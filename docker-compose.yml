@@ -1,0 +1,17 @@
+services:
+  node-stats:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount database file for persistence
+      - ./stats.db:/app/stats.db
+      # Mount Docker socket for Docker metrics
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    pid: host
+    ipc: host
+    restart: unless-stopped
+    environment:
+      - GIN_MODE=release

@@ -1,0 +1,25 @@
+#!/bin/bash
+
+echo "Building React frontend..."
+
+# Navigate to frontend directory
+cd frontend
+
+# Install dependencies
+yarn
+
+# Build production build
+yarn build
+
+echo "Frontend build completed!"
+
+# Return to project root
+cd ..
+
+echo "Building Go backend..."
+
+# Build Go application
+go build -o bin/server ./cmd/server
+
+echo "Backend build completed!"
+echo "Built files are in ./dist/ directory (frontend) and ./bin/server (backend)"

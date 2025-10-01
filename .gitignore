@@ -1,0 +1,11 @@
+dist
+.DS_Store
+system-stats
+*/node_modules
+bin
+*.db
+# npm
+package-lock.json
+# yarn
+.yarn-integrity
+.env
