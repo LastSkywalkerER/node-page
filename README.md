@@ -10,17 +10,43 @@ A comprehensive system monitoring dashboard for Node.js applications with real-t
 - **Docker Support**: Monitor Docker containers and system resources
 - **Persistent Storage**: SQLite database for historical metrics
 
+## Screenshots
+
+### Neon Terminal Theme
+![Neon Terminal Theme](assets/neon-terminal.png)
+
+### Glass Aurora Theme
+![Glass Aurora Theme](assets/glass-aurora.png)
+
+### Cards Flow Theme
+![Cards Flow Theme](assets/cards-flow.png)
+
+### Slate Pro Theme
+![Slate Pro Theme](assets/slate-pro.png)
+
 ## Quick Start
 
 ### Using Docker (Recommended)
 
-```bash
-# Build and run with Docker Compose
-docker-compose up --build
+Create a `docker-compose.yml` file:
 
-# Or build manually
-docker build -t node-stats .
-docker run -p 8080:8080 -v $(pwd)/stats.db:/app/stats.db -v /var/run/docker.sock:/var/run/docker.sock:ro node-stats
+```yaml
+services:
+  node-stats:
+    image: 'ghcr.io/lastskywalkerer/node-page:latest'
+    volumes:
+      - '/var/run/docker.sock:/var/run/docker.sock:ro'
+    pid: host
+    ipc: host
+    restart: unless-stopped
+    environment:
+      - GIN_MODE=release
+```
+
+Then run:
+
+```bash
+docker-compose up -d
 ```
 
 The application will be available at `http://localhost:8080`
@@ -49,35 +75,15 @@ yarn dev
 - `GET /api/docker` - Docker containers info
 - `GET /api/system` - System information
 
-## GitHub Actions CI/CD
-
-This project includes automated Docker builds via GitHub Actions:
-
-### Setup
-
-1. **Create a GitHub Repository**: Push your code to a GitHub repository
-
-2. **GitHub Token Setup**:
-   - GitHub Actions automatically provides `GITHUB_TOKEN` for authentication with GitHub Container Registry
-   - No additional secrets are required for this workflow
-
-3. **Push Changes**: The workflow will automatically trigger on push to main branch
-
-### Workflow Features
-
-- **Automated Builds**: Builds Docker image on every push to main
-- **Multi-platform**: Supports Linux containers
-- **Registry**: Pushes to GitHub Container Registry (ghcr.io)
-- **Tagging**: Uses semantic versioning and branch-based tags
 
 ### Pulling Pre-built Images
 
 ```bash
 # Pull from GitHub Container Registry
-docker pull ghcr.io/YOUR_USERNAME/YOUR_REPO:latest
+docker pull ghcr.io/lastskywalkerer/node-page:latest
 
 # Run the container
-docker run -p 8080:8080 ghcr.io/YOUR_USERNAME/YOUR_REPO:latest
+docker run -p 8080:8080 ghcr.io/lastskywalkerer/node-page:latest
 ```
 
 ## Architecture
@@ -103,12 +109,6 @@ The application follows Clean Architecture principles:
 └── Dockerfile         # Container definition
 ```
 
-### Adding New Metrics
-
-1. Create new module in `internal/modules/`
-2. Implement the standard structure: `application/`, `infrastructure/`, `presentation/`
-3. Add API endpoint in the presentation layer
-4. Update frontend widgets if needed
 
 ## Contributing
 
