@@ -28,12 +28,13 @@ func NewCPURepository(db *gorm.DB) CPURepository {
 func (r *cpuRepository) SaveCurrentMetric(ctx context.Context, metric localentities.CPUMetric) error {
 	// Save as historical metric
 	historicalMetric := localentities.HistoricalCPUMetric{
-		Timestamp: time.Now().UTC(),
-		Usage:     metric.UsagePercent,
-		Cores:     metric.Cores,
-		LoadAvg1:  metric.LoadAvg1,
-		LoadAvg5:  metric.LoadAvg5,
-		LoadAvg15: metric.LoadAvg15,
+		Timestamp:   time.Now().UTC(),
+		Usage:       metric.UsagePercent,
+		Cores:       metric.Cores,
+		LoadAvg1:    metric.LoadAvg1,
+		LoadAvg5:    metric.LoadAvg5,
+		LoadAvg15:   metric.LoadAvg15,
+		Temperature: metric.Temperature,
 	}
 
 	return r.db.WithContext(ctx).Create(&historicalMetric).Error
@@ -57,6 +58,7 @@ func (r *cpuRepository) GetLatestMetric(ctx context.Context) (localentities.CPUM
 		LoadAvg1:     metric.LoadAvg1,
 		LoadAvg5:     metric.LoadAvg5,
 		LoadAvg15:    metric.LoadAvg15,
+		Temperature:  metric.Temperature,
 	}, nil
 }
 

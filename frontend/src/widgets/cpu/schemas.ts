@@ -7,6 +7,7 @@ export const cpuMetricSchema = z.object({
   load_avg_1: z.number(),
   load_avg_5: z.number(),
   load_avg_15: z.number(),
+  temperature: z.number(),
 });
 
 // Historical CPU data schema
@@ -16,6 +17,7 @@ export const historicalCPUSchema = z.object({
   load_avg_1: z.number(),
   load_avg_5: z.number(),
   load_avg_15: z.number(),
+  temperature: z.number(),
 });
 
 export type CPUMetric = z.infer<typeof cpuMetricSchema>;

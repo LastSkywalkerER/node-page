@@ -7,7 +7,7 @@ import (
 /**
  * CPUMetric represents CPU performance and utilization metrics.
  * This structure contains information about CPU usage percentage, core count,
- * and system load averages over different time periods.
+ * system load averages over different time periods, and temperature.
  */
 type CPUMetric struct {
 	/** UsagePercent shows the current CPU utilization as a percentage */
@@ -24,6 +24,9 @@ type CPUMetric struct {
 
 	/** LoadAvg15 represents the system load average over the last 15 minutes */
 	LoadAvg15 float64 `json:"load_avg_15"`
+
+	/** Temperature represents the current CPU temperature in Celsius */
+	Temperature float64 `json:"temperature"`
 }
 
 /**

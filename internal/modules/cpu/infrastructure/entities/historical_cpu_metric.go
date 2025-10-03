@@ -6,7 +6,7 @@ import (
 
 /**
  * HistoricalCPUMetric represents a historical CPU performance metric stored in the database.
- * This structure contains CPU usage statistics and system load averages recorded at a specific time,
+ * This structure contains CPU usage statistics, system load averages, and temperature recorded at a specific time,
  * used for trend analysis and historical reporting.
  */
 type HistoricalCPUMetric struct {
@@ -27,6 +27,9 @@ type HistoricalCPUMetric struct {
 
 	/** LoadAvg15 represents the 15-minute system load average */
 	LoadAvg15 float64 `json:"load_avg_15" gorm:"column:load_avg_15"`
+
+	/** Temperature shows the CPU temperature in Celsius at the time of recording */
+	Temperature float64 `json:"temperature" gorm:"column:temperature"`
 }
 
 /**

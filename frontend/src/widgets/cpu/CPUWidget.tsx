@@ -50,8 +50,8 @@ export function CPUWidget() {
             <span>{metrics.latest?.cores ?? 'N/A'}</span>
           </div>
           <div className="flex justify-between">
-            <span>Base Clock:</span>
-            <span>3.9 GHz</span>
+            <span>Temperature:</span>
+            <span>{metrics.latest?.temperature ? `${metrics.latest.temperature.toFixed(1)}°C` : 'N/A'}</span>
           </div>
         </div>
       )}
