@@ -56,12 +56,14 @@ func (s *service) Save(ctx context.Context, metric entities.MemoryMetric) error 
 
 func (s *service) GetLatest(ctx context.Context) (entities.MemoryMetric, error) {
 	s.logger.Info("Getting latest memory metrics")
-	metric, err := s.memoryRepository.GetLatestMetric(ctx)
+	// Collect fresh metrics instead of getting from database
+	// to ensure we have all current fields including cache and swap
+	metric, err := s.collector.CollectMemoryMetrics(ctx)
 	if err != nil {
-		s.logger.Error("Failed to get latest memory metrics", "error", err)
+		s.logger.Error("Failed to collect latest memory metrics", "error", err)
 		return entities.MemoryMetric{}, err
 	}
-	s.logger.Info("Latest memory metrics retrieved successfully")
+	s.logger.Info("Latest memory metrics collected successfully")
 	return metric, nil
 }
 

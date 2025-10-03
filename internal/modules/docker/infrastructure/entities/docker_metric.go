@@ -67,6 +67,9 @@ type DockerContainer struct {
 
 	/** Created shows when the container was created (ISO 8601 timestamp) */
 	Created string `json:"created"`
+
+	/** FinishedAt shows when the container finished (ISO 8601 timestamp, for exited containers) */
+	FinishedAt string `json:"finished_at,omitempty"`
 }
 
 /**
@@ -127,6 +130,9 @@ type DockerContainerEntity struct {
 
 	/** Created shows when the container was created (ISO 8601 timestamp) */
 	Created string `gorm:"column:created"`
+
+	/** FinishedAt shows when the container finished (ISO 8601 timestamp, for exited containers) */
+	FinishedAt string `gorm:"column:finished_at"`
 }
 
 /**
@@ -215,7 +221,8 @@ func (e DockerContainerEntity) ToDockerContainer() (DockerContainer, error) {
 			BlockRead:         e.BlockRead,
 			BlockWrite:        e.BlockWrite,
 		},
-		Created: e.Created,
+		Created:    e.Created,
+		FinishedAt: e.FinishedAt,
 	}, nil
 }
 
@@ -251,5 +258,6 @@ func (c DockerContainer) ToDockerContainerEntity(metricTimestamp time.Time) (Doc
 		BlockRead:         c.Stats.BlockRead,
 		BlockWrite:        c.Stats.BlockWrite,
 		Created:           c.Created,
+		FinishedAt:        c.FinishedAt,
 	}, nil
 }

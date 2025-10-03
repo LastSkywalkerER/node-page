@@ -86,11 +86,12 @@ export function DiskWidget() {
                   axisLine={false}
                   tickLine={false}
                   tick={{fontSize: 10, fill: 'currentColor', opacity: 0.6}}
-                  domain={[0, 100]}
+                  domain={[0, 'dataMax']}
+                  tickFormatter={(value) => formatBytes(value)}
                 />
                 <Area
                   type="monotone"
-                  dataKey="usage"
+                  dataKey="used"
                   stroke={theme.chart.color}
                   fillOpacity={1}
                   fill="url(#diskGradient)"

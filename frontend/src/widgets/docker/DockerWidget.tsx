@@ -11,7 +11,6 @@ export function DockerWidget() {
   const theme = useWidgetTheme('docker');
   const secondaryTextClass = useSecondaryText();
   const { data: metrics, isLoading } = useDocker();
-  const [selectedContainer, setSelectedContainer] = useState<string | null>(null);
 
   if (isLoading || !metrics) {
     return (
@@ -60,9 +59,7 @@ export function DockerWidget() {
           {metrics?.latest?.containers?.map((container: any) => (
             <div
               key={container.id}
-              className={`p-3 rounded-lg bg-white/5 border border-white/10 transition-all duration-200 ${
-                selectedContainer === container.id ? 'ring-2 ring-blue-500/50' : ''
-              }`}
+              className={`p-3 rounded-lg bg-white/5 border border-white/10 transition-all duration-200`}
             >
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center space-x-2">
@@ -93,16 +90,6 @@ export function DockerWidget() {
                   >
                     {container.state}
                   </Badge>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className={`h-6 w-6 p-0 ${theme.container.className} hover:opacity-70`}
-                    onClick={() => setSelectedContainer(
-                      selectedContainer === container.id ? null : container.id
-                    )}
-                  >
-                    <MoreHorizontal className="w-3 h-3" />
-                  </Button>
                 </div>
               </div>
 
@@ -111,7 +98,7 @@ export function DockerWidget() {
                   <div className="text-sm font-medium text-white">
                     {container.stats.cpu_limit > 0
                       ? `${container.stats.cpu_percent_of_limit.toFixed(1)}% / ${container.stats.cpu_limit.toFixed(1)} CPU`
-                      : `${container.stats.cpu_percent_of_limit.toFixed(1)}% of available CPU`
+                      : `${container.stats.cpu_percent_of_limit.toFixed(1)}%`
                     }
                   </div>
                   <div className={`text-xs ${secondaryTextClass}`}>CPU Usage</div>
@@ -138,57 +125,40 @@ export function DockerWidget() {
                 </div>
                 <div className="text-center flex-1 px-2">
                   <div className="text-sm font-medium text-white">
-                    ↓{(container.stats.network_rx / (1024 * 1024)).toFixed(1)}MB ↑{(container.stats.network_tx / (1024 * 1024)).toFixed(1)}MB
+                    {(() => {
+                      const rxKB = container.stats.network_rx / 1024;
+                      const txKB = container.stats.network_tx / 1024;
+
+                      // Show in MB if > 1024 KB, otherwise in KB
+                      const rxDisplay = rxKB > 1024 ? `${(rxKB / 1024).toFixed(1)}MB` : `${rxKB.toFixed(1)}KB`;
+                      const txDisplay = txKB > 1024 ? `${(txKB / 1024).toFixed(1)}MB` : `${txKB.toFixed(1)}KB`;
+
+                      return `↓${rxDisplay} ↑${txDisplay}`;
+                    })()}
                   </div>
                   <div className={`text-xs ${secondaryTextClass}`}>Network</div>
                 </div>
                 <div className="text-center flex-1 px-2">
                   <div className="text-sm font-medium text-white">
                     {(() => {
-                      const uptime = Date.now() - new Date(container.created).getTime();
+                      // For exited containers, show time since finished
+                      // For running/restarting containers, show time since created
+                      const referenceTime = container.state === 'exited' && container.finished_at
+                        ? new Date(container.finished_at).getTime()
+                        : new Date(container.created).getTime();
+
+                      const uptime = Date.now() - referenceTime;
                       const days = Math.floor(uptime / (1000 * 60 * 60 * 24));
                       const hours = Math.floor((uptime % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
                       return days > 0 ? `${days}d ${hours}h` : `${hours}h`;
                     })()}
                   </div>
-                  <div className={`text-xs ${secondaryTextClass}`}>Uptime</div>
+                  <div className={`text-xs ${secondaryTextClass}`}>
+                    {container.state === 'exited' ? 'Down time' : 'Uptime'}
+                  </div>
                 </div>
               </div>
 
-              {selectedContainer === container.id && (
-                <div className="border-t border-white/10 pt-3 mt-3 space-y-2">
-                  <div className="flex justify-between items-center">
-                    <Button variant="outline" size="sm" className="flex-1 mr-2">
-                      <RefreshCw className="w-3 h-3 mr-1" />
-                      Restart
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="flex-1"
-                      disabled={container.state !== 'running'}
-                    >
-                      {container.state === 'running' ? (
-                        <>
-                          <Square className="w-3 h-3 mr-1" />
-                          Stop
-                        </>
-                      ) : (
-                        <>
-                          <Play className="w-3 h-3 mr-1" />
-                          Start
-                        </>
-                      )}
-                    </Button>
-                  </div>
-                  <div className={`text-xs ${secondaryTextClass} space-y-1`}>
-                    <div>Container: {container.name}</div>
-                    <div>Image: {container.image}</div>
-                    <div>Status: {container.status}</div>
-                    <div>Ports: {container.ports.length > 0 ? container.ports.map((p: any) => `${p.private_port}:${p.public_port}`).join(', ') : 'None'}</div>
-                  </div>
-                </div>
-              )}
             </div>
           ))}
         </div>

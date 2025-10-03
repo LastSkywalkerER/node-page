@@ -7,6 +7,10 @@ export const memoryMetricSchema = z.object({
   used: z.number(),
   usage_percent: z.number(),
   free: z.number(),
+  cached: z.number().optional(),
+  buffers: z.number().optional(),
+  swap_total: z.number().optional(),
+  swap_used: z.number().optional(),
 });
 
 // Historical memory data schema

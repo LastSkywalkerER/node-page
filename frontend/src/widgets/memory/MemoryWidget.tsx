@@ -50,12 +50,16 @@ export function MemoryWidget() {
             <span>{metrics.latest?.used ? formatBytes(metrics.latest.used) : 'N/A'}</span>
           </div>
           <div className="flex justify-between">
+            <span>Total:</span>
+            <span>{metrics.latest?.total ? formatBytes(metrics.latest.total) : 'N/A'}</span>
+          </div>
+          <div className="flex justify-between">
             <span>Cache:</span>
-            <span>2.1 GB</span>
+            <span>{metrics.latest?.cached ? formatBytes((metrics.latest.cached || 0) + (metrics.latest.buffers || 0)) : 'N/A'}</span>
           </div>
           <div className="flex justify-between">
             <span>Swap:</span>
-            <span>0 GB</span>
+            <span>{metrics.latest?.swap_used !== undefined ? formatBytes(metrics.latest.swap_used) : 'N/A'}</span>
           </div>
         </div>
       )}
@@ -86,11 +90,12 @@ export function MemoryWidget() {
                   axisLine={false}
                   tickLine={false}
                   tick={{fontSize: 10, fill: 'currentColor', opacity: 0.6}}
-                  domain={[0, 100]}
+                  domain={[0, 'dataMax']}
+                  tickFormatter={(value) => formatBytes(value)}
                 />
                 <Area
                   type="monotone"
-                  dataKey="usage"
+                  dataKey="used"
                   stroke={theme.chart.color}
                   fillOpacity={1}
                   fill="url(#memoryGradient)"

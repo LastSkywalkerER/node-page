@@ -24,6 +24,18 @@ type MemoryMetric struct {
 
 	/** Free indicates the amount of completely unused memory in bytes */
 	Free uint64 `json:"free"`
+
+	/** Cached shows the amount of memory used for caching in bytes */
+	Cached uint64 `json:"cached"`
+
+	/** Buffers shows the amount of memory used for buffers in bytes */
+	Buffers uint64 `json:"buffers"`
+
+	/** SwapTotal shows the total amount of swap space in bytes */
+	SwapTotal uint64 `json:"swap_total"`
+
+	/** SwapUsed shows the amount of swap space currently in use in bytes */
+	SwapUsed uint64 `json:"swap_used"`
 }
 
 /**

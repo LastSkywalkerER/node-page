@@ -222,15 +222,19 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (enti
 			containerID = containerID[:12]
 		}
 
+		finishedAt := c.parseContainerFinishedTime(containerJSON.State.FinishedAt)
+		c.logger.Debug("Container finished time", "container_id", containerID, "finished_at_raw", containerJSON.State.FinishedAt, "finished_at_parsed", finishedAt)
+
 		dockerContainer := entities.DockerContainer{
-			ID:      containerID,
-			Name:    name,
-			Image:   containerInfo.Image,
-			State:   containerInfo.State,
-			Status:  containerInfo.Status,
-			Ports:   ports,
-			Stats:   containerStats,
-			Created: c.parseContainerCreatedTime(containerJSON.Created),
+			ID:         containerID,
+			Name:       name,
+			Image:      containerInfo.Image,
+			State:      containerInfo.State,
+			Status:     containerInfo.Status,
+			Ports:      ports,
+			Stats:      containerStats,
+			Created:    c.parseContainerCreatedTime(containerJSON.Created),
+			FinishedAt: finishedAt,
 		}
 
 		results <- containerResult{
@@ -369,6 +373,7 @@ func (c *dockerMetricsCollector) getContainerResourceStats(ctx context.Context, 
 			networkTx += network.TxBytes
 		}
 	}
+	c.logger.Debug("Network stats for container", "container_id", containerID, "network_rx_bytes", networkRx, "network_tx_bytes", networkTx)
 
 	// Safely get disk statistics
 	var blockRead, blockWrite uint64
@@ -535,4 +540,23 @@ func (c *dockerMetricsCollector) parseContainerCreatedTime(createdStr string) st
 	}
 	// If failed, return current time
 	return time.Now().Format(time.RFC3339)
+}
+
+// parseContainerFinishedTime parses container finished time from string and returns string
+func (c *dockerMetricsCollector) parseContainerFinishedTime(finishedStr string) string {
+	// Check for empty string (container is still running)
+	if finishedStr == "" || finishedStr == "0001-01-01T00:00:00Z" {
+		return ""
+	}
+
+	// Try to parse in RFC3339 format
+	if t, err := time.Parse(time.RFC3339, finishedStr); err == nil {
+		return t.Format(time.RFC3339)
+	}
+	// Try to parse in RFC3339Nano format
+	if t, err := time.Parse(time.RFC3339Nano, finishedStr); err == nil {
+		return t.Format(time.RFC3339)
+	}
+	// If failed, return empty string
+	return ""
 }

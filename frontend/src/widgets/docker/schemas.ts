@@ -28,6 +28,7 @@ export const dockerContainerSchema = z.object({
   ports: z.array(dockerPortSchema),
   stats: dockerStatsSchema,
   created: z.string(),
+  finished_at: z.string().optional(),
 });
 
 export const dockerMetricSchema = z.object({

@@ -31,7 +31,8 @@ func NewMemoryMetricsCollector(logger *log.Logger) *MemoryMetricsCollector {
 
 /**
  * CollectMemoryMetrics gathers current memory performance statistics.
- * This method collects memory usage, available memory, and usage percentages.
+ * This method collects memory usage, available memory, usage percentages,
+ * cached memory, buffers, and swap information.
  *
  * @param ctx The context for the operation
  * @return entities.MemoryMetric The collected memory metrics
@@ -45,6 +46,14 @@ func (c *MemoryMetricsCollector) CollectMemoryMetrics(ctx context.Context) (enti
 		return entities.MemoryMetric{}, err
 	}
 
+	// Collect swap information
+	swapStat, err := mem.SwapMemoryWithContext(ctx)
+	if err != nil {
+		c.logger.Warn("Failed to collect swap statistics", "error", err)
+		// Continue without swap data
+		swapStat = &mem.SwapMemoryStat{}
+	}
+
 	c.logger.Info("Memory metrics collected successfully", "total", memStat.Total, "used_percent", memStat.UsedPercent)
 	return entities.MemoryMetric{
 		Total:        memStat.Total,
@@ -52,5 +61,9 @@ func (c *MemoryMetricsCollector) CollectMemoryMetrics(ctx context.Context) (enti
 		Used:         memStat.Used,
 		UsagePercent: memStat.UsedPercent,
 		Free:         memStat.Free,
+		Cached:       memStat.Cached,
+		Buffers:      memStat.Buffers,
+		SwapTotal:    swapStat.Total,
+		SwapUsed:     swapStat.Used,
 	}, nil
 }
