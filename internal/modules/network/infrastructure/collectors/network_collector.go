@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/charmbracelet/log"
-	"github.com/shirou/gopsutil/v3/net"
+	"github.com/shirou/gopsutil/v4/net"
 
 	"system-stats/internal/modules/network/infrastructure/entities"
 )

@@ -5,8 +5,8 @@ import (
 	"runtime"
 
 	"github.com/charmbracelet/log"
-	"github.com/shirou/gopsutil/v3/cpu"
-	"github.com/shirou/gopsutil/v3/load"
+	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/load"
 
 	"system-stats/internal/modules/cpu/infrastructure/entities"
 )

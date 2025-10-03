@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/charmbracelet/log"
-	"github.com/shirou/gopsutil/v3/disk"
+	"github.com/shirou/gopsutil/v4/disk"
 
 	"system-stats/internal/modules/disk/infrastructure/entities"
 )
