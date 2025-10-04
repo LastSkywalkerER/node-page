@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -157,6 +158,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (enti
 	// Structure for parallel container processing results
 	type containerResult struct {
 		container entities.DockerContainer
+		stackName string
 		isRunning bool
 		err       error
 	}
@@ -189,6 +191,13 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (enti
 			name = strings.TrimPrefix(containerInfo.Names[0], "/")
 		} else {
 			name = "unknown"
+		}
+
+		// Extract stack name from compose labels first
+		stackName := c.extractStackName(containerJSON.Config.Labels)
+		if stackName == "" {
+			// If no compose project found, try to extract from container name
+			stackName = c.extractStackNameFromContainerName(name)
 		}
 
 		// Convert ports (with nil protection)
@@ -239,6 +248,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (enti
 
 		results <- containerResult{
 			container: dockerContainer,
+			stackName: stackName,
 			isRunning: isRunning,
 		}
 	}
@@ -248,8 +258,8 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (enti
 		go processContainer(containerInfo)
 	}
 
-	// Collect results
-	dockerContainers := make([]entities.DockerContainer, 0, len(containers))
+	// Collect results and group by stacks
+	stackMap := make(map[string]*entities.DockerStack)
 	for i := 0; i < len(containers); i++ {
 		result := <-results
 		if result.err != nil {
@@ -259,47 +269,78 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (enti
 		if result.isRunning {
 			atomic.AddInt32(&runningCount, 1)
 		}
-		dockerContainers = append(dockerContainers, result.container)
+
+		// Get or create stack
+		stack, exists := stackMap[result.stackName]
+		if !exists {
+			stack = &entities.DockerStack{
+				Name:       result.stackName,
+				Containers: make([]entities.DockerContainer, 0),
+			}
+			stackMap[result.stackName] = stack
+		}
+
+		// Add container to stack
+		stack.Containers = append(stack.Containers, result.container)
+		stack.TotalContainers++
+
+		if result.isRunning {
+			stack.RunningContainers++
+		}
 	}
 
-	c.logger.Info("Docker metrics collected successfully", "total_containers", len(containers), "running_containers", int(runningCount))
+	// Merge stacks with common prefixes (e.g., myapp-web, myapp-api -> myapp)
+	mergedStackMap := c.mergeStacksByCommonPrefix(stackMap)
 
-	// Log full content of all containers
-	for i, container := range dockerContainers {
-		c.logger.Debug("Docker container details",
-			"index", i,
-			"id", container.ID,
-			"name", container.Name,
-			"image", container.Image,
-			"state", container.State,
-			"status", container.Status,
-			"ports_count", len(container.Ports),
-			"cpu_percent", container.Stats.CPUPercent,
-			"cpu_limit", container.Stats.CPULimit,
-			"cpu_percent_of_limit", container.Stats.CPUPercentOfLimit,
-			"memory_usage", container.Stats.MemoryUsage,
-			"memory_limit", container.Stats.MemoryLimit,
-			"memory_percent", container.Stats.MemoryPercent,
-			"network_rx", container.Stats.NetworkRx,
-			"network_tx", container.Stats.NetworkTx,
-			"block_read", container.Stats.BlockRead,
-			"block_write", container.Stats.BlockWrite,
-			"created", container.Created)
+	// Convert map to slice
+	dockerStacks := make([]entities.DockerStack, 0, len(mergedStackMap))
+	for _, stack := range mergedStackMap {
+		dockerStacks = append(dockerStacks, *stack)
+	}
 
-		// Log ports separately if they exist
-		for j, port := range container.Ports {
-			c.logger.Debug("Docker container port",
-				"container_name", container.Name,
-				"port_index", j,
-				"private_port", port.PrivatePort,
-				"public_port", port.PublicPort,
-				"type", port.Type,
-				"ip", port.IP)
+	c.logger.Info("Docker metrics collected successfully", "total_containers", len(containers), "running_containers", int(runningCount), "stacks", len(dockerStacks))
+
+	// Log full content of all stacks and containers
+	for i, stack := range dockerStacks {
+		c.logger.Debug("Docker stack details", "stack_index", i, "stack_name", stack.Name, "containers_count", len(stack.Containers), "running_containers", stack.RunningContainers)
+		for j, container := range stack.Containers {
+			c.logger.Debug("Docker container details",
+				"stack_name", stack.Name,
+				"container_index", j,
+				"id", container.ID,
+				"name", container.Name,
+				"image", container.Image,
+				"state", container.State,
+				"status", container.Status,
+				"ports_count", len(container.Ports),
+				"cpu_percent", container.Stats.CPUPercent,
+				"cpu_limit", container.Stats.CPULimit,
+				"cpu_percent_of_limit", container.Stats.CPUPercentOfLimit,
+				"memory_usage", container.Stats.MemoryUsage,
+				"memory_limit", container.Stats.MemoryLimit,
+				"memory_percent", container.Stats.MemoryPercent,
+				"network_rx", container.Stats.NetworkRx,
+				"network_tx", container.Stats.NetworkTx,
+				"block_read", container.Stats.BlockRead,
+				"block_write", container.Stats.BlockWrite,
+				"created", container.Created)
+
+			// Log ports separately if they exist
+			for k, port := range container.Ports {
+				c.logger.Debug("Docker container port",
+					"stack_name", stack.Name,
+					"container_name", container.Name,
+					"port_index", k,
+					"private_port", port.PrivatePort,
+					"public_port", port.PublicPort,
+					"type", port.Type,
+					"ip", port.IP)
+			}
 		}
 	}
 
 	return entities.DockerMetric{
-		Containers:        dockerContainers,
+		Stacks:            dockerStacks,
 		TotalContainers:   len(containers),
 		RunningContainers: int(runningCount),
 		DockerAvailable:   true,
@@ -559,4 +600,203 @@ func (c *dockerMetricsCollector) parseContainerFinishedTime(finishedStr string) 
 	}
 	// If failed, return empty string
 	return ""
+}
+
+// extractStackName extracts the docker-compose project name from container labels
+func (c *dockerMetricsCollector) extractStackName(labels map[string]string) string {
+	if labels == nil {
+		return ""
+	}
+
+	// Primary Docker Compose project label
+	if project, exists := labels["com.docker.compose.project"]; exists && project != "" {
+		return project
+	}
+
+	// Alternative compose labels that might contain project name
+	if project, exists := labels["com.docker.compose.project.config_files"]; exists && project != "" {
+		return project
+	}
+
+	// Docker Swarm stack namespace
+	if stack, exists := labels["com.docker.stack.namespace"]; exists && stack != "" {
+		return stack
+	}
+
+	// Kubernetes namespace (for containers running in k8s)
+	if namespace, exists := labels["io.kubernetes.pod.namespace"]; exists && namespace != "" {
+		return namespace
+	}
+
+	// Custom stack label (for manually labeled containers)
+	if stack, exists := labels["custom.stack.name"]; exists && stack != "" {
+		return stack
+	}
+
+	// Environment variable based stack detection
+	if stack, exists := labels["env.STACK_NAME"]; exists && stack != "" {
+		return stack
+	}
+
+	return ""
+}
+
+// extractStackNameFromContainerName attempts to extract stack name from container name
+// For containers created by docker-compose, the name typically follows pattern: project-service-instance
+// This function uses heuristic patterns to identify stack names without hardcoded values
+func (c *dockerMetricsCollector) extractStackNameFromContainerName(containerName string) string {
+	if containerName == "" {
+		return containerName
+	}
+
+	// Split by hyphens (most common separator in docker-compose names)
+	parts := strings.Split(containerName, "-")
+
+	// If no hyphens or only one part, return as is (standalone container)
+	if len(parts) < 2 {
+		return containerName
+	}
+
+	// Check if last part is a number (instance number like -1, -2, etc)
+	if _, err := strconv.Atoi(parts[len(parts)-1]); err == nil {
+		// Has number at the end, pattern like: stack-service-1
+		// Take everything except the last part (instance number)
+		if len(parts) >= 3 {
+			return strings.Join(parts[:len(parts)-2], "-")
+		}
+		// If only 2 parts and last is number, take first part
+		return parts[0]
+	}
+
+	// If no pattern matches, return first part
+	return parts[0]
+}
+
+// mergeStacksByCommonPrefix merges stacks that have common prefixes in their names
+// For example: myapp-web, myapp-api, myapp-db -> merged into myapp stack
+func (c *dockerMetricsCollector) mergeStacksByCommonPrefix(stackMap map[string]*entities.DockerStack) map[string]*entities.DockerStack {
+	if len(stackMap) <= 1 {
+		return stackMap
+	}
+
+	// Collect all stack names
+	stackNames := make([]string, 0, len(stackMap))
+	for name := range stackMap {
+		stackNames = append(stackNames, name)
+	}
+
+	// Find merge candidates - stacks with common prefixes
+	mergeGroups := c.findCommonPrefixGroups(stackNames)
+
+	// If no merges needed, return original map
+	if len(mergeGroups) == 0 {
+		return stackMap
+	}
+
+	// Create new map with merged stacks
+	mergedMap := make(map[string]*entities.DockerStack)
+
+	// Track which stacks have been merged
+	mergedStacks := make(map[string]bool)
+
+	// Process each merge group
+	for commonPrefix, groupStacks := range mergeGroups {
+		if len(groupStacks) < 2 {
+			continue // Skip groups with only one stack
+		}
+
+		c.logger.Debug("Merging stacks with common prefix", "prefix", commonPrefix, "stacks", groupStacks)
+
+		// Create merged stack
+		mergedStack := &entities.DockerStack{
+			Name:       commonPrefix,
+			Containers: make([]entities.DockerContainer, 0),
+		}
+
+		// Collect all containers from stacks in this group
+		for _, stackName := range groupStacks {
+			if stack, exists := stackMap[stackName]; exists {
+				mergedStack.Containers = append(mergedStack.Containers, stack.Containers...)
+				mergedStack.TotalContainers += stack.TotalContainers
+				mergedStack.RunningContainers += stack.RunningContainers
+				mergedStacks[stackName] = true
+			}
+		}
+
+		mergedMap[commonPrefix] = mergedStack
+	}
+
+	// Add unmerged stacks
+	for stackName, stack := range stackMap {
+		if !mergedStacks[stackName] {
+			mergedMap[stackName] = stack
+		}
+	}
+
+	c.logger.Debug("Stack merging completed", "original_stacks", len(stackMap), "merged_stacks", len(mergedMap))
+	return mergedMap
+}
+
+// findCommonPrefixGroups finds groups of stack names that share common prefixes
+func (c *dockerMetricsCollector) findCommonPrefixGroups(stackNames []string) map[string][]string {
+	prefixGroups := make(map[string][]string)
+
+	for _, stackName := range stackNames {
+		// Skip single containers or unknown stacks
+		if stackName == "unknown" || !strings.Contains(stackName, "-") {
+			continue
+		}
+
+		// Extract potential prefixes (parts before the last hyphen)
+		parts := strings.Split(stackName, "-")
+		if len(parts) < 2 {
+			continue
+		}
+
+		// Try different prefix lengths
+		for i := 1; i < len(parts); i++ {
+			prefix := strings.Join(parts[:i], "-")
+
+			// Skip too short prefixes
+			if len(prefix) < 3 {
+				continue
+			}
+
+			// Check if this prefix makes sense (should be followed by a service name)
+			if i >= len(parts)-1 {
+				continue
+			}
+
+			prefixGroups[prefix] = append(prefixGroups[prefix], stackName)
+		}
+	}
+
+	// Filter groups to only include those with multiple stacks
+	result := make(map[string][]string)
+	for prefix, stacks := range prefixGroups {
+		if len(stacks) >= 2 {
+			// Remove duplicates
+			uniqueStacks := c.removeDuplicates(stacks)
+			if len(uniqueStacks) >= 2 {
+				result[prefix] = uniqueStacks
+			}
+		}
+	}
+
+	return result
+}
+
+// removeDuplicates removes duplicate strings from slice
+func (c *dockerMetricsCollector) removeDuplicates(items []string) []string {
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(items))
+
+	for _, item := range items {
+		if !seen[item] {
+			seen[item] = true
+			result = append(result, item)
+		}
+	}
+
+	return result
 }

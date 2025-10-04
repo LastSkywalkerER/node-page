@@ -38,7 +38,7 @@ func (s *service) Collect(ctx context.Context) (entities.DockerMetric, error) {
 		s.logger.Error("Failed to collect Docker metrics", "error", err)
 		return entities.DockerMetric{}, err
 	}
-	s.logger.Info("Docker metrics collected successfully", "containers_count", len(metrics.Containers))
+	s.logger.Info("Docker metrics collected successfully", "stacks_count", len(metrics.Stacks), "total_containers", metrics.TotalContainers)
 	return metrics, nil
 }
 

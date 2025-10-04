@@ -6,13 +6,31 @@ import (
 )
 
 /**
+ * DockerStack represents a group of Docker containers that belong to the same docker-compose project.
+ * This structure groups containers by their compose project name and provides aggregate statistics.
+ */
+type DockerStack struct {
+	/** Name is the name of the docker-compose project/stack */
+	Name string `json:"name"`
+
+	/** Containers contains all containers in this stack */
+	Containers []DockerContainer `json:"containers"`
+
+	/** TotalContainers shows the total number of containers in this stack (including stopped) */
+	TotalContainers int `json:"total_containers"`
+
+	/** RunningContainers shows the number of currently running containers in this stack */
+	RunningContainers int `json:"running_containers"`
+}
+
+/**
  * DockerMetric represents Docker daemon and container metrics.
  * This structure provides information about Docker availability, container counts,
- * and individual container statistics.
+ * and grouped container statistics by docker-compose stacks.
  */
 type DockerMetric struct {
-	/** Containers contains detailed information about each Docker container */
-	Containers []DockerContainer `json:"containers"`
+	/** Stacks contains grouped information about Docker containers organized by compose projects */
+	Stacks []DockerStack `json:"stacks"`
 
 	/** TotalContainers shows the total number of containers (including stopped) */
 	TotalContainers int `json:"total_containers"`

@@ -31,8 +31,15 @@ export const dockerContainerSchema = z.object({
   finished_at: z.string().optional(),
 });
 
-export const dockerMetricSchema = z.object({
+export const dockerStackSchema = z.object({
+  name: z.string(),
   containers: z.array(dockerContainerSchema),
+  total_containers: z.number(),
+  running_containers: z.number(),
+});
+
+export const dockerMetricSchema = z.object({
+  stacks: z.array(dockerStackSchema),
   total_containers: z.number(),
   running_containers: z.number(),
   docker_available: z.boolean(),
@@ -42,4 +49,5 @@ export const dockerMetricSchema = z.object({
 export type DockerStats = z.infer<typeof dockerStatsSchema>;
 export type DockerPort = z.infer<typeof dockerPortSchema>;
 export type DockerContainer = z.infer<typeof dockerContainerSchema>;
+export type DockerStack = z.infer<typeof dockerStackSchema>;
 export type DockerMetric = z.infer<typeof dockerMetricSchema>;
