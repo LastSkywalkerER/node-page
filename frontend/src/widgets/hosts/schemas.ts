@@ -1,0 +1,30 @@
+import { z } from 'zod';
+
+export const HostSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  mac_address: z.string(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+
+export const HostsResponseSchema = z.object({
+  hosts: z.array(HostSchema),
+});
+
+export const CurrentHostResponseSchema = z.object({
+  host: HostSchema,
+});
+
+export const HostHealthSchema = z.object({
+  host_id: z.number(),
+  status: z.string(),
+  latency_ms: z.number(),
+  uptime_seconds: z.number(),
+  last_seen: z.string(),
+});
+
+export type Host = z.infer<typeof HostSchema>;
+export type HostsResponse = z.infer<typeof HostsResponseSchema>;
+export type CurrentHostResponse = z.infer<typeof CurrentHostResponseSchema>;
+export type HostHealth = z.infer<typeof HostHealthSchema>;

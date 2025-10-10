@@ -41,7 +41,7 @@ type DockerRepository interface {
 	 * @param metric The Docker metrics data to be stored
 	 * @return error Returns an error if the save operation fails
 	 */
-	SaveCurrentMetric(ctx context.Context, metric localentities.DockerMetric) error
+	SaveCurrentMetric(ctx context.Context, metric localentities.DockerMetric, hostId uint) error
 
 	/**
 	 * GetLatestMetric retrieves the most recent Docker metrics from the database.
@@ -59,6 +59,7 @@ type DockerRepository interface {
 	 * @return error Returns an error if the retrieval operation fails
 	 */
 	GetHistoricalMetrics(ctx context.Context, hours float64) ([]interface{}, error)
+	GetHistoricalMetricsByHost(ctx context.Context, hostId uint, hours float64) ([]interface{}, error)
 }
 
 /**
@@ -67,6 +68,9 @@ type DockerRepository interface {
  * including container counts and Docker availability status.
  */
 type HistoricalDockerMetric struct {
+	/** HostID is the foreign key referencing the host that recorded this metric */
+	HostID *uint `json:"host_id" gorm:"default:null"`
+
 	/** Timestamp indicates when this Docker metric was recorded (primary key) */
 	Timestamp time.Time `json:"timestamp" gorm:"primaryKey"`
 

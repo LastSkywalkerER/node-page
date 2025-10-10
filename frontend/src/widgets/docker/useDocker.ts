@@ -1,11 +1,14 @@
 import { useQuery } from '@tanstack/react-query';
 
 // Hook for Docker metrics - updates every 5 seconds
-export function useDocker() {
+export function useDocker(hostId?: number | null) {
+  const queryKey = hostId ? ['docker-metrics', hostId] : ['docker-metrics'];
+
   return useQuery({
-    queryKey: ['docker-metrics'],
+    queryKey,
     queryFn: async () => {
-      const response = await fetch('/api/docker');
+      const url = hostId ? `/api/docker?host_id=${hostId}` : '/api/docker';
+      const response = await fetch(url);
       if (!response.ok) {
         throw new Error('Failed to fetch Docker metrics');
       }

@@ -7,10 +7,14 @@ import { format } from 'date-fns';
 import { useWidgetTheme, useSecondaryText } from '@/shared/themes';
 import { useDocker } from './useDocker';
 
-export function DockerWidget() {
+interface DockerWidgetProps {
+  hostId?: number | null;
+}
+
+export function DockerWidget({ hostId }: DockerWidgetProps = {}) {
   const theme = useWidgetTheme('docker');
   const secondaryTextClass = useSecondaryText();
-  const { data: metrics, isLoading } = useDocker();
+  const { data: metrics, isLoading } = useDocker(hostId);
   const [expandedStacks, setExpandedStacks] = useState<Set<string>>(new Set());
 
   const toggleStackExpansion = (stackName: string) => {

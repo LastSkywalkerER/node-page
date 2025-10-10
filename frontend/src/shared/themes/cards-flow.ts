@@ -48,6 +48,14 @@ export const cardsFlowWidgetThemes: Record<WidgetType, WidgetThemeConfig> = {
     value: { className: 'text-2xl font-bold text-white' },
     chart: { type: 'area', color: '#10b981', fill: 'rgba(16, 185, 129, 0.1)' },
     details: { show: true, className: 'text-slate-400 text-sm' }
+  },
+  hosts: {
+    container: { className: 'text-white' },
+    icon: { className: 'bg-slate-800 text-white' },
+    title: { className: 'text-lg font-semibold text-white' },
+    value: { className: 'text-white' },
+    chart: { type: 'line', color: '#60a5fa' },
+    details: { show: true, className: 'text-slate-400 text-sm' }
   }
 };
 
@@ -59,6 +67,10 @@ export const cardsFlowLayoutTheme: LayoutThemeConfig = {
   subheading: { className: 'text-xs text-white/80 uppercase tracking-wide' },
   body: { className: 'text-sm text-white' },
   secondaryText: { className: 'text-white/60' },
+  hostItem: {
+    className: 'bg-white/5 border border-white/10 rounded-xl p-3 cursor-pointer transition-all duration-200 hover:bg-white/10 shadow-lg',
+    selectedClassName: 'bg-white/15 border-white/20 ring-2 ring-blue-400/50 shadow-xl',
+  },
   chart: {
     gridColor: 'rgba(255,255,255,0.1)',
     axisColor: 'rgba(255,255,255,0.6)',

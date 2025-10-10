@@ -6,6 +6,8 @@
 package di
 
 import (
+	"time"
+
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
@@ -19,8 +21,12 @@ import (
 	dockerdomain "system-stats/internal/modules/docker/domain/repositories"
 	dockercollectors "system-stats/internal/modules/docker/infrastructure/collectors"
 	dockerrepos "system-stats/internal/modules/docker/infrastructure/repositories"
+	healthservice "system-stats/internal/modules/health/application"
 	historyapp "system-stats/internal/modules/history_metrics/application"
 	historycore "system-stats/internal/modules/history_metrics/core"
+	hostservice "system-stats/internal/modules/hosts/application"
+	hostentities "system-stats/internal/modules/hosts/infrastructure/entities"
+	hostrepos "system-stats/internal/modules/hosts/infrastructure/repositories"
 	memoryservice "system-stats/internal/modules/memory/application"
 	memoryentities "system-stats/internal/modules/memory/infrastructure/entities"
 	memoryrepos "system-stats/internal/modules/memory/infrastructure/repositories"
@@ -47,6 +53,7 @@ type Container struct {
 	diskRepository    diskrepos.DiskRepository
 	networkRepository networkrepos.NetworkRepository
 	dockerRepository  dockerdomain.DockerRepository
+	hostRepository    hostrepos.HostRepository
 
 	/** individual services for each metric type */
 	cpuService     cpuservice.Service
@@ -54,6 +61,8 @@ type Container struct {
 	diskService    diskservice.Service
 	networkService networkservice.Service
 	dockerService  dockerservice.Service
+	hostService    hostservice.Service
+	healthService  healthservice.Service
 
 	/** systemService provides aggregated system metrics */
 	systemService systemsrv.Service
@@ -69,10 +78,11 @@ type Container struct {
  *
  * @param logger The logger instance for structured logging
  * @param dbPath The file path to the SQLite database
+ * @param startTime The application start time for uptime calculations
  * @return *Container The initialized dependency injection container
  * @return error Returns an error if any dependency initialization fails
  */
-func NewContainer(logger *log.Logger, dbPath string) (*Container, error) {
+func NewContainer(logger *log.Logger, dbPath string, startTime time.Time) (*Container, error) {
 	container := &Container{
 		logger: logger,
 	}
@@ -89,6 +99,7 @@ func NewContainer(logger *log.Logger, dbPath string) (*Container, error) {
 	container.diskRepository = diskrepos.NewDiskRepository(db)
 	container.networkRepository = networkrepos.NewNetworkRepository(db)
 	container.dockerRepository = dockerrepos.NewDockerRepository(db)
+	container.hostRepository = hostrepos.NewHostRepository(db)
 
 	// Create individual services for each metric type
 	container.cpuService = cpuservice.NewService(container.logger, container.cpuRepository)
@@ -96,6 +107,8 @@ func NewContainer(logger *log.Logger, dbPath string) (*Container, error) {
 	container.diskService = diskservice.NewService(container.logger, container.diskRepository)
 	container.networkService = networkservice.NewService(container.logger, container.networkRepository)
 	container.dockerService = dockerservice.NewService(container.logger, dockercollectors.NewDockerMetricsCollector(container.logger), dockerrepos.NewDockerRepository(db))
+	container.hostService = hostservice.NewService(container.logger, container.hostRepository)
+	container.healthService = healthservice.NewService(container.logger, container.hostRepository, startTime)
 
 	// Create system service that aggregates all metrics
 	container.systemService = systemsrv.NewService(
@@ -118,6 +131,7 @@ func NewContainer(logger *log.Logger, dbPath string) (*Container, error) {
 	container.historicalMetricsService = historyapp.NewHistoricalMetricsService(
 		container.logger,
 		metricsCollector,
+		container.hostService,
 	)
 
 	return container, nil
@@ -145,6 +159,7 @@ func initDatabase(dbPath string) (*gorm.DB, error) {
 		&diskentities.HistoricalDiskMetric{},
 		&networkentities.HistoricalNetworkMetric{},
 		&dockerdomain.HistoricalDockerMetric{},
+		&hostentities.Host{},
 	)
 	if err != nil {
 		return nil, err
@@ -201,6 +216,22 @@ func (c *Container) GetNetworkService() networkservice.Service {
  */
 func (c *Container) GetDockerService() dockerservice.Service {
 	return c.dockerService
+}
+
+/**
+ * GetHostService returns the host service instance.
+ * @return hostservice.Service The host service instance
+ */
+func (c *Container) GetHostService() hostservice.Service {
+	return c.hostService
+}
+
+/**
+ * GetHealthService returns the health service instance.
+ * @return healthservice.Service The health service instance
+ */
+func (c *Container) GetHealthService() healthservice.Service {
+	return c.healthService
 }
 
 /**

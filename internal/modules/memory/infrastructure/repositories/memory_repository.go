@@ -10,9 +10,10 @@ import (
 )
 
 type MemoryRepository interface {
-	SaveCurrentMetric(ctx context.Context, metric localentities.MemoryMetric) error
+	SaveCurrentMetric(ctx context.Context, metric localentities.MemoryMetric, hostId uint) error
 	GetLatestMetric(ctx context.Context) (localentities.MemoryMetric, error)
 	GetHistoricalMetrics(ctx context.Context, hours float64) ([]localentities.HistoricalMemoryMetric, error)
+	GetHistoricalMetricsByHost(ctx context.Context, hostId uint, hours float64) ([]localentities.HistoricalMemoryMetric, error)
 }
 
 type memoryRepository struct {
@@ -25,9 +26,10 @@ func NewMemoryRepository(db *gorm.DB) MemoryRepository {
 	return &memoryRepository{db: db}
 }
 
-func (r *memoryRepository) SaveCurrentMetric(ctx context.Context, metric localentities.MemoryMetric) error {
+func (r *memoryRepository) SaveCurrentMetric(ctx context.Context, metric localentities.MemoryMetric, hostId uint) error {
 	// Save as historical metric
 	historicalMetric := localentities.HistoricalMemoryMetric{
+		HostID:       &hostId,
 		Timestamp:    time.Now().UTC(),
 		UsagePercent: metric.UsagePercent,
 		UsedBytes:    metric.Used,
@@ -63,6 +65,17 @@ func (r *memoryRepository) GetHistoricalMetrics(ctx context.Context, hours float
 
 	query := r.db.WithContext(ctx).
 		Where("timestamp >= datetime('now', '-' || ? || ' hours')", hours).
+		Order("timestamp ASC").
+		Find(&metrics)
+
+	return metrics, query.Error
+}
+
+func (r *memoryRepository) GetHistoricalMetricsByHost(ctx context.Context, hostId uint, hours float64) ([]localentities.HistoricalMemoryMetric, error) {
+	var metrics []localentities.HistoricalMemoryMetric
+
+	query := r.db.WithContext(ctx).
+		Where("host_id = ? AND timestamp >= datetime('now', '-' || ? || ' hours')", hostId, hours).
 		Order("timestamp ASC").
 		Find(&metrics)
 

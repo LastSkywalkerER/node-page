@@ -11,10 +11,11 @@ import (
 
 type Service interface {
 	Collect(ctx context.Context) (entities.DockerMetric, error)
-	Save(ctx context.Context, metric entities.DockerMetric) error
+	Save(ctx context.Context, metric entities.DockerMetric, hostId uint) error
 	GetLatest(ctx context.Context) (entities.DockerMetric, error)
 	GetHistorical(ctx context.Context, hours float64) ([]interface{}, error)
-	CollectAndSave(ctx context.Context) error
+	GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]interface{}, error)
+	CollectAndSave(ctx context.Context, hostId uint) error
 }
 
 type service struct {
@@ -42,9 +43,9 @@ func (s *service) Collect(ctx context.Context) (entities.DockerMetric, error) {
 	return metrics, nil
 }
 
-func (s *service) Save(ctx context.Context, metric entities.DockerMetric) error {
+func (s *service) Save(ctx context.Context, metric entities.DockerMetric, hostId uint) error {
 	s.logger.Info("Saving Docker metrics to repository", "total_containers", metric.TotalContainers, "running_containers", metric.RunningContainers)
-	err := s.dockerRepository.SaveCurrentMetric(ctx, metric)
+	err := s.dockerRepository.SaveCurrentMetric(ctx, metric, hostId)
 	if err != nil {
 		s.logger.Error("Failed to save Docker metrics", "error", err)
 		return err
@@ -81,10 +82,27 @@ func (s *service) GetHistorical(ctx context.Context, hours float64) ([]interface
 	return result, nil
 }
 
-func (s *service) CollectAndSave(ctx context.Context) error {
+func (s *service) GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]interface{}, error) {
+	s.logger.Info("Getting historical Docker metrics by host", "host_id", hostId, "hours", hours)
+	metrics, err := s.dockerRepository.GetHistoricalMetricsByHost(ctx, hostId, hours)
+	if err != nil {
+		s.logger.Error("Failed to get historical Docker metrics by host", "error", err, "host_id", hostId, "hours", hours)
+		return nil, err
+	}
+	s.logger.Info("Historical Docker metrics by host retrieved successfully", "host_id", hostId, "count", len(metrics))
+
+	// Convert to []interface{} for compatibility
+	result := make([]interface{}, len(metrics))
+	for i, metric := range metrics {
+		result[i] = metric
+	}
+	return result, nil
+}
+
+func (s *service) CollectAndSave(ctx context.Context, hostId uint) error {
 	metric, err := s.Collect(ctx)
 	if err != nil {
 		return err
 	}
-	return s.Save(ctx, metric)
+	return s.Save(ctx, metric, hostId)
 }

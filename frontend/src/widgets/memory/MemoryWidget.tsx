@@ -5,9 +5,13 @@ import { format } from 'date-fns';
 import { useWidgetTheme } from '@/shared/themes';
 import { useMemory } from './useMemory';
 
-export function MemoryWidget() {
+interface MemoryWidgetProps {
+  hostId?: number | null;
+}
+
+export function MemoryWidget({ hostId }: MemoryWidgetProps = {}) {
   const theme = useWidgetTheme('memory');
-  const { data: metrics, isLoading } = useMemory();
+  const { data: metrics, isLoading } = useMemory(hostId);
 
   if (isLoading || !metrics) {
     return (

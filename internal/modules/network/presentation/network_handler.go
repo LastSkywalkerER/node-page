@@ -21,6 +21,16 @@ func parseHoursQuery(c *gin.Context) float64 {
 	return hours
 }
 
+// parseHostIdQuery parses the 'host_id' query parameter from the request.
+func parseHostIdQuery(c *gin.Context) uint {
+	hostIdStr := c.DefaultQuery("host_id", "0")
+	hostId, err := strconv.ParseUint(hostIdStr, 10, 32)
+	if err != nil {
+		return 0
+	}
+	return uint(hostId)
+}
+
 // NetworkHandler handles HTTP requests for network metrics.
 type NetworkHandler struct {
 	logger  *log.Logger
@@ -37,9 +47,10 @@ func NewNetworkHandler(logger *log.Logger, service networkservice.Service) *Netw
 
 // HandleNetworkStats returns current network metrics with latest and historical data.
 func (h *NetworkHandler) HandleNetworkStats(c *gin.Context) {
-	h.logger.Info("Handling network stats request", "client_ip", c.ClientIP())
+	h.logger.Info("Handling network stats request", "client_ip", c.ClientIP(), "user_agent", c.GetHeader("User-Agent"))
 
 	hours := parseHoursQuery(c)
+	hostId := parseHostIdQuery(c)
 
 	// Get latest network metrics from database
 	latestMetrics, err := h.service.GetLatest(c.Request.Context())
@@ -49,15 +60,20 @@ func (h *NetworkHandler) HandleNetworkStats(c *gin.Context) {
 		return
 	}
 
-	// Get historical network metrics
-	historyMetrics, err := h.service.GetHistorical(c.Request.Context(), hours)
+	// Get historical network metrics (filtered by host_id if provided)
+	var historyMetrics []interface{}
+	if hostId > 0 {
+		historyMetrics, err = h.service.GetHistoricalByHost(c.Request.Context(), hostId, hours)
+	} else {
+		historyMetrics, err = h.service.GetHistorical(c.Request.Context(), hours)
+	}
 	if err != nil {
-		h.logger.Error("Failed to fetch historical network metrics", "error", err, "hours", hours)
+		h.logger.Error("Failed to fetch historical network metrics", "error", err, "hours", hours, "host_id", hostId)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	h.logger.Info("Network stats response sent successfully", "interfaces_count", len(latestMetrics.Interfaces), "history_points", len(historyMetrics))
+	h.logger.Info("Network stats response sent successfully", "interfaces_count", len(latestMetrics.Interfaces), "history_points", len(historyMetrics), "host_id", hostId)
 	c.JSON(http.StatusOK, gin.H{
 		"latest":  latestMetrics,
 		"history": historyMetrics,

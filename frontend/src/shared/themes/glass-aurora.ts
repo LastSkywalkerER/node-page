@@ -48,6 +48,14 @@ export const glassAuroraWidgetThemes: Record<WidgetType, WidgetThemeConfig> = {
     value: { className: 'text-2xl font-bold text-white' },
     chart: { type: 'area', color: '#10b981', fill: 'rgba(16, 185, 129, 0.1)' },
     details: { show: true, className: 'text-sm opacity-70' }
+  },
+  hosts: {
+    container: { className: 'text-white' },
+    icon: { className: 'bg-white/10' },
+    title: { className: 'text-lg font-semibold text-white/90' },
+    value: { className: 'text-white' },
+    chart: { type: 'line', color: '#60a5fa' },
+    details: { show: true, className: 'text-white/60' }
   }
 };
 
@@ -59,6 +67,10 @@ export const glassAuroraLayoutTheme: LayoutThemeConfig = {
   subheading: { className: 'text-xs text-white/60 uppercase tracking-wide' },
   body: { className: 'text-sm text-white' },
   secondaryText: { className: 'text-white/60' },
+  hostItem: {
+    className: 'glass rounded-lg p-3 cursor-pointer transition-all duration-200 hover:bg-white/5 border border-white/10',
+    selectedClassName: 'bg-white/10 border-white/20 ring-2 ring-blue-400/50',
+  },
   chart: {
     gridColor: 'rgba(255,255,255,0.1)',
     axisColor: 'rgba(255,255,255,0.6)',

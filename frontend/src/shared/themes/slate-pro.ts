@@ -48,6 +48,14 @@ export const slateProWidgetThemes: Record<WidgetType, WidgetThemeConfig> = {
     value: { className: 'text-2xl font-bold text-white' },
     chart: { type: 'area', color: '#10b981', fill: 'rgba(16, 185, 129, 0.1)' },
     details: { show: true, className: 'text-slate-400 text-sm' }
+  },
+  hosts: {
+    container: { className: 'text-slate-100' },
+    icon: { className: 'bg-slate-700/50' },
+    title: { className: 'text-lg font-semibold text-slate-200' },
+    value: { className: 'text-slate-200' },
+    chart: { type: 'line', color: '#60a5fa' },
+    details: { show: true, className: 'text-slate-400 text-sm' }
   }
 };
 
@@ -59,6 +67,10 @@ export const slateProLayoutTheme: LayoutThemeConfig = {
   subheading: { className: 'text-xs text-slate-400 uppercase tracking-wide mb-2' },
   body: { className: 'text-sm text-slate-100' },
   secondaryText: { className: 'text-slate-400' },
+  hostItem: {
+    className: 'bg-slate-900/50 border border-slate-800 rounded-lg p-3 cursor-pointer transition-all duration-200 hover:bg-slate-800/50',
+    selectedClassName: 'bg-slate-800/70 border-slate-600 ring-2 ring-blue-400/50',
+  },
   chart: {
     gridColor: 'hsl(var(--muted))',
     axisColor: 'hsl(var(--muted-foreground))',

@@ -1,4 +1,5 @@
 import { useLayoutTheme } from '@/shared/themes';
+import { useHost } from '@/shared/lib/HostContext';
 import {
   CPUWidget,
   MemoryWidget,
@@ -9,6 +10,7 @@ import {
 
 export function DashboardLayout() {
   const layoutTheme = useLayoutTheme();
+  const { selectedHostId } = useHost();
 
   return (
     <div className={layoutTheme.mainContainer.className}>
@@ -19,29 +21,29 @@ export function DashboardLayout() {
         <div className="col-span-12 lg:col-span-4 xl:col-span-3 space-y-4 md:space-y-6">
           {/* CPU Widget */}
           <div className={layoutTheme.card.className}>
-            <CPUWidget />
+            <CPUWidget hostId={selectedHostId} />
           </div>
 
           {/* Memory Widget */}
           <div className={layoutTheme.card.className}>
-            <MemoryWidget />
+            <MemoryWidget hostId={selectedHostId} />
           </div>
 
           {/* Disk Widget */}
           <div className={layoutTheme.card.className}>
-            <DiskWidget />
+            <DiskWidget hostId={selectedHostId} />
           </div>
 
           {/* Network Widget */}
           <div className={layoutTheme.card.className}>
-            <NetworkWidget />
+            <NetworkWidget hostId={selectedHostId} />
           </div>
         </div>
 
         {/* Right Column - Docker Widget */}
         <div className="col-span-12 lg:col-span-8 xl:col-span-9">
           <div className={layoutTheme.card.className}>
-            <DockerWidget />
+            <DockerWidget hostId={selectedHostId} />
           </div>
         </div>
       </div>

@@ -25,6 +25,8 @@ import (
 	cpumodule "system-stats/internal/modules/cpu/presentation"
 	diskmodule "system-stats/internal/modules/disk/presentation"
 	dockermodule "system-stats/internal/modules/docker/presentation"
+	healthmodule "system-stats/internal/modules/health/presentation"
+	hostmodule "system-stats/internal/modules/hosts/presentation"
 	memorymodule "system-stats/internal/modules/memory/presentation"
 	networkmodule "system-stats/internal/modules/network/presentation"
 	systemmodule "system-stats/internal/modules/system/presentation"
@@ -83,7 +85,7 @@ func Run() {
 	// Initialize dependency injection container with database configuration
 	logger.Info("Initializing dependency injection container...")
 	/** container holds all application dependencies and services configured via dependency injection */
-	container, err := di.NewContainer(logger, *dbPath)
+	container, err := di.NewContainer(logger, *dbPath, startTime)
 	if err != nil {
 		logger.Fatal("Failed to initialize DI container", "error", err)
 	}
@@ -201,6 +203,12 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	/** dockerHandler handles HTTP requests for docker container metrics */
 	dockerHandler := dockermodule.NewDockerHandler(logger, container.GetDockerService())
 
+	/** hostHandler handles HTTP requests for host information */
+	hostHandler := hostmodule.NewHostHandler(logger, container.GetHostService())
+
+	/** healthHandler handles HTTP requests for health checks */
+	healthHandler := healthmodule.NewHealthHandler(logger, container.GetHealthService())
+
 	// API routes for React dashboard - JSON endpoints for real-time data
 	/** api is the route group for dashboard API endpoints that return JSON data */
 	api := router.Group("/api")
@@ -211,15 +219,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		/** GET /api/metrics/historical - Historical metrics are accessed via individual module endpoints */
 
 		/** GET /api/health - Health check endpoint for monitoring system status */
-		api.GET("/health", func(c *gin.Context) {
-			uptime := time.Since(startTime).String()
-			logger.Info("Handling health check request", "client_ip", c.ClientIP(), "uptime", uptime)
-			c.JSON(http.StatusOK, gin.H{
-				"status":    "ok",
-				"timestamp": time.Now(),
-				"uptime":    uptime,
-			})
-		})
+		api.GET("/health", healthHandler.HandleHealth)
 	}
 
 	// Stats routes for individual metrics - detailed JSON responses for each metric type
@@ -238,6 +238,15 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 
 		/** GET /api/docker - Returns docker container statistics and status information */
 		api.GET("/docker", dockerHandler.HandleDockerStats)
+
+		/** GET /api/hosts - Returns all registered hosts */
+		api.GET("/hosts", hostHandler.HandleGetAllHosts)
+
+		/** GET /api/hosts/current - Returns current host information */
+		api.GET("/hosts/current", hostHandler.HandleGetCurrentHost)
+
+		/** POST /api/hosts/register - Registers or updates current host */
+		api.POST("/hosts/register", hostHandler.HandleRegisterCurrentHost)
 	}
 
 	// Static files for React app (assets, js, css) - serve built frontend assets
@@ -290,6 +299,9 @@ API Endpoints:
   GET /api/disk    - Disk statistics (JSON)
   GET /api/network - Network statistics (JSON)
   GET /api/docker  - Docker containers statistics (JSON)
+  GET /api/hosts   - All registered hosts (JSON)
+  GET /api/hosts/current - Current host information (JSON)
+  POST /api/hosts/register - Register/update current host
   GET /api/metrics/current - Current metrics for dashboard (JSON)
   GET /api/metrics/historical - Historical metrics for dashboard (JSON)
   GET /api/health    - Health check (JSON)
@@ -304,5 +316,9 @@ API usage examples:
   curl http://localhost:8080/api/disk
   curl http://localhost:8080/api/network
   curl http://localhost:8080/api/docker
-  curl http://localhost:8080/api/health`)
+  curl http://localhost:8080/api/hosts
+  curl http://localhost:8080/api/hosts/current
+  curl -X POST http://localhost:8080/api/hosts/register
+  curl http://localhost:8080/api/health
+  curl "http://localhost:8080/api/health?host_id=1"`)
 }

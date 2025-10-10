@@ -5,9 +5,13 @@ import { format } from 'date-fns';
 import { useWidgetTheme } from '@/shared/themes';
 import { useDisk } from './useDisk';
 
-export function DiskWidget() {
+interface DiskWidgetProps {
+  hostId?: number | null;
+}
+
+export function DiskWidget({ hostId }: DiskWidgetProps = {}) {
   const theme = useWidgetTheme('disk');
-  const { data: metrics, isLoading } = useDisk();
+  const { data: metrics, isLoading } = useDisk(hostId);
 
   if (isLoading || !metrics) {
     return (

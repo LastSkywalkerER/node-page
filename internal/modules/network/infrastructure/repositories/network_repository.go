@@ -10,9 +10,10 @@ import (
 )
 
 type NetworkRepository interface {
-	SaveCurrentMetric(ctx context.Context, metric localentities.NetworkMetric) error
+	SaveCurrentMetric(ctx context.Context, metric localentities.NetworkMetric, hostId uint) error
 	GetLatestMetric(ctx context.Context) (localentities.NetworkMetric, error)
 	GetHistoricalMetrics(ctx context.Context, hours float64) ([]localentities.NetworkMetric, error)
+	GetHistoricalMetricsByHost(ctx context.Context, hostId uint, hours float64) ([]localentities.NetworkMetric, error)
 }
 
 type networkRepository struct {
@@ -25,9 +26,10 @@ func NewNetworkRepository(db *gorm.DB) NetworkRepository {
 	return &networkRepository{db: db}
 }
 
-func (r *networkRepository) SaveCurrentMetric(ctx context.Context, metric localentities.NetworkMetric) error {
+func (r *networkRepository) SaveCurrentMetric(ctx context.Context, metric localentities.NetworkMetric, hostId uint) error {
 	// Save complete network metric as historical record
 	historicalMetric := localentities.HistoricalNetworkMetric{
+		HostID:     &hostId,
 		Timestamp:  time.Now().UTC(),
 		Interfaces: metric.Interfaces, // Store complete interfaces array
 	}
@@ -79,6 +81,29 @@ func (r *networkRepository) GetHistoricalMetrics(ctx context.Context, hours floa
 	// Debug log
 	if len(metrics) > 0 {
 		println("DEBUG: Historical metrics retrieved, first metric has", len(metrics[0].Interfaces), "interfaces")
+	}
+
+	return metrics, nil
+}
+
+func (r *networkRepository) GetHistoricalMetricsByHost(ctx context.Context, hostId uint, hours float64) ([]localentities.NetworkMetric, error) {
+	var historicalMetrics []localentities.HistoricalNetworkMetric
+
+	query := r.db.WithContext(ctx).
+		Where("host_id = ? AND timestamp >= datetime('now', '-' || ? || ' hours')", hostId, hours).
+		Order("timestamp ASC").
+		Find(&historicalMetrics)
+
+	if query.Error != nil {
+		return nil, query.Error
+	}
+
+	// Convert to NetworkMetric format
+	metrics := make([]localentities.NetworkMetric, len(historicalMetrics))
+	for i, historical := range historicalMetrics {
+		metrics[i] = localentities.NetworkMetric{
+			Interfaces: historical.Interfaces,
+		}
 	}
 
 	return metrics, nil

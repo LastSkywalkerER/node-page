@@ -12,10 +12,11 @@ import (
 
 type Service interface {
 	Collect(ctx context.Context) (entities.MemoryMetric, error)
-	Save(ctx context.Context, metric entities.MemoryMetric) error
+	Save(ctx context.Context, metric entities.MemoryMetric, hostId uint) error
 	GetLatest(ctx context.Context) (entities.MemoryMetric, error)
 	GetHistorical(ctx context.Context, hours float64) ([]interface{}, error)
-	CollectAndSave(ctx context.Context) error
+	GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]interface{}, error)
+	CollectAndSave(ctx context.Context, hostId uint) error
 }
 
 type service struct {
@@ -43,14 +44,14 @@ func (s *service) Collect(ctx context.Context) (entities.MemoryMetric, error) {
 	return metric, nil
 }
 
-func (s *service) Save(ctx context.Context, metric entities.MemoryMetric) error {
-	s.logger.Info("Saving memory metrics to repository", "usage_percent", metric.UsagePercent)
-	err := s.memoryRepository.SaveCurrentMetric(ctx, metric)
+func (s *service) Save(ctx context.Context, metric entities.MemoryMetric, hostId uint) error {
+	s.logger.Info("Saving memory metrics to repository", "usage_percent", metric.UsagePercent, "host_id", hostId)
+	err := s.memoryRepository.SaveCurrentMetric(ctx, metric, hostId)
 	if err != nil {
-		s.logger.Error("Failed to save memory metrics", "error", err)
+		s.logger.Error("Failed to save memory metrics", "error", err, "host_id", hostId)
 		return err
 	}
-	s.logger.Info("Memory metrics saved successfully")
+	s.logger.Info("Memory metrics saved successfully", "host_id", hostId)
 	return nil
 }
 
@@ -84,10 +85,27 @@ func (s *service) GetHistorical(ctx context.Context, hours float64) ([]interface
 	return result, nil
 }
 
-func (s *service) CollectAndSave(ctx context.Context) error {
+func (s *service) GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]interface{}, error) {
+	s.logger.Info("Getting historical memory metrics by host", "host_id", hostId, "hours", hours)
+	metrics, err := s.memoryRepository.GetHistoricalMetricsByHost(ctx, hostId, hours)
+	if err != nil {
+		s.logger.Error("Failed to get historical memory metrics by host", "error", err, "host_id", hostId, "hours", hours)
+		return nil, err
+	}
+	s.logger.Info("Historical memory metrics by host retrieved successfully", "host_id", hostId, "count", len(metrics))
+
+	// Convert to []interface{} for compatibility
+	result := make([]interface{}, len(metrics))
+	for i, metric := range metrics {
+		result[i] = metric
+	}
+	return result, nil
+}
+
+func (s *service) CollectAndSave(ctx context.Context, hostId uint) error {
 	metric, err := s.Collect(ctx)
 	if err != nil {
 		return err
 	}
-	return s.Save(ctx, metric)
+	return s.Save(ctx, metric, hostId)
 }

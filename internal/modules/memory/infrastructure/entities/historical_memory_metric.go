@@ -10,6 +10,9 @@ import (
  * including both percentage and absolute byte values.
  */
 type HistoricalMemoryMetric struct {
+	/** HostID is the foreign key referencing the host that recorded this metric */
+	HostID *uint `json:"host_id" gorm:"default:null"`
+
 	/** Timestamp indicates when this memory metric was recorded (primary key) */
 	Timestamp time.Time `json:"timestamp" gorm:"primaryKey"`
 

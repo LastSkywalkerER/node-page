@@ -10,9 +10,10 @@ import (
 )
 
 type DiskRepository interface {
-	SaveCurrentMetric(ctx context.Context, metric localentities.DiskMetric) error
+	SaveCurrentMetric(ctx context.Context, metric localentities.DiskMetric, hostId uint) error
 	GetLatestMetric(ctx context.Context) (localentities.DiskMetric, error)
 	GetHistoricalMetrics(ctx context.Context, hours float64) ([]localentities.HistoricalDiskMetric, error)
+	GetHistoricalMetricsByHost(ctx context.Context, hostId uint, hours float64) ([]localentities.HistoricalDiskMetric, error)
 }
 
 type diskRepository struct {
@@ -25,9 +26,10 @@ func NewDiskRepository(db *gorm.DB) DiskRepository {
 	return &diskRepository{db: db}
 }
 
-func (r *diskRepository) SaveCurrentMetric(ctx context.Context, metric localentities.DiskMetric) error {
+func (r *diskRepository) SaveCurrentMetric(ctx context.Context, metric localentities.DiskMetric, hostId uint) error {
 	// Save as historical metric
 	historicalMetric := localentities.HistoricalDiskMetric{
+		HostID:       &hostId,
 		Timestamp:    time.Now().UTC(),
 		UsagePercent: metric.UsagePercent,
 		UsedBytes:    metric.Used,
@@ -62,6 +64,17 @@ func (r *diskRepository) GetHistoricalMetrics(ctx context.Context, hours float64
 
 	query := r.db.WithContext(ctx).
 		Where("timestamp >= datetime('now', '-' || ? || ' hours')", hours).
+		Order("timestamp ASC").
+		Find(&metrics)
+
+	return metrics, query.Error
+}
+
+func (r *diskRepository) GetHistoricalMetricsByHost(ctx context.Context, hostId uint, hours float64) ([]localentities.HistoricalDiskMetric, error) {
+	var metrics []localentities.HistoricalDiskMetric
+
+	query := r.db.WithContext(ctx).
+		Where("host_id = ? AND timestamp >= datetime('now', '-' || ? || ' hours')", hostId, hours).
 		Order("timestamp ASC").
 		Find(&metrics)
 

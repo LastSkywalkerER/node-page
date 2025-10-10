@@ -4,10 +4,14 @@ import { format } from 'date-fns';
 import { useWidgetTheme, useSecondaryText } from '@/shared/themes';
 import { useCPU } from './useCPU';
 
-export function CPUWidget() {
+interface CPUWidgetProps {
+  hostId?: number | null;
+}
+
+export function CPUWidget({ hostId }: CPUWidgetProps = {}) {
   const theme = useWidgetTheme('cpu');
   const secondaryTextClass = useSecondaryText();
-  const { data: metrics, isLoading } = useCPU();
+  const { data: metrics, isLoading } = useCPU(hostId);
 
   if (isLoading || !metrics) {
     return (

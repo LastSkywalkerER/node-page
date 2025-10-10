@@ -47,9 +47,13 @@ const getFastestInterface = (interfaces: NetworkInterface[]): NetworkInterface |
   );
 };
 
-export function NetworkWidget() {
+interface NetworkWidgetProps {
+  hostId?: number | null;
+}
+
+export function NetworkWidget({ hostId }: NetworkWidgetProps = {}) {
   const theme = useWidgetTheme('network');
-  const { data: metrics, isLoading } = useNetwork();
+  const { data: metrics, isLoading } = useNetwork(hostId);
 
   // Process network data
   const interfaces = metrics?.latest?.interfaces || [];

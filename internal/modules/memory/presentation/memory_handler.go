@@ -21,6 +21,16 @@ func parseHoursQuery(c *gin.Context) float64 {
 	return hours
 }
 
+// parseHostIdQuery parses the 'host_id' query parameter from the request.
+func parseHostIdQuery(c *gin.Context) uint {
+	hostIdStr := c.DefaultQuery("host_id", "0")
+	hostId, err := strconv.ParseUint(hostIdStr, 10, 32)
+	if err != nil {
+		return 0
+	}
+	return uint(hostId)
+}
+
 // MemoryHandler handles HTTP requests for memory metrics.
 type MemoryHandler struct {
 	logger  *log.Logger
@@ -37,9 +47,10 @@ func NewMemoryHandler(logger *log.Logger, service memoryservice.Service) *Memory
 
 // HandleMemoryStats returns current memory metrics with latest and historical data.
 func (h *MemoryHandler) HandleMemoryStats(c *gin.Context) {
-	h.logger.Info("Handling memory stats request", "client_ip", c.ClientIP())
+	h.logger.Info("Handling memory stats request", "client_ip", c.ClientIP(), "user_agent", c.GetHeader("User-Agent"))
 
 	hours := parseHoursQuery(c)
+	hostId := parseHostIdQuery(c)
 
 	// Get latest memory metrics from database
 	latestMetrics, err := h.service.GetLatest(c.Request.Context())
@@ -49,15 +60,20 @@ func (h *MemoryHandler) HandleMemoryStats(c *gin.Context) {
 		return
 	}
 
-	// Get historical memory metrics
-	historyMetrics, err := h.service.GetHistorical(c.Request.Context(), hours)
+	// Get historical memory metrics (filtered by host_id if provided)
+	var historyMetrics []interface{}
+	if hostId > 0 {
+		historyMetrics, err = h.service.GetHistoricalByHost(c.Request.Context(), hostId, hours)
+	} else {
+		historyMetrics, err = h.service.GetHistorical(c.Request.Context(), hours)
+	}
 	if err != nil {
-		h.logger.Error("Failed to fetch historical memory metrics", "error", err, "hours", hours)
+		h.logger.Error("Failed to fetch historical memory metrics", "error", err, "hours", hours, "host_id", hostId)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	h.logger.Info("Memory stats response sent successfully", "history_points", len(historyMetrics))
+	h.logger.Info("Memory stats response sent successfully", "history_points", len(historyMetrics), "host_id", hostId)
 	c.JSON(http.StatusOK, gin.H{
 		"latest":  latestMetrics,
 		"history": historyMetrics,

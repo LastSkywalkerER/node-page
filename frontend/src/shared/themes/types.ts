@@ -38,6 +38,11 @@ export interface LayoutThemeConfig {
   chartContainer: {
     className: string;
   };
+  // Host list item styles
+  hostItem: {
+    className: string;
+    selectedClassName: string;
+  };
   // Text styles
   heading: {
     className: string;
@@ -68,6 +73,6 @@ export interface LayoutThemeConfig {
   };
 }
 
-export type WidgetType = 'cpu' | 'memory' | 'disk' | 'network' | 'docker' | 'system-health';
+export type WidgetType = 'cpu' | 'memory' | 'disk' | 'network' | 'docker' | 'system-health' | 'hosts';
 
 export type GlobalThemeType = 'glass-aurora' | 'neon-terminal' | 'slate-pro' | 'cards-flow';

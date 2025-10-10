@@ -23,10 +23,11 @@ func NewDockerRepository(db *gorm.DB) repositories.DockerRepository {
 	return &dockerRepository{db: db}
 }
 
-func (r *dockerRepository) SaveCurrentMetric(ctx context.Context, metric localentities.DockerMetric) error {
+func (r *dockerRepository) SaveCurrentMetric(ctx context.Context, metric localentities.DockerMetric, hostId uint) error {
 	// Save as historical metric
 	timestamp := time.Now().UTC()
 	historicalMetric := repositories.HistoricalDockerMetric{
+		HostID:            &hostId,
 		Timestamp:         timestamp,
 		TotalContainers:   metric.TotalContainers,
 		RunningContainers: metric.RunningContainers,
@@ -200,6 +201,26 @@ func (r *dockerRepository) GetHistoricalMetrics(ctx context.Context, hours float
 
 	query := r.db.WithContext(ctx).
 		Where("timestamp >= datetime('now', '-' || ? || ' hours')", hours).
+		Order("timestamp ASC").
+		Find(&metrics)
+
+	if query.Error != nil {
+		return nil, query.Error
+	}
+
+	// Convert to []interface{} for compatibility
+	result := make([]interface{}, len(metrics))
+	for i, metric := range metrics {
+		result[i] = metric
+	}
+	return result, nil
+}
+
+func (r *dockerRepository) GetHistoricalMetricsByHost(ctx context.Context, hostId uint, hours float64) ([]interface{}, error) {
+	var metrics []repositories.HistoricalDockerMetric
+
+	query := r.db.WithContext(ctx).
+		Where("host_id = ? AND timestamp >= datetime('now', '-' || ? || ' hours')", hostId, hours).
 		Order("timestamp ASC").
 		Find(&metrics)
 

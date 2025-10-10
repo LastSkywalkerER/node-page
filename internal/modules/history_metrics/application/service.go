@@ -6,13 +6,14 @@ import (
 	"time"
 
 	"system-stats/internal/modules/history_metrics/core"
+	hostservice "system-stats/internal/modules/hosts/application"
 
 	"github.com/charmbracelet/log"
 )
 
 // MetricsSaver defines the interface for module services
 type MetricsSaver interface {
-	CollectAndSave(ctx context.Context) error
+	CollectAndSave(ctx context.Context, hostId uint) error
 }
 
 type metricsCollector struct {
@@ -28,6 +29,7 @@ func NewMetricsCollector(services ...MetricsSaver) *metricsCollector {
 type historicalMetricsService struct {
 	logger           *log.Logger
 	metricsCollector *metricsCollector
+	hostService      hostservice.Service
 	ticker           *time.Ticker
 	stopChan         chan struct{}
 	isRunning        bool
@@ -37,10 +39,12 @@ type historicalMetricsService struct {
 func NewHistoricalMetricsService(
 	logger *log.Logger,
 	metricsCollector *metricsCollector,
+	hostService hostservice.Service,
 ) core.HistoricalMetricsService {
 	return &historicalMetricsService{
 		logger:           logger,
 		metricsCollector: metricsCollector,
+		hostService:      hostService,
 		stopChan:         make(chan struct{}),
 	}
 }
@@ -48,16 +52,27 @@ func NewHistoricalMetricsService(
 func (s *historicalMetricsService) CollectAndSaveMetrics(ctx context.Context) error {
 	s.logger.Info("Starting metrics collection cycle for all modules")
 
+	// First, register or update current host
+	host, err := s.hostService.RegisterOrUpdateCurrentHost(ctx)
+	if err != nil {
+		s.logger.Error("Failed to register/update current host", "error", err)
+		return err
+	}
+
+	hostId := host.ID
+	s.logger.Info("Current host registered/updated", "host_id", hostId, "name", host.Name)
+
+	// Collect and save metrics for all modules with host_id
 	for _, service := range s.metricsCollector.services {
 		// Collect and save metrics
-		err := service.CollectAndSave(ctx)
+		err := service.CollectAndSave(ctx, hostId)
 		if err != nil {
-			s.logger.Error("Failed to collect and save metrics", "error", err)
+			s.logger.Error("Failed to collect and save metrics", "error", err, "host_id", hostId)
 			continue // Continue with other services even if one fails
 		}
 	}
 
-	s.logger.Info("Metrics collection cycle completed for all modules")
+	s.logger.Info("Metrics collection cycle completed for all modules", "host_id", hostId)
 	return nil
 }
 
