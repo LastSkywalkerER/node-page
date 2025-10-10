@@ -50,7 +50,17 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo,
 
 	hostname := hostInfo.Hostname
 
-	// Get network interfaces to find MAC address
+	// Determine primary local IP via UDP dial trick
+	// This does not actually send traffic but lets kernel pick the outbound interface
+	primaryIP := ""
+	if conn, dialErr := net.Dial("udp", "8.8.8.8:80"); dialErr == nil {
+		if udpAddr, ok := conn.LocalAddr().(*net.UDPAddr); ok && udpAddr.IP != nil {
+			primaryIP = udpAddr.IP.String()
+		}
+		conn.Close()
+	}
+
+	// Get network interfaces to find MAC address; prefer interface matching primaryIP
 	interfaces, err := gopsutilnet.InterfacesWithContext(ctx)
 	if err != nil {
 		c.logger.Error("Failed to collect network interfaces", "error", err)
@@ -58,27 +68,40 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo,
 	}
 
 	var macAddress string
-
-	// Find the first interface with a valid MAC address
-	for _, iface := range interfaces {
-		// Skip interfaces without hardware address
-		if iface.HardwareAddr == "" {
-			continue
+	// First pass: try to match by primary IP
+	if primaryIP != "" {
+		for _, iface := range interfaces {
+			if iface.HardwareAddr == "" || iface.Name == "lo" || iface.Name == "lo0" {
+				continue
+			}
+			if _, err := net.ParseMAC(iface.HardwareAddr); err != nil {
+				continue
+			}
+			for _, addr := range iface.Addrs {
+				if addr.Addr == primaryIP || addr.Addr == primaryIP+"/32" { // gopsutil may include CIDR
+					macAddress = iface.HardwareAddr
+					c.logger.Info("Selected primary interface by IP", "interface", iface.Name, "ip", addr.Addr, "mac", macAddress)
+					break
+				}
+			}
+			if macAddress != "" {
+				break
+			}
 		}
-
-		// Skip loopback interfaces
-		if iface.Name == "lo" || iface.Name == "lo0" {
-			continue
+	}
+	// Second pass: fallback to first valid non-loopback MAC
+	if macAddress == "" {
+		for _, iface := range interfaces {
+			if iface.HardwareAddr == "" || iface.Name == "lo" || iface.Name == "lo0" {
+				continue
+			}
+			if _, err := net.ParseMAC(iface.HardwareAddr); err != nil {
+				continue
+			}
+			macAddress = iface.HardwareAddr
+			c.logger.Info("Fallback to first valid MAC address", "interface", iface.Name, "mac", macAddress)
+			break
 		}
-
-		// Validate MAC address format
-		if _, err := net.ParseMAC(iface.HardwareAddr); err != nil {
-			continue
-		}
-
-		macAddress = iface.HardwareAddr
-		c.logger.Info("Found valid MAC address", "interface", iface.Name, "mac", macAddress)
-		break
 	}
 
 	if macAddress == "" {

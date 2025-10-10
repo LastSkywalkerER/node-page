@@ -2,6 +2,7 @@ package networkmetrics
 
 import (
 	"context"
+	"errors"
 
 	"system-stats/internal/modules/network/infrastructure/collectors"
 	"system-stats/internal/modules/network/infrastructure/entities"
@@ -95,7 +96,11 @@ func (s *service) GetLatest(ctx context.Context) (entities.NetworkMetric, error)
 	s.logger.Info("Getting latest network metrics")
 	metric, err := s.networkRepository.GetLatestMetric(ctx)
 	if err != nil {
-		s.logger.Error("Failed to get latest network metrics", "error", err)
+		if errors.Is(err, context.Canceled) {
+			s.logger.Info("Context canceled while getting latest network metrics")
+		} else {
+			s.logger.Error("Failed to get latest network metrics", "error", err)
+		}
 		return entities.NetworkMetric{}, err
 	}
 	s.logger.Info("Latest network metrics retrieved successfully")
@@ -106,7 +111,11 @@ func (s *service) GetHistorical(ctx context.Context, hours float64) ([]interface
 	s.logger.Info("Getting historical network metrics", "hours", hours)
 	metrics, err := s.networkRepository.GetHistoricalMetrics(ctx, hours)
 	if err != nil {
-		s.logger.Error("Failed to get historical network metrics", "error", err, "hours", hours)
+		if errors.Is(err, context.Canceled) {
+			s.logger.Info("Context canceled while getting historical network metrics")
+		} else {
+			s.logger.Error("Failed to get historical network metrics", "error", err, "hours", hours)
+		}
 		return nil, err
 	}
 	s.logger.Info("Historical network metrics retrieved successfully", "count", len(metrics))
@@ -128,7 +137,11 @@ func (s *service) GetHistoricalByHost(ctx context.Context, hostId uint, hours fl
 	s.logger.Info("Getting historical network metrics by host", "host_id", hostId, "hours", hours)
 	metrics, err := s.networkRepository.GetHistoricalMetricsByHost(ctx, hostId, hours)
 	if err != nil {
-		s.logger.Error("Failed to get historical network metrics by host", "error", err, "host_id", hostId, "hours", hours)
+		if errors.Is(err, context.Canceled) {
+			s.logger.Info("Context canceled while getting historical network metrics by host")
+		} else {
+			s.logger.Error("Failed to get historical network metrics by host", "error", err, "host_id", hostId, "hours", hours)
+		}
 		return nil, err
 	}
 	s.logger.Info("Historical network metrics by host retrieved successfully", "host_id", hostId, "count", len(metrics))

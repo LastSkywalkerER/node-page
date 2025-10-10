@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -53,8 +55,13 @@ func (h *DockerHandler) HandleDockerStats(c *gin.Context) {
 	hostId := parseHostIdQuery(c)
 
 	// Get latest Docker metrics from database
-	latestMetrics, err := h.service.GetLatest(c.Request.Context())
+	ctx := c.Request.Context()
+	latestMetrics, err := h.service.GetLatest(ctx)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			h.logger.Info("Client canceled request while fetching latest Docker metrics")
+			return
+		}
 		h.logger.Error("Failed to fetch latest Docker metrics", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":            err.Error(),
@@ -66,11 +73,15 @@ func (h *DockerHandler) HandleDockerStats(c *gin.Context) {
 	// Get historical Docker metrics (filtered by host_id if provided)
 	var historyMetrics []interface{}
 	if hostId > 0 {
-		historyMetrics, err = h.service.GetHistoricalByHost(c.Request.Context(), hostId, hours)
+		historyMetrics, err = h.service.GetHistoricalByHost(ctx, hostId, hours)
 	} else {
-		historyMetrics, err = h.service.GetHistorical(c.Request.Context(), hours)
+		historyMetrics, err = h.service.GetHistorical(ctx, hours)
 	}
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			h.logger.Info("Client canceled request while fetching historical Docker metrics")
+			return
+		}
 		h.logger.Error("Failed to fetch historical Docker metrics", "error", err, "hours", hours, "host_id", hostId)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":            err.Error(),

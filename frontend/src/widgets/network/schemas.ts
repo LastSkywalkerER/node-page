@@ -9,6 +9,7 @@ export const networkInterfaceSchema = z.object({
   packets_recv: z.number(),
   speed_kbps_sent: z.number(),
   speed_kbps_recv: z.number(),
+  is_primary: z.boolean().optional().default(false),
 });
 
 export const networkMetricSchema = z.object({

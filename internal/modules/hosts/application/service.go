@@ -2,8 +2,10 @@ package hosts
 
 import (
 	"context"
+	"errors"
 
 	"github.com/charmbracelet/log"
+	"gorm.io/gorm"
 
 	"system-stats/internal/modules/hosts/infrastructure/collectors"
 	"system-stats/internal/modules/hosts/infrastructure/entities"
@@ -84,6 +86,16 @@ func (s *service) GetCurrentHost(ctx context.Context) (*entities.Host, error) {
 		return nil, err
 	}
 
-	// Get host record by MAC address
-	return s.GetHostByMacAddress(ctx, hostInfo.MacAddress)
+	// Try to get host by MAC; if not found, upsert it
+	host, err := s.hostRepository.GetHostByMacAddress(ctx, hostInfo.MacAddress)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			s.logger.Info("Host not found by MAC, performing upsert", "mac_address", hostInfo.MacAddress)
+			return s.hostRepository.UpsertHost(ctx, hostInfo)
+		}
+		s.logger.Error("Failed to get host by MAC address", "error", err, "mac_address", hostInfo.MacAddress)
+		return nil, err
+	}
+
+	return host, nil
 }

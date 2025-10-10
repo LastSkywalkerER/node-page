@@ -40,10 +40,13 @@ const hasActiveSpeed = (iface: NetworkInterface): boolean => {
   return iface.speed_kbps_sent > 0 || iface.speed_kbps_recv > 0;
 };
 
-const getFastestInterface = (interfaces: NetworkInterface[]): NetworkInterface | null => {
+const getPrimaryInterface = (interfaces: NetworkInterface[]): NetworkInterface | null => {
   if (!interfaces.length) return null;
-  return interfaces.reduce((fastest, current) =>
-    getTotalTraffic(current) > getTotalTraffic(fastest) ? current : fastest
+  const primary = interfaces.find((i) => (i as any).is_primary === true);
+  if (primary) return primary;
+  // Fallback to the one with most total traffic if no primary is provided
+  return interfaces.reduce((best, current) =>
+    getTotalTraffic(current) > getTotalTraffic(best) ? current : best
   );
 };
 
@@ -57,7 +60,7 @@ export function NetworkWidget({ hostId }: NetworkWidgetProps = {}) {
 
   // Process network data
   const interfaces = metrics?.latest?.interfaces || [];
-  const fastestInterface = getFastestInterface(interfaces);
+  const fastestInterface = getPrimaryInterface(interfaces);
   const activeInterfaces = interfaces.filter((iface: NetworkInterface) => hasActiveSpeed(iface));
   const inactiveInterfaces = interfaces.filter((iface: NetworkInterface) => !hasActiveSpeed(iface));
 

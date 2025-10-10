@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -53,8 +55,13 @@ func (h *NetworkHandler) HandleNetworkStats(c *gin.Context) {
 	hostId := parseHostIdQuery(c)
 
 	// Get latest network metrics from database
-	latestMetrics, err := h.service.GetLatest(c.Request.Context())
+	ctx := c.Request.Context()
+	latestMetrics, err := h.service.GetLatest(ctx)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			h.logger.Info("Client canceled request while fetching latest network metrics")
+			return
+		}
 		h.logger.Error("Failed to fetch latest network metrics", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -63,11 +70,15 @@ func (h *NetworkHandler) HandleNetworkStats(c *gin.Context) {
 	// Get historical network metrics (filtered by host_id if provided)
 	var historyMetrics []interface{}
 	if hostId > 0 {
-		historyMetrics, err = h.service.GetHistoricalByHost(c.Request.Context(), hostId, hours)
+		historyMetrics, err = h.service.GetHistoricalByHost(ctx, hostId, hours)
 	} else {
-		historyMetrics, err = h.service.GetHistorical(c.Request.Context(), hours)
+		historyMetrics, err = h.service.GetHistorical(ctx, hours)
 	}
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			h.logger.Info("Client canceled request while fetching historical network metrics")
+			return
+		}
 		h.logger.Error("Failed to fetch historical network metrics", "error", err, "hours", hours, "host_id", hostId)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

@@ -2,9 +2,10 @@ package collectors
 
 import (
 	"context"
+	"net"
 
 	"github.com/charmbracelet/log"
-	"github.com/shirou/gopsutil/v4/net"
+	gopsutilnet "github.com/shirou/gopsutil/v4/net"
 
 	"system-stats/internal/modules/network/infrastructure/entities"
 )
@@ -40,11 +41,23 @@ func NewNetworkMetricsCollector(logger *log.Logger) *NetworkMetricsCollector {
  */
 func (c *NetworkMetricsCollector) CollectNetworkMetrics(ctx context.Context) (entities.NetworkMetric, error) {
 	c.logger.Info("Collecting network interface statistics")
-	netStats, err := net.IOCountersWithContext(ctx, true)
+	netStats, err := gopsutilnet.IOCountersWithContext(ctx, true)
 	if err != nil {
 		c.logger.Error("Failed to collect network interface statistics", "error", err)
 		return entities.NetworkMetric{}, err
 	}
+
+	// Determine primary interface by local IP using UDP dial trick
+	primaryIP := ""
+	if conn, dialErr := net.Dial("udp", "8.8.8.8:80"); dialErr == nil {
+		if udpAddr, ok := conn.LocalAddr().(*net.UDPAddr); ok && udpAddr.IP != nil {
+			primaryIP = udpAddr.IP.String()
+		}
+		conn.Close()
+	}
+
+	// Also fetch interface address info to map names to IPs
+	ifaceDetails, _ := gopsutilnet.InterfacesWithContext(ctx)
 
 	interfaces := make([]entities.NetworkInterface, 0, len(netStats))
 	for _, stat := range netStats {
@@ -53,12 +66,31 @@ func (c *NetworkMetricsCollector) CollectNetworkMetrics(ctx context.Context) (en
 			continue
 		}
 
+		isPrimary := false
+		if primaryIP != "" {
+			for _, d := range ifaceDetails {
+				if d.Name != stat.Name {
+					continue
+				}
+				for _, addr := range d.Addrs {
+					if addr.Addr == primaryIP || addr.Addr == primaryIP+"/32" {
+						isPrimary = true
+						break
+					}
+				}
+				if isPrimary {
+					break
+				}
+			}
+		}
+
 		interfaces = append(interfaces, entities.NetworkInterface{
 			Name:        stat.Name,
 			BytesSent:   stat.BytesSent,
 			BytesRecv:   stat.BytesRecv,
 			PacketsSent: stat.PacketsSent,
 			PacketsRecv: stat.PacketsRecv,
+			IsPrimary:   isPrimary,
 		})
 	}
 

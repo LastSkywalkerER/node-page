@@ -2,6 +2,7 @@ package dockermetrics
 
 import (
 	"context"
+	"errors"
 
 	"system-stats/internal/modules/docker/domain/repositories"
 	"system-stats/internal/modules/docker/infrastructure/entities"
@@ -58,7 +59,11 @@ func (s *service) GetLatest(ctx context.Context) (entities.DockerMetric, error) 
 	s.logger.Info("Getting latest Docker metrics")
 	metric, err := s.dockerRepository.GetLatestMetric(ctx)
 	if err != nil {
-		s.logger.Error("Failed to get latest Docker metrics", "error", err)
+		if errors.Is(err, context.Canceled) {
+			s.logger.Info("Context canceled while getting latest Docker metrics")
+		} else {
+			s.logger.Error("Failed to get latest Docker metrics", "error", err)
+		}
 		return entities.DockerMetric{}, err
 	}
 	s.logger.Info("Latest Docker metrics retrieved successfully")
@@ -69,7 +74,11 @@ func (s *service) GetHistorical(ctx context.Context, hours float64) ([]interface
 	s.logger.Info("Getting historical Docker metrics", "hours", hours)
 	metrics, err := s.dockerRepository.GetHistoricalMetrics(ctx, hours)
 	if err != nil {
-		s.logger.Error("Failed to get historical Docker metrics", "error", err, "hours", hours)
+		if errors.Is(err, context.Canceled) {
+			s.logger.Info("Context canceled while getting historical Docker metrics")
+		} else {
+			s.logger.Error("Failed to get historical Docker metrics", "error", err, "hours", hours)
+		}
 		return nil, err
 	}
 	s.logger.Info("Historical Docker metrics retrieved successfully", "count", len(metrics))
@@ -86,7 +95,11 @@ func (s *service) GetHistoricalByHost(ctx context.Context, hostId uint, hours fl
 	s.logger.Info("Getting historical Docker metrics by host", "host_id", hostId, "hours", hours)
 	metrics, err := s.dockerRepository.GetHistoricalMetricsByHost(ctx, hostId, hours)
 	if err != nil {
-		s.logger.Error("Failed to get historical Docker metrics by host", "error", err, "host_id", hostId, "hours", hours)
+		if errors.Is(err, context.Canceled) {
+			s.logger.Info("Context canceled while getting historical Docker metrics by host")
+		} else {
+			s.logger.Error("Failed to get historical Docker metrics by host", "error", err, "host_id", hostId, "hours", hours)
+		}
 		return nil, err
 	}
 	s.logger.Info("Historical Docker metrics by host retrieved successfully", "host_id", hostId, "count", len(metrics))

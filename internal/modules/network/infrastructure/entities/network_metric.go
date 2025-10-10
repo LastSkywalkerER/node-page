@@ -51,6 +51,9 @@ type NetworkInterface struct {
 
 	/** SpeedKbpsRecv shows current download speed in kilobits per second */
 	SpeedKbpsRecv float64 `json:"speed_kbps_recv"`
+
+	/** IsPrimary indicates whether this interface is the system's primary outbound interface */
+	IsPrimary bool `json:"is_primary"`
 }
 
 /**
