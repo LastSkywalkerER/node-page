@@ -6,3 +6,4 @@ export { DockerWidget } from './docker/DockerWidget';
 export { HostsWidget } from './hosts/HostsWidget';
 export { ThemeSelectorWidget } from './theme-selector/ThemeSelectorWidget';
 export { default as ConnectionStatusWidget } from './connection-status/ConnectionStatusWidget';
+export { default as SensorsWidget } from './sensors/SensorsWidget';

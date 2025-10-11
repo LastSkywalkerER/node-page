@@ -15,20 +15,3 @@ export function useHosts() {
     staleTime: 10000,
   });
 }
-
-// Hook for getting current host
-export function useCurrentHost() {
-  return useQuery({
-    queryKey: ['current-host'],
-    queryFn: async () => {
-      const response = await fetch('/api/hosts/current');
-      if (!response.ok) {
-        throw new Error('Failed to fetch current host');
-      }
-      return response.json();
-    },
-    refetchInterval: 30000,
-    staleTime: 10000,
-  });
-}
-

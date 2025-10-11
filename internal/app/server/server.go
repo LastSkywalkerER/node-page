@@ -29,6 +29,7 @@ import (
 	hostmodule "system-stats/internal/modules/hosts/presentation"
 	memorymodule "system-stats/internal/modules/memory/presentation"
 	networkmodule "system-stats/internal/modules/network/presentation"
+	sensorsmodule "system-stats/internal/modules/sensors/presentation"
 	systemmodule "system-stats/internal/modules/system/presentation"
 )
 
@@ -203,6 +204,9 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	/** dockerHandler handles HTTP requests for docker container metrics */
 	dockerHandler := dockermodule.NewDockerHandler(logger, container.GetDockerService())
 
+	/** sensorsHandler handles HTTP requests for sensors (temperatures) */
+	sensorsHandler := sensorsmodule.NewSensorsHandler(logger, container.GetSensorsService())
+
 	/** hostHandler handles HTTP requests for host information */
 	hostHandler := hostmodule.NewHostHandler(logger, container.GetHostService())
 
@@ -238,6 +242,9 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 
 		/** GET /api/docker - Returns docker container statistics and status information */
 		api.GET("/docker", dockerHandler.HandleDockerStats)
+
+		/** GET /api/sensors - Returns temperature sensors readings */
+		api.GET("/sensors", sensorsHandler.HandleSensors)
 
 		/** GET /api/hosts - Returns all registered hosts */
 		api.GET("/hosts", hostHandler.HandleGetAllHosts)

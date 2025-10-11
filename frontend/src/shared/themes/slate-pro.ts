@@ -56,6 +56,14 @@ export const slateProWidgetThemes: Record<WidgetType, WidgetThemeConfig> = {
     value: { className: 'text-slate-200' },
     chart: { type: 'line', color: '#60a5fa' },
     details: { show: true, className: 'text-slate-400 text-sm' }
+  },
+  sensors: {
+    container: { className: 'text-slate-100' },
+    icon: { className: 'bg-slate-700/50' },
+    title: { className: 'text-slate-200 font-medium' },
+    value: { className: 'text-2xl font-bold text-white' },
+    chart: { type: 'line', color: '#f87171' },
+    details: { show: true, className: 'text-slate-400 text-sm' }
   }
 };
 

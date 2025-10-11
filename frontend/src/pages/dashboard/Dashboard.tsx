@@ -1,10 +1,11 @@
 import { ReactNode, useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAlerts } from '@/shared/lib/store';
 import { HostProvider } from '@/shared/lib/HostContext';
 import ConnectionStatusWidget from '@/widgets/connection-status/ConnectionStatusWidget';
 import AlertsPanel from './components/AlertsPanel';
 import { HostsSidebar } from './components/HostsSidebar';
-import { useCurrentHost, useHosts } from '@/widgets/hosts/useHosts';
+import { useHosts } from '@/widgets/hosts/useHosts';
 
 interface DashboardProps {
   children: ReactNode;
@@ -12,16 +13,46 @@ interface DashboardProps {
 
 export default function Dashboard({ children }: DashboardProps) {
   const alerts = useAlerts();
-  const [selectedHostId, setSelectedHostId] = useState<number | null>(null);
-  const { data: currentHostData, isLoading: currentHostLoading } = useCurrentHost();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialHostIdParam = searchParams.get('host_id');
+  const initialHostId = initialHostIdParam ? Number(initialHostIdParam) : null;
+  const [selectedHostId, setSelectedHostId] = useState<number | null>(initialHostId);
   const { data: hostsData } = useHosts();
 
-  // Auto-select current host on first load
+  // Sync selectedHostId with URL query param `host_id`
   useEffect(() => {
-    if (!currentHostLoading && currentHostData?.host && selectedHostId === null) {
-      setSelectedHostId(currentHostData.host.id);
+    const hostIdParam = searchParams.get('host_id');
+    const parsed = hostIdParam ? Number(hostIdParam) : null;
+    if ((parsed || null) !== selectedHostId) {
+      setSelectedHostId(parsed);
     }
-  }, [currentHostData, selectedHostId, currentHostLoading]);
+  }, [searchParams]);
+
+  // If no host_id provided, default to the first host from the list
+  useEffect(() => {
+    if (selectedHostId === null) {
+      const currentParam = searchParams.get('host_id');
+      const firstHostId = hostsData?.hosts?.[0]?.id;
+      if (!currentParam && firstHostId !== undefined) {
+        setSelectedHostId(firstHostId);
+      }
+    }
+  }, [hostsData, selectedHostId, searchParams]);
+
+  // When selection changes, update URL param
+  useEffect(() => {
+    const currentParam = searchParams.get('host_id');
+    const nextParam = selectedHostId !== null ? String(selectedHostId) : null;
+    if (currentParam !== nextParam) {
+      const newParams = new URLSearchParams(searchParams);
+      if (nextParam === null) {
+        newParams.delete('host_id');
+      } else {
+        newParams.set('host_id', nextParam);
+      }
+      setSearchParams(newParams, { replace: true });
+    }
+  }, [selectedHostId]);
 
   // Find selected host name
   const selectedHostName = hostsData?.hosts?.find((host: any) => host.id === selectedHostId)?.name;

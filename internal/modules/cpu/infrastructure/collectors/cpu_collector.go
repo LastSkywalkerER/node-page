@@ -148,6 +148,47 @@ func (c *CPUMetricsCollector) CollectCPUMetrics(ctx context.Context) (entities.C
 		}
 	}
 
+	// Collect CPU info (static) - take first CPU as representative
+	infoStats, err := cpu.InfoWithContext(ctx)
+	if err != nil {
+		c.logger.Warn("Failed to collect CPU info", "error", err)
+	}
+	var vendorID, family, model, modelName, microcode string
+	var mhz float64
+	var cacheSize int32
+	var flags []string
+	if len(infoStats) > 0 {
+		cpu0 := infoStats[0]
+		vendorID = cpu0.VendorID
+		family = cpu0.Family
+		model = cpu0.Model
+		modelName = cpu0.ModelName
+		mhz = cpu0.Mhz
+		cacheSize = cpu0.CacheSize
+		flags = cpu0.Flags
+		microcode = cpu0.Microcode
+	}
+
+	// Collect CPU times (aggregate)
+	timesStats, err := cpu.TimesWithContext(ctx, false)
+	if err != nil {
+		c.logger.Warn("Failed to collect CPU times", "error", err)
+	}
+	var user, systemTime, idle, nice, iowait, irq, softirq, steal, guest, guestNice float64
+	if len(timesStats) > 0 {
+		agg := timesStats[0]
+		user = agg.User
+		systemTime = agg.System
+		idle = agg.Idle
+		nice = agg.Nice
+		iowait = agg.Iowait
+		irq = agg.Irq
+		softirq = agg.Softirq
+		steal = agg.Steal
+		guest = agg.Guest
+		guestNice = agg.GuestNice
+	}
+
 	c.logger.Info("CPU metrics collected successfully", "usage_percent", usage, "cores", cores, "temperature", temperature)
 	return entities.CPUMetric{
 		UsagePercent: usage,
@@ -156,5 +197,23 @@ func (c *CPUMetricsCollector) CollectCPUMetrics(ctx context.Context) (entities.C
 		LoadAvg5:     loadStat.Load5,
 		LoadAvg15:    loadStat.Load15,
 		Temperature:  temperature,
+		VendorID:     vendorID,
+		Family:       family,
+		Model:        model,
+		ModelName:    modelName,
+		Mhz:          mhz,
+		CacheSize:    cacheSize,
+		Flags:        flags,
+		Microcode:    microcode,
+		User:         user,
+		System:       systemTime,
+		Idle:         idle,
+		Nice:         nice,
+		Iowait:       iowait,
+		Irq:          irq,
+		Softirq:      softirq,
+		Steal:        steal,
+		Guest:        guest,
+		GuestNice:    guestNice,
 	}, nil
 }

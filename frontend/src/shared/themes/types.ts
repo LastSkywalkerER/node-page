@@ -73,6 +73,6 @@ export interface LayoutThemeConfig {
   };
 }
 
-export type WidgetType = 'cpu' | 'memory' | 'disk' | 'network' | 'docker' | 'system-health' | 'hosts';
+export type WidgetType = 'cpu' | 'memory' | 'disk' | 'network' | 'docker' | 'system-health' | 'hosts' | 'sensors';
 
 export type GlobalThemeType = 'glass-aurora' | 'neon-terminal' | 'slate-pro' | 'cards-flow';

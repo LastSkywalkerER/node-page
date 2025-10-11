@@ -33,6 +33,7 @@ import (
 	networkservice "system-stats/internal/modules/network/application"
 	networkentities "system-stats/internal/modules/network/infrastructure/entities"
 	networkrepos "system-stats/internal/modules/network/infrastructure/repositories"
+	sensorsservice "system-stats/internal/modules/sensors/application"
 	systemsrv "system-stats/internal/modules/system/application"
 
 	"github.com/charmbracelet/log"
@@ -69,6 +70,9 @@ type Container struct {
 
 	/** historicalMetricsService manages historical metrics collection and storage */
 	historicalMetricsService historycore.HistoricalMetricsService
+
+	// sensors service
+	sensorsService sensorsservice.Service
 }
 
 /**
@@ -109,6 +113,7 @@ func NewContainer(logger *log.Logger, dbPath string, startTime time.Time) (*Cont
 	container.dockerService = dockerservice.NewService(container.logger, dockercollectors.NewDockerMetricsCollector(container.logger), dockerrepos.NewDockerRepository(db))
 	container.hostService = hostservice.NewService(container.logger, container.hostRepository)
 	container.healthService = healthservice.NewService(container.logger, container.hostRepository, startTime)
+	container.sensorsService = sensorsservice.NewService(container.logger)
 
 	// Create system service that aggregates all metrics
 	container.systemService = systemsrv.NewService(
@@ -240,6 +245,11 @@ func (c *Container) GetHealthService() healthservice.Service {
  */
 func (c *Container) GetSystemService() systemsrv.Service {
 	return c.systemService
+}
+
+// GetSensorsService returns the sensors service instance.
+func (c *Container) GetSensorsService() sensorsservice.Service {
+	return c.sensorsService
 }
 
 /**

@@ -56,6 +56,14 @@ export const neonTerminalWidgetThemes: Record<WidgetType, WidgetThemeConfig> = {
     value: { className: 'text-green-400' },
     chart: { type: 'line', color: '#00ff88' },
     details: { show: true, className: 'text-green-600 text-xs font-mono' }
+  },
+  sensors: {
+    container: { className: 'text-green-400' },
+    icon: { className: 'bg-green-500/20 border border-green-500/30' },
+    title: { className: 'text-green-400 font-mono' },
+    value: { className: 'text-2xl font-bold text-green-300' },
+    chart: { type: 'area', color: '#ff3864', fill: 'rgba(255, 56, 100, 0.1)' },
+    details: { show: true, className: 'text-green-600 text-xs font-mono' }
   }
 };
 

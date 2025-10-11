@@ -11,6 +11,10 @@ export const memoryMetricSchema = z.object({
   buffers: z.number().optional(),
   swap_total: z.number().optional(),
   swap_used: z.number().optional(),
+  active: z.number().optional(),
+  inactive: z.number().optional(),
+  shared: z.number().optional(),
+  swap_free: z.number().optional(),
 });
 
 // Historical memory data schema

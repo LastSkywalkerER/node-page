@@ -27,6 +27,43 @@ type CPUMetric struct {
 
 	/** Temperature represents the current CPU temperature in Celsius */
 	Temperature float64 `json:"temperature"`
+
+	// --- CPU static/info fields (from gopsutil cpu.InfoStat aggregated) ---
+	/** VendorID is the CPU vendor identifier */
+	VendorID string `json:"vendor_id"`
+
+	/** Family is the CPU family */
+	Family string `json:"family"`
+
+	/** Model is the CPU model */
+	Model string `json:"model"`
+
+	/** ModelName is the human-readable CPU model name */
+	ModelName string `json:"model_name"`
+
+	/** Mhz is the reported base clock frequency in MHz */
+	Mhz float64 `json:"mhz"`
+
+	/** CacheSize is the CPU cache size in KB */
+	CacheSize int32 `json:"cache_size"`
+
+	/** Flags are CPU feature flags */
+	Flags []string `json:"flags" gorm:"-"`
+
+	/** Microcode version string */
+	Microcode string `json:"microcode"`
+
+	// --- CPU times (aggregate across all CPUs) ---
+	User      float64 `json:"user"`
+	System    float64 `json:"system"`
+	Idle      float64 `json:"idle"`
+	Nice      float64 `json:"nice"`
+	Iowait    float64 `json:"iowait"`
+	Irq       float64 `json:"irq"`
+	Softirq   float64 `json:"softirq"`
+	Steal     float64 `json:"steal"`
+	Guest     float64 `json:"guest"`
+	GuestNice float64 `json:"guest_nice"`
 }
 
 /**

@@ -3,6 +3,7 @@ package collectors
 import (
 	"context"
 	"net"
+	"sort"
 
 	"github.com/charmbracelet/log"
 	"github.com/shirou/gopsutil/v4/host"
@@ -41,7 +42,7 @@ func NewHostCollector(logger *log.Logger) *HostCollector {
 func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo, error) {
 	c.logger.Info("Collecting host information")
 
-	// Get hostname
+	// Get hostname and system info
 	hostInfo, err := host.InfoWithContext(ctx)
 	if err != nil {
 		c.logger.Error("Failed to collect hostname", "error", err)
@@ -89,18 +90,59 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo,
 			}
 		}
 	}
-	// Second pass: fallback to first valid non-loopback MAC
+	// Second pass: if primary interface has no MAC, prefer interfaces with highest received bytes (non-loopback)
 	if macAddress == "" {
-		for _, iface := range interfaces {
-			if iface.HardwareAddr == "" || iface.Name == "lo" || iface.Name == "lo0" {
-				continue
+		if ioCounters, err := gopsutilnet.IOCountersWithContext(ctx, true); err == nil {
+			recvByName := make(map[string]uint64, len(ioCounters))
+			for _, c := range ioCounters {
+				recvByName[c.Name] = c.BytesRecv
 			}
-			if _, err := net.ParseMAC(iface.HardwareAddr); err != nil {
-				continue
+
+			type ifaceScore struct {
+				idx int
+				rx  uint64
 			}
-			macAddress = iface.HardwareAddr
-			c.logger.Info("Fallback to first valid MAC address", "interface", iface.Name, "mac", macAddress)
-			break
+
+			var scores []ifaceScore
+			for idx, iface := range interfaces {
+				if iface.Name == "lo" || iface.Name == "lo0" {
+					continue
+				}
+				rx := recvByName[iface.Name]
+				if rx == 0 {
+					continue
+				}
+				scores = append(scores, ifaceScore{idx: idx, rx: rx})
+			}
+
+			sort.Slice(scores, func(i, j int) bool { return scores[i].rx > scores[j].rx })
+			for _, s := range scores {
+				iface := interfaces[s.idx]
+				if iface.HardwareAddr == "" {
+					continue
+				}
+				if _, err := net.ParseMAC(iface.HardwareAddr); err != nil {
+					continue
+				}
+				macAddress = iface.HardwareAddr
+				c.logger.Info("Selected interface by received bytes", "interface", iface.Name, "rx_bytes", recvByName[iface.Name], "mac", macAddress)
+				break
+			}
+		}
+
+		// Final fallback: first valid non-loopback MAC if nothing else matched
+		if macAddress == "" {
+			for _, iface := range interfaces {
+				if iface.HardwareAddr == "" || iface.Name == "lo" || iface.Name == "lo0" {
+					continue
+				}
+				if _, err := net.ParseMAC(iface.HardwareAddr); err != nil {
+					continue
+				}
+				macAddress = iface.HardwareAddr
+				c.logger.Info("Fallback to first valid MAC address", "interface", iface.Name, "mac", macAddress)
+				break
+			}
 		}
 	}
 
@@ -111,7 +153,15 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo,
 
 	c.logger.Info("Host information collected successfully", "hostname", hostname, "mac_address", macAddress)
 	return entities.HostInfo{
-		Name:       hostname,
-		MacAddress: macAddress,
+		Name:                 hostname,
+		MacAddress:           macAddress,
+		OS:                   hostInfo.OS,
+		Platform:             hostInfo.Platform,
+		PlatformFamily:       hostInfo.PlatformFamily,
+		PlatformVersion:      hostInfo.PlatformVersion,
+		KernelVersion:        hostInfo.KernelVersion,
+		VirtualizationSystem: hostInfo.VirtualizationSystem,
+		VirtualizationRole:   hostInfo.VirtualizationRole,
+		HostID:               hostInfo.HostID,
 	}, nil
 }

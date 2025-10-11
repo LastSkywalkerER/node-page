@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Server, Wifi, WifiOff, Clock, Zap } from 'lucide-react';
-import { useHosts, useCurrentHost } from './useHosts';
+import { useHosts } from './useHosts';
 import { useConnectionStatus } from '../connection-status/useConnectionStatus';
 import { useWidgetTheme, useLayoutTheme, useSecondaryText } from '@/shared/themes';
 import { cn } from '@/shared/lib/utils';
@@ -49,12 +49,10 @@ function HealthInfo({ hostId, theme, secondaryTextClass }: { hostId: number, the
 
 export function HostsWidget({ selectedHostId, onHostSelect }: HostsWidgetProps) {
   const { data: hostsData, isLoading: hostsLoading } = useHosts();
-  const { data: currentHostData } = useCurrentHost();
   const theme = useWidgetTheme('hosts');
   const layoutTheme = useLayoutTheme();
   const secondaryTextClass = useSecondaryText();
 
-  const currentHost = currentHostData?.host;
   const hosts = hostsData?.hosts || [];
 
   return (
@@ -83,7 +81,7 @@ export function HostsWidget({ selectedHostId, onHostSelect }: HostsWidgetProps) 
         ) : (
           hosts.map((host: any) => {
             const isSelected = selectedHostId === host.id;
-            const isCurrent = host.id === currentHost?.id;
+            const isCurrent = isSelected; // mark current as the selected host
 
             return (
               <div
@@ -101,7 +99,35 @@ export function HostsWidget({ selectedHostId, onHostSelect }: HostsWidgetProps) 
                 </div>
                 <div className="flex-1 min-w-0 text-left">
                   <div className={cn("font-medium truncate", theme.value.className)}>{host.name}</div>
-                  <div className={cn("text-xs truncate", secondaryTextClass)}>{host.mac_address}</div>
+                <div className={cn("text-xs truncate", secondaryTextClass)}>{host.mac_address}</div>
+                {/* Show brief system info if available */}
+                {(host.platform || host.os || host.kernel_version || host.platform_family || host.virtualization_system || host.system_host_id) && (
+                  <div className={cn("text-[10px] space-y-0.5", secondaryTextClass)}>
+                    <div className="truncate">
+                      {(host.platform || host.os) && (
+                        <span>
+                          {host.platform || host.os}
+                          {host.platform_version ? ` (${host.platform_version})` : ''}
+                        </span>
+                      )}
+                      {host.kernel_version ? ` • kernel ${host.kernel_version}` : ''}
+                    </div>
+                    {(host.platform_family || host.virtualization_system || host.virtualization_role) && (
+                      <div className="truncate">
+                        {host.platform_family && <span>family: {host.platform_family}</span>}
+                        {host.virtualization_system && (
+                          <span>{host.platform_family ? ' • ' : ''}virt: {host.virtualization_system}{host.virtualization_role ? ` (${host.virtualization_role})` : ''}</span>
+                        )}
+                      </div>
+                    )}
+                    {host.system_host_id && (
+                      <div className="truncate">id: {host.system_host_id}</div>
+                    )}
+                    {host.last_seen && (
+                      <div className="truncate">last seen: {new Date(host.last_seen).toLocaleString()}</div>
+                    )}
+                  </div>
+                )}
                   <HealthInfo hostId={host.id} theme={theme} secondaryTextClass={secondaryTextClass} />
                   {isCurrent && (
                     <div className="text-xs text-green-400">Current Host</div>

@@ -56,6 +56,14 @@ export const glassAuroraWidgetThemes: Record<WidgetType, WidgetThemeConfig> = {
     value: { className: 'text-white' },
     chart: { type: 'line', color: '#60a5fa' },
     details: { show: true, className: 'text-white/60' }
+  },
+  sensors: {
+    container: { className: 'text-white' },
+    icon: { className: 'bg-white/10' },
+    title: { className: 'text-white font-medium' },
+    value: { className: 'text-2xl font-bold text-white' },
+    chart: { type: 'line', color: '#f87171' },
+    details: { show: true, className: 'text-white/70' }
   }
 };
 

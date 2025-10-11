@@ -19,6 +19,16 @@ type Host struct {
 	/** MacAddress is the MAC address of the primary network interface */
 	MacAddress string `json:"mac_address" gorm:"uniqueIndex;not null"`
 
+	// Extended system info
+	OS                   string `json:"os"`
+	Platform             string `json:"platform"`
+	PlatformFamily       string `json:"platform_family"`
+	PlatformVersion      string `json:"platform_version"`
+	KernelVersion        string `json:"kernel_version"`
+	VirtualizationSystem string `json:"virtualization_system"`
+	VirtualizationRole   string `json:"virtualization_role"`
+	SystemHostID         string `json:"system_host_id"`
+
 	/** LastSeen indicates when this host was last active */
 	LastSeen time.Time `json:"last_seen"`
 

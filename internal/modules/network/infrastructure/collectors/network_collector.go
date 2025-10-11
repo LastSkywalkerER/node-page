@@ -67,29 +67,36 @@ func (c *NetworkMetricsCollector) CollectNetworkMetrics(ctx context.Context) (en
 		}
 
 		isPrimary := false
-		if primaryIP != "" {
-			for _, d := range ifaceDetails {
-				if d.Name != stat.Name {
-					continue
-				}
-				for _, addr := range d.Addrs {
-					if addr.Addr == primaryIP || addr.Addr == primaryIP+"/32" {
-						isPrimary = true
-						break
-					}
-				}
-				if isPrimary {
-					break
+		ips := make([]string, 0, 2)
+		mac := ""
+		for _, d := range ifaceDetails {
+			if d.Name != stat.Name {
+				continue
+			}
+			for _, addr := range d.Addrs {
+				// addr.Addr may include CIDR, preserve as-is for clarity
+				ips = append(ips, addr.Addr)
+				if primaryIP != "" && (addr.Addr == primaryIP || addr.Addr == primaryIP+"/32") {
+					isPrimary = true
 				}
 			}
+			mac = d.HardwareAddr
+			// found the interface detail, no need to continue
+			break
 		}
 
 		interfaces = append(interfaces, entities.NetworkInterface{
 			Name:        stat.Name,
+			IPs:         ips,
+			Mac:         mac,
 			BytesSent:   stat.BytesSent,
 			BytesRecv:   stat.BytesRecv,
 			PacketsSent: stat.PacketsSent,
 			PacketsRecv: stat.PacketsRecv,
+			Errin:       stat.Errin,
+			Errout:      stat.Errout,
+			Dropin:      stat.Dropin,
+			Dropout:     stat.Dropout,
 			IsPrimary:   isPrimary,
 		})
 	}

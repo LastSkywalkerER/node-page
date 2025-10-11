@@ -65,5 +65,9 @@ func (c *MemoryMetricsCollector) CollectMemoryMetrics(ctx context.Context) (enti
 		Buffers:      memStat.Buffers,
 		SwapTotal:    swapStat.Total,
 		SwapUsed:     swapStat.Used,
+		Active:       memStat.Active,
+		Inactive:     memStat.Inactive,
+		Shared:       memStat.Shared,
+		SwapFree:     swapStat.Free,
 	}, nil
 }

@@ -34,6 +34,12 @@ type NetworkInterface struct {
 	/** Name is the network interface name (e.g., "eth0", "wlan0") */
 	Name string `json:"name"`
 
+	/** IPs lists all IP addresses assigned to this interface (IPv4/IPv6) */
+	IPs []string `json:"ips"`
+
+	/** Mac is the hardware (MAC) address of the interface */
+	Mac string `json:"mac"`
+
 	/** BytesSent shows total bytes transmitted since system start */
 	BytesSent uint64 `json:"bytes_sent"`
 
@@ -54,6 +60,12 @@ type NetworkInterface struct {
 
 	/** IsPrimary indicates whether this interface is the system's primary outbound interface */
 	IsPrimary bool `json:"is_primary"`
+
+	// Error/drop counters
+	Errin   uint64 `json:"errin"`
+	Errout  uint64 `json:"errout"`
+	Dropin  uint64 `json:"dropin"`
+	Dropout uint64 `json:"dropout"`
 }
 
 /**

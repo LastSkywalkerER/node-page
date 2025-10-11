@@ -1,7 +1,7 @@
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, AreaChart, Area } from 'recharts';
 import { Cpu } from 'lucide-react';
 import { format } from 'date-fns';
-import { useWidgetTheme, useSecondaryText } from '@/shared/themes';
+import { useWidgetTheme } from '@/shared/themes';
 import { useCPU } from './useCPU';
 
 interface CPUWidgetProps {
@@ -10,7 +10,6 @@ interface CPUWidgetProps {
 
 export function CPUWidget({ hostId }: CPUWidgetProps = {}) {
   const theme = useWidgetTheme('cpu');
-  const secondaryTextClass = useSecondaryText();
   const { data: metrics, isLoading } = useCPU(hostId);
 
   if (isLoading || !metrics) {
@@ -47,18 +46,80 @@ export function CPUWidget({ hostId }: CPUWidgetProps = {}) {
         </div>
       </div>
 
-      {theme.details.show && (
-        <div className={`space-y-2 text-sm ${secondaryTextClass}`}>
-          <div className="flex justify-between">
-            <span>Cores:</span>
-            <span>{metrics.latest?.cores ?? 'N/A'}</span>
+      {theme.details.show && (() => {
+        const latest = metrics.latest ?? {} as any;
+
+        const labelMap: Record<string, string> = {
+          usage_percent: 'Usage',
+          cores: 'Cores',
+          model_name: 'Model',
+          vendor_id: 'Vendor',
+          mhz: 'Base Clock',
+          temperature: 'Temperature',
+          load_avg_1: 'Load avg (1m)',
+          load_avg_5: 'Load avg (5m)',
+          load_avg_15: 'Load avg (15m)',
+          cache_size: 'Cache size',
+          family: 'Family',
+          model: 'Model ID',
+          flags: 'Flags',
+          microcode: 'Microcode',
+          user: 'User time',
+          system: 'System time',
+          idle: 'Idle time',
+          nice: 'Nice time',
+          iowait: 'IO wait',
+          irq: 'IRQ',
+          softirq: 'SoftIRQ',
+          steal: 'Steal',
+          guest: 'Guest',
+          guest_nice: 'Guest nice',
+        };
+
+        const isEmptyValue = (value: unknown): boolean => {
+          if (value === null || value === undefined) return true;
+          if (typeof value === 'number') return value === 0;
+          if (typeof value === 'string') return value.trim().length === 0;
+          if (Array.isArray(value)) return value.length === 0;
+          return false;
+        };
+
+        const humanizeKey = (key: string): string =>
+          key
+            .replace(/_/g, ' ')
+            .replace(/\b\w/g, (c) => c.toUpperCase());
+
+        const formatValue = (key: string, value: unknown): string => {
+          if (value === null || value === undefined) return 'N/A';
+          if (key === 'mhz' && typeof value === 'number') return `${value.toFixed(0)} MHz`;
+          if (key === 'temperature' && typeof value === 'number') return `${value.toFixed(1)}°C`;
+          if (key.startsWith('load_avg_') && typeof value === 'number') return value.toFixed(2);
+          if (key === 'flags' && Array.isArray(value)) return value.join(', ');
+          if (typeof value === 'number') return String(value);
+          return String(value);
+        };
+
+        const entries = Object.entries(latest)
+          .filter(([key, value]) => key !== 'usage_percent' && !isEmptyValue(value))
+          .map(([key, value]) => ({
+            key,
+            label: labelMap[key] ?? humanizeKey(key),
+            value: formatValue(key, value),
+          }));
+
+        if (entries.length === 0) return null;
+
+        return (
+          <div className="space-y-1 text-xs opacity-60">
+            {entries.map((entry) => (
+              <div className="flex justify-between" key={entry.key}>
+                <span>{entry.label}:</span>
+                <span className="truncate max-w-[60%] text-right">{entry.value}</span>
+              </div>
+            ))}
           </div>
-          <div className="flex justify-between">
-            <span>Temperature:</span>
-            <span>{metrics.latest?.temperature ? `${metrics.latest.temperature.toFixed(1)}°C` : 'N/A'}</span>
-          </div>
-        </div>
-      )}
+        );
+      })()}
 
       {theme.details.show && metrics?.history && metrics.history.length > 0 && (
         <div className="mt-4">

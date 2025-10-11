@@ -6,6 +6,7 @@ import {
   DiskWidget,
   NetworkWidget,
   DockerWidget,
+  SensorsWidget,
 } from '@/widgets';
 
 export function DashboardLayout() {
@@ -37,6 +38,11 @@ export function DashboardLayout() {
           {/* Network Widget */}
           <div className={layoutTheme.card.className}>
             <NetworkWidget hostId={selectedHostId} />
+          </div>
+
+          {/* Sensors Widget */}
+          <div className={layoutTheme.card.className}>
+            <SensorsWidget />
           </div>
         </div>
 

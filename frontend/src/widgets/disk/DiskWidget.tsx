@@ -12,6 +12,12 @@ interface DiskWidgetProps {
 export function DiskWidget({ hostId }: DiskWidgetProps = {}) {
   const theme = useWidgetTheme('disk');
   const { data: metrics, isLoading } = useDisk(hostId);
+  const latest = (metrics as any)?.latest || {};
+  const mounts: any[] = Array.isArray(latest?.mounts) ? latest.mounts : [];
+  const partitions: any[] = Array.isArray(latest?.partitions) ? latest.partitions : [];
+  const ioCounters: any[] = Array.isArray(latest?.io_counters) ? latest.io_counters : [];
+  const topReadDev = ioCounters.reduce((best: any, d: any) => (best && best.read_bytes > d.read_bytes ? best : d), null as any);
+  const topWriteDev = ioCounters.reduce((best: any, d: any) => (best && best.write_bytes > d.write_bytes ? best : d), null as any);
 
   if (isLoading || !metrics) {
     return (
@@ -48,7 +54,7 @@ export function DiskWidget({ hostId }: DiskWidgetProps = {}) {
       </div>
 
       {theme.details.show && (
-        <div className={`space-y-2 text-sm ${theme.details.className || ''}`}>
+        <div className="space-y-1 text-xs opacity-60">
           <div className="flex justify-between">
             <span>Used:</span>
             <span>{metrics.latest?.used ? formatBytes(metrics.latest.used) : 'N/A'}</span>
@@ -57,10 +63,50 @@ export function DiskWidget({ hostId }: DiskWidgetProps = {}) {
             <span>Free:</span>
             <span>{metrics.latest?.free ? formatBytes(metrics.latest.free) : 'N/A'}</span>
           </div>
-          <div className="flex justify-between">
-            <span>Partitions:</span>
-            <span>3</span>
+          <div className="space-y-1">
+            <div className="flex justify-between">
+              <span>Partitions:</span>
+              <span>{partitions.length}</span>
+            </div>
+            {mounts
+              .slice()
+              .sort((a: any, b: any) => b.used_percent - a.used_percent)
+              .slice(0, 3)
+              .map((m: any) => (
+                <div key={m.path} className="flex justify-between">
+                  <span className="truncate max-w-[50%]" title={m.path}>{m.path} ({m.fstype})</span>
+                  <span>{m.used_percent.toFixed(1)}% · {formatBytes(m.used)}/{formatBytes(m.total)}</span>
+                </div>
+              ))}
           </div>
+
+          {partitions.slice(0, 2).map((p: any) => (
+            <div key={`${p.device}-${p.mountpoint}`} className="flex justify-between">
+              <span className="truncate max-w-[60%]" title={p.device}>{p.device} → {p.mountpoint}</span>
+              <span>{p.fstype}{p.opts ? ` • ${p.opts}` : ''}</span>
+            </div>
+          ))}
+
+          {ioCounters.length > 0 && (
+            <div className="space-y-1 text-xs opacity-60">
+              <div className="flex justify-between">
+                <span>Devices:</span>
+                <span>{ioCounters.length}</span>
+              </div>
+              {topReadDev && (
+                <div className="flex justify-between">
+                  <span>Top Read:</span>
+                  <span>{topReadDev.name} · {formatBytes(topReadDev.read_bytes)}</span>
+                </div>
+              )}
+              {topWriteDev && (
+                <div className="flex justify-between">
+                  <span>Top Write:</span>
+                  <span>{topWriteDev.name} · {formatBytes(topWriteDev.write_bytes)}</span>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

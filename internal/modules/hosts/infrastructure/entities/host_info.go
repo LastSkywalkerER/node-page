@@ -12,6 +12,16 @@ type HostInfo struct {
 
 	/** MacAddress is the MAC address of the primary network interface */
 	MacAddress string `json:"mac_address"`
+
+	// Extended host/system info
+	OS                   string `json:"os"`
+	Platform             string `json:"platform"`
+	PlatformFamily       string `json:"platform_family"`
+	PlatformVersion      string `json:"platform_version"`
+	KernelVersion        string `json:"kernel_version"`
+	VirtualizationSystem string `json:"virtualization_system"`
+	VirtualizationRole   string `json:"virtualization_role"`
+	HostID               string `json:"host_id"`
 }
 
 /**

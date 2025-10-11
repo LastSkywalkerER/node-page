@@ -32,9 +32,17 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo localentities.
 	// 1) Try to find by MAC address
 	err := r.db.WithContext(ctx).Where("mac_address = ?", hostInfo.MacAddress).First(&host).Error
 	if err == nil {
-		// Found by MAC → update name and timestamps
+		// Found by MAC → update fields and timestamps
 		now := time.Now()
 		host.Name = hostInfo.Name
+		host.OS = hostInfo.OS
+		host.Platform = hostInfo.Platform
+		host.PlatformFamily = hostInfo.PlatformFamily
+		host.PlatformVersion = hostInfo.PlatformVersion
+		host.KernelVersion = hostInfo.KernelVersion
+		host.VirtualizationSystem = hostInfo.VirtualizationSystem
+		host.VirtualizationRole = hostInfo.VirtualizationRole
+		host.SystemHostID = hostInfo.HostID
 		host.LastSeen = now
 		host.UpdatedAt = now
 		return &host, r.db.WithContext(ctx).Save(&host).Error
@@ -47,9 +55,17 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo localentities.
 	var hostByName localentities.Host
 	err = r.db.WithContext(ctx).Where("name = ?", hostInfo.Name).First(&hostByName).Error
 	if err == nil {
-		// Found by Name → update MAC and timestamps
+		// Found by Name → update fields and timestamps
 		now := time.Now()
 		hostByName.MacAddress = hostInfo.MacAddress
+		hostByName.OS = hostInfo.OS
+		hostByName.Platform = hostInfo.Platform
+		hostByName.PlatformFamily = hostInfo.PlatformFamily
+		hostByName.PlatformVersion = hostInfo.PlatformVersion
+		hostByName.KernelVersion = hostInfo.KernelVersion
+		hostByName.VirtualizationSystem = hostInfo.VirtualizationSystem
+		hostByName.VirtualizationRole = hostInfo.VirtualizationRole
+		hostByName.SystemHostID = hostInfo.HostID
 		hostByName.LastSeen = now
 		hostByName.UpdatedAt = now
 		return &hostByName, r.db.WithContext(ctx).Save(&hostByName).Error
@@ -61,11 +77,19 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo localentities.
 	// 3) Not found by MAC or Name → create new record
 	now := time.Now()
 	host = localentities.Host{
-		Name:       hostInfo.Name,
-		MacAddress: hostInfo.MacAddress,
-		LastSeen:   now,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		Name:                 hostInfo.Name,
+		MacAddress:           hostInfo.MacAddress,
+		OS:                   hostInfo.OS,
+		Platform:             hostInfo.Platform,
+		PlatformFamily:       hostInfo.PlatformFamily,
+		PlatformVersion:      hostInfo.PlatformVersion,
+		KernelVersion:        hostInfo.KernelVersion,
+		VirtualizationSystem: hostInfo.VirtualizationSystem,
+		VirtualizationRole:   hostInfo.VirtualizationRole,
+		SystemHostID:         hostInfo.HostID,
+		LastSeen:             now,
+		CreatedAt:            now,
+		UpdatedAt:            now,
 	}
 	return &host, r.db.WithContext(ctx).Create(&host).Error
 }

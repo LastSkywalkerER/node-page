@@ -50,6 +50,21 @@ const getPrimaryInterface = (interfaces: NetworkInterface[]): NetworkInterface |
   );
 };
 
+const getPrimaryIp = (iface?: NetworkInterface | null): string | null => {
+  if (!iface) return null;
+  const ips = (iface as any).ips as string[] | undefined;
+  if (!ips || ips.length === 0) return null;
+  // Prefer IPv4 if available, otherwise first
+  const ipv4 = ips.find(ip => ip.includes("."));
+  return ipv4 || ips[0];
+};
+
+const getMac = (iface?: NetworkInterface | null): string | null => {
+  if (!iface) return null;
+  const mac = (iface as any).mac as string | undefined;
+  return mac && mac.length > 0 ? mac : null;
+};
+
 interface NetworkWidgetProps {
   hostId?: number | null;
 }
@@ -93,31 +108,25 @@ export function NetworkWidget({ hostId }: NetworkWidgetProps = {}) {
         </div>
         <div className="text-right">
           <div className={theme.value.className}>
-            {fastestInterface ? (
-              <div className="text-xs space-y-0.5">
-                <div>↑ {formatSpeed(fastestInterface.speed_kbps_sent)}</div>
-                <div>↓ {formatSpeed(fastestInterface.speed_kbps_recv)}</div>
-              </div>
-            ) : '0 KB/s'}
+            {getPrimaryIp(fastestInterface)}
+          </div>
+          <div className={theme.value.className}>
+              {getMac(fastestInterface)}
           </div>
         </div>
       </div>
 
       {theme.details.show && (
-        <div className={`space-y-2 text-sm ${theme.details.className || ''}`}>
+        <div className="space-y-1 text-xs opacity-60">
           {/* Fastest interface traffic details */}
           {fastestInterface && (
             <div className="space-y-1">
               <div className="flex justify-between">
                 <span>{fastestInterface.name}:</span>
                 <div className="text-right text-xs">
-                  <div>↑ {formatSpeed(fastestInterface.speed_kbps_sent)}</div>
-                  <div>↓ {formatSpeed(fastestInterface.speed_kbps_recv)}</div>
+                  <div>↑ {formatBytes(fastestInterface.bytes_sent)} ↑ {formatSpeed(fastestInterface.speed_kbps_sent)}</div>
+                  <div> ↓ {formatBytes(fastestInterface.bytes_recv)} ↓ {formatSpeed(fastestInterface.speed_kbps_recv)}</div>
                 </div>
-              </div>
-              <div className="flex justify-between text-xs opacity-60">
-                <span>↓ {formatBytes(fastestInterface.bytes_recv)}</span>
-                <span>↑ {formatBytes(fastestInterface.bytes_sent)}</span>
               </div>
             </div>
           )}
@@ -126,7 +135,10 @@ export function NetworkWidget({ hostId }: NetworkWidgetProps = {}) {
           {activeInterfaces.filter((iface: NetworkInterface) => iface.name !== fastestInterface?.name).map((iface: NetworkInterface) => (
             <div key={iface.name} className="flex justify-between">
               <span>{iface.name}:</span>
-              <span>{formatSpeed(getMaxSpeed(iface))}</span>
+              <div className="text-right text-xs">
+                  <div>MAC: {(iface as any).mac || ''} ↑ {formatSpeed(iface.speed_kbps_sent)}</div>
+                  <div>IP: {getPrimaryIp(iface)} ↓ {formatSpeed(iface.speed_kbps_recv)}</div>
+                </div>
             </div>
           ))}
 
@@ -136,6 +148,16 @@ export function NetworkWidget({ hostId }: NetworkWidgetProps = {}) {
               <span>Inactive:</span>
               <span className="text-right">
                 {inactiveInterfaces.map((iface: NetworkInterface) => iface.name).join(', ')}
+              </span>
+            </div>
+          )}
+
+          {/* Error/Drop counters for primary interface if available */}
+          {!!fastestInterface && (!!fastestInterface.errin || !!fastestInterface.errout || !!fastestInterface.dropin || !!fastestInterface.dropout) && (
+            <div className="flex justify-between text-xs opacity-60">
+              <span>Errors/Drops (pkts):</span>
+              <span className="text-right">
+                err-in:{fastestInterface.errin || 0} · err-out:{fastestInterface.errout || 0} · drop-in:{fastestInterface.dropin || 0} · drop-out:{fastestInterface.dropout || 0}
               </span>
             </div>
           )}

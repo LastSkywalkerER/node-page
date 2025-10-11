@@ -36,6 +36,12 @@ type MemoryMetric struct {
 
 	/** SwapUsed shows the amount of swap space currently in use in bytes */
 	SwapUsed uint64 `json:"swap_used"`
+
+	// Additional fields for richer memory stats
+	Active   uint64 `json:"active"`
+	Inactive uint64 `json:"inactive"`
+	Shared   uint64 `json:"shared"`
+	SwapFree uint64 `json:"swap_free"`
 }
 
 /**

@@ -56,6 +56,14 @@ export const cardsFlowWidgetThemes: Record<WidgetType, WidgetThemeConfig> = {
     value: { className: 'text-white' },
     chart: { type: 'line', color: '#60a5fa' },
     details: { show: true, className: 'text-slate-400 text-sm' }
+  },
+  sensors: {
+    container: { className: 'text-white' },
+    icon: { className: 'bg-slate-800 text-white' },
+    title: { className: 'text-white font-medium' },
+    value: { className: 'text-2xl font-bold text-white' },
+    chart: { type: 'area', color: '#ef4444', fill: 'rgba(239, 68, 68, 0.1)' },
+    details: { show: true, className: 'text-slate-400 text-sm' }
   }
 };
 
