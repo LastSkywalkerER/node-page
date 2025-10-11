@@ -60,7 +60,16 @@ func (c *DiskMetricsCollector) CollectDiskMetrics(ctx context.Context) (entities
 	// Usage per mountpoint and totals
 	var total, used, free uint64
 	var mounts []entities.UsageStat
-	var primary *disk.UsageStat // pick the largest non-virtual filesystem as primary
+	var primary *disk.UsageStat // root or largest non-virtual filesystem as primary
+	var best *disk.UsageStat
+	var bestTotal uint64
+
+	// Prefer root filesystem totals first (reliable in VMs/containers)
+	if ru, rerr := disk.UsageWithContext(ctx, "/"); rerr == nil && ru != nil {
+		if ru.Total > 0 { // accept even if fstype is empty
+			primary = ru
+		}
+	}
 	for _, p := range parts {
 		u, uerr := disk.UsageWithContext(ctx, p.Mountpoint)
 		if uerr != nil {
@@ -79,11 +88,10 @@ func (c *DiskMetricsCollector) CollectDiskMetrics(ctx context.Context) (entities
 			InodesFree:        u.InodesFree,
 			InodesUsedPercent: u.InodesUsedPercent,
 		})
-		// Choose primary filesystem: largest total among non-virtual FS types
-		if !isVirtualFilesystem(u.Fstype) {
-			if primary == nil || u.Total > primary.Total {
-				primary = u
-			}
+		// Track the largest non-virtual filesystem as a fallback candidate
+		if !isVirtualFilesystem(u.Fstype) && u.Total > bestTotal {
+			best = u
+			bestTotal = u.Total
 		}
 	}
 
@@ -93,11 +101,18 @@ func (c *DiskMetricsCollector) CollectDiskMetrics(ctx context.Context) (entities
 		used = primary.Used
 		free = primary.Free
 	} else {
-		// Fallback: aggregate (best-effort) if no suitable primary found
-		for _, m := range mounts {
-			total += m.Total
-			used += m.Used
-			free += m.Free
+		// Prefer best candidate if available, else aggregate as last resort
+		if best != nil {
+			total = best.Total
+			used = best.Used
+			free = best.Free
+		} else {
+			// Fallback: aggregate (best-effort) if no suitable primary found
+			for _, m := range mounts {
+				total += m.Total
+				used += m.Used
+				free += m.Free
+			}
 		}
 	}
 

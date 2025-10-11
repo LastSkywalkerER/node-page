@@ -69,7 +69,7 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo,
 	}
 
 	var macAddress string
-	// First pass: try to match by primary IP
+	// First pass: try to match by primary IPv4
 	if primaryIP != "" {
 		for _, iface := range interfaces {
 			if iface.HardwareAddr == "" || iface.Name == "lo" || iface.Name == "lo0" {
@@ -79,9 +79,20 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo,
 				continue
 			}
 			for _, addr := range iface.Addrs {
-				if addr.Addr == primaryIP || addr.Addr == primaryIP+"/32" { // gopsutil may include CIDR
+				// Consider only IPv4 addresses; addr.Addr may be with CIDR
+				var ip net.IP
+				if parsedIP, _, err := net.ParseCIDR(addr.Addr); err == nil {
+					ip = parsedIP
+				} else {
+					ip = net.ParseIP(addr.Addr)
+				}
+				if ip == nil || ip.To4() == nil {
+					continue
+				}
+				ipStr := ip.String()
+				if ipStr == primaryIP {
 					macAddress = iface.HardwareAddr
-					c.logger.Info("Selected primary interface by IP", "interface", iface.Name, "ip", addr.Addr, "mac", macAddress)
+					c.logger.Info("Selected primary interface by IPv4", "interface", iface.Name, "ip", ipStr, "mac", macAddress)
 					break
 				}
 			}
@@ -124,8 +135,25 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo,
 				if _, err := net.ParseMAC(iface.HardwareAddr); err != nil {
 					continue
 				}
+				// Require the interface to have at least one IPv4 address
+				hasIPv4 := false
+				for _, addr := range iface.Addrs {
+					var ip net.IP
+					if parsedIP, _, err := net.ParseCIDR(addr.Addr); err == nil {
+						ip = parsedIP
+					} else {
+						ip = net.ParseIP(addr.Addr)
+					}
+					if ip != nil && ip.To4() != nil {
+						hasIPv4 = true
+						break
+					}
+				}
+				if !hasIPv4 {
+					continue
+				}
 				macAddress = iface.HardwareAddr
-				c.logger.Info("Selected interface by received bytes", "interface", iface.Name, "rx_bytes", recvByName[iface.Name], "mac", macAddress)
+				c.logger.Info("Selected interface by received bytes (IPv4)", "interface", iface.Name, "rx_bytes", recvByName[iface.Name], "mac", macAddress)
 				break
 			}
 		}
@@ -139,8 +167,25 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo,
 				if _, err := net.ParseMAC(iface.HardwareAddr); err != nil {
 					continue
 				}
+				// Require at least one IPv4 address on the interface
+				hasIPv4 := false
+				for _, addr := range iface.Addrs {
+					var ip net.IP
+					if parsedIP, _, err := net.ParseCIDR(addr.Addr); err == nil {
+						ip = parsedIP
+					} else {
+						ip = net.ParseIP(addr.Addr)
+					}
+					if ip != nil && ip.To4() != nil {
+						hasIPv4 = true
+						break
+					}
+				}
+				if !hasIPv4 {
+					continue
+				}
 				macAddress = iface.HardwareAddr
-				c.logger.Info("Fallback to first valid MAC address", "interface", iface.Name, "mac", macAddress)
+				c.logger.Info("Fallback to first valid MAC address (IPv4)", "interface", iface.Name, "mac", macAddress)
 				break
 			}
 		}

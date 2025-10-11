@@ -74,15 +74,30 @@ func (c *NetworkMetricsCollector) CollectNetworkMetrics(ctx context.Context) (en
 				continue
 			}
 			for _, addr := range d.Addrs {
-				// addr.Addr may include CIDR, preserve as-is for clarity
-				ips = append(ips, addr.Addr)
-				if primaryIP != "" && (addr.Addr == primaryIP || addr.Addr == primaryIP+"/32") {
+				// Extract only IPv4 addresses; ignore IPv6 or non-IPv4 entries.
+				var ip net.IP
+				if parsedIP, _, err := net.ParseCIDR(addr.Addr); err == nil {
+					ip = parsedIP
+				} else {
+					ip = net.ParseIP(addr.Addr)
+				}
+				if ip == nil || ip.To4() == nil {
+					continue
+				}
+				ipStr := ip.String()
+				ips = append(ips, ipStr)
+				if primaryIP != "" && ipStr == primaryIP {
 					isPrimary = true
 				}
 			}
 			mac = d.HardwareAddr
 			// found the interface detail, no need to continue
 			break
+		}
+
+		// Skip interfaces that do not have any IPv4 address
+		if len(ips) == 0 {
+			continue
 		}
 
 		interfaces = append(interfaces, entities.NetworkInterface{
