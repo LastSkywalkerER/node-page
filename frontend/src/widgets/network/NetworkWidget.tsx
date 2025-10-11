@@ -106,14 +106,6 @@ export function NetworkWidget({ hostId }: NetworkWidgetProps = {}) {
           </div>
           <h3 className={`text-lg font-semibold ${theme.title.className}`}>Network</h3>
         </div>
-        <div className="text-right">
-          <div className={theme.value.className}>
-            {getPrimaryIp(fastestInterface)}
-          </div>
-          <div className={theme.value.className}>
-              {getMac(fastestInterface)}
-          </div>
-        </div>
       </div>
 
       {theme.details.show && (
@@ -124,6 +116,8 @@ export function NetworkWidget({ hostId }: NetworkWidgetProps = {}) {
               <div className="flex justify-between">
                 <span>{fastestInterface.name}:</span>
                 <div className="text-right text-xs">
+                  {!!getPrimaryIp(fastestInterface) && <div>Primary IP: {getPrimaryIp(fastestInterface)}</div>}
+                  {!!getMac(fastestInterface) && <div>MAC: {getMac(fastestInterface)}</div>}
                   <div>↑ {formatBytes(fastestInterface.bytes_sent)} ↑ {formatSpeed(fastestInterface.speed_kbps_sent)}</div>
                   <div> ↓ {formatBytes(fastestInterface.bytes_recv)} ↓ {formatSpeed(fastestInterface.speed_kbps_recv)}</div>
                 </div>
