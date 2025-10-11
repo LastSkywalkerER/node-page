@@ -13,15 +13,19 @@ A comprehensive system monitoring dashboard for Node.js applications with real-t
 ## Screenshots
 
 ### Neon Terminal Theme
+
 ![Neon Terminal Theme](assets/neon-terminal.png)
 
 ### Glass Aurora Theme
+
 ![Glass Aurora Theme](assets/glass-aurora.png)
 
 ### Cards Flow Theme
+
 ![Cards Flow Theme](assets/cards-flow.png)
 
 ### Slate Pro Theme
+
 ![Slate Pro Theme](assets/slate-pro.png)
 
 ## Quick Start
@@ -34,13 +38,26 @@ Create a `docker-compose.yml` file:
 services:
   node-stats:
     image: 'ghcr.io/lastskywalkerer/node-page:latest'
+    command: ["-addr", ":9090"]
+    # ports:
+    #   - "9090:9090"
+    # Optional: host network mode to access host interface metrics
+    network_mode: host
     volumes:
-      - '/var/run/docker.sock:/var/run/docker.sock:ro'
+      # Mount database file for persistence
+      - ./stats.db:/app/stats.db
+      # Mount Docker socket for Docker metrics
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Mount host filesystem for system metrics
+      - /:/host:ro
     pid: host
     ipc: host
     restart: unless-stopped
     environment:
       - GIN_MODE=release
+      - HOST_PROC=/host/proc
+      - HOST_SYS=/host/sys
+      - HOST_ETC=/host/etc
 ```
 
 Then run:
@@ -54,12 +71,14 @@ The application will be available at `http://localhost:8080`
 ### Local Development
 
 #### Backend (Go)
+
 ```bash
 go mod download
 go run cmd/server/main.go
 ```
 
 #### Frontend (React + TypeScript)
+
 ```bash
 cd frontend
 yarn install
@@ -74,7 +93,6 @@ yarn dev
 - `GET /api/network` - Network statistics
 - `GET /api/docker` - Docker containers info
 - `GET /api/system` - System information
-
 
 ### Pulling Pre-built Images
 
@@ -108,7 +126,6 @@ The application follows Clean Architecture principles:
 ├── .github/workflows/  # CI/CD pipelines
 └── Dockerfile         # Container definition
 ```
-
 
 ## Contributing
 

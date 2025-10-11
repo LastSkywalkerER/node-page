@@ -60,6 +60,7 @@ func (c *DiskMetricsCollector) CollectDiskMetrics(ctx context.Context) (entities
 	// Usage per mountpoint and totals
 	var total, used, free uint64
 	var mounts []entities.UsageStat
+	var primary *disk.UsageStat // pick the largest non-virtual filesystem as primary
 	for _, p := range parts {
 		u, uerr := disk.UsageWithContext(ctx, p.Mountpoint)
 		if uerr != nil {
@@ -78,9 +79,26 @@ func (c *DiskMetricsCollector) CollectDiskMetrics(ctx context.Context) (entities
 			InodesFree:        u.InodesFree,
 			InodesUsedPercent: u.InodesUsedPercent,
 		})
-		total += u.Total
-		used += u.Used
-		free += u.Free
+		// Choose primary filesystem: largest total among non-virtual FS types
+		if !isVirtualFilesystem(u.Fstype) {
+			if primary == nil || u.Total > primary.Total {
+				primary = u
+			}
+		}
+	}
+
+	// Determine totals from primary filesystem to avoid double-counting multiple mounts
+	if primary != nil {
+		total = primary.Total
+		used = primary.Used
+		free = primary.Free
+	} else {
+		// Fallback: aggregate (best-effort) if no suitable primary found
+		for _, m := range mounts {
+			total += m.Total
+			used += m.Used
+			free += m.Free
+		}
 	}
 
 	// IO Counters
@@ -124,4 +142,29 @@ func (c *DiskMetricsCollector) CollectDiskMetrics(ctx context.Context) (entities
 		Mounts:       mounts,
 		IOCounters:   ioCounters,
 	}, nil
+}
+
+// isVirtualFilesystem returns true for pseudo/virtual filesystems that shouldn't
+// be used for overall disk capacity calculations.
+func isVirtualFilesystem(fs string) bool {
+	if fs == "" {
+		return true
+	}
+	switch strings.ToLower(fs) {
+	case "tmpfs", "devtmpfs", "devfs", "proc", "sysfs", "cgroup", "cgroup2",
+		"overlay", "squashfs", "autofs", "tracefs", "nsfs", "ramfs", "aufs",
+		"zram", "ecryptfs", "fusectl", "fdescfs", "binder", "configfs",
+		"securityfs", "pstore", "debugfs":
+		return true
+	}
+	// Treat any fuse.* helpers (gvfs, app images, etc.) as virtual
+	if strings.HasPrefix(strings.ToLower(fs), "fuse") {
+		return true
+	}
+	// Network filesystems should not determine capacity
+	switch strings.ToLower(fs) {
+	case "nfs", "nfs4", "smbfs", "cifs", "afpfs", "9p":
+		return true
+	}
+	return false
 }

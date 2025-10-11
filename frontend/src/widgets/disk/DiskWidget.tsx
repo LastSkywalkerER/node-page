@@ -56,6 +56,10 @@ export function DiskWidget({ hostId }: DiskWidgetProps = {}) {
       {theme.details.show && (
         <div className="space-y-1 text-xs opacity-60">
           <div className="flex justify-between">
+            <span>Total:</span>
+            <span>{metrics.latest?.total ? formatBytes(metrics.latest.total) : 'N/A'}</span>
+          </div>
+          <div className="flex justify-between">
             <span>Used:</span>
             <span>{metrics.latest?.used ? formatBytes(metrics.latest.used) : 'N/A'}</span>
           </div>
