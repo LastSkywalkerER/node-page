@@ -13,6 +13,9 @@ type HostInfo struct {
 	/** MacAddress is the MAC address of the primary network interface */
 	MacAddress string `json:"mac_address"`
 
+	/** IPv4 is the primary IPv4 address of the host */
+	IPv4 string `json:"ipv4"`
+
 	// Extended host/system info
 	OS                   string `json:"os"`
 	Platform             string `json:"platform"`

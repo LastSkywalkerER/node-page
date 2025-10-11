@@ -100,6 +100,9 @@ export function HostsWidget({ selectedHostId, onHostSelect }: HostsWidgetProps) 
                 <div className="flex-1 min-w-0 text-left">
                   <div className={cn("font-medium truncate", theme.value.className)}>{host.name}</div>
                 <div className={cn("text-xs truncate", secondaryTextClass)}>{host.mac_address}</div>
+                {host.ipv4 && (
+                  <div className={cn("text-[10px] truncate", secondaryTextClass)}>IPv4: {host.ipv4}</div>
+                )}
                 {/* Show brief system info if available */}
                 {(host.platform || host.os || host.kernel_version || host.platform_family || host.virtualization_system || host.system_host_id) && (
                   <div className={cn("text-[10px] space-y-0.5", secondaryTextClass)}>

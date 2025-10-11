@@ -69,6 +69,7 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo,
 	}
 
 	var macAddress string
+	var ipv4 string
 	// First pass: try to match by primary IPv4
 	if primaryIP != "" {
 		for _, iface := range interfaces {
@@ -92,6 +93,7 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo,
 				ipStr := ip.String()
 				if ipStr == primaryIP {
 					macAddress = iface.HardwareAddr
+					ipv4 = ipStr
 					c.logger.Info("Selected primary interface by IPv4", "interface", iface.Name, "ip", ipStr, "mac", macAddress)
 					break
 				}
@@ -146,6 +148,9 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo,
 					}
 					if ip != nil && ip.To4() != nil {
 						hasIPv4 = true
+						if ipv4 == "" {
+							ipv4 = ip.String()
+						}
 						break
 					}
 				}
@@ -178,6 +183,9 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo,
 					}
 					if ip != nil && ip.To4() != nil {
 						hasIPv4 = true
+						if ipv4 == "" {
+							ipv4 = ip.String()
+						}
 						break
 					}
 				}
@@ -200,6 +208,7 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo,
 	return entities.HostInfo{
 		Name:                 hostname,
 		MacAddress:           macAddress,
+		IPv4:                 ipv4,
 		OS:                   hostInfo.OS,
 		Platform:             hostInfo.Platform,
 		PlatformFamily:       hostInfo.PlatformFamily,

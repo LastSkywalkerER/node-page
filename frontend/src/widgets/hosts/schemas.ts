@@ -4,6 +4,7 @@ export const HostSchema = z.object({
   id: z.number(),
   name: z.string(),
   mac_address: z.string(),
+  ipv4: z.string().optional().default(''),
   os: z.string().optional().default(''),
   platform: z.string().optional().default(''),
   platform_family: z.string().optional().default(''),

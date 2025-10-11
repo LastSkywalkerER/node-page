@@ -35,6 +35,7 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo localentities.
 		// Found by MAC → update fields and timestamps
 		now := time.Now()
 		host.Name = hostInfo.Name
+		host.IPv4 = hostInfo.IPv4
 		host.OS = hostInfo.OS
 		host.Platform = hostInfo.Platform
 		host.PlatformFamily = hostInfo.PlatformFamily
@@ -58,6 +59,7 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo localentities.
 		// Found by Name → update fields and timestamps
 		now := time.Now()
 		hostByName.MacAddress = hostInfo.MacAddress
+		hostByName.IPv4 = hostInfo.IPv4
 		hostByName.OS = hostInfo.OS
 		hostByName.Platform = hostInfo.Platform
 		hostByName.PlatformFamily = hostInfo.PlatformFamily
@@ -79,6 +81,7 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo localentities.
 	host = localentities.Host{
 		Name:                 hostInfo.Name,
 		MacAddress:           hostInfo.MacAddress,
+		IPv4:                 hostInfo.IPv4,
 		OS:                   hostInfo.OS,
 		Platform:             hostInfo.Platform,
 		PlatformFamily:       hostInfo.PlatformFamily,
