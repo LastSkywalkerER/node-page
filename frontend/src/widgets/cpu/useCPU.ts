@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { apiClient } from '../../shared/lib/api';
 
 // Hook for CPU metrics - updates every 5 seconds
 export function useCPU(hostId?: number | null) {
@@ -7,12 +8,9 @@ export function useCPU(hostId?: number | null) {
   return useQuery({
     queryKey,
     queryFn: async () => {
-      const url = hostId ? `/api/cpu?host_id=${hostId}` : '/api/cpu';
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error('Failed to fetch CPU metrics');
-      }
-      return response.json();
+      const url = hostId ? `/cpu?host_id=${hostId}` : '/cpu';
+      const { data } = await apiClient.get(url);
+      return data;
     },
     refetchInterval: 5000,
     staleTime: 1000,

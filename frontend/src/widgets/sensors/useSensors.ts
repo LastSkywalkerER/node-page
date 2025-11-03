@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { apiClient } from '../../shared/lib/api';
 
 export function useSensors(hostId?: number | null) {
   const queryKey = hostId ? ['sensors', hostId] : ['sensors'];
@@ -6,10 +7,9 @@ export function useSensors(hostId?: number | null) {
   return useQuery({
     queryKey,
     queryFn: async () => {
-      const url = hostId ? `/api/sensors?host_id=${hostId}` : '/api/sensors';
-      const response = await fetch(url);
-      if (!response.ok) throw new Error('Failed to fetch sensors');
-      return response.json();
+      const url = hostId ? `/sensors?host_id=${hostId}` : '/sensors';
+      const { data } = await apiClient.get(url);
+      return data;
     },
     refetchInterval: 5000,
     staleTime: 1000,

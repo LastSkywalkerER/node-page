@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { apiClient } from '../../shared/lib/api';
 
 // Hook for Memory metrics - updates every 5 seconds
 export function useMemory(hostId?: number | null) {
@@ -7,12 +8,9 @@ export function useMemory(hostId?: number | null) {
   return useQuery({
     queryKey,
     queryFn: async () => {
-      const url = hostId ? `/api/memory?host_id=${hostId}` : '/api/memory';
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error('Failed to fetch memory metrics');
-      }
-      return response.json();
+      const url = hostId ? `/memory?host_id=${hostId}` : '/memory';
+      const { data } = await apiClient.get(url);
+      return data;
     },
     refetchInterval: 5000,
     staleTime: 1000,

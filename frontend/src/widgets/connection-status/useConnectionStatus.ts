@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
+import { apiClient } from '../../shared/lib/api';
 
 export interface ConnectionStatus {
   isConnected: boolean;
@@ -16,15 +17,9 @@ export function useConnectionStatus(hostId?: number) {
     queryFn: async ({ queryKey }: any): Promise<{ status: string; uptime?: string; latency_ms?: number; host_uptime_seconds?: number; latency?: number; uptime_formatted?: string }> => {
       const [, currentHostId] = queryKey;
       const startTime = Date.now();
-      const url = currentHostId ? `/api/health?host_id=${currentHostId}` : '/api/health';
-      const response = await fetch(url);
+      const url = currentHostId ? `/health?host_id=${currentHostId}` : '/health';
+      const { data } = await apiClient.get(url);
       const endTime = Date.now();
-
-      if (!response.ok) {
-        throw new Error('Connection failed');
-      }
-
-      const data = await response.json();
 
       // Use server-provided latency for host health checks, otherwise measure locally
       let latency: number;

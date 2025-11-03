@@ -1,17 +1,26 @@
 import { useEffect } from 'react';
-import { useThemeQuery } from '@/shared/hooks/theme';
-import Dashboard from '@/pages/dashboard/Dashboard';
-import { DashboardLayout } from '@/pages/dashboard/DashboardLayout';
+import { Routes, Route, Navigate } from 'react-router-dom';
+import { useUserStore } from './shared/store/user';
+import { useThemeQuery } from './shared/hooks/theme';
+import { ProtectedRoute } from './shared/guards/ProtectedRoute';
+import { AuthPage } from './pages/AuthPage';
+import Dashboard from './pages/dashboard/Dashboard';
+import { DashboardLayout } from './pages/dashboard/DashboardLayout';
+import { HeaderBar } from './shared/components/HeaderBar';
 
 /**
  * App is the main React component that serves as the root of the application.
- * This component manages theme switching and renders the dashboard with the selected theme.
- * It applies theme-specific styles to the document and body elements.
- *
- * @returns {JSX.Element} The main application component with theme-aware dashboard
+ * This component manages routing, authentication, and theme switching.
  */
 function App() {
   const theme = useThemeQuery();
+  const { initializeFromStorage, isAuthenticated } = useUserStore();
+
+  useEffect(() => {
+    // Initialize user authentication state from storage (sync, no API calls)
+    // Actual API verification happens in ProtectedRoute via useEnsureAuth
+    initializeFromStorage();
+  }, [initializeFromStorage]);
 
   useEffect(() => {
     // Apply theme-specific styles to document root for CSS variable theming
@@ -30,21 +39,44 @@ function App() {
     document.body.className = bodyClasses[theme] || '';
   }, [theme]);
 
-  /**
-   * renderDashboard renders the universal dashboard layout component.
-   * The layout automatically adapts to the selected theme using visual theming.
-   *
-   * @returns {JSX.Element} The universal dashboard component
-   */
-  const renderDashboard = () => {
-    return <DashboardLayout />;
-  };
-
   return (
     <div className="min-h-screen text-white">
-      <Dashboard>
-        {renderDashboard()}
-      </Dashboard>
+      {/* Header bar shown only when authenticated */}
+      {isAuthenticated && <HeaderBar />}
+
+      <Routes>
+        {/* Public auth route */}
+        <Route
+          path="/auth"
+          element={
+            isAuthenticated ? <Navigate to="/dashboard" replace /> : <AuthPage />
+          }
+        />
+
+        {/* Protected dashboard routes */}
+        <Route
+          path="/dashboard/*"
+          element={
+            <ProtectedRoute>
+              <Dashboard>
+                <DashboardLayout />
+              </Dashboard>
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Default redirect */}
+        <Route
+          path="/"
+          element={<Navigate to={isAuthenticated ? "/dashboard" : "/auth"} replace />}
+        />
+
+        {/* Catch all - redirect to dashboard or auth */}
+        <Route
+          path="*"
+          element={<Navigate to={isAuthenticated ? "/dashboard" : "/auth"} replace />}
+        />
+      </Routes>
     </div>
   );
 }

@@ -35,6 +35,9 @@ import (
 	networkrepos "system-stats/internal/modules/network/infrastructure/repositories"
 	sensorsservice "system-stats/internal/modules/sensors/application"
 	systemsrv "system-stats/internal/modules/system/application"
+	userapp "system-stats/internal/modules/users/application"
+	userentities "system-stats/internal/modules/users/infrastructure/entities"
+	userrepos "system-stats/internal/modules/users/infrastructure/repositories"
 
 	"github.com/charmbracelet/log"
 )
@@ -56,6 +59,10 @@ type Container struct {
 	dockerRepository  dockerdomain.DockerRepository
 	hostRepository    hostrepos.HostRepository
 
+	/** user repositories */
+	userRepository        userrepos.UserRepository
+	refreshTokenRepository userrepos.RefreshTokenRepository
+
 	/** individual services for each metric type */
 	cpuService     cpuservice.Service
 	memoryService  memoryservice.Service
@@ -64,6 +71,10 @@ type Container struct {
 	dockerService  dockerservice.Service
 	hostService    hostservice.Service
 	healthService  healthservice.Service
+
+	/** user services */
+	userService  userapp.UserService
+	tokenService userapp.TokenService
 
 	/** systemService provides aggregated system metrics */
 	systemService systemsrv.Service
@@ -105,6 +116,10 @@ func NewContainer(logger *log.Logger, dbPath string, startTime time.Time) (*Cont
 	container.dockerRepository = dockerrepos.NewDockerRepository(db)
 	container.hostRepository = hostrepos.NewHostRepository(db)
 
+	// Create user repositories
+	container.userRepository = userrepos.NewUserRepository(db)
+	container.refreshTokenRepository = userrepos.NewRefreshTokenRepository(db)
+
 	// Create individual services for each metric type
 	container.cpuService = cpuservice.NewService(container.logger, container.cpuRepository)
 	container.memoryService = memoryservice.NewService(container.logger, container.memoryRepository)
@@ -114,6 +129,16 @@ func NewContainer(logger *log.Logger, dbPath string, startTime time.Time) (*Cont
 	container.hostService = hostservice.NewService(container.logger, container.hostRepository)
 	container.healthService = healthservice.NewService(container.logger, container.hostRepository, startTime)
 	container.sensorsService = sensorsservice.NewService(container.logger)
+
+	// Create user services (using default JWT secrets - in production these should come from env/config)
+	container.tokenService = userapp.NewTokenService(
+		container.refreshTokenRepository,
+		"system-stats-access-secret-key-change-in-production",  // TODO: get from env
+		"system-stats-refresh-secret-key-change-in-production", // TODO: get from env
+		15*time.Minute,                 // access TTL
+		720*time.Hour,                  // refresh TTL (30 days)
+	)
+	container.userService = userapp.NewUserService(container.userRepository, container.tokenService)
 
 	// Create system service that aggregates all metrics
 	container.systemService = systemsrv.NewService(
@@ -157,6 +182,18 @@ func initDatabase(dbPath string) (*gorm.DB, error) {
 		return nil, err
 	}
 
+	// Configure SQLite for better concurrency and integrity
+	// Enable WAL mode to reduce write-lock contention and set a busy timeout
+	_ = db.Exec("PRAGMA journal_mode=WAL;").Error
+	_ = db.Exec("PRAGMA busy_timeout = 5000;").Error
+	_ = db.Exec("PRAGMA foreign_keys = ON;").Error
+
+	// Limit max open connections for SQLite to avoid database locked errors
+	if sqlDB, err := db.DB(); err == nil {
+		// SQLite should generally have 1 writer connection
+		sqlDB.SetMaxOpenConns(1)
+	}
+
 	// Auto-migrate all historical metric entities to create database tables
 	err = db.AutoMigrate(
 		&cpuentities.HistoricalCPUMetric{},
@@ -166,6 +203,17 @@ func initDatabase(dbPath string) (*gorm.DB, error) {
 		&dockerdomain.HistoricalDockerMetric{},
 		&hostentities.Host{},
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Migrate user entities separately to ensure proper foreign key relationships
+	err = db.AutoMigrate(&userentities.User{})
+	if err != nil {
+		return nil, err
+	}
+
+	err = db.AutoMigrate(&userentities.RefreshToken{})
 	if err != nil {
 		return nil, err
 	}
@@ -250,6 +298,22 @@ func (c *Container) GetSystemService() systemsrv.Service {
 // GetSensorsService returns the sensors service instance.
 func (c *Container) GetSensorsService() sensorsservice.Service {
 	return c.sensorsService
+}
+
+/**
+ * GetUserService returns the user service instance.
+ * @return userapp.UserService The user service instance
+ */
+func (c *Container) GetUserService() userapp.UserService {
+	return c.userService
+}
+
+/**
+ * GetTokenService returns the token service instance.
+ * @return userapp.TokenService The token service instance
+ */
+func (c *Container) GetTokenService() userapp.TokenService {
+	return c.tokenService
 }
 
 /**

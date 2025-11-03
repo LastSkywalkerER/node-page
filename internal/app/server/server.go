@@ -31,6 +31,7 @@ import (
 	networkmodule "system-stats/internal/modules/network/presentation"
 	sensorsmodule "system-stats/internal/modules/sensors/presentation"
 	systemmodule "system-stats/internal/modules/system/presentation"
+	usermodule "system-stats/internal/modules/users/presentation"
 )
 
 /**
@@ -213,12 +214,36 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	/** healthHandler handles HTTP requests for health checks */
 	healthHandler := healthmodule.NewHealthHandler(logger, container.GetHealthService())
 
+	/** authHandler handles authentication requests */
+	authHandler := usermodule.NewAuthHandler(container.GetUserService(), container.GetTokenService())
+
+	/** usersHandler handles user management requests */
+	usersHandler := usermodule.NewUsersHandler(container.GetUserService())
+
 	// API routes for React dashboard - JSON endpoints for real-time data
 	/** api is the route group for dashboard API endpoints that return JSON data */
-	api := router.Group("/api")
+	api := router.Group("/api/v1")
 	{
+		// Auth routes (public)
+		auth := api.Group("/auth")
+		{
+			auth.POST("/register", authHandler.Register)
+			auth.POST("/login", authHandler.Login)
+			auth.POST("/refresh", authHandler.Refresh)
+			auth.POST("/logout", middleware.AuthJWT(container.GetTokenService()), authHandler.Logout)
+		}
+
+		// User management routes (protected)
+		users := api.Group("/users", middleware.AuthJWT(container.GetTokenService()))
+		{
+			users.GET("/me", usersHandler.Me)
+			users.GET("", middleware.RequireAdmin(), usersHandler.List)
+			users.PATCH("/:id", middleware.RequireAdmin(), usersHandler.UpdateRole)
+			users.DELETE("/:id", middleware.RequireAdmin(), usersHandler.Delete)
+		}
+
 		/** GET /api/metrics/current - Returns current system metrics in JSON format for dashboard display */
-		api.GET("/metrics/current", systemHandler.HandleCurrentMetrics)
+		api.GET("/metrics/current", middleware.AuthJWT(container.GetTokenService()), systemHandler.HandleCurrentMetrics)
 
 		/** GET /api/metrics/historical - Historical metrics are accessed via individual module endpoints */
 
@@ -227,33 +252,35 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	}
 
 	// Stats routes for individual metrics - detailed JSON responses for each metric type
+	// All these routes now require authentication
+	authAPI := api.Group("", middleware.AuthJWT(container.GetTokenService()))
 	{
 		/** GET /api/cpu - Returns detailed CPU metrics including usage, cores, and load averages */
-		api.GET("/cpu", cpuHandler.HandleCPUStats)
+		authAPI.GET("/cpu", cpuHandler.HandleCPUStats)
 
 		/** GET /api/memory - Returns memory usage statistics including RAM and swap information */
-		api.GET("/memory", memoryHandler.HandleMemoryStats)
+		authAPI.GET("/memory", memoryHandler.HandleMemoryStats)
 
 		/** GET /api/disk - Returns disk storage metrics including usage percentages and space information */
-		api.GET("/disk", diskHandler.HandleDiskStats)
+		authAPI.GET("/disk", diskHandler.HandleDiskStats)
 
 		/** GET /api/network - Returns network interface statistics and traffic data */
-		api.GET("/network", networkHandler.HandleNetworkStats)
+		authAPI.GET("/network", networkHandler.HandleNetworkStats)
 
 		/** GET /api/docker - Returns docker container statistics and status information */
-		api.GET("/docker", dockerHandler.HandleDockerStats)
+		authAPI.GET("/docker", dockerHandler.HandleDockerStats)
 
 		/** GET /api/sensors - Returns temperature sensors readings */
-		api.GET("/sensors", sensorsHandler.HandleSensors)
+		authAPI.GET("/sensors", sensorsHandler.HandleSensors)
 
 		/** GET /api/hosts - Returns all registered hosts */
-		api.GET("/hosts", hostHandler.HandleGetAllHosts)
+		authAPI.GET("/hosts", hostHandler.HandleGetAllHosts)
 
 		/** GET /api/hosts/current - Returns current host information */
-		api.GET("/hosts/current", hostHandler.HandleGetCurrentHost)
+		authAPI.GET("/hosts/current", hostHandler.HandleGetCurrentHost)
 
 		/** POST /api/hosts/register - Registers or updates current host */
-		api.POST("/hosts/register", hostHandler.HandleRegisterCurrentHost)
+		authAPI.POST("/hosts/register", hostHandler.HandleRegisterCurrentHost)
 	}
 
 	// Static files for React app (assets, js, css) - serve built frontend assets
