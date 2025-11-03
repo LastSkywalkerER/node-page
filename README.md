@@ -58,6 +58,8 @@ services:
       - HOST_PROC=/host/proc
       - HOST_SYS=/host/sys
       - HOST_ETC=/host/etc
+      - JWT_SECRET=${JWT_SECRET:-your-jwt-secret-key-change-in-production}
+      - REFRESH_SECRET=${REFRESH_SECRET:-your-refresh-secret-key-change-in-production}
 ```
 
 Then run:
