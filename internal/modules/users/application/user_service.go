@@ -28,9 +28,9 @@ type UserService interface {
 }
 
 type userService struct {
-	userRepo   userrepos.UserRepository
-	tokenSvc   TokenService
-	validator  *validator.Validate
+	userRepo  userrepos.UserRepository
+	tokenSvc  TokenService
+	validator *validator.Validate
 }
 
 // NewUserService creates a new user service
@@ -47,17 +47,26 @@ func NewUserService(
 
 // Register creates a new user account
 func (s *userService) Register(ctx context.Context, email, password string) (*localentities.User, error) {
-    // Create user with minimal validation and proper password hashing
-    hashedPassword, err := s.HashPassword(password)
-    if err != nil {
-        return nil, fmt.Errorf("failed to hash password: %w", err)
-    }
+	// Check if there are already users in the database
+	count, err := s.Count(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check user count: %w", err)
+	}
+	if count > 0 {
+		return nil, errors.New("registration is disabled: users already exist")
+	}
 
-    user := &localentities.User{
-        Email:        strings.ToLower(strings.TrimSpace(email)),
-        PasswordHash: hashedPassword,
-        Role:         "ADMIN",
-    }
+	// Create user with minimal validation and proper password hashing
+	hashedPassword, err := s.HashPassword(password)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	user := &localentities.User{
+		Email:        strings.ToLower(strings.TrimSpace(email)),
+		PasswordHash: hashedPassword,
+		Role:         "ADMIN",
+	}
 
 	if err := s.userRepo.Create(ctx, user); err != nil {
 		return nil, fmt.Errorf("failed to create user: %w", err)

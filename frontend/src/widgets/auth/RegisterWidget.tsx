@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { yupResolver } from '@hookform/resolvers/yup';
 import * as yup from 'yup';
+import { AxiosError } from 'axios';
 import { Button } from '../../shared/ui/button';
 import { Input } from '../../shared/ui/input';
 import { Label } from '../../shared/ui/label';
@@ -54,7 +55,14 @@ export function RegisterWidget({ onSwitchToLogin }: RegisterWidgetProps) {
         password: data.password,
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Registration failed');
+      let errorMessage = 'Registration failed';
+      if (err instanceof AxiosError && err.response?.data) {
+        const errorData = err.response.data as { error?: string; message?: string };
+        errorMessage = errorData.error || errorData.message || errorMessage;
+      } else if (err instanceof Error) {
+        errorMessage = err.message;
+      }
+      setError(errorMessage);
     }
   };
 

@@ -100,7 +100,11 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		code := "internal_error"
 		errorMsg := "Failed to register user"
 
-		if strings.Contains(err.Error(), "already exists") {
+		if strings.Contains(err.Error(), "registration is disabled") {
+			status = http.StatusForbidden
+			code = "registration_disabled"
+			errorMsg = "Registration is disabled. Users already exist in the system."
+		} else if strings.Contains(err.Error(), "already exists") {
 			status = http.StatusConflict
 			code = "email_already_exists"
 			errorMsg = "User with this email already exists"
