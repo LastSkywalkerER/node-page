@@ -18,7 +18,7 @@ function App() {
 
   useEffect(() => {
     // Initialize user authentication state from storage (sync, no API calls)
-    // Actual API verification happens in ProtectedRoute via useEnsureAuth
+    // ProtectedRoute checks for valid refresh token, interceptor handles token refresh automatically
     initializeFromStorage();
   }, [initializeFromStorage]);
 

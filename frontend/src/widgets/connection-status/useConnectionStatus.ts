@@ -1,5 +1,4 @@
 import { useQuery } from '@tanstack/react-query';
-import { useEffect, useRef } from 'react';
 import { apiClient } from '../../shared/lib/api';
 
 export interface ConnectionStatus {
@@ -10,8 +9,6 @@ export interface ConnectionStatus {
 
 // Hook for monitoring connection status
 export function useConnectionStatus(hostId?: number) {
-  const refetchRef = useRef<() => void>();
-
   const query = useQuery({
     queryKey: ['connection-status-widget', hostId],
     queryFn: async ({ queryKey }: any): Promise<{ status: string; uptime?: string; latency_ms?: number; host_uptime_seconds?: number; latency?: number; uptime_formatted?: string }> => {
@@ -37,22 +34,11 @@ export function useConnectionStatus(hostId?: number) {
       };
     },
     staleTime: 1000,
+    refetchInterval: 1000,
     retry: 3,
     retryDelay: 1000,
     enabled: true,
   });
-
-  // Update refetch ref
-  refetchRef.current = query.refetch;
-
-  // Manual refetch every second
-  useEffect(() => {
-    const interval = setInterval(() => {
-      refetchRef.current?.();
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, []); // Empty dependency array to run only once
 
   return {
     isConnected: query.isSuccess,

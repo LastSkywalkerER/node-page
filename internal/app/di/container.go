@@ -6,6 +6,7 @@
 package di
 
 import (
+	"os"
 	"time"
 
 	"gorm.io/driver/sqlite"
@@ -60,7 +61,7 @@ type Container struct {
 	hostRepository    hostrepos.HostRepository
 
 	/** user repositories */
-	userRepository        userrepos.UserRepository
+	userRepository         userrepos.UserRepository
 	refreshTokenRepository userrepos.RefreshTokenRepository
 
 	/** individual services for each metric type */
@@ -130,13 +131,13 @@ func NewContainer(logger *log.Logger, dbPath string, startTime time.Time) (*Cont
 	container.healthService = healthservice.NewService(container.logger, container.hostRepository, startTime)
 	container.sensorsService = sensorsservice.NewService(container.logger)
 
-	// Create user services (using default JWT secrets - in production these should come from env/config)
+	// Create user services (using JWT secrets from environment variables)
 	container.tokenService = userapp.NewTokenService(
 		container.refreshTokenRepository,
-		"system-stats-access-secret-key-change-in-production",  // TODO: get from env
-		"system-stats-refresh-secret-key-change-in-production", // TODO: get from env
-		15*time.Minute,                 // access TTL
-		720*time.Hour,                  // refresh TTL (30 days)
+		os.Getenv("JWT_SECRET"),
+		os.Getenv("REFRESH_SECRET"),
+		15*time.Minute, // access TTL
+		720*time.Hour,  // refresh TTL (30 days)
 	)
 	container.userService = userapp.NewUserService(container.userRepository, container.tokenService)
 

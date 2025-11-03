@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { yupResolver } from '@hookform/resolvers/yup';
-import * as yup from 'yup';
 import { AxiosError } from 'axios';
 import { Button } from '../../shared/ui/button';
 import { Input } from '../../shared/ui/input';
@@ -9,24 +8,7 @@ import { Label } from '../../shared/ui/label';
 import { Alert, AlertDescription } from '../../shared/ui/alert';
 import { Loader2, Eye, EyeOff } from 'lucide-react';
 import { useRegister } from './useRegister';
-
-const registerSchema = yup.object({
-  email: yup.string().email('Invalid email address').required('Email is required'),
-  password: yup
-    .string()
-    .min(8, 'Password must be at least 8 characters')
-    .matches(
-      /^(?=.*[a-zA-Z])(?=.*\d)/,
-      'Password must contain at least one letter and one number'
-    )
-    .required('Password is required'),
-  confirmPassword: yup
-    .string()
-    .oneOf([yup.ref('password')], 'Passwords must match')
-    .required('Please confirm your password'),
-});
-
-type RegisterFormData = yup.InferType<typeof registerSchema>;
+import { registerSchema, RegisterFormData } from './schemas';
 
 interface RegisterWidgetProps {
   onSwitchToLogin: () => void;

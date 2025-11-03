@@ -248,7 +248,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		/** GET /api/metrics/historical - Historical metrics are accessed via individual module endpoints */
 
 		/** GET /api/health - Health check endpoint for monitoring system status */
-		api.GET("/health", healthHandler.HandleHealth)
+		api.GET("/health", middleware.AuthJWT(container.GetTokenService()), healthHandler.HandleHealth)
 	}
 
 	// Stats routes for individual metrics - detailed JSON responses for each metric type

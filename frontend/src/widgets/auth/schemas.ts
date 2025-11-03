@@ -1,17 +1,30 @@
 // Validation schemas for auth widgets
-// Note: Validation is handled in the widgets using react-hook-form and yup
-// This file can be used for additional schema definitions if needed
+import * as yup from 'yup';
 
-export interface LoginFormData {
-  email: string;
-  password: string;
-}
+export const loginSchema = yup.object({
+  email: yup.string().email('Invalid email address').required('Email is required'),
+  password: yup.string().min(8, 'Password must be at least 8 characters').required('Password is required'),
+});
 
-export interface RegisterFormData {
-  email: string;
-  password: string;
-  confirmPassword: string;
-}
+export const registerSchema = yup.object({
+  email: yup.string().email('Invalid email address').required('Email is required'),
+  password: yup
+    .string()
+    .min(8, 'Password must be at least 8 characters')
+    .matches(
+      /^(?=.*[a-zA-Z])(?=.*\d)/,
+      'Password must contain at least one letter and one number'
+    )
+    .required('Password is required'),
+  confirmPassword: yup
+    .string()
+    .oneOf([yup.ref('password')], 'Passwords must match')
+    .required('Please confirm your password'),
+});
+
+export type LoginFormData = yup.InferType<typeof loginSchema>;
+
+export type RegisterFormData = yup.InferType<typeof registerSchema>;
 
 export interface AuthResponse {
   user: {

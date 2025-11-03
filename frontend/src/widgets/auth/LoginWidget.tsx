@@ -1,20 +1,13 @@
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { yupResolver } from '@hookform/resolvers/yup';
-import * as yup from 'yup';
 import { Button } from '../../shared/ui/button';
 import { Input } from '../../shared/ui/input';
 import { Label } from '../../shared/ui/label';
 import { Alert, AlertDescription } from '../../shared/ui/alert';
 import { Loader2, Eye, EyeOff } from 'lucide-react';
 import { useLogin } from './useLogin';
-
-const loginSchema = yup.object({
-  email: yup.string().email('Invalid email address').required('Email is required'),
-  password: yup.string().min(8, 'Password must be at least 8 characters').required('Password is required'),
-});
-
-type LoginFormData = yup.InferType<typeof loginSchema>;
+import { loginSchema, LoginFormData } from './schemas';
 
 interface LoginWidgetProps {
   onSwitchToRegister: () => void;
