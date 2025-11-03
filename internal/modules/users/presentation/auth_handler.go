@@ -117,16 +117,26 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// TEMPORARY: Skip token generation for debugging
+	// Generate tokens
+	tokenPair, err := h.tokenService.GenerateTokens(c.Request.Context(), user)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":   "token_generation_error",
+			"error":  "Failed to generate tokens",
+			"detail": err.Error(),
+		})
+		return
+	}
+
 	response := RegisterResponse{
 		User: &UserResponse{
 			ID:    user.ID,
 			Email: user.Email,
 			Role:  user.Role,
 		},
-		AccessToken:  "temp-access-token",
-		RefreshToken: "temp-refresh-token",
-		ExpiresIn:    900,
+		AccessToken:  tokenPair.AccessToken,
+		RefreshToken: tokenPair.RefreshToken,
+		ExpiresIn:    tokenPair.ExpiresIn,
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": response})

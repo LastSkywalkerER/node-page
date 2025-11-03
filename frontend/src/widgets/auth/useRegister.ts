@@ -2,6 +2,7 @@ import { useMutation } from '@tanstack/react-query';
 import { authService } from '../../shared/lib/auth';
 import { useNavigate } from 'react-router-dom';
 import { useUserStore } from '../../shared/store/user';
+import { storageService } from '../../shared/lib/storage';
 
 interface RegisterData {
   email: string;
@@ -19,8 +20,20 @@ export function useRegister() {
     onSuccess: (payload) => {
       // Persist tokens and user, update auth state
       setAuthFromResponse(payload);
-      // Redirect to dashboard on successful registration
-      navigate('/dashboard');
+      // Wait for next tick and verify tokens are saved before navigation
+      // This prevents race conditions where dashboard components make requests before tokens are ready
+      queueMicrotask(() => {
+        // Verify tokens are actually in storage before navigating
+        const token = storageService.getAuthToken();
+        if (token) {
+          navigate('/dashboard');
+        } else {
+          // If tokens aren't ready, wait a bit more
+          setTimeout(() => {
+            navigate('/dashboard');
+          }, 10);
+        }
+      });
     },
     onError: (error) => {
       console.error('Registration error:', error);
