@@ -6,17 +6,14 @@
 package di
 
 import (
-	"os"
 	"time"
 
-	"gorm.io/driver/sqlite"
-	"gorm.io/gorm"
+	"system-stats/internal/app/config"
+	"system-stats/internal/app/database"
 
 	cpuservice "system-stats/internal/modules/cpu/application"
-	cpuentities "system-stats/internal/modules/cpu/infrastructure/entities"
 	cpurepos "system-stats/internal/modules/cpu/infrastructure/repositories"
 	diskservice "system-stats/internal/modules/disk/application"
-	diskentities "system-stats/internal/modules/disk/infrastructure/entities"
 	diskrepos "system-stats/internal/modules/disk/infrastructure/repositories"
 	dockerservice "system-stats/internal/modules/docker/application"
 	dockerdomain "system-stats/internal/modules/docker/domain/repositories"
@@ -26,18 +23,14 @@ import (
 	historyapp "system-stats/internal/modules/history_metrics/application"
 	historycore "system-stats/internal/modules/history_metrics/core"
 	hostservice "system-stats/internal/modules/hosts/application"
-	hostentities "system-stats/internal/modules/hosts/infrastructure/entities"
 	hostrepos "system-stats/internal/modules/hosts/infrastructure/repositories"
 	memoryservice "system-stats/internal/modules/memory/application"
-	memoryentities "system-stats/internal/modules/memory/infrastructure/entities"
 	memoryrepos "system-stats/internal/modules/memory/infrastructure/repositories"
 	networkservice "system-stats/internal/modules/network/application"
-	networkentities "system-stats/internal/modules/network/infrastructure/entities"
 	networkrepos "system-stats/internal/modules/network/infrastructure/repositories"
 	sensorsservice "system-stats/internal/modules/sensors/application"
 	systemsrv "system-stats/internal/modules/system/application"
 	userapp "system-stats/internal/modules/users/application"
-	userentities "system-stats/internal/modules/users/infrastructure/entities"
 	userrepos "system-stats/internal/modules/users/infrastructure/repositories"
 
 	"github.com/charmbracelet/log"
@@ -93,19 +86,26 @@ type Container struct {
  * cache instances, and command/query handlers in the correct dependency order.
  *
  * @param logger The logger instance for structured logging
- * @param dbPath The file path to the SQLite database
+ * @param dbConfig The database configuration (type and connection details)
+ * @param jwtSecret The JWT secret key for access tokens
+ * @param refreshSecret The refresh secret key for refresh tokens
  * @param startTime The application start time for uptime calculations
  * @return *Container The initialized dependency injection container
  * @return error Returns an error if any dependency initialization fails
  */
-func NewContainer(logger *log.Logger, dbPath string, startTime time.Time) (*Container, error) {
+func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret, refreshSecret string, startTime time.Time) (*Container, error) {
 	container := &Container{
 		logger: logger,
 	}
 
-	// Initialize GORM database connection with automatic schema migration
-	db, err := initDatabase(dbPath)
+	// Initialize GORM database connection
+	db, err := database.Initialize(dbConfig)
 	if err != nil {
+		return nil, err
+	}
+
+	// Perform database migrations
+	if err := database.Migrate(db); err != nil {
 		return nil, err
 	}
 
@@ -131,11 +131,11 @@ func NewContainer(logger *log.Logger, dbPath string, startTime time.Time) (*Cont
 	container.healthService = healthservice.NewService(container.logger, container.hostRepository, startTime)
 	container.sensorsService = sensorsservice.NewService(container.logger)
 
-	// Create user services (using JWT secrets from environment variables)
+	// Create user services (using JWT secrets from configuration)
 	container.tokenService = userapp.NewTokenService(
 		container.refreshTokenRepository,
-		os.Getenv("JWT_SECRET"),
-		os.Getenv("REFRESH_SECRET"),
+		jwtSecret,
+		refreshSecret,
 		15*time.Minute, // access TTL
 		720*time.Hour,  // refresh TTL (30 days)
 	)
@@ -166,60 +166,6 @@ func NewContainer(logger *log.Logger, dbPath string, startTime time.Time) (*Cont
 	)
 
 	return container, nil
-}
-
-/**
- * initDatabase initializes the GORM database connection.
- * This function sets up the SQLite database connection for the application and performs
- * automatic schema migration for all historical metric entities.
- *
- * @param dbPath The file path to the SQLite database file
- * @return *gorm.DB The initialized GORM database instance
- * @return error Returns an error if database connection or migration fails
- */
-func initDatabase(dbPath string) (*gorm.DB, error) {
-	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
-	if err != nil {
-		return nil, err
-	}
-
-	// Configure SQLite for better concurrency and integrity
-	// Enable WAL mode to reduce write-lock contention and set a busy timeout
-	_ = db.Exec("PRAGMA journal_mode=WAL;").Error
-	_ = db.Exec("PRAGMA busy_timeout = 5000;").Error
-	_ = db.Exec("PRAGMA foreign_keys = ON;").Error
-
-	// Limit max open connections for SQLite to avoid database locked errors
-	if sqlDB, err := db.DB(); err == nil {
-		// SQLite should generally have 1 writer connection
-		sqlDB.SetMaxOpenConns(1)
-	}
-
-	// Auto-migrate all historical metric entities to create database tables
-	err = db.AutoMigrate(
-		&cpuentities.HistoricalCPUMetric{},
-		&memoryentities.HistoricalMemoryMetric{},
-		&diskentities.HistoricalDiskMetric{},
-		&networkentities.HistoricalNetworkMetric{},
-		&dockerdomain.HistoricalDockerMetric{},
-		&hostentities.Host{},
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// Migrate user entities separately to ensure proper foreign key relationships
-	err = db.AutoMigrate(&userentities.User{})
-	if err != nil {
-		return nil, err
-	}
-
-	err = db.AutoMigrate(&userentities.RefreshToken{})
-	if err != nil {
-		return nil, err
-	}
-
-	return db, nil
 }
 
 // Dependency getters - provide access to initialized components

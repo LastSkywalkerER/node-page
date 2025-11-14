@@ -20,7 +20,9 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/gin-gonic/gin"
 
+	"system-stats/internal/app/config"
 	"system-stats/internal/app/di"
+	"system-stats/internal/app/help"
 	"system-stats/internal/app/middleware"
 	cpumodule "system-stats/internal/modules/cpu/presentation"
 	diskmodule "system-stats/internal/modules/disk/presentation"
@@ -41,57 +43,56 @@ import (
  * The server provides REST API endpoints for metrics data and serves the React dashboard.
  */
 func Run() {
-	// Parse command line arguments for server configuration
-	/** addr specifies the HTTP server listening address (host:port format) */
-	var (
-		addr = flag.String("addr", ":8080", "HTTP server address")
-		/** help flag triggers display of command-line help and exits */
-		help = flag.Bool("help", false, "Show help message")
-		/** dbPath specifies the file path to the SQLite database file */
-		dbPath = flag.String("db", "stats.db", "SQLite database path")
-		/** mode sets Gin framework mode: "debug" for development or "release" for production */
-		mode = flag.String("mode", "release", "Gin mode (debug/release)")
-		/** debug enables debug logging level (default: info, warn, error) */
-		debug = flag.Bool("debug", false, "Enable debug logging")
-	)
+	// Parse command line arguments - only help flag is supported
+	showHelp := flag.Bool("help", false, "Show help message with environment variables description")
 	flag.Parse()
 
 	// Show help message and exit if requested
-	if *help {
-		printHelp()
-		return
+	if *showHelp {
+		help.ShowAndExit()
 	}
 
-	// Initialize logger with debug level if requested
+	// Load configuration from environment variables
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Initialize logger
 	logger := log.NewWithOptions(os.Stderr, log.Options{
 		ReportCaller:    true,
 		ReportTimestamp: true,
 		Prefix:          "system-stats",
 	})
 	log.SetDefault(logger)
-	if *debug {
+
+	// Set log level from configuration
+	if cfg.Debug {
 		log.SetLevel(log.DebugLevel)
 	} else {
 		log.SetLevel(log.InfoLevel)
 	}
 
-	// Configure Gin framework mode (debug for development, release for production)
-	if *mode == "release" {
+	// Configure Gin framework mode from configuration
+	if cfg.GinMode == "release" {
 		gin.SetMode(gin.ReleaseMode)
+	} else {
+		gin.SetMode(gin.DebugMode)
 	}
 
 	// Record server start time for uptime calculations
 	/** startTime records when the server was started for health check uptime calculation */
 	startTime := time.Now()
 
-	// Initialize dependency injection container with database configuration
-	logger.Info("Initializing dependency injection container...")
+	// Initialize dependency injection container with configuration
+	logger.Info("Initializing dependency injection container...", "db_type", cfg.Database.Type, "db_dsn", config.MaskDSN(cfg.Database.DSN))
 	/** container holds all application dependencies and services configured via dependency injection */
-	container, err := di.NewContainer(logger, *dbPath, startTime)
+	container, err := di.NewContainer(logger, cfg.Database, cfg.JWTSecret, cfg.RefreshSecret, startTime)
 	if err != nil {
 		logger.Fatal("Failed to initialize DI container", "error", err)
 	}
-	logger.Info("DI container initialized", "database", *dbPath)
+	logger.Info("DI container initialized", "database_type", cfg.Database.Type)
 
 	historicalMetricsService := container.GetHistoricalMetricsService()
 
@@ -118,7 +119,7 @@ func Run() {
 	// Create HTTP server with configured router
 	/** server is the HTTP server instance that will handle incoming requests */
 	server := &http.Server{
-		Addr:    *addr,
+		Addr:    cfg.Addr,
 		Handler: router,
 	}
 
@@ -129,11 +130,11 @@ func Run() {
 
 	// Start HTTP server in background goroutine
 	go func() {
-		logger.Info("Attempting to start server", "address", *addr)
+		logger.Info("Attempting to start server", "address", cfg.Addr)
 		if err := server.ListenAndServe(); err != nil {
 			logger.Error("Server error", "error", err)
 		}
-		logger.Info("Server is running", "address", *addr)
+		logger.Info("Server is running", "address", cfg.Addr)
 	}()
 
 	// Wait for shutdown signal
@@ -305,54 +306,4 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	})
 
 	return router
-}
-
-/**
- * printHelp displays the command-line help message with usage instructions and API documentation.
- * This function is called when the user provides the -help flag and shows all available
- * command-line options, API endpoints, and usage examples.
- */
-func printHelp() {
-	fmt.Println(`System Stats API Server
-
-Usage:
-  system-stats [options]
-
-Options:
-  -addr string    HTTP server address (default ":8080")
-  -debug         Enable debug logging (default: info, warn, error)
-  -help          Show this help message
-  -db string     SQLite database path (default "stats.db")
-  -mode string   Gin mode (debug/release) (default "release")
-
-API Endpoints:
-  GET /              - API documentation page
-  GET /dashboard     - Beautiful dashboard with real-time charts
-  GET /api/cpu     - CPU statistics (JSON)
-  GET /api/memory  - Memory statistics (JSON)
-  GET /api/disk    - Disk statistics (JSON)
-  GET /api/network - Network statistics (JSON)
-  GET /api/docker  - Docker containers statistics (JSON)
-  GET /api/hosts   - All registered hosts (JSON)
-  GET /api/hosts/current - Current host information (JSON)
-  POST /api/hosts/register - Register/update current host
-  GET /api/metrics/current - Current metrics for dashboard (JSON)
-  GET /api/metrics/historical - Historical metrics for dashboard (JSON)
-  GET /api/health    - Health check (JSON)
-
-Examples:
-  system-stats                    # Start server on :8080
-  system-stats -addr :3000        # Start server on :3000
-
-API usage examples:
-  curl http://localhost:8080/api/cpu
-  curl http://localhost:8080/api/memory
-  curl http://localhost:8080/api/disk
-  curl http://localhost:8080/api/network
-  curl http://localhost:8080/api/docker
-  curl http://localhost:8080/api/hosts
-  curl http://localhost:8080/api/hosts/current
-  curl -X POST http://localhost:8080/api/hosts/register
-  curl http://localhost:8080/api/health
-  curl "http://localhost:8080/api/health?host_id=1"`)
 }
