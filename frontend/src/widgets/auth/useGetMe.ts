@@ -1,11 +1,12 @@
+import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { authService } from '../../shared/lib/auth';
+import { authService, User } from '../../shared/lib/auth';
 import { useUserStore } from '../../shared/store/user';
 
 export function useGetMe(options?: { enabled?: boolean }) {
   const { setUser } = useUserStore();
 
-  return useQuery({
+  const query = useQuery<User>({
     queryKey: ['me'],
     queryFn: async () => {
       return await authService.getMe();
@@ -13,10 +14,15 @@ export function useGetMe(options?: { enabled?: boolean }) {
     enabled: options?.enabled ?? true,
     retry: false,
     refetchOnWindowFocus: false,
-    onSuccess: (user) => {
-      setUser(user);
-    },
   });
+
+  useEffect(() => {
+    if (query.data) {
+      setUser(query.data);
+    }
+  }, [query.data, setUser]);
+
+  return query;
 }
 
 

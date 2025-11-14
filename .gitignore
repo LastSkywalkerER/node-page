@@ -9,3 +9,4 @@ package-lock.json
 # yarn
 .yarn-integrity
 .env
+*.db*
