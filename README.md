@@ -45,7 +45,7 @@ Node Stats is perfect for:
 - ✅ RESTful API endpoints for all metrics
 - ✅ User authentication (registration, login, refresh tokens, user management)
 - ✅ SQLite database for historical metrics storage
-- ❌ Application configuration via UI on first launch (setup wizard for initial configuration)
+- ✅ Application configuration via UI on first launch (setup wizard for initial configuration)
 - ❌ Multi-node statistics synchronization and aggregation (push-based model where each node sends metrics to a central server, eliminating the need to expose individual nodes to the internet for secure centralized collection)
 - ❌ Alert system (configurable notifications when metric thresholds are exceeded)
 - ❌ Container logs monitoring (real-time viewing and filtering of Docker container logs)
