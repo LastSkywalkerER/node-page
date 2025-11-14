@@ -32,6 +32,8 @@ import (
 	memorymodule "system-stats/internal/modules/memory/presentation"
 	networkmodule "system-stats/internal/modules/network/presentation"
 	sensorsmodule "system-stats/internal/modules/sensors/presentation"
+	setupapp "system-stats/internal/modules/setup/application"
+	setupmodule "system-stats/internal/modules/setup/presentation"
 	systemmodule "system-stats/internal/modules/system/presentation"
 	usermodule "system-stats/internal/modules/users/presentation"
 )
@@ -221,10 +223,24 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	/** usersHandler handles user management requests */
 	usersHandler := usermodule.NewUsersHandler(container.GetUserService())
 
+	/** configWriter handles reading and writing .env configuration files */
+	configWriter := setupapp.NewConfigWriter()
+
+	/** setupHandler handles setup wizard requests */
+	setupHandler := setupmodule.NewSetupHandler(configWriter, container.GetUserService())
+
 	// API routes for React dashboard - JSON endpoints for real-time data
 	/** api is the route group for dashboard API endpoints that return JSON data */
 	api := router.Group("/api/v1")
 	{
+		// Setup routes (public, only work when no users exist)
+		setup := api.Group("/setup")
+		{
+			setup.GET("/status", setupHandler.Status)
+			setup.GET("/config", setupHandler.GetConfig)
+			setup.POST("/complete", setupHandler.CompleteSetup)
+		}
+
 		// Auth routes (public)
 		auth := api.Group("/auth")
 		{

@@ -3,7 +3,9 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { useUserStore } from './shared/store/user';
 import { useThemeQuery } from './shared/hooks/theme';
 import { ProtectedRoute } from './shared/guards/ProtectedRoute';
+import { SetupRoute } from './shared/guards/SetupRoute';
 import { AuthPage } from './pages/AuthPage';
+import { SetupPage } from './pages/SetupPage';
 import Dashboard from './pages/dashboard/Dashboard';
 import { DashboardLayout } from './pages/dashboard/DashboardLayout';
 import { HeaderBar } from './shared/components/HeaderBar';
@@ -45,11 +47,19 @@ function App() {
       {isAuthenticated && <HeaderBar />}
 
       <Routes>
+        {/* Setup wizard route (public, only accessible when setup is needed) */}
+        <Route
+          path="/setup"
+          element={<SetupPage />}
+        />
+
         {/* Public auth route */}
         <Route
           path="/auth"
           element={
-            isAuthenticated ? <Navigate to="/dashboard" replace /> : <AuthPage />
+            <SetupRoute>
+              {isAuthenticated ? <Navigate to="/dashboard" replace /> : <AuthPage />}
+            </SetupRoute>
           }
         />
 
@@ -57,24 +67,34 @@ function App() {
         <Route
           path="/dashboard/*"
           element={
-            <ProtectedRoute>
-              <Dashboard>
-                <DashboardLayout />
-              </Dashboard>
-            </ProtectedRoute>
+            <SetupRoute>
+              <ProtectedRoute>
+                <Dashboard>
+                  <DashboardLayout />
+                </Dashboard>
+              </ProtectedRoute>
+            </SetupRoute>
           }
         />
 
         {/* Default redirect */}
         <Route
           path="/"
-          element={<Navigate to={isAuthenticated ? "/dashboard" : "/auth"} replace />}
+          element={
+            <SetupRoute>
+              <Navigate to={isAuthenticated ? "/dashboard" : "/auth"} replace />
+            </SetupRoute>
+          }
         />
 
         {/* Catch all - redirect to dashboard or auth */}
         <Route
           path="*"
-          element={<Navigate to={isAuthenticated ? "/dashboard" : "/auth"} replace />}
+          element={
+            <SetupRoute>
+              <Navigate to={isAuthenticated ? "/dashboard" : "/auth"} replace />
+            </SetupRoute>
+          }
         />
       </Routes>
     </div>
