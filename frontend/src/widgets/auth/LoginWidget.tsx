@@ -2,10 +2,9 @@ import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { yupResolver } from '@hookform/resolvers/yup';
 import { Button } from '../../shared/ui/button';
-import { Input } from '../../shared/ui/input';
-import { Label } from '../../shared/ui/label';
+import { FormInputField, FormPasswordField } from '../../shared/ui/form-field';
 import { Alert, AlertDescription } from '../../shared/ui/alert';
-import { Loader2, Eye, EyeOff } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { useLogin } from './useLogin';
 import { loginSchema, LoginFormData } from './schemas';
 
@@ -14,7 +13,6 @@ interface LoginWidgetProps {
 }
 
 export function LoginWidget({ onSwitchToRegister }: LoginWidgetProps) {
-  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const {
@@ -44,42 +42,28 @@ export function LoginWidget({ onSwitchToRegister }: LoginWidgetProps) {
         </Alert>
       )}
 
-      <div className="space-y-2">
-        <Label htmlFor="email" className="text-white">Email</Label>
-        <Input
-          id="email"
-          type="email"
-          placeholder="Enter your email"
-          className="bg-slate-700 border-slate-600 text-white placeholder:text-slate-400"
-          {...register('email')}
-        />
-        {errors.email && (
-          <p className="text-sm text-red-400">{errors.email.message}</p>
-        )}
-      </div>
+      <FormInputField
+        label="Email"
+        register={register('email')}
+        name="email"
+        inputProps={{
+          type: 'email',
+          placeholder: 'Enter your email',
+          className: 'bg-slate-700 border-slate-600 text-white placeholder:text-slate-400',
+        }}
+        error={errors.email}
+      />
 
-      <div className="space-y-2">
-        <Label htmlFor="password" className="text-white">Password</Label>
-        <div className="relative">
-          <Input
-            id="password"
-            type={showPassword ? 'text' : 'password'}
-            placeholder="Enter your password"
-            className="bg-slate-700 border-slate-600 text-white placeholder:text-slate-400 pr-10"
-            {...register('password')}
-          />
-          <button
-            type="button"
-            onClick={() => setShowPassword(!showPassword)}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
-          >
-            {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-          </button>
-        </div>
-        {errors.password && (
-          <p className="text-sm text-red-400">{errors.password.message}</p>
-        )}
-      </div>
+      <FormPasswordField
+        label="Password"
+        register={register('password')}
+        name="password"
+        inputProps={{
+          placeholder: 'Enter your password',
+          className: 'bg-slate-700 border-slate-600 text-white placeholder:text-slate-400',
+        }}
+        error={errors.password}
+      />
 
       <Button
         type="submit"

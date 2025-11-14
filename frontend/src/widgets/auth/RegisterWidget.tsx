@@ -3,10 +3,9 @@ import { useForm } from 'react-hook-form';
 import { yupResolver } from '@hookform/resolvers/yup';
 import { AxiosError } from 'axios';
 import { Button } from '../../shared/ui/button';
-import { Input } from '../../shared/ui/input';
-import { Label } from '../../shared/ui/label';
+import { FormInputField, FormPasswordField } from '../../shared/ui/form-field';
 import { Alert, AlertDescription } from '../../shared/ui/alert';
-import { Loader2, Eye, EyeOff } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { useRegister } from './useRegister';
 import { registerSchema, RegisterFormData } from './schemas';
 
@@ -15,8 +14,6 @@ interface RegisterWidgetProps {
 }
 
 export function RegisterWidget({ onSwitchToLogin }: RegisterWidgetProps) {
-  const [showPassword, setShowPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const {
@@ -56,65 +53,39 @@ export function RegisterWidget({ onSwitchToLogin }: RegisterWidgetProps) {
         </Alert>
       )}
 
-      <div className="space-y-2">
-        <Label htmlFor="register-email" className="text-white">Email</Label>
-        <Input
-          id="register-email"
-          type="email"
-          placeholder="Enter your email"
-          className="bg-slate-700 border-slate-600 text-white placeholder:text-slate-400"
-          {...register('email')}
-        />
-        {errors.email && (
-          <p className="text-sm text-red-400">{errors.email.message}</p>
-        )}
-      </div>
+      <FormInputField
+        label="Email"
+        register={register('email')}
+        name="register-email"
+        inputProps={{
+          type: 'email',
+          placeholder: 'Enter your email',
+          className: 'bg-slate-700 border-slate-600 text-white placeholder:text-slate-400',
+        }}
+        error={errors.email}
+      />
 
-      <div className="space-y-2">
-        <Label htmlFor="register-password" className="text-white">Password</Label>
-        <div className="relative">
-          <Input
-            id="register-password"
-            type={showPassword ? 'text' : 'password'}
-            placeholder="Create a password"
-            className="bg-slate-700 border-slate-600 text-white placeholder:text-slate-400 pr-10"
-            {...register('password')}
-          />
-          <button
-            type="button"
-            onClick={() => setShowPassword(!showPassword)}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
-          >
-            {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-          </button>
-        </div>
-        {errors.password && (
-          <p className="text-sm text-red-400">{errors.password.message}</p>
-        )}
-      </div>
+      <FormPasswordField
+        label="Password"
+        register={register('password')}
+        name="register-password"
+        inputProps={{
+          placeholder: 'Create a password',
+          className: 'bg-slate-700 border-slate-600 text-white placeholder:text-slate-400',
+        }}
+        error={errors.password}
+      />
 
-      <div className="space-y-2">
-        <Label htmlFor="confirm-password" className="text-white">Confirm Password</Label>
-        <div className="relative">
-          <Input
-            id="confirm-password"
-            type={showConfirmPassword ? 'text' : 'password'}
-            placeholder="Confirm your password"
-            className="bg-slate-700 border-slate-600 text-white placeholder:text-slate-400 pr-10"
-            {...register('confirmPassword')}
-          />
-          <button
-            type="button"
-            onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
-          >
-            {showConfirmPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-          </button>
-        </div>
-        {errors.confirmPassword && (
-          <p className="text-sm text-red-400">{errors.confirmPassword.message}</p>
-        )}
-      </div>
+      <FormPasswordField
+        label="Confirm Password"
+        register={register('confirmPassword')}
+        name="confirm-password"
+        inputProps={{
+          placeholder: 'Confirm your password',
+          className: 'bg-slate-700 border-slate-600 text-white placeholder:text-slate-400',
+        }}
+        error={errors.confirmPassword}
+      />
 
       <Button
         type="submit"

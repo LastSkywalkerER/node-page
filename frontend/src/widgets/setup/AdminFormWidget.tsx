@@ -2,9 +2,7 @@ import React from 'react';
 import { useForm } from 'react-hook-form';
 import { yupResolver } from '@hookform/resolvers/yup';
 import { Button } from '../../shared/ui/button';
-import { Input } from '../../shared/ui/input';
-import { PasswordInput } from '../../shared/ui/password-input';
-import { Label } from '../../shared/ui/label';
+import { FormInputField, FormPasswordField } from '../../shared/ui/form-field';
 import { adminUserSchema, AdminUserFormData } from './schemas';
 
 export const ADMIN_STEP_META = {
@@ -29,51 +27,30 @@ export function AdminFormWidget({ onSubmit, onBack }: AdminFormWidgetProps) {
 
   return (
     <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-      <div className="space-y-2">
-        <Label htmlFor="email" className="text-white">
-          Email <span className="text-red-400">*</span>
-        </Label>
-        <Input
-          id="email"
-          type="email"
-          {...form.register('email')}
-        />
-        {form.formState.errors.email && (
-          <p className="text-sm text-red-400">
-            {form.formState.errors.email.message}
-          </p>
-        )}
-      </div>
+      <FormInputField
+        label="Email"
+        required
+        register={form.register('email')}
+        name="email"
+        inputProps={{ type: 'email' }}
+        error={form.formState.errors.email}
+      />
 
-      <div className="space-y-2">
-        <Label htmlFor="password" className="text-white">
-          Password <span className="text-red-400">*</span>
-        </Label>
-        <PasswordInput
-          id="password"
-          {...form.register('password')}
-        />
-        {form.formState.errors.password && (
-          <p className="text-sm text-red-400">
-            {form.formState.errors.password.message}
-          </p>
-        )}
-      </div>
+      <FormPasswordField
+        label="Password"
+        required
+        register={form.register('password')}
+        name="password"
+        error={form.formState.errors.password}
+      />
 
-      <div className="space-y-2">
-        <Label htmlFor="confirmPassword" className="text-white">
-          Confirm Password <span className="text-red-400">*</span>
-        </Label>
-        <PasswordInput
-          id="confirmPassword"
-          {...form.register('confirmPassword')}
-        />
-        {form.formState.errors.confirmPassword && (
-          <p className="text-sm text-red-400">
-            {form.formState.errors.confirmPassword.message}
-          </p>
-        )}
-      </div>
+      <FormPasswordField
+        label="Confirm Password"
+        required
+        register={form.register('confirmPassword')}
+        name="confirmPassword"
+        error={form.formState.errors.confirmPassword}
+      />
 
       <div className="flex gap-2">
         <Button
