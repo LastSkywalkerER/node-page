@@ -3,11 +3,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["-addr", ":9090"]
-    # ports:
-    #   - "9090:9090"
-    # Optional: host network mode to access host interface metrics
-    network_mode: host
+    ports:
+      - "9090:9090"
+    # Note: network_mode: host is not fully supported on macOS Docker Desktop
+    # Using port mapping instead. For Linux, you can uncomment network_mode: host
+    # and comment out ports section for better host metrics access
+    # network_mode: host
     volumes:
       # Mount database file for persistence
       - ./stats.db:/app/stats.db
@@ -15,13 +16,23 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       # Mount host filesystem for system metrics
       - /:/host:ro
+    # pid: host and ipc: host work better with network_mode: host
+    # On macOS, these may have limited functionality
     pid: host
     ipc: host
     restart: unless-stopped
     environment:
-      - GIN_MODE=release
+      # Server configuration
+      - ADDR=${ADDR:-:9090}
+      - GIN_MODE=${GIN_MODE:-release}
+      - DEBUG=${DEBUG:-false}
+      # Database configuration
+      - DB_TYPE=${DB_TYPE:-sqlite}
+      - DB_DSN=${DB_DSN:-/app/stats.db}
+      # Authentication configuration (required)
+      - JWT_SECRET=${JWT_SECRET:-your-jwt-secret-key-change-in-production}
+      - REFRESH_SECRET=${REFRESH_SECRET:-your-refresh-secret-key-change-in-production}
+      # Host filesystem paths for system metrics
       - HOST_PROC=/host/proc
       - HOST_SYS=/host/sys
       - HOST_ETC=/host/etc
-      - JWT_SECRET=${JWT_SECRET:-your-jwt-secret-key-change-in-production}
-      - REFRESH_SECRET=${REFRESH_SECRET:-your-refresh-secret-key-change-in-production}
