@@ -1,16 +1,31 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../shared/ui/card';
-import { Button } from '../shared/ui/button';
-import { Alert, AlertDescription } from '../shared/ui/alert';
 import { useSetupStatus, useSetupConfig, useCompleteSetup } from '../widgets/setup/useSetup';
 import { SetupConfigFormData, AdminUserFormData } from '../widgets/setup/schemas';
-import { ConfigFormWidget } from '../widgets/setup/ConfigFormWidget';
-import { AdminFormWidget } from '../widgets/setup/AdminFormWidget';
-import { ReviewWidget } from '../widgets/setup/ReviewWidget';
+import {
+  WelcomeWidget,
+  WELCOME_STEP_META,
+  ConfigFormWidget,
+  CONFIG_STEP_META,
+  AdminFormWidget,
+  ADMIN_STEP_META,
+  ReviewWidget,
+  REVIEW_STEP_META,
+  SuccessWidget,
+  SUCCESS_STEP_META,
+} from '../widgets/setup';
 import { DEFAULT_SETUP_CONFIG } from '../shared/config/setup';
 
 type Step = 'welcome' | 'config' | 'admin' | 'review' | 'success';
+
+const STEP_META = {
+  welcome: WELCOME_STEP_META,
+  config: CONFIG_STEP_META,
+  admin: ADMIN_STEP_META,
+  review: REVIEW_STEP_META,
+  success: SUCCESS_STEP_META,
+} as const;
 
 export function SetupPage() {
   const navigate = useNavigate();
@@ -99,42 +114,17 @@ export function SetupPage() {
         <Card className="bg-slate-800/50 border-slate-700">
           <CardHeader>
             <CardTitle className="text-white">
-              {step === 'welcome' && 'Welcome'}
-              {step === 'config' && 'Configuration'}
-              {step === 'admin' && 'Admin Account'}
-              {step === 'review' && 'Review'}
-              {step === 'success' && 'Setup Complete'}
+              {STEP_META[step].title}
             </CardTitle>
             <CardDescription className="text-slate-400">
-              {step === 'welcome' && 'Let\'s configure your System Stats installation'}
-              {step === 'config' && 'Configure application settings'}
-              {step === 'admin' && 'Create your administrator account'}
-              {step === 'review' && 'Review your configuration before completing setup'}
-              {step === 'success' && 'Setup completed successfully!'}
+              {STEP_META[step].description}
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {/* Welcome Step */}
             {step === 'welcome' && (
-              <div className="space-y-6">
-                <p className="text-slate-300">
-                  Welcome to System Stats! This wizard will help you configure your installation.
-                </p>
-                <div className="space-y-2">
-                  <h3 className="text-white font-semibold">You'll need to configure:</h3>
-                  <ul className="list-disc list-inside text-slate-300 space-y-1">
-                    <li>Application configuration (server address, database, etc.)</li>
-                    <li>Security secrets (JWT tokens)</li>
-                    <li>Administrator account</li>
-                  </ul>
-                </div>
-                <Button onClick={() => setStep('config')} className="w-full">
-                  Get Started
-                </Button>
-              </div>
+              <WelcomeWidget onNext={() => setStep('config')} />
             )}
 
-            {/* Configuration Step */}
             {step === 'config' && (
               <ConfigFormWidget
                 initialValues={getInitialConfigValues()}
@@ -143,7 +133,6 @@ export function SetupPage() {
               />
             )}
 
-            {/* Admin User Step */}
             {step === 'admin' && (
               <AdminFormWidget
                 onSubmit={handleAdminSubmit}
@@ -151,7 +140,6 @@ export function SetupPage() {
               />
             )}
 
-            {/* Review Step */}
             {step === 'review' && configData && adminData && (
               <ReviewWidget
                 configData={configData}
@@ -163,18 +151,8 @@ export function SetupPage() {
               />
             )}
 
-            {/* Success Step */}
             {step === 'success' && (
-              <div className="space-y-6">
-                <Alert className="bg-green-900/50 border-green-700">
-                  <AlertDescription className="text-green-200">
-                    Setup completed successfully! Please restart the server for changes to take effect.
-                  </AlertDescription>
-                </Alert>
-                <Button onClick={() => navigate('/auth')} className="w-full">
-                  Go to Login
-                </Button>
-              </div>
+              <SuccessWidget />
             )}
           </CardContent>
         </Card>

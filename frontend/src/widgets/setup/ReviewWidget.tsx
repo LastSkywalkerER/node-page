@@ -3,6 +3,11 @@ import { Button } from '../../shared/ui/button';
 import { Alert, AlertDescription } from '../../shared/ui/alert';
 import { SetupConfigFormData, AdminUserFormData } from './schemas';
 
+export const REVIEW_STEP_META = {
+  title: 'Review',
+  description: 'Review your configuration before completing setup',
+} as const;
+
 interface ReviewWidgetProps {
   configData: SetupConfigFormData;
   adminData: AdminUserFormData;

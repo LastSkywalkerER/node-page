@@ -1,12 +1,17 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { useForm } from 'react-hook-form';
 import { yupResolver } from '@hookform/resolvers/yup';
-import { Eye, EyeOff } from 'lucide-react';
 import { Button } from '../../shared/ui/button';
 import { Input } from '../../shared/ui/input';
+import { PasswordInput } from '../../shared/ui/password-input';
 import { Label } from '../../shared/ui/label';
 import { setupConfigSchema, SetupConfigFormData } from './schemas';
 import { DEFAULT_SETUP_CONFIG } from '../../shared/config/setup';
+
+export const CONFIG_STEP_META = {
+  title: 'Configuration',
+  description: 'Configure application settings',
+} as const;
 
 interface ConfigFormWidgetProps {
   initialValues?: Partial<SetupConfigFormData>;
@@ -19,9 +24,6 @@ export function ConfigFormWidget({
   onSubmit,
   onBack,
 }: ConfigFormWidgetProps) {
-  const [showJwtSecret, setShowJwtSecret] = useState(false);
-  const [showRefreshSecret, setShowRefreshSecret] = useState(false);
-
   const form = useForm<SetupConfigFormData>({
     resolver: yupResolver(setupConfigSchema),
     defaultValues: {
@@ -37,30 +39,16 @@ export function ConfigFormWidget({
 
   return (
     <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-      <div className="space-y-2">
+      <div className="space-y-2 w-full">
         <Label htmlFor="jwt_secret" className="text-white">
           JWT Secret <span className="text-red-400">*</span>
         </Label>
-        <div className="flex gap-2">
-          <div className="relative flex-1">
-            <Input
-              id="jwt_secret"
-              type={showJwtSecret ? 'text' : 'password'}
-              {...form.register('jwt_secret')}
-              className="pr-10"
-            />
-            <button
-              type="button"
-              onClick={() => setShowJwtSecret(!showJwtSecret)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 transition-colors"
-            >
-              {showJwtSecret ? (
-                <EyeOff className="h-4 w-4" />
-              ) : (
-                <Eye className="h-4 w-4" />
-              )}
-            </button>
-          </div>
+        <div className="flex gap-2 w-full">
+          <PasswordInput
+            id="jwt_secret"
+            {...form.register('jwt_secret')}
+            className="flex-1"
+          />
           <Button
             type="button"
             variant="secondary"
@@ -77,30 +65,16 @@ export function ConfigFormWidget({
         )}
       </div>
 
-      <div className="space-y-2">
+      <div className="space-y-2 w-full">
         <Label htmlFor="refresh_secret" className="text-white">
           Refresh Secret <span className="text-red-400">*</span>
         </Label>
-        <div className="flex gap-2">
-          <div className="relative flex-1">
-            <Input
-              id="refresh_secret"
-              type={showRefreshSecret ? 'text' : 'password'}
-              {...form.register('refresh_secret')}
-              className="pr-10"
-            />
-            <button
-              type="button"
-              onClick={() => setShowRefreshSecret(!showRefreshSecret)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 transition-colors"
-            >
-              {showRefreshSecret ? (
-                <EyeOff className="h-4 w-4" />
-              ) : (
-                <Eye className="h-4 w-4" />
-              )}
-            </button>
-          </div>
+        <div className="flex gap-2 w-full">
+          <PasswordInput
+            id="refresh_secret"
+            {...form.register('refresh_secret')}
+            className="flex-1"
+          />
           <Button
             type="button"
             variant="secondary"
