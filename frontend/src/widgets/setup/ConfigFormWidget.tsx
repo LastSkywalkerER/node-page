@@ -1,11 +1,11 @@
 import { useEffect, useRef } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Button } from '../../shared/ui/button';
-import { FormInputField, FormSelectField, FormField } from '../../shared/ui/form-field';
+import { Button } from '@/components/ui/button';
+import { FormInputField, FormSelectField, FormField } from '@/components/ui/form-field';
 import { setupConfigSchema, SetupConfigFormData } from './schemas';
 import { DEFAULT_SETUP_CONFIG } from '../../shared/config/setup';
-import { PasswordInput } from '../../shared/ui/password-input';
+import { PasswordInput } from '@/shared/ui/password-input';
 
 export const CONFIG_STEP_META = {
   title: 'Configuration',

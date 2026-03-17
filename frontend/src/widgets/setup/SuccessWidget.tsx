@@ -1,7 +1,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Button } from '../../shared/ui/button';
-import { Alert, AlertDescription } from '../../shared/ui/alert';
+import { Button } from '@/components/ui/button';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 
 export const SUCCESS_STEP_META = {
   title: 'Setup Complete',

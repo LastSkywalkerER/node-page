@@ -1,8 +1,8 @@
 import React from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Button } from '../../shared/ui/button';
-import { FormInputField, FormPasswordField } from '../../shared/ui/form-field';
+import { Button } from '@/components/ui/button';
+import { FormInputField, FormPasswordField } from '@/components/ui/form-field';
 import { adminUserSchema, AdminUserFormData } from './schemas';
 
 export const ADMIN_STEP_META = {

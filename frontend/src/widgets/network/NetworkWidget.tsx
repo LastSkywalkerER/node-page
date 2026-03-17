@@ -1,208 +1,119 @@
-import { Network } from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, AreaChart, Area } from 'recharts';
-import { format } from 'date-fns';
-import { useWidgetTheme } from '@/shared/themes';
-import { useNetwork } from './useNetwork';
-import { NetworkInterface } from './schemas';
+import { AreaChart, Area, XAxis, YAxis } from 'recharts'
+import { Network, ArrowUp, ArrowDown } from 'lucide-react'
+import { format } from 'date-fns'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
+import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from '@/components/ui/chart'
+import { MetricCardSkeleton } from '@/shared/components/MetricCardSkeleton'
+import { CHART_COLORS } from '@/shared/lib/chartColors'
+import { useNetwork } from './useNetwork'
+import { NetworkInterface } from './schemas'
 
-// Utility functions
-const formatSpeed = (kbps: number): string => {
-  if (kbps >= 1024 * 1024) {
-    return `${(kbps / (1024 * 1024)).toFixed(1)} GB/s`;
-  } else if (kbps >= 1024) {
-    return `${(kbps / 1024).toFixed(1)} MB/s`;
-  } else {
-    return `${kbps.toFixed(0)} KB/s`;
-  }
-};
+interface NetworkWidgetProps { hostId: number }
 
-const formatBytes = (bytes: number): string => {
-  if (bytes >= 1024 * 1024 * 1024) {
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-  } else if (bytes >= 1024 * 1024) {
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  } else if (bytes >= 1024) {
-    return `${(bytes / 1024).toFixed(1)} KB`;
-  } else {
-    return `${bytes} B`;
-  }
-};
+const fmtBytes = (b: number) => b >= 1e9 ? `${(b/1e9).toFixed(1)} GB` : b >= 1e6 ? `${(b/1e6).toFixed(1)} MB` : b >= 1e3 ? `${(b/1e3).toFixed(1)} KB` : `${b} B`
+const fmtSpeed = (kbps: number) => kbps >= 1e6 ? `${(kbps/1e6).toFixed(1)} GB/s` : kbps >= 1024 ? `${(kbps/1024).toFixed(1)} MB/s` : `${kbps.toFixed(0)} KB/s`
+const totalTraffic = (i: NetworkInterface) => i.bytes_sent + i.bytes_recv
+const isActiveIface = (i: NetworkInterface) => i.speed_kbps_sent > 0 || i.speed_kbps_recv > 0
 
-const getMaxSpeed = (iface: NetworkInterface): number => {
-  return Math.max(iface.speed_kbps_sent, iface.speed_kbps_recv);
-};
-
-const getTotalTraffic = (iface: NetworkInterface): number => {
-  return iface.bytes_sent + iface.bytes_recv;
-};
-
-const hasActiveSpeed = (iface: NetworkInterface): boolean => {
-  return iface.speed_kbps_sent > 0 || iface.speed_kbps_recv > 0;
-};
-
-const getPrimaryInterface = (interfaces: NetworkInterface[]): NetworkInterface | null => {
-  if (!interfaces.length) return null;
-  const primary = interfaces.find((i) => (i as any).is_primary === true);
-  if (primary) return primary;
-  // Fallback to the one with most total traffic if no primary is provided
-  return interfaces.reduce((best, current) =>
-    getTotalTraffic(current) > getTotalTraffic(best) ? current : best
-  );
-};
-
-const getPrimaryIp = (iface?: NetworkInterface | null): string | null => {
-  if (!iface) return null;
-  const ips = (iface as any).ips as string[] | undefined;
-  if (!ips || ips.length === 0) return null;
-  // Prefer IPv4 if available, otherwise first
-  const ipv4 = ips.find(ip => ip.includes("."));
-  return ipv4 || ips[0];
-};
-
-const getMac = (iface?: NetworkInterface | null): string | null => {
-  if (!iface) return null;
-  const mac = (iface as any).mac as string | undefined;
-  return mac && mac.length > 0 ? mac : null;
-};
-
-interface NetworkWidgetProps {
-  hostId?: number | null;
+function getPrimary(ifaces: NetworkInterface[]) {
+  if (!ifaces.length) return null
+  const primary = ifaces.find((i: any) => i.is_primary)
+  return primary ?? ifaces.reduce((b, c) => totalTraffic(c) > totalTraffic(b) ? c : b)
 }
 
-export function NetworkWidget({ hostId }: NetworkWidgetProps = {}) {
-  const theme = useWidgetTheme('network');
-  const { data: metrics, isLoading } = useNetwork(hostId);
+const chartConfig: ChartConfig = {
+  speed: { label: 'Upload MB/s', color: CHART_COLORS.network },
+}
 
-  // Process network data
-  const interfaces = metrics?.latest?.interfaces || [];
-  const fastestInterface = getPrimaryInterface(interfaces);
-  const activeInterfaces = interfaces.filter((iface: NetworkInterface) => hasActiveSpeed(iface));
-  const inactiveInterfaces = interfaces.filter((iface: NetworkInterface) => !hasActiveSpeed(iface));
+export function NetworkWidget({ hostId }: NetworkWidgetProps) {
+  const { data: metrics, isLoading } = useNetwork(hostId)
+  if (isLoading || !metrics) return <MetricCardSkeleton />
 
-  if (isLoading || !metrics) {
-    return (
-      <div className={theme.container.className}>
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center space-x-3">
-            <div className={`p-2 rounded-lg ${theme.icon.className}`}>
-              <Network className="w-5 h-5" />
-            </div>
-            <h3 className={`text-lg font-semibold ${theme.title.className}`}>Network</h3>
-          </div>
-          <div className="text-right">
-            <div className={theme.value.className}>Loading...</div>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const ifaces: NetworkInterface[] = metrics.latest?.interfaces ?? []
+  const primary = getPrimary(ifaces)
+  const active = ifaces.filter(i => isActiveIface(i) && i.name !== primary?.name)
+  const inactive = ifaces.filter(i => !isActiveIface(i) && i.name !== primary?.name)
 
   return (
-    <div className={theme.container.className}>
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center space-x-3">
-          <div className={`p-2 rounded-lg ${theme.icon.className}`}>
-            <Network className="w-5 h-5" />
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Network className="h-4 w-4 text-muted-foreground" />
+            <span className="text-sm font-medium text-muted-foreground">Network</span>
           </div>
-          <h3 className={`text-lg font-semibold ${theme.title.className}`}>Network</h3>
-        </div>
-      </div>
-
-      {theme.details.show && (
-        <div className="space-y-1 text-xs opacity-60">
-          {/* Fastest interface traffic details */}
-          {fastestInterface && (
-            <div className="space-y-1">
-              <div className="flex justify-between">
-                <span>{fastestInterface.name}:</span>
-                <div className="text-right text-xs">
-                  {!!getPrimaryIp(fastestInterface) && <div>Primary IP: {getPrimaryIp(fastestInterface)}</div>}
-                  {!!getMac(fastestInterface) && <div>MAC: {getMac(fastestInterface)}</div>}
-                  <div>↑ {formatBytes(fastestInterface.bytes_sent)} ↑ {formatSpeed(fastestInterface.speed_kbps_sent)}</div>
-                  <div> ↓ {formatBytes(fastestInterface.bytes_recv)} ↓ {formatSpeed(fastestInterface.speed_kbps_recv)}</div>
-                </div>
-              </div>
-            </div>
+          {primary && (
+            <span className="text-xs font-mono text-muted-foreground">{primary.name}</span>
           )}
-
-          {/* Other active interfaces with speeds */}
-          {activeInterfaces.filter((iface: NetworkInterface) => iface.name !== fastestInterface?.name).map((iface: NetworkInterface) => (
-            <div key={iface.name} className="flex justify-between">
-              <span>{iface.name}:</span>
-              <div className="text-right text-xs">
-                  <div>MAC: {(iface as any).mac || ''} ↑ {formatSpeed(iface.speed_kbps_sent)}</div>
-                  <div>IP: {getPrimaryIp(iface)} ↓ {formatSpeed(iface.speed_kbps_recv)}</div>
+        </div>
+        {primary && (
+          <div className="mt-2 flex items-center gap-3 text-sm">
+            <span className="flex items-center gap-1 font-medium tabular-nums" style={{ color: CHART_COLORS.network }}>
+              <ArrowUp className="h-3 w-3" />{fmtSpeed(primary.speed_kbps_sent)}
+            </span>
+            <span className="flex items-center gap-1 font-medium tabular-nums text-muted-foreground">
+              <ArrowDown className="h-3 w-3" />{fmtSpeed(primary.speed_kbps_recv)}
+            </span>
+          </div>
+        )}
+      </CardHeader>
+      <CardContent className="space-y-3 pt-0">
+        <div className="space-y-1 text-xs">
+          {primary && (
+            <>
+              {(primary as any).ips?.length > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">IP</span>
+                  <span className="font-mono font-medium">{(primary as any).ips.find((ip: string) => ip.includes('.')) ?? (primary as any).ips[0]}</span>
                 </div>
+              )}
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Total sent</span>
+                <span className="font-medium">{fmtBytes(primary.bytes_sent)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Total recv</span>
+                <span className="font-medium">{fmtBytes(primary.bytes_recv)}</span>
+              </div>
+            </>
+          )}
+          {active.map((i: NetworkInterface) => (
+            <div key={i.name} className="flex justify-between">
+              <span className="text-muted-foreground">{i.name}</span>
+              <span>↑{fmtSpeed(i.speed_kbps_sent)} ↓{fmtSpeed(i.speed_kbps_recv)}</span>
             </div>
           ))}
-
-          {/* Inactive interfaces as comma-separated list */}
-          {inactiveInterfaces.length > 0 && (
+          {inactive.length > 0 && (
             <div className="flex justify-between">
-              <span>Inactive:</span>
-              <span className="text-right">
-                {inactiveInterfaces.map((iface: NetworkInterface) => iface.name).join(', ')}
-              </span>
-            </div>
-          )}
-
-          {/* Error/Drop counters for primary interface if available */}
-          {!!fastestInterface && (!!fastestInterface.errin || !!fastestInterface.errout || !!fastestInterface.dropin || !!fastestInterface.dropout) && (
-            <div className="flex justify-between text-xs opacity-60">
-              <span>Errors/Drops (pkts):</span>
-              <span className="text-right">
-                err-in:{fastestInterface.errin || 0} · err-out:{fastestInterface.errout || 0} · drop-in:{fastestInterface.dropin || 0} · drop-out:{fastestInterface.dropout || 0}
-              </span>
+              <span className="text-muted-foreground">Inactive</span>
+              <span className="truncate max-w-[55%] text-right">{inactive.map(i => i.name).join(', ')}</span>
             </div>
           )}
         </div>
-      )}
-
-      {theme.details.show && metrics?.history && metrics.history.length > 0 && fastestInterface && (
-        <div className="mt-4">
-          <div className="h-32">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={metrics.history
-                .slice(-20)
-                .map((point: any) => {
-                  const iface = point.interfaces?.find((i: any) => i.name === fastestInterface.name);
-                  return {
-                    time: 'timestamp' in point ? format(new Date(point.timestamp), 'HH:mm') : format(new Date(), 'HH:mm'),
-                    speed: iface ? iface.speed_kbps_sent / 1000 : 0, // Convert to Mbps
-                  };
-                })}
-              >
-                <defs>
-                  <linearGradient id="networkGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor={theme.chart.color} stopOpacity={0.3}/>
-                    <stop offset="95%" stopColor={theme.chart.color} stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <XAxis
-                  dataKey="time"
-                  axisLine={false}
-                  tickLine={false}
-                  tick={{fontSize: 10, fill: 'currentColor', opacity: 0.6}}
-                />
-                <YAxis
-                  axisLine={false}
-                  tickLine={false}
-                  tick={{fontSize: 10, fill: 'currentColor', opacity: 0.6}}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="speed"
-                  stroke={theme.chart.color}
-                  fillOpacity={1}
-                  fill="url(#networkGradient)"
-                  strokeWidth={2}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-          <div className="text-xs opacity-60 mt-1">Speed (Mbps) - {fastestInterface.name}</div>
-        </div>
-      )}
-    </div>
-  );
+        {metrics.history && metrics.history.length > 0 && primary && (
+          <ChartContainer config={chartConfig} className="h-20 w-full">
+            <AreaChart data={metrics.history.slice(-20).map((p: any) => {
+              const iface = p.interfaces?.find((i: any) => i.name === primary.name)
+              const d = new Date(p.timestamp)
+              return {
+                time: isNaN(d.getTime()) ? '' : format(d, 'HH:mm'),
+                speed: iface ? iface.speed_kbps_sent / 1024 : 0,
+              }
+            })} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
+              <defs>
+                <linearGradient id="netGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="var(--color-speed)" stopOpacity={0.25} />
+                  <stop offset="95%" stopColor="var(--color-speed)" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fontSize: 9 }} interval="preserveStartEnd" />
+              <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 9 }} width={28} />
+              <ChartTooltip cursor={false} content={<ChartTooltipContent hideLabel formatter={(v) => `${Number(v).toFixed(2)} MB/s`} />} />
+              <Area type="monotone" dataKey="speed" stroke="var(--color-speed)" fill="url(#netGrad)" strokeWidth={1.5} dot={false} />
+            </AreaChart>
+          </ChartContainer>
+        )}
+      </CardContent>
+    </Card>
+  )
 }

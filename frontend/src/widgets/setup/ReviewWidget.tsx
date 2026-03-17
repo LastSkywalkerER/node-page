@@ -1,6 +1,6 @@
 import React from 'react';
-import { Button } from '../../shared/ui/button';
-import { Alert, AlertDescription } from '../../shared/ui/alert';
+import { Button } from '@/components/ui/button';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { SetupConfigFormData, AdminUserFormData } from './schemas';
 
 export const REVIEW_STEP_META = {

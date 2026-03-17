@@ -1,160 +1,94 @@
-import { MemoryStick } from 'lucide-react';
-import { formatBytes } from '@/shared/lib/utils';
-import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, AreaChart, Area } from 'recharts';
-import { format } from 'date-fns';
-import { useWidgetTheme } from '@/shared/themes';
-import { useMemory } from './useMemory';
+import { AreaChart, Area, XAxis, YAxis } from 'recharts'
+import { MemoryStick } from 'lucide-react'
+import { format } from 'date-fns'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
+import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from '@/components/ui/chart'
+import { MetricCardSkeleton } from '@/shared/components/MetricCardSkeleton'
+import { CHART_COLORS } from '@/shared/lib/chartColors'
+import { formatBytes } from '@/shared/lib/utils'
+import { useMemory } from './useMemory'
 
-interface MemoryWidgetProps {
-  hostId?: number | null;
+interface MemoryWidgetProps { hostId: number }
+
+const SHOW_KEYS = ['total', 'used', 'available', 'cached', 'buffers', 'swap_total', 'swap_used']
+const LABEL_MAP: Record<string, string> = {
+  total: 'Total', available: 'Available', used: 'Used', free: 'Free',
+  cached: 'Cached', buffers: 'Buffers', swap_total: 'Swap Total',
+  swap_used: 'Swap Used', swap_free: 'Swap Free',
+}
+const BYTES_KEYS = new Set(['total', 'available', 'used', 'free', 'cached', 'buffers',
+  'active', 'inactive', 'shared', 'swap_total', 'swap_used', 'swap_free'])
+
+function usageColor(pct: number) {
+  if (pct > 90) return '#ef4444'
+  if (pct > 75) return '#f59e0b'
+  return CHART_COLORS.memory
 }
 
-export function MemoryWidget({ hostId }: MemoryWidgetProps = {}) {
-  const theme = useWidgetTheme('memory');
-  const { data: metrics, isLoading } = useMemory(hostId);
+export function MemoryWidget({ hostId }: MemoryWidgetProps) {
+  const { data: metrics, isLoading } = useMemory(hostId)
+  if (isLoading || !metrics) return <MetricCardSkeleton />
 
-  if (isLoading || !metrics) {
-    return (
-      <div className={theme.container.className}>
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center space-x-3">
-            <div className={`p-2 rounded-lg ${theme.icon.className}`}>
-              <MemoryStick className="w-5 h-5" />
-            </div>
-            <h3 className={`text-lg font-semibold ${theme.title.className}`}>Memory</h3>
-          </div>
-          <div className="text-right">
-            <div className={theme.value.className}>Loading...</div>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const pct = metrics.latest?.usage_percent ?? 0
+  const color = usageColor(pct)
+  const latest = metrics.latest ?? {} as Record<string, unknown>
+  const details = SHOW_KEYS
+    .filter(k => latest[k] != null && latest[k] !== 0)
+    .map(k => ({
+      key: k,
+      label: LABEL_MAP[k] ?? k.replace(/_/g, ' '),
+      value: BYTES_KEYS.has(k) && typeof latest[k] === 'number' ? formatBytes(latest[k] as number) : String(latest[k]),
+    }))
+
+  const chartConfig: ChartConfig = { used: { label: 'Used', color } }
 
   return (
-    <div className={theme.container.className}>
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center space-x-3">
-          <div className={`p-2 rounded-lg ${theme.icon.className}`}>
-            <MemoryStick className="w-5 h-5" />
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <MemoryStick className="h-4 w-4 text-muted-foreground" />
+            <span className="text-sm font-medium text-muted-foreground">Memory</span>
           </div>
-          <h3 className={`text-lg font-semibold ${theme.title.className}`}>Memory</h3>
+          <span className="text-2xl font-bold tabular-nums" style={{ color }}>
+            {pct.toFixed(1)}%
+          </span>
         </div>
-        <div className="text-right">
-          <div className={theme.value.className}>
-            {metrics.latest?.usage_percent ? `${metrics.latest.usage_percent.toFixed(1)}%` : 'N/A'}
-          </div>
+        <div className="mt-2 h-1 rounded-full bg-muted overflow-hidden">
+          <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: color }} />
         </div>
-      </div>
-
-      {theme.details.show && (() => {
-        const latest = metrics.latest ?? {} as any;
-
-        const labelMap: Record<string, string> = {
-          usage_percent: 'Usage',
-          total: 'Total',
-          available: 'Available',
-          used: 'Used',
-          free: 'Free',
-          cached: 'Cached',
-          buffers: 'Buffers',
-          active: 'Active',
-          inactive: 'Inactive',
-          shared: 'Shared',
-          swap_total: 'Swap Total',
-          swap_used: 'Swap Used',
-          swap_free: 'Swap Free',
-        };
-
-        const bytesKeys = new Set([
-          'total', 'available', 'used', 'free', 'cached', 'buffers',
-          'active', 'inactive', 'shared', 'swap_total', 'swap_used', 'swap_free',
-        ]);
-
-        const isEmptyValue = (value: unknown): boolean => {
-          if (value === null || value === undefined) return true;
-          if (typeof value === 'number') return value === 0;
-          if (typeof value === 'string') return value.trim().length === 0;
-          if (Array.isArray(value)) return value.length === 0;
-          return false;
-        };
-
-        const humanizeKey = (key: string): string =>
-          key
-            .replace(/_/g, ' ')
-            .replace(/\b\w/g, (c) => c.toUpperCase());
-
-        const formatValue = (key: string, value: unknown): string => {
-          if (value === null || value === undefined) return 'N/A';
-          if (bytesKeys.has(key) && typeof value === 'number') return formatBytes(value);
-          if (typeof value === 'number') return String(value);
-          return String(value);
-        };
-
-        const entries = Object.entries(latest)
-          .filter(([key, value]) => key !== 'usage_percent' && !isEmptyValue(value))
-          .map(([key, value]) => ({
-            key,
-            label: labelMap[key] ?? humanizeKey(key),
-            value: formatValue(key, value),
-          }));
-
-        if (entries.length === 0) return null;
-
-        return (
-          <div className="space-y-1 text-xs opacity-60">
-            {entries.map((entry) => (
-              <div className="flex justify-between" key={entry.key}>
-                <span>{entry.label}:</span>
-                <span className="truncate max-w-[60%] text-right">{entry.value}</span>
+      </CardHeader>
+      <CardContent className="space-y-3 pt-0">
+        {details.length > 0 && (
+          <div className="space-y-1">
+            {details.map(e => (
+              <div key={e.key} className="flex justify-between text-xs">
+                <span className="text-muted-foreground">{e.label}</span>
+                <span className="font-medium">{e.value}</span>
               </div>
             ))}
           </div>
-        );
-      })()}
-
-      {theme.details.show && metrics?.history && metrics.history.length > 0 && (
-        <div className="mt-4">
-          <div className="h-32">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={metrics.history.map((point: any) => ({
-                time: format(new Date(point.timestamp), 'HH:mm'),
-                usage: point.usage_percent,
-                used: point.used_bytes,
-                total: point.total_bytes,
-              }))}>
-                <defs>
-                  <linearGradient id="memoryGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor={theme.chart.color} stopOpacity={0.3}/>
-                    <stop offset="95%" stopColor={theme.chart.color} stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <XAxis
-                  dataKey="time"
-                  axisLine={false}
-                  tickLine={false}
-                  tick={{fontSize: 10, fill: 'currentColor', opacity: 0.6}}
-                />
-                <YAxis
-                  axisLine={false}
-                  tickLine={false}
-                  tick={{fontSize: 10, fill: 'currentColor', opacity: 0.6}}
-                  domain={[0, 'dataMax']}
-                  tickFormatter={(value) => formatBytes(value)}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="used"
-                  stroke={theme.chart.color}
-                  fillOpacity={1}
-                  fill="url(#memoryGradient)"
-                  strokeWidth={2}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      )}
-    </div>
-  );
+        )}
+        {metrics.history && metrics.history.length > 0 && (
+          <ChartContainer config={chartConfig} className="h-20 w-full">
+            <AreaChart data={metrics.history.map((p: any) => {
+              const d = new Date(p.timestamp)
+              return { time: isNaN(d.getTime()) ? '' : format(d, 'HH:mm'), used: p.used_bytes }
+            })} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
+              <defs>
+                <linearGradient id="memGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="var(--color-used)" stopOpacity={0.25} />
+                  <stop offset="95%" stopColor="var(--color-used)" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fontSize: 9 }} interval="preserveStartEnd" />
+              <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 9 }} tickFormatter={v => formatBytes(v)} width={36} />
+              <ChartTooltip cursor={false} content={<ChartTooltipContent hideLabel formatter={(v) => formatBytes(Number(v))} />} />
+              <Area type="monotone" dataKey="used" stroke="var(--color-used)" fill="url(#memGrad)" strokeWidth={1.5} dot={false} />
+            </AreaChart>
+          </ChartContainer>
+        )}
+      </CardContent>
+    </Card>
+  )
 }
