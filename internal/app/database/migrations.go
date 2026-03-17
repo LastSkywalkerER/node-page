@@ -1,7 +1,5 @@
-/**
- * Package database provides database migration functionality.
- * This file contains migration logic for all database entities.
- */
+ // Package database provides database migration functionality.
+ // This file contains migration logic for all database entities.
 package database
 
 import (
@@ -12,19 +10,15 @@ import (
 	cpuentities "system-stats/internal/modules/cpu/infrastructure/entities"
 	diskentities "system-stats/internal/modules/disk/infrastructure/entities"
 	dockerdomain "system-stats/internal/modules/docker/domain/repositories"
+	dockerentities "system-stats/internal/modules/docker/infrastructure/entities"
 	hostentities "system-stats/internal/modules/hosts/infrastructure/entities"
 	memoryentities "system-stats/internal/modules/memory/infrastructure/entities"
 	networkentities "system-stats/internal/modules/network/infrastructure/entities"
 	userentities "system-stats/internal/modules/users/infrastructure/entities"
 )
 
-/**
- * Migrate performs automatic schema migration for all database entities.
- * This function creates all necessary tables and ensures proper foreign key relationships.
- *
- * @param db The GORM database instance
- * @return error Returns an error if migration fails
- */
+ // Migrate performs automatic schema migration for all database entities.
+ // This function creates all necessary tables and ensures proper foreign key relationships.
 func Migrate(db *gorm.DB) error {
 	// Auto-migrate all historical metric entities to create database tables
 	err := db.AutoMigrate(
@@ -33,6 +27,7 @@ func Migrate(db *gorm.DB) error {
 		&diskentities.HistoricalDiskMetric{},
 		&networkentities.HistoricalNetworkMetric{},
 		&dockerdomain.HistoricalDockerMetric{},
+		&dockerentities.DockerContainerEntity{},
 		&hostentities.Host{},
 	)
 	if err != nil {

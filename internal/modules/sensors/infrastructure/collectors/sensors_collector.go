@@ -19,7 +19,7 @@ func NewSensorsCollector(logger *log.Logger) *SensorsCollector {
 }
 
 func (c *SensorsCollector) CollectTemperatures(ctx context.Context) (entities.TemperatureMetric, error) {
-	c.logger.Info("Collecting temperature sensors")
+	c.logger.Debug("Collecting temperature sensors")
 	temps, err := sensors.TemperaturesWithContext(ctx)
 	if err != nil {
 		c.logger.Warn("Failed to collect temperatures with context, trying fallback", "error", err)
@@ -39,6 +39,6 @@ func (c *SensorsCollector) CollectTemperatures(ctx context.Context) (entities.Te
 			Critical:    t.Critical,
 		})
 	}
-	c.logger.Info("Collected sensors", "count", len(out))
+	c.logger.Debug("Collected sensors", "count", len(out))
 	return entities.TemperatureMetric{Timestamp: time.Now(), Sensors: out}, nil
 }

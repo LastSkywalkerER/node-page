@@ -1,8 +1,6 @@
-/**
- * Package help provides help message display functionality.
- * This package handles displaying application documentation, environment variables
- * description, and usage examples.
- */
+ // Package help provides help message display functionality.
+ // This package handles displaying application documentation, environment variables
+ // description, and usage examples.
 package help
 
 import (
@@ -10,11 +8,9 @@ import (
 	"os"
 )
 
-/**
- * Show displays the help message with application description, environment variables
- * documentation, and example .env configuration file.
- * This function outputs comprehensive documentation to stdout and exits.
- */
+ // Show displays the help message with application description, environment variables
+ // documentation, and example .env configuration file.
+ // This function outputs comprehensive documentation to stdout and exits.
 func Show() {
 	fmt.Println(`System Stats API Server
 
@@ -122,10 +118,8 @@ API Usage Examples:
     -H "Authorization: Bearer YOUR_ACCESS_TOKEN"`)
 }
 
-/**
- * ShowAndExit displays the help message and exits the application with code 0.
- * This is a convenience function for handling the -help flag.
- */
+ // ShowAndExit displays the help message and exits the application with code 0.
+ // This is a convenience function for handling the -help flag.
 func ShowAndExit() {
 	Show()
 	os.Exit(0)

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { yupResolver } from '@hookform/resolvers/yup';
+import { zodResolver } from '@hookform/resolvers/zod';
 import { AxiosError } from 'axios';
 import { Button } from '../../shared/ui/button';
 import { FormInputField, FormPasswordField } from '../../shared/ui/form-field';
@@ -21,7 +21,7 @@ export function RegisterWidget({ onSwitchToLogin }: RegisterWidgetProps) {
     handleSubmit,
     formState: { errors, isSubmitting },
   } = useForm<RegisterFormData>({
-    resolver: yupResolver(registerSchema),
+    resolver: zodResolver(registerSchema),
   });
 
   const registerMutation = useRegister();

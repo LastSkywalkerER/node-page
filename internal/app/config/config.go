@@ -1,37 +1,31 @@
-/**
- * Package config provides application configuration management.
- * This package handles loading configuration from environment variables and .env files.
- */
+ // Package config provides application configuration management.
+ // This package handles loading configuration from environment variables and .env files.
 package config
 
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
 )
 
-/**
- * DatabaseType represents the type of database to use.
- */
+ // DatabaseType represents the type of database to use.
 type DatabaseType string
 
 const (
-	DatabaseTypeSQLite DatabaseType = "sqlite"
+	DatabaseTypeSQLite   DatabaseType = "sqlite"
+	DatabaseTypePostgres DatabaseType = "postgres"
 )
 
-/**
- * DatabaseConfig holds configuration for database connection.
- */
+ // DatabaseConfig holds configuration for database connection.
 type DatabaseConfig struct {
 	Type DatabaseType // Database type: "sqlite"
 	DSN  string       // Data Source Name: file path for SQLite database
 }
 
-/**
- * Config holds all application configuration loaded from environment variables.
- */
+ // Config holds all application configuration loaded from environment variables.
 type Config struct {
 	// Server configuration
 	Addr    string // HTTP server listening address
@@ -44,16 +38,20 @@ type Config struct {
 	// Authentication configuration
 	JWTSecret     string // Secret key for JWT access tokens
 	RefreshSecret string // Secret key for JWT refresh tokens
+
+	// Cookie configuration
+	CookieSecure bool // COOKIE_SECURE: set Secure flag on cookies (true in production with TLS)
+
+	// CORS configuration
+	AllowOrigin string // ALLOW_ORIGIN: allowed CORS origin, default "*"
+
+	// Data retention
+	RetentionDays int // METRICS_RETENTION_DAYS: how long to keep historical metrics, default 30
 }
 
-/**
- * Load loads application configuration from environment variables.
- * It first attempts to load a .env file if it exists, then reads all configuration
- * from environment variables with appropriate defaults.
- *
- * @return *Config The loaded configuration
- * @return error Returns an error if required configuration is missing or invalid
- */
+ // Load loads application configuration from environment variables.
+ // It first attempts to load a .env file if it exists, then reads all configuration
+ // from environment variables with appropriate defaults.
 func Load() (*Config, error) {
 	// Load .env file if it exists (ignore error if file doesn't exist)
 	_ = godotenv.Load()
@@ -78,6 +76,21 @@ func Load() (*Config, error) {
 	config.JWTSecret = os.Getenv("JWT_SECRET")
 	config.RefreshSecret = os.Getenv("REFRESH_SECRET")
 
+	// Cookie configuration
+	cookieSecureEnv := strings.ToLower(getEnv("COOKIE_SECURE", "false"))
+	config.CookieSecure = cookieSecureEnv == "true" || cookieSecureEnv == "1"
+
+	// CORS configuration
+	config.AllowOrigin = getEnv("ALLOW_ORIGIN", "*")
+
+	// Data retention
+	retentionStr := getEnv("METRICS_RETENTION_DAYS", "30")
+	retentionDays, err := strconv.Atoi(retentionStr)
+	if err != nil || retentionDays <= 0 {
+		retentionDays = 30
+	}
+	config.RetentionDays = retentionDays
+
 	// Validate required configuration
 	if err := config.validate(); err != nil {
 		return nil, err
@@ -86,12 +99,7 @@ func Load() (*Config, error) {
 	return config, nil
 }
 
-/**
- * loadDatabaseConfig loads database configuration from environment variables.
- *
- * @return *DatabaseConfig The database configuration
- * @return error Returns an error if configuration is invalid
- */
+ // loadDatabaseConfig loads database configuration from environment variables.
 func loadDatabaseConfig() (*DatabaseConfig, error) {
 	config := &DatabaseConfig{}
 
@@ -100,8 +108,11 @@ func loadDatabaseConfig() (*DatabaseConfig, error) {
 	config.Type = DatabaseType(dbType)
 
 	// Validate database type
-	if config.Type != DatabaseTypeSQLite {
-		return nil, fmt.Errorf("unsupported database type: %s (supported: sqlite)", dbType)
+	switch config.Type {
+	case DatabaseTypeSQLite, DatabaseTypePostgres:
+		// supported
+	default:
+		return nil, fmt.Errorf("unsupported database type: %s (supported: sqlite, postgres)", dbType)
 	}
 
 	// For SQLite: use DSN as file path
@@ -109,11 +120,7 @@ func loadDatabaseConfig() (*DatabaseConfig, error) {
 	return config, nil
 }
 
-/**
- * validate validates that all required configuration values are present.
- *
- * @return error Returns an error if required configuration is missing
- */
+ // validate validates that all required configuration values are present.
 func (c *Config) validate() error {
 	if c.JWTSecret == "" {
 		return fmt.Errorf("JWT_SECRET environment variable is required")
@@ -124,13 +131,8 @@ func (c *Config) validate() error {
 	return nil
 }
 
-/**
- * MaskDSN masks sensitive information in a database connection string for logging.
- * This function replaces passwords in DSN strings with asterisks to prevent logging sensitive data.
- *
- * @param dsn The database connection string
- * @return string The DSN string with masked password
- */
+ // MaskDSN masks sensitive information in a database connection string for logging.
+ // This function replaces passwords in DSN strings with asterisks to prevent logging sensitive data.
 func MaskDSN(dsn string) string {
 	if dsn == "" {
 		return ""
@@ -151,13 +153,7 @@ func MaskDSN(dsn string) string {
 	return dsn
 }
 
-/**
- * getEnv gets an environment variable value or returns a default if not set.
- *
- * @param key The environment variable key
- * @param defaultValue The default value to return if the variable is not set
- * @return string The environment variable value or default
- */
+ // getEnv gets an environment variable value or returns a default if not set.
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value

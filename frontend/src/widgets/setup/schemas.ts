@@ -1,48 +1,39 @@
 // Validation schemas for setup wizard
-import * as yup from 'yup';
+import { z } from 'zod';
 
-export const setupConfigSchema = yup.object({
-  jwt_secret: yup.string().min(16, 'JWT secret must be at least 16 characters').required('JWT secret is required'),
-  refresh_secret: yup.string().min(16, 'Refresh secret must be at least 16 characters').required('Refresh secret is required'),
-  addr: yup.string().default(':8080'),
-  gin_mode: yup.string().oneOf(['debug', 'release'], 'Gin mode must be debug or release').default('release'),
-  debug: yup.string().oneOf(['true', 'false'], 'Debug must be true or false').default('false'),
-  db_type: yup.string().default('sqlite'),
-  db_dsn: yup.string().default('stats.db'),
+export const setupConfigSchema = z.object({
+  jwt_secret: z.string().min(16, 'JWT secret must be at least 16 characters'),
+  refresh_secret: z.string().min(16, 'Refresh secret must be at least 16 characters'),
+  addr: z.string(),
+  gin_mode: z.enum(['debug', 'release'], { message: 'Gin mode must be debug or release' }),
+  debug: z.enum(['true', 'false'], { message: 'Debug must be true or false' }),
+  db_type: z.string(),
+  db_dsn: z.string(),
 });
 
-export const adminUserSchema = yup.object({
-  email: yup.string().email('Invalid email address').required('Email is required'),
-  password: yup
-    .string()
-    .min(8, 'Password must be at least 8 characters')
-    .matches(
-      /^(?=.*[a-zA-Z])(?=.*\d)/,
-      'Password must contain at least one letter and one number'
-    )
-    .required('Password is required'),
-  confirmPassword: yup
-    .string()
-    .oneOf([yup.ref('password')], 'Passwords must match')
-    .required('Please confirm your password'),
+const passwordSchema = z
+  .string()
+  .min(8, 'Password must be at least 8 characters')
+  .regex(/^(?=.*[a-zA-Z])(?=.*\d)/, 'Password must contain at least one letter and one number');
+
+export const adminUserSchema = z.object({
+  email: z.string().email('Invalid email address'),
+  password: passwordSchema,
+  confirmPassword: z.string(),
+}).refine((data) => data.password === data.confirmPassword, {
+  message: 'Passwords must match',
+  path: ['confirmPassword'],
 });
 
-export const completeSetupSchema = yup.object({
-  config: setupConfigSchema.required(),
-  admin_email: yup.string().email('Invalid email address').required('Email is required'),
-  admin_password: yup
-    .string()
-    .min(8, 'Password must be at least 8 characters')
-    .matches(
-      /^(?=.*[a-zA-Z])(?=.*\d)/,
-      'Password must contain at least one letter and one number'
-    )
-    .required('Password is required'),
+export const completeSetupSchema = z.object({
+  config: setupConfigSchema,
+  admin_email: z.string().email('Invalid email address'),
+  admin_password: passwordSchema,
 });
 
-export type SetupConfigFormData = yup.InferType<typeof setupConfigSchema>;
-export type AdminUserFormData = yup.InferType<typeof adminUserSchema>;
-export type CompleteSetupFormData = yup.InferType<typeof completeSetupSchema>;
+export type SetupConfigFormData = z.infer<typeof setupConfigSchema>;
+export type AdminUserFormData = z.infer<typeof adminUserSchema>;
+export type CompleteSetupFormData = z.infer<typeof completeSetupSchema>;
 
 export interface SetupStatusResponse {
   setup_needed: boolean;
@@ -63,4 +54,3 @@ export interface ConfigResponse {
 export interface CompleteSetupResponse {
   message: string;
 }
-

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { yupResolver } from '@hookform/resolvers/yup';
+import { zodResolver } from '@hookform/resolvers/zod';
 import { Button } from '../../shared/ui/button';
 import { FormInputField, FormPasswordField } from '../../shared/ui/form-field';
 import { Alert, AlertDescription } from '../../shared/ui/alert';
@@ -8,11 +8,7 @@ import { Loader2 } from 'lucide-react';
 import { useLogin } from './useLogin';
 import { loginSchema, LoginFormData } from './schemas';
 
-interface LoginWidgetProps {
-  onSwitchToRegister: () => void;
-}
-
-export function LoginWidget({ onSwitchToRegister }: LoginWidgetProps) {
+export function LoginWidget() {
   const [error, setError] = useState<string | null>(null);
 
   const {
@@ -20,7 +16,7 @@ export function LoginWidget({ onSwitchToRegister }: LoginWidgetProps) {
     handleSubmit,
     formState: { errors, isSubmitting },
   } = useForm<LoginFormData>({
-    resolver: yupResolver(loginSchema),
+    resolver: zodResolver(loginSchema),
   });
 
   const loginMutation = useLogin();
@@ -79,17 +75,6 @@ export function LoginWidget({ onSwitchToRegister }: LoginWidgetProps) {
           'Sign In'
         )}
       </Button>
-
-      <div className="text-center">
-        <button
-          type="button"
-          onClick={onSwitchToRegister}
-          className="text-sm text-blue-400 hover:text-blue-300"
-        >
-          Don't have an account? Sign up
-        </button>
-      </div>
     </form>
   );
 }
-

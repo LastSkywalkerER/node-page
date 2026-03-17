@@ -14,8 +14,8 @@ type Service interface {
 	Collect(ctx context.Context) (entities.DockerMetric, error)
 	Save(ctx context.Context, metric entities.DockerMetric, hostId uint) error
 	GetLatest(ctx context.Context) (entities.DockerMetric, error)
-	GetHistorical(ctx context.Context, hours float64) ([]interface{}, error)
-	GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]interface{}, error)
+	GetHistorical(ctx context.Context, hours float64) ([]repositories.HistoricalDockerMetric, error)
+	GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]repositories.HistoricalDockerMetric, error)
 	CollectAndSave(ctx context.Context, hostId uint) error
 }
 
@@ -34,82 +34,64 @@ func NewService(logger *log.Logger, collector repositories.DockerMetricsCollecto
 }
 
 func (s *service) Collect(ctx context.Context) (entities.DockerMetric, error) {
-	s.logger.Info("Collecting Docker metrics")
+	s.logger.Debug("Collecting Docker metrics")
 	metrics, err := s.collector.CollectDockerMetrics(ctx)
 	if err != nil {
 		s.logger.Error("Failed to collect Docker metrics", "error", err)
 		return entities.DockerMetric{}, err
 	}
-	s.logger.Info("Docker metrics collected successfully", "stacks_count", len(metrics.Stacks), "total_containers", metrics.TotalContainers)
+	s.logger.Debug("Docker metrics collected", "stacks_count", len(metrics.Stacks), "total_containers", metrics.TotalContainers)
 	return metrics, nil
 }
 
 func (s *service) Save(ctx context.Context, metric entities.DockerMetric, hostId uint) error {
-	s.logger.Info("Saving Docker metrics to repository", "total_containers", metric.TotalContainers, "running_containers", metric.RunningContainers)
+	s.logger.Debug("Saving Docker metrics", "total_containers", metric.TotalContainers, "running_containers", metric.RunningContainers)
 	err := s.dockerRepository.SaveCurrentMetric(ctx, metric, hostId)
 	if err != nil {
 		s.logger.Error("Failed to save Docker metrics", "error", err)
 		return err
 	}
-	s.logger.Info("Docker metrics saved successfully")
+	s.logger.Debug("Docker metrics saved")
 	return nil
 }
 
 func (s *service) GetLatest(ctx context.Context) (entities.DockerMetric, error) {
-	s.logger.Info("Getting latest Docker metrics")
 	metric, err := s.dockerRepository.GetLatestMetric(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			s.logger.Info("Context canceled while getting latest Docker metrics")
+			s.logger.Debug("Context canceled while getting latest Docker metrics")
 		} else {
 			s.logger.Error("Failed to get latest Docker metrics", "error", err)
 		}
 		return entities.DockerMetric{}, err
 	}
-	s.logger.Info("Latest Docker metrics retrieved successfully")
 	return metric, nil
 }
 
-func (s *service) GetHistorical(ctx context.Context, hours float64) ([]interface{}, error) {
-	s.logger.Info("Getting historical Docker metrics", "hours", hours)
+func (s *service) GetHistorical(ctx context.Context, hours float64) ([]repositories.HistoricalDockerMetric, error) {
 	metrics, err := s.dockerRepository.GetHistoricalMetrics(ctx, hours)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			s.logger.Info("Context canceled while getting historical Docker metrics")
+			s.logger.Debug("Context canceled while getting historical Docker metrics")
 		} else {
 			s.logger.Error("Failed to get historical Docker metrics", "error", err, "hours", hours)
 		}
 		return nil, err
 	}
-	s.logger.Info("Historical Docker metrics retrieved successfully", "count", len(metrics))
-
-	// Convert to []interface{} for compatibility
-	result := make([]interface{}, len(metrics))
-	for i, metric := range metrics {
-		result[i] = metric
-	}
-	return result, nil
+	return metrics, nil
 }
 
-func (s *service) GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]interface{}, error) {
-	s.logger.Info("Getting historical Docker metrics by host", "host_id", hostId, "hours", hours)
+func (s *service) GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]repositories.HistoricalDockerMetric, error) {
 	metrics, err := s.dockerRepository.GetHistoricalMetricsByHost(ctx, hostId, hours)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			s.logger.Info("Context canceled while getting historical Docker metrics by host")
+			s.logger.Debug("Context canceled while getting historical Docker metrics by host")
 		} else {
 			s.logger.Error("Failed to get historical Docker metrics by host", "error", err, "host_id", hostId, "hours", hours)
 		}
 		return nil, err
 	}
-	s.logger.Info("Historical Docker metrics by host retrieved successfully", "host_id", hostId, "count", len(metrics))
-
-	// Convert to []interface{} for compatibility
-	result := make([]interface{}, len(metrics))
-	for i, metric := range metrics {
-		result[i] = metric
-	}
-	return result, nil
+	return metrics, nil
 }
 
 func (s *service) CollectAndSave(ctx context.Context, hostId uint) error {

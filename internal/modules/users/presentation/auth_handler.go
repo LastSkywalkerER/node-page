@@ -13,10 +13,11 @@ import (
 type AuthHandler struct {
 	userService  userservice.UserService
 	tokenService userservice.TokenService
+	cookieSecure bool
 }
 
 // NewAuthHandler creates a new auth handler
-func NewAuthHandler(userService userservice.UserService, tokenService userservice.TokenService) *AuthHandler {
+func NewAuthHandler(userService userservice.UserService, tokenService userservice.TokenService, cookieSecure bool) *AuthHandler {
 	if userService == nil {
 		panic("userService cannot be nil")
 	}
@@ -26,6 +27,7 @@ func NewAuthHandler(userService userservice.UserService, tokenService userservic
 	return &AuthHandler{
 		userService:  userService,
 		tokenService: tokenService,
+		cookieSecure: cookieSecure,
 	}
 }
 
@@ -35,38 +37,15 @@ type RegisterRequest struct {
 	Password string `json:"password" binding:"required,min=8"`
 }
 
-// RegisterResponse represents a registration response
-type RegisterResponse struct {
-	User         *UserResponse `json:"user"`
-	AccessToken  string        `json:"access_token"`
-	RefreshToken string        `json:"refresh_token"`
-	ExpiresIn    int64         `json:"expires_in"`
-}
-
 // LoginRequest represents a user login request
 type LoginRequest struct {
 	Email    string `json:"email" binding:"required,email"`
 	Password string `json:"password" binding:"required,min=8"`
 }
 
-// LoginResponse represents a login response
-type LoginResponse struct {
-	User         *UserResponse `json:"user"`
-	AccessToken  string        `json:"access_token"`
-	RefreshToken string        `json:"refresh_token"`
-	ExpiresIn    int64         `json:"expires_in"`
-}
-
-// RefreshRequest represents a token refresh request
+// RefreshRequest represents an optional token refresh request body (cookie is preferred)
 type RefreshRequest struct {
-	RefreshToken string `json:"refresh_token" binding:"required"`
-}
-
-// RefreshResponse represents a token refresh response
-type RefreshResponse struct {
-	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
-	ExpiresIn    int64  `json:"expires_in"`
 }
 
 // LogoutRequest represents a logout request
@@ -81,6 +60,16 @@ type UserResponse struct {
 	Role  string `json:"role"`
 }
 
+func (h *AuthHandler) setAuthCookies(c *gin.Context, accessToken, refreshToken string, expiresIn int64) {
+	c.SetCookie("access_token", accessToken, int(15*60), "/", "", h.cookieSecure, true)
+	c.SetCookie("refresh_token", refreshToken, int(30*24*3600), "/api/v1/auth", "", h.cookieSecure, true)
+}
+
+func (h *AuthHandler) clearAuthCookies(c *gin.Context) {
+	c.SetCookie("access_token", "", -1, "/", "", h.cookieSecure, true)
+	c.SetCookie("refresh_token", "", -1, "/api/v1/auth", "", h.cookieSecure, true)
+}
+
 // Register handles user registration
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req RegisterRequest
@@ -93,7 +82,6 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// Register user
 	user, err := h.userService.Register(c.Request.Context(), req.Email, req.Password)
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -114,36 +102,25 @@ func (h *AuthHandler) Register(c *gin.Context) {
 			errorMsg = err.Error()
 		}
 
-		c.JSON(status, gin.H{
-			"code":  code,
-			"error": errorMsg,
-		})
+		c.JSON(status, gin.H{"code": code, "error": errorMsg})
 		return
 	}
 
-	// Generate tokens
 	tokenPair, err := h.tokenService.GenerateTokens(c.Request.Context(), user)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":   "token_generation_error",
-			"error":  "Failed to generate tokens",
-			"detail": err.Error(),
+			"code":  "token_generation_error",
+			"error": "Failed to generate tokens",
 		})
 		return
 	}
 
-	response := RegisterResponse{
-		User: &UserResponse{
-			ID:    user.ID,
-			Email: user.Email,
-			Role:  user.Role,
-		},
-		AccessToken:  tokenPair.AccessToken,
-		RefreshToken: tokenPair.RefreshToken,
-		ExpiresIn:    tokenPair.ExpiresIn,
-	}
+	h.setAuthCookies(c, tokenPair.AccessToken, tokenPair.RefreshToken, tokenPair.ExpiresIn)
 
-	c.JSON(http.StatusOK, gin.H{"data": response})
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"user":       UserResponse{ID: user.ID, Email: user.Email, Role: user.Role},
+		"expires_in": tokenPair.ExpiresIn,
+	}})
 }
 
 // Login handles user authentication
@@ -158,7 +135,6 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	// Authenticate user
 	user, err := h.userService.Login(c.Request.Context(), req.Email, req.Password)
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -171,53 +147,46 @@ func (h *AuthHandler) Login(c *gin.Context) {
 			errorMsg = "Invalid email or password"
 		}
 
-		c.JSON(status, gin.H{
-			"code":  code,
-			"error": errorMsg,
-		})
+		c.JSON(status, gin.H{"code": code, "error": errorMsg})
 		return
 	}
 
-	// Generate tokens
 	tokenPair, err := h.tokenService.GenerateTokens(c.Request.Context(), user)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":   "token_generation_error",
-			"error":  "Failed to generate tokens",
-			"detail": err.Error(),
+			"code":  "token_generation_error",
+			"error": "Failed to generate tokens",
 		})
 		return
 	}
 
-	response := LoginResponse{
-		User: &UserResponse{
-			ID:    user.ID,
-			Email: user.Email,
-			Role:  user.Role,
-		},
-		AccessToken:  tokenPair.AccessToken,
-		RefreshToken: tokenPair.RefreshToken,
-		ExpiresIn:    tokenPair.ExpiresIn,
-	}
+	h.setAuthCookies(c, tokenPair.AccessToken, tokenPair.RefreshToken, tokenPair.ExpiresIn)
 
-	c.JSON(http.StatusOK, gin.H{"data": response})
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"user":       UserResponse{ID: user.ID, Email: user.Email, Role: user.Role},
+		"expires_in": tokenPair.ExpiresIn,
+	}})
 }
 
 // Refresh handles token refresh
 func (h *AuthHandler) Refresh(c *gin.Context) {
-	var req RefreshRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":   "validation_error",
-			"error":  "Invalid request data",
-			"detail": err.Error(),
-		})
-		return
+	// Prefer refresh token from cookie; fall back to request body
+	refreshToken, err := c.Cookie("refresh_token")
+	if err != nil || refreshToken == "" {
+		var req RefreshRequest
+		if err := c.ShouldBindJSON(&req); err != nil || req.RefreshToken == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"code":  "validation_error",
+				"error": "Refresh token required",
+			})
+			return
+		}
+		refreshToken = req.RefreshToken
 	}
 
-	// Validate refresh token
-	dbToken, err := h.tokenService.ValidateRefreshToken(c.Request.Context(), req.RefreshToken)
+	dbToken, err := h.tokenService.ValidateRefreshToken(c.Request.Context(), refreshToken)
 	if err != nil {
+		h.clearAuthCookies(c)
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"code":  "invalid_or_revoked_refresh",
 			"error": "Invalid or revoked refresh token",
@@ -225,8 +194,6 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 		return
 	}
 
-	// Revoke old refresh token if rotate is enabled (we'll implement rotation later)
-	// For now, just generate new tokens
 	tokenPair, err := h.tokenService.GenerateTokens(c.Request.Context(), &dbToken.User)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -238,28 +205,30 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 
 	// Revoke old token after successful generation
 	if err := h.tokenService.RevokeRefreshToken(c.Request.Context(), dbToken.JTI); err != nil {
-		// Log error but don't fail the request
 		c.Error(err)
 	}
 
-	response := RefreshResponse{
-		AccessToken:  tokenPair.AccessToken,
-		RefreshToken: tokenPair.RefreshToken,
-		ExpiresIn:    tokenPair.ExpiresIn,
-	}
+	h.setAuthCookies(c, tokenPair.AccessToken, tokenPair.RefreshToken, tokenPair.ExpiresIn)
 
-	c.JSON(http.StatusOK, gin.H{"data": response})
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"expires_in": tokenPair.ExpiresIn,
+	}})
 }
 
 // Logout handles user logout
 func (h *AuthHandler) Logout(c *gin.Context) {
 	var req LogoutRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		// Optional request body, continue
 		req = LogoutRequest{}
 	}
 
-	// Get user from context (set by AuthJWT middleware)
+	// Also check cookie for refresh token to revoke
+	if req.RefreshToken == "" {
+		if cookie, err := c.Cookie("refresh_token"); err == nil {
+			req.RefreshToken = cookie
+		}
+	}
+
 	userID, exists := c.Get("userID")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{
@@ -269,17 +238,16 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 		return
 	}
 
-	// If specific refresh token provided, revoke only that one
 	if req.RefreshToken != "" {
-		// Validate and revoke specific token
 		dbToken, err := h.tokenService.ValidateRefreshToken(c.Request.Context(), req.RefreshToken)
 		if err == nil && dbToken != nil && dbToken.UserID == userID.(uint) {
 			h.tokenService.RevokeRefreshToken(c.Request.Context(), dbToken.JTI)
 		}
 	} else {
-		// Revoke all user's tokens
 		h.tokenService.RevokeAllUserTokens(c.Request.Context(), userID.(uint))
 	}
+
+	h.clearAuthCookies(c)
 
 	c.JSON(http.StatusNoContent, nil)
 }

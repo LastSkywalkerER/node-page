@@ -16,13 +16,11 @@ import { HeaderBar } from './shared/components/HeaderBar';
  */
 function App() {
   const theme = useThemeQuery();
-  const { initializeFromStorage, isAuthenticated } = useUserStore();
+  const { initializeAuth, isAuthenticated } = useUserStore();
 
   useEffect(() => {
-    // Initialize user authentication state from storage (sync, no API calls)
-    // ProtectedRoute checks for valid refresh token, interceptor handles token refresh automatically
-    initializeFromStorage();
-  }, [initializeFromStorage]);
+    initializeAuth();
+  }, [initializeAuth]);
 
   useEffect(() => {
     // Apply theme-specific styles to document root for CSS variable theming

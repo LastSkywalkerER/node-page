@@ -12,15 +12,17 @@ import (
 
 // SetupHandler handles setup-related HTTP requests
 type SetupHandler struct {
-	configWriter *setupapp.ConfigWriter
-	userService  userservice.UserService
+	configWriter    *setupapp.ConfigWriter
+	userService     userservice.UserService
+	onSetupComplete func() // called once after setup finishes; may be nil
 }
 
 // NewSetupHandler creates a new setup handler
-func NewSetupHandler(configWriter *setupapp.ConfigWriter, userService userservice.UserService) *SetupHandler {
+func NewSetupHandler(configWriter *setupapp.ConfigWriter, userService userservice.UserService, onSetupComplete func()) *SetupHandler {
 	return &SetupHandler{
-		configWriter: configWriter,
-		userService:  userService,
+		configWriter:    configWriter,
+		userService:     userService,
+		onSetupComplete: onSetupComplete,
 	}
 }
 
@@ -228,8 +230,11 @@ func (h *SetupHandler) CompleteSetup(c *gin.Context) {
 		return
 	}
 
-	// Success - user created
-	_ = user // user is created but we don't need to return it
+	// Success - user created; kick off metrics collection if registered
+	_ = user
+	if h.onSetupComplete != nil {
+		go h.onSetupComplete()
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"data": CompleteSetupResponse{

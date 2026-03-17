@@ -18,11 +18,9 @@ import (
 	"github.com/charmbracelet/log"
 )
 
-/**
- * systemMetricsCollector implements the SystemMetricsCollector interface.
- * This collector gathers system performance metrics using individual collectors
- * for CPU, memory, disk, and network metrics.
- */
+ // systemMetricsCollector implements the SystemMetricsCollector interface.
+ // This collector gathers system performance metrics using individual collectors
+ // for CPU, memory, disk, and network metrics.
 type systemMetricsCollector struct {
 	logger           *log.Logger
 	cpuCollector     *cpucollectors.CPUMetricsCollector
@@ -31,14 +29,9 @@ type systemMetricsCollector struct {
 	networkCollector *networkcollectors.NetworkMetricsCollector
 }
 
-/**
- * NewSystemMetricsCollector creates a new system metrics collector instance.
- * This constructor initializes the collector with individual metric collectors
- * for gathering comprehensive system statistics.
- *
- * @param logger The logger instance for logging collection operations
- * @return *systemMetricsCollector Returns the initialized system collector
- */
+ // NewSystemMetricsCollector creates a new system metrics collector instance.
+ // This constructor initializes the collector with individual metric collectors
+ // for gathering comprehensive system statistics.
 func NewSystemMetricsCollector(logger *log.Logger) *systemMetricsCollector {
 	return &systemMetricsCollector{
 		logger:           logger,
@@ -49,63 +42,33 @@ func NewSystemMetricsCollector(logger *log.Logger) *systemMetricsCollector {
 	}
 }
 
-/**
- * CollectCPUMetrics gathers current CPU performance statistics.
- * This method delegates to the CPU collector for specialized CPU metrics collection.
- *
- * @param ctx The context for the operation
- * @return cpumetric.CPUMetric The collected CPU metrics
- * @return error Returns an error if CPU metrics collection fails
- */
+ // CollectCPUMetrics gathers current CPU performance statistics.
+ // This method delegates to the CPU collector for specialized CPU metrics collection.
 func (c *systemMetricsCollector) CollectCPUMetrics(ctx context.Context) (cpumetric.CPUMetric, error) {
 	return c.cpuCollector.CollectCPUMetrics(ctx)
 }
 
-/**
- * CollectMemoryMetrics gathers current memory usage statistics.
- * This method delegates to the memory collector for specialized memory metrics collection.
- *
- * @param ctx The context for the operation
- * @return memorymetric.MemoryMetric The collected memory metrics
- * @return error Returns an error if memory metrics collection fails
- */
+ // CollectMemoryMetrics gathers current memory usage statistics.
+ // This method delegates to the memory collector for specialized memory metrics collection.
 func (c *systemMetricsCollector) CollectMemoryMetrics(ctx context.Context) (memorymetric.MemoryMetric, error) {
 	return c.memoryCollector.CollectMemoryMetrics(ctx)
 }
 
-/**
- * CollectDiskMetrics gathers current disk storage statistics.
- * This method delegates to the disk collector for specialized disk metrics collection.
- *
- * @param ctx The context for the operation
- * @return diskmetric.DiskMetric The collected disk metrics
- * @return error Returns an error if disk metrics collection fails
- */
+ // CollectDiskMetrics gathers current disk storage statistics.
+ // This method delegates to the disk collector for specialized disk metrics collection.
 func (c *systemMetricsCollector) CollectDiskMetrics(ctx context.Context) (diskmetric.DiskMetric, error) {
 	return c.diskCollector.CollectDiskMetrics(ctx)
 }
 
-/**
- * CollectNetworkMetrics gathers current network interface statistics.
- * This method delegates to the network collector for specialized network metrics collection.
- *
- * @param ctx The context for the operation
- * @return networkmetric.NetworkMetric The collected network metrics
- * @return error Returns an error if network metrics collection fails
- */
+ // CollectNetworkMetrics gathers current network interface statistics.
+ // This method delegates to the network collector for specialized network metrics collection.
 func (c *systemMetricsCollector) CollectNetworkMetrics(ctx context.Context) (networkmetric.NetworkMetric, error) {
 	return c.networkCollector.CollectNetworkMetrics(ctx)
 }
 
-/**
- * CollectAllMetrics gathers all system performance metrics.
- * This method collects CPU, memory, disk, and network metrics using
- * individual specialized collectors.
- *
- * @param ctx The context for the operation
- * @return *systemmetric.SystemMetric The collected system metrics
- * @return error Returns an error if any metrics collection fails
- */
+ // CollectAllMetrics gathers all system performance metrics.
+ // This method collects CPU, memory, disk, and network metrics using
+ // individual specialized collectors.
 func (c *systemMetricsCollector) CollectAllMetrics(ctx context.Context) (*systemmetric.SystemMetric, error) {
 	// Collect CPU metrics
 	cpuMetrics, err := c.cpuCollector.CollectCPUMetrics(ctx)

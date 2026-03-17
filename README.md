@@ -116,7 +116,36 @@ The application will be available at `http://localhost:8080` by default. You can
 
 ### Local Development
 
-#### Backend (Go)
+#### Full Dev Run (Recommended)
+
+The project uses **Overmind** with a **Procfile** to run backend and frontend in parallel. Backend uses **Air** for live reload; frontend uses **Vite** with proxy to the API.
+
+**Prerequisites:**
+- [Overmind](https://github.com/DarthSim/overmind) — `brew install overmind` (macOS) or [install from releases](https://github.com/DarthSim/overmind/releases)
+- Go, Node.js, Yarn
+
+```bash
+# Install backend dependencies
+go mod download
+
+# Install frontend dependencies
+cd frontend && yarn install && cd ..
+
+# Set required environment variables
+export JWT_SECRET=your-jwt-secret-key
+export REFRESH_SECRET=your-refresh-secret-key
+
+# Optional: customize server address (default: :8080)
+export ADDR=:8080
+
+# Run backend + frontend together
+./scripts/dev
+```
+
+- **Backend** (Air): `http://localhost:8080` — live reload on Go file changes
+- **Frontend** (Vite): `http://localhost:5173` — proxies `/api` and `/ws` to backend
+
+#### Backend Only (Go)
 
 ```bash
 # Install dependencies
@@ -133,7 +162,7 @@ export ADDR=:8080
 go run cmd/server/main.go
 ```
 
-#### Frontend (React + TypeScript)
+#### Frontend Only (React + TypeScript)
 
 ```bash
 cd frontend
@@ -141,7 +170,7 @@ yarn install
 yarn dev
 ```
 
-The frontend development server typically runs on `http://localhost:5173` (Vite default port).
+The frontend development server typically runs on `http://localhost:5173` (Vite default port). It proxies API requests to `http://localhost:8080`.
 
 ## API Documentation
 
@@ -236,14 +265,13 @@ Node Stats is built using modern web technologies and follows Clean Architecture
 git clone https://github.com/yourusername/node-stats.git
 cd node-stats
 
-# Build backend
-go build -o bin/server cmd/server/main.go
-
-# Build frontend
-cd frontend
-yarn install
-yarn build
+# One-command build (backend + frontend)
+./scripts/build
 ```
+
+Or build manually: `go build -o bin/server ./cmd/server` and `cd frontend && yarn && yarn build`.
+
+**Helper scripts** (in `scripts/`): `./scripts/dev` — run backend + frontend; `./scripts/build` — build both; `./scripts/clean-db` — remove SQLite DB (prompts for confirmation, reads `DB_DSN` from `.env` or uses `stats.db`).
 
 ### Running Tests
 

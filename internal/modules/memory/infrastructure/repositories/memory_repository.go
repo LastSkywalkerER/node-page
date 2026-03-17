@@ -6,6 +6,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"system-stats/internal/app/database"
 	localentities "system-stats/internal/modules/memory/infrastructure/entities"
 )
 
@@ -21,13 +22,10 @@ type memoryRepository struct {
 }
 
 func NewMemoryRepository(db *gorm.DB) MemoryRepository {
-	// Auto-migrate the historical memory metrics table
-	db.AutoMigrate(&localentities.HistoricalMemoryMetric{})
 	return &memoryRepository{db: db}
 }
 
 func (r *memoryRepository) SaveCurrentMetric(ctx context.Context, metric localentities.MemoryMetric, hostId uint) error {
-	// Save as historical metric
 	historicalMetric := localentities.HistoricalMemoryMetric{
 		HostID:       &hostId,
 		Timestamp:    time.Now().UTC(),
@@ -35,7 +33,6 @@ func (r *memoryRepository) SaveCurrentMetric(ctx context.Context, metric localen
 		UsedBytes:    metric.Used,
 		TotalBytes:   metric.Total,
 	}
-
 	return r.db.WithContext(ctx).Create(&historicalMetric).Error
 }
 
@@ -45,12 +42,10 @@ func (r *memoryRepository) GetLatestMetric(ctx context.Context) (localentities.M
 	err := r.db.WithContext(ctx).
 		Order("timestamp DESC").
 		First(&metric).Error
-
 	if err != nil {
 		return localentities.MemoryMetric{}, err
 	}
 
-	// Convert historical to current metric
 	return localentities.MemoryMetric{
 		Total:        metric.TotalBytes,
 		Used:         metric.UsedBytes,
@@ -62,22 +57,16 @@ func (r *memoryRepository) GetLatestMetric(ctx context.Context) (localentities.M
 
 func (r *memoryRepository) GetHistoricalMetrics(ctx context.Context, hours float64) ([]localentities.HistoricalMemoryMetric, error) {
 	var metrics []localentities.HistoricalMemoryMetric
-
-	query := r.db.WithContext(ctx).
-		Where("timestamp >= datetime('now', '-' || ? || ' hours')", hours).
+	err := database.TimeOffsetQuery(r.db.WithContext(ctx), hours).
 		Order("timestamp ASC").
-		Find(&metrics)
-
-	return metrics, query.Error
+		Find(&metrics).Error
+	return metrics, err
 }
 
 func (r *memoryRepository) GetHistoricalMetricsByHost(ctx context.Context, hostId uint, hours float64) ([]localentities.HistoricalMemoryMetric, error) {
 	var metrics []localentities.HistoricalMemoryMetric
-
-	query := r.db.WithContext(ctx).
-		Where("host_id = ? AND timestamp >= datetime('now', '-' || ? || ' hours')", hostId, hours).
+	err := database.TimeOffsetQueryWithHost(r.db.WithContext(ctx), hostId, hours).
 		Order("timestamp ASC").
-		Find(&metrics)
-
-	return metrics, query.Error
+		Find(&metrics).Error
+	return metrics, err
 }

@@ -13,36 +13,23 @@ import (
 	"system-stats/internal/modules/cpu/infrastructure/entities"
 )
 
-/**
- * cpuMetricsCollector implements the CPUMetricsCollector interface.
- * This collector gathers CPU performance statistics using cross-platform
- * system monitoring libraries (gopsutil).
- */
+ // cpuMetricsCollector implements the CPUMetricsCollector interface.
+ // This collector gathers CPU performance statistics using cross-platform
+ // system monitoring libraries (gopsutil).
 type CPUMetricsCollector struct {
 	logger *log.Logger
 }
 
-/**
- * NewCPUMetricsCollector creates a new CPU metrics collector instance.
- * This constructor initializes the collector for gathering CPU statistics.
- *
- * @param logger The logger instance for logging collection operations
- * @return *cpuMetricsCollector Returns the initialized CPU collector
- */
+ // NewCPUMetricsCollector creates a new CPU metrics collector instance.
+ // This constructor initializes the collector for gathering CPU statistics.
 func NewCPUMetricsCollector(logger *log.Logger) *CPUMetricsCollector {
 	return &CPUMetricsCollector{logger: logger}
 }
 
-/**
- * CollectCPUMetrics gathers current CPU performance statistics.
- * This method collects CPU usage percentage, core count, and system load averages.
- *
- * @param ctx The context for the operation
- * @return entities.CPUMetric The collected CPU metrics
- * @return error Returns an error if CPU metrics collection fails
- */
+ // CollectCPUMetrics gathers current CPU performance statistics.
+ // This method collects CPU usage percentage, core count, and system load averages.
 func (c *CPUMetricsCollector) CollectCPUMetrics(ctx context.Context) (entities.CPUMetric, error) {
-	c.logger.Info("Collecting CPU usage percentage")
+	c.logger.Debug("Collecting CPU usage percentage")
 	// Get CPU usage percentage (without delay for fast response)
 	percentages, err := cpu.PercentWithContext(ctx, 0, false)
 	if err != nil {
@@ -58,7 +45,7 @@ func (c *CPUMetricsCollector) CollectCPUMetrics(ctx context.Context) (entities.C
 	// Get number of cores
 	cores := runtime.NumCPU()
 
-	c.logger.Info("Collecting CPU load averages")
+	c.logger.Debug("Collecting CPU load averages")
 	// Get load average
 	loadStat, err := load.AvgWithContext(ctx)
 	if err != nil {
@@ -66,7 +53,7 @@ func (c *CPUMetricsCollector) CollectCPUMetrics(ctx context.Context) (entities.C
 		return entities.CPUMetric{}, err
 	}
 
-	c.logger.Info("Collecting CPU temperature")
+	c.logger.Debug("Collecting CPU temperature")
 	// Get CPU temperature
 	temperature := 0.0
 	temperatures, err := sensors.TemperaturesWithContext(ctx)
@@ -79,7 +66,7 @@ func (c *CPUMetricsCollector) CollectCPUMetrics(ctx context.Context) (entities.C
 	if err != nil {
 		c.logger.Warn("Failed to collect CPU temperature, using 0.0", "error", err)
 	} else {
-		c.logger.Info("Found temperature sensors", "count", len(temperatures))
+		c.logger.Debug("Found temperature sensors", "count", len(temperatures))
 
 		// Extended list of CPU temperature sensor keys for different OS
 		cpuSensorKeys := []string{
@@ -103,7 +90,7 @@ func (c *CPUMetricsCollector) CollectCPUMetrics(ctx context.Context) (entities.C
 			for _, key := range cpuSensorKeys {
 				if strings.Contains(sensorKeyLower, strings.ToLower(key)) {
 					temperature = temp.Temperature
-					c.logger.Info("Found CPU temperature sensor", "key", temp.SensorKey, "temperature", temperature)
+					c.logger.Debug("Found CPU temperature sensor", "key", temp.SensorKey, "temperature", temperature)
 					break
 				}
 			}
@@ -121,7 +108,7 @@ func (c *CPUMetricsCollector) CollectCPUMetrics(ctx context.Context) (entities.C
 					strings.Contains(sensorKeyLower, "cpu") ||
 					strings.Contains(sensorKeyLower, "core") {
 					temperature = temp.Temperature
-					c.logger.Info("Using thermal sensor as fallback", "key", temp.SensorKey, "temperature", temperature)
+					c.logger.Debug("Using thermal sensor as fallback", "key", temp.SensorKey, "temperature", temperature)
 					break
 				}
 			}
@@ -132,7 +119,7 @@ func (c *CPUMetricsCollector) CollectCPUMetrics(ctx context.Context) (entities.C
 			for _, temp := range temperatures {
 				if (temp.SensorKey == "TB0T" || temp.SensorKey == "TB1T") && temp.Temperature > 0 {
 					temperature = temp.Temperature
-					c.logger.Info("Using battery sensor as system temperature indicator", "key", temp.SensorKey, "temperature", temperature)
+					c.logger.Debug("Using battery sensor as system temperature indicator", "key", temp.SensorKey, "temperature", temperature)
 					break
 				}
 			}
@@ -143,7 +130,7 @@ func (c *CPUMetricsCollector) CollectCPUMetrics(ctx context.Context) (entities.C
 			firstTemp := temperatures[0].Temperature
 			if firstTemp > 0 && firstTemp < 150 {
 				temperature = firstTemp
-				c.logger.Info("Using first available temperature sensor", "key", temperatures[0].SensorKey, "temperature", temperature)
+				c.logger.Debug("Using first available temperature sensor", "key", temperatures[0].SensorKey, "temperature", temperature)
 			}
 		}
 	}
@@ -189,7 +176,7 @@ func (c *CPUMetricsCollector) CollectCPUMetrics(ctx context.Context) (entities.C
 		guestNice = agg.GuestNice
 	}
 
-	c.logger.Info("CPU metrics collected successfully", "usage_percent", usage, "cores", cores, "temperature", temperature)
+	c.logger.Debug("CPU metrics collected successfully", "usage_percent", usage, "cores", cores, "temperature", temperature)
 	return entities.CPUMetric{
 		UsagePercent: usage,
 		Cores:        cores,

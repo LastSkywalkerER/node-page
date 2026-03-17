@@ -34,7 +34,7 @@ func NewService(logger *log.Logger, hostRepository hostrepos.HostRepository) Ser
 }
 
 func (s *service) RegisterOrUpdateCurrentHost(ctx context.Context) (*entities.Host, error) {
-	s.logger.Info("Registering or updating current host")
+	s.logger.Debug("Registering or updating current host")
 
 	// Collect current host information
 	hostInfo, err := s.collector.CollectHostInfo(ctx)
@@ -50,34 +50,34 @@ func (s *service) RegisterOrUpdateCurrentHost(ctx context.Context) (*entities.Ho
 		return nil, err
 	}
 
-	s.logger.Info("Host registered/updated successfully", "host_id", host.ID, "name", host.Name, "mac", host.MacAddress)
+	s.logger.Debug("Host registered/updated successfully", "host_id", host.ID, "name", host.Name, "mac", host.MacAddress)
 	return host, nil
 }
 
 func (s *service) GetHostByMacAddress(ctx context.Context, macAddress string) (*entities.Host, error) {
-	s.logger.Info("Getting host by MAC address", "mac_address", macAddress)
+	s.logger.Debug("Getting host by MAC address", "mac_address", macAddress)
 	host, err := s.hostRepository.GetHostByMacAddress(ctx, macAddress)
 	if err != nil {
 		s.logger.Error("Failed to get host by MAC address", "error", err, "mac_address", macAddress)
 		return nil, err
 	}
-	s.logger.Info("Host retrieved successfully", "host_id", host.ID, "name", host.Name)
+	s.logger.Debug("Host retrieved successfully", "host_id", host.ID, "name", host.Name)
 	return host, nil
 }
 
 func (s *service) GetAllHosts(ctx context.Context) ([]entities.Host, error) {
-	s.logger.Info("Getting all hosts")
+	s.logger.Debug("Getting all hosts")
 	hosts, err := s.hostRepository.GetAllHosts(ctx)
 	if err != nil {
 		s.logger.Error("Failed to get all hosts", "error", err)
 		return nil, err
 	}
-	s.logger.Info("All hosts retrieved successfully", "count", len(hosts))
+	s.logger.Debug("All hosts retrieved successfully", "count", len(hosts))
 	return hosts, nil
 }
 
 func (s *service) GetCurrentHost(ctx context.Context) (*entities.Host, error) {
-	s.logger.Info("Getting current host information")
+	s.logger.Debug("Getting current host information")
 
 	// Collect current host information to get MAC address
 	hostInfo, err := s.collector.CollectHostInfo(ctx)
@@ -90,7 +90,7 @@ func (s *service) GetCurrentHost(ctx context.Context) (*entities.Host, error) {
 	host, err := s.hostRepository.GetHostByMacAddress(ctx, hostInfo.MacAddress)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			s.logger.Info("Host not found by MAC, performing upsert", "mac_address", hostInfo.MacAddress)
+			s.logger.Debug("Host not found by MAC, performing upsert", "mac_address", hostInfo.MacAddress)
 			return s.hostRepository.UpsertHost(ctx, hostInfo)
 		}
 		s.logger.Error("Failed to get host by MAC address", "error", err, "mac_address", hostInfo.MacAddress)

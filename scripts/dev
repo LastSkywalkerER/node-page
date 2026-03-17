@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+if ! command -v overmind >/dev/null 2>&1; then
+  echo "Error: overmind is not installed. Install it with: brew install overmind" >&2
+  exit 1
+fi
+
+if [[ ! -f "Procfile" ]]; then
+  echo "Error: Procfile not found in $REPO_ROOT" >&2
+  exit 1
+fi
+
+# Preparatory work (skip if already done)
+echo "Preparing environment..."
+
+if command -v go >/dev/null 2>&1; then
+  go mod download
+else
+  echo "Warning: go not found, skipping backend deps" >&2
+fi
+
+if [[ ! -d "frontend/node_modules" ]]; then
+  echo "Installing frontend dependencies (first run)..."
+  (cd frontend && yarn install)
+else
+  echo "Frontend deps OK (node_modules exists), skipping yarn install"
+fi
+
+# Dev defaults for secrets if not set
+export JWT_SECRET="${JWT_SECRET:-dev-jwt-secret-change-in-production}"
+export REFRESH_SECRET="${REFRESH_SECRET:-dev-refresh-secret-change-in-production}"
+
+echo "Starting backend + frontend..."
+exec overmind start -f Procfile

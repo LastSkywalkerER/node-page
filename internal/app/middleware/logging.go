@@ -28,12 +28,16 @@ func LoggingMiddleware(logger *log.Logger) gin.HandlerFunc {
 	})
 }
 
-// CORSMiddleware adds CORS headers
-func CORSMiddleware() gin.HandlerFunc {
+// CORSMiddleware adds CORS headers. allowOrigin should be "*" or a specific origin.
+// Set allowCredentials to true when using HttpOnly cookies (requires a specific origin, not "*").
+func CORSMiddleware(allowOrigin string, allowCredentials bool) gin.HandlerFunc {
 	return gin.HandlerFunc(func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Origin", allowOrigin)
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization")
+		if allowCredentials {
+			c.Header("Access-Control-Allow-Credentials", "true")
+		}
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)

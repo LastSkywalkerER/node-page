@@ -14,8 +14,8 @@ type Service interface {
 	Collect(ctx context.Context) (entities.MemoryMetric, error)
 	Save(ctx context.Context, metric entities.MemoryMetric, hostId uint) error
 	GetLatest(ctx context.Context) (entities.MemoryMetric, error)
-	GetHistorical(ctx context.Context, hours float64) ([]interface{}, error)
-	GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]interface{}, error)
+	GetHistorical(ctx context.Context, hours float64) ([]entities.HistoricalMemoryMetric, error)
+	GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]entities.HistoricalMemoryMetric, error)
 	CollectAndSave(ctx context.Context, hostId uint) error
 }
 
@@ -34,72 +34,53 @@ func NewService(logger *log.Logger, memoryRepository memoryrepos.MemoryRepositor
 }
 
 func (s *service) Collect(ctx context.Context) (entities.MemoryMetric, error) {
-	s.logger.Info("Collecting memory metrics")
+	s.logger.Debug("Collecting memory metrics")
 	metric, err := s.collector.CollectMemoryMetrics(ctx)
 	if err != nil {
 		s.logger.Error("Failed to collect memory metrics", "error", err)
 		return entities.MemoryMetric{}, err
 	}
-	s.logger.Info("Memory metrics collected successfully", "usage_percent", metric.UsagePercent)
+	s.logger.Debug("Memory metrics collected", "usage_percent", metric.UsagePercent)
 	return metric, nil
 }
 
 func (s *service) Save(ctx context.Context, metric entities.MemoryMetric, hostId uint) error {
-	s.logger.Info("Saving memory metrics to repository", "usage_percent", metric.UsagePercent, "host_id", hostId)
+	s.logger.Debug("Saving memory metrics", "usage_percent", metric.UsagePercent, "host_id", hostId)
 	err := s.memoryRepository.SaveCurrentMetric(ctx, metric, hostId)
 	if err != nil {
 		s.logger.Error("Failed to save memory metrics", "error", err, "host_id", hostId)
 		return err
 	}
-	s.logger.Info("Memory metrics saved successfully", "host_id", hostId)
+	s.logger.Debug("Memory metrics saved", "host_id", hostId)
 	return nil
 }
 
 func (s *service) GetLatest(ctx context.Context) (entities.MemoryMetric, error) {
-	s.logger.Info("Getting latest memory metrics")
-	// Collect fresh metrics instead of getting from database
-	// to ensure we have all current fields including cache and swap
+	// Collect fresh metrics to ensure all current fields are populated.
 	metric, err := s.collector.CollectMemoryMetrics(ctx)
 	if err != nil {
 		s.logger.Error("Failed to collect latest memory metrics", "error", err)
 		return entities.MemoryMetric{}, err
 	}
-	s.logger.Info("Latest memory metrics collected successfully")
 	return metric, nil
 }
 
-func (s *service) GetHistorical(ctx context.Context, hours float64) ([]interface{}, error) {
-	s.logger.Info("Getting historical memory metrics", "hours", hours)
+func (s *service) GetHistorical(ctx context.Context, hours float64) ([]entities.HistoricalMemoryMetric, error) {
 	metrics, err := s.memoryRepository.GetHistoricalMetrics(ctx, hours)
 	if err != nil {
 		s.logger.Error("Failed to get historical memory metrics", "error", err, "hours", hours)
 		return nil, err
 	}
-	s.logger.Info("Historical memory metrics retrieved successfully", "count", len(metrics))
-
-	// Convert to []interface{} for compatibility
-	result := make([]interface{}, len(metrics))
-	for i, metric := range metrics {
-		result[i] = metric
-	}
-	return result, nil
+	return metrics, nil
 }
 
-func (s *service) GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]interface{}, error) {
-	s.logger.Info("Getting historical memory metrics by host", "host_id", hostId, "hours", hours)
+func (s *service) GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]entities.HistoricalMemoryMetric, error) {
 	metrics, err := s.memoryRepository.GetHistoricalMetricsByHost(ctx, hostId, hours)
 	if err != nil {
 		s.logger.Error("Failed to get historical memory metrics by host", "error", err, "host_id", hostId, "hours", hours)
 		return nil, err
 	}
-	s.logger.Info("Historical memory metrics by host retrieved successfully", "host_id", hostId, "count", len(metrics))
-
-	// Convert to []interface{} for compatibility
-	result := make([]interface{}, len(metrics))
-	for i, metric := range metrics {
-		result[i] = metric
-	}
-	return result, nil
+	return metrics, nil
 }
 
 func (s *service) CollectAndSave(ctx context.Context, hostId uint) error {

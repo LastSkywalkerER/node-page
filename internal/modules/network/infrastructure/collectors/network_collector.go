@@ -10,37 +10,24 @@ import (
 	"system-stats/internal/modules/network/infrastructure/entities"
 )
 
-/**
- * networkMetricsCollector implements the NetworkMetricsCollector interface.
- * This collector gathers network performance statistics using cross-platform
- * system monitoring libraries (gopsutil).
- */
+ // networkMetricsCollector implements the NetworkMetricsCollector interface.
+ // This collector gathers network performance statistics using cross-platform
+ // system monitoring libraries (gopsutil).
 type NetworkMetricsCollector struct {
 	logger *log.Logger
 }
 
-/**
- * NewNetworkMetricsCollector creates a new network metrics collector instance.
- * This constructor initializes the collector for gathering network statistics.
- *
- * @param logger The logger instance for logging collection operations
- * @return *networkMetricsCollector Returns the initialized network collector
- */
+ // NewNetworkMetricsCollector creates a new network metrics collector instance.
+ // This constructor initializes the collector for gathering network statistics.
 func NewNetworkMetricsCollector(logger *log.Logger) *NetworkMetricsCollector {
 	return &NetworkMetricsCollector{logger: logger}
 }
 
-/**
- * CollectNetworkMetrics gathers current network performance statistics.
- * This method collects network interface statistics including bytes sent/received
- * and packet counts, excluding loopback interfaces.
- *
- * @param ctx The context for the operation
- * @return entities.NetworkMetric The collected network metrics
- * @return error Returns an error if network metrics collection fails
- */
+ // CollectNetworkMetrics gathers current network performance statistics.
+ // This method collects network interface statistics including bytes sent/received
+ // and packet counts, excluding loopback interfaces.
 func (c *NetworkMetricsCollector) CollectNetworkMetrics(ctx context.Context) (entities.NetworkMetric, error) {
-	c.logger.Info("Collecting network interface statistics")
+	c.logger.Debug("Collecting network interface statistics")
 	netStats, err := gopsutilnet.IOCountersWithContext(ctx, true)
 	if err != nil {
 		c.logger.Error("Failed to collect network interface statistics", "error", err)
@@ -116,7 +103,7 @@ func (c *NetworkMetricsCollector) CollectNetworkMetrics(ctx context.Context) (en
 		})
 	}
 
-	c.logger.Info("Network metrics collected successfully", "interfaces_count", len(interfaces))
+	c.logger.Debug("Network metrics collected successfully", "interfaces_count", len(interfaces))
 	return entities.NetworkMetric{
 		Interfaces: interfaces,
 	}, nil

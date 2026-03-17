@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Load .env from repo root if present
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+if [[ -f ".env" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source .env
+  set +a
+fi
+
+DB_TYPE="${DB_TYPE:-sqlite}"
+DB_DSN="${DB_DSN:-stats.db}"
+
+if [[ "$DB_TYPE" != "sqlite" ]]; then
+  echo "clean-db supports only SQLite (DB_TYPE=sqlite). Current: DB_TYPE=$DB_TYPE" >&2
+  echo "For PostgreSQL, run truncate/drop manually." >&2
+  exit 1
+fi
+
+# Resolve path: if DSN is relative, it's relative to repo root
+if [[ "$DB_DSN" != /* ]]; then
+  DB_PATH="$REPO_ROOT/$DB_DSN"
+else
+  DB_PATH="$DB_DSN"
+fi
+
+if [[ ! -f "$DB_PATH" ]]; then
+  echo "No database file at $DB_PATH, nothing to clean."
+  exit 0
+fi
+
+echo "This will remove the SQLite database: $DB_PATH"
+read -r -p "Continue? [y/N] " reply
+case "$(echo "$reply" | tr '[:upper:]' '[:lower:]')" in
+  y|yes) ;;
+  *) echo "Aborted."
+     exit 0 ;;
+esac
+
+rm -f "$DB_PATH"
+echo "Database removed: $DB_PATH"

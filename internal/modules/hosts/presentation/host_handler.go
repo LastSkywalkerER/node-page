@@ -25,7 +25,7 @@ func NewHostHandler(logger *log.Logger, service hostservice.Service) *HostHandle
 
 // HandleRegisterCurrentHost registers or updates the current host information.
 func (h *HostHandler) HandleRegisterCurrentHost(c *gin.Context) {
-	h.logger.Info("Handling register current host request", "client_ip", c.ClientIP(), "user_agent", c.GetHeader("User-Agent"))
+	h.logger.Debug("Handling register current host request", "client_ip", c.ClientIP(), "user_agent", c.GetHeader("User-Agent"))
 
 	host, err := h.service.RegisterOrUpdateCurrentHost(c.Request.Context())
 	if err != nil {
@@ -34,7 +34,7 @@ func (h *HostHandler) HandleRegisterCurrentHost(c *gin.Context) {
 		return
 	}
 
-	h.logger.Info("Current host registered/updated successfully", "host_id", host.ID)
+	h.logger.Debug("Current host registered/updated successfully", "host_id", host.ID)
 	c.JSON(http.StatusOK, gin.H{
 		"host": host,
 	})
@@ -42,7 +42,7 @@ func (h *HostHandler) HandleRegisterCurrentHost(c *gin.Context) {
 
 // HandleGetCurrentHost returns information about the current host.
 func (h *HostHandler) HandleGetCurrentHost(c *gin.Context) {
-	h.logger.Info("Handling get current host request", "client_ip", c.ClientIP(), "user_agent", c.GetHeader("User-Agent"))
+	h.logger.Debug("Handling get current host request", "client_ip", c.ClientIP(), "user_agent", c.GetHeader("User-Agent"))
 
 	host, err := h.service.GetCurrentHost(c.Request.Context())
 	if err != nil {
@@ -51,7 +51,7 @@ func (h *HostHandler) HandleGetCurrentHost(c *gin.Context) {
 		return
 	}
 
-	h.logger.Info("Current host information retrieved successfully", "host_id", host.ID)
+	h.logger.Debug("Current host information retrieved successfully", "host_id", host.ID)
 	c.JSON(http.StatusOK, gin.H{
 		"host": host,
 	})
@@ -59,7 +59,7 @@ func (h *HostHandler) HandleGetCurrentHost(c *gin.Context) {
 
 // HandleGetAllHosts returns information about all registered hosts.
 func (h *HostHandler) HandleGetAllHosts(c *gin.Context) {
-	h.logger.Info("Handling get all hosts request", "client_ip", c.ClientIP(), "user_agent", c.GetHeader("User-Agent"))
+	h.logger.Debug("Handling get all hosts request", "client_ip", c.ClientIP(), "user_agent", c.GetHeader("User-Agent"))
 
 	hosts, err := h.service.GetAllHosts(c.Request.Context())
 	if err != nil {
@@ -68,7 +68,7 @@ func (h *HostHandler) HandleGetAllHosts(c *gin.Context) {
 		return
 	}
 
-	h.logger.Info("All hosts information retrieved successfully", "count", len(hosts))
+	h.logger.Debug("All hosts information retrieved successfully", "count", len(hosts))
 	c.JSON(http.StatusOK, gin.H{
 		"hosts": hosts,
 	})

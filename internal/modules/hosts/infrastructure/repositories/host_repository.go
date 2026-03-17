@@ -21,8 +21,6 @@ type hostRepository struct {
 }
 
 func NewHostRepository(db *gorm.DB) HostRepository {
-	// Auto-migrate the hosts table
-	db.AutoMigrate(&localentities.Host{})
 	return &hostRepository{db: db}
 }
 

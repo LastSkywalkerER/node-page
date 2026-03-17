@@ -6,6 +6,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"system-stats/internal/app/database"
 	localentities "system-stats/internal/modules/disk/infrastructure/entities"
 )
 
@@ -21,13 +22,10 @@ type diskRepository struct {
 }
 
 func NewDiskRepository(db *gorm.DB) DiskRepository {
-	// Auto-migrate the historical disk metrics table
-	db.AutoMigrate(&localentities.HistoricalDiskMetric{})
 	return &diskRepository{db: db}
 }
 
 func (r *diskRepository) SaveCurrentMetric(ctx context.Context, metric localentities.DiskMetric, hostId uint) error {
-	// Save as historical metric
 	historicalMetric := localentities.HistoricalDiskMetric{
 		HostID:       &hostId,
 		Timestamp:    time.Now().UTC(),
@@ -35,7 +33,6 @@ func (r *diskRepository) SaveCurrentMetric(ctx context.Context, metric localenti
 		UsedBytes:    metric.Used,
 		TotalBytes:   metric.Total,
 	}
-
 	return r.db.WithContext(ctx).Create(&historicalMetric).Error
 }
 
@@ -45,12 +42,10 @@ func (r *diskRepository) GetLatestMetric(ctx context.Context) (localentities.Dis
 	err := r.db.WithContext(ctx).
 		Order("timestamp DESC").
 		First(&metric).Error
-
 	if err != nil {
 		return localentities.DiskMetric{}, err
 	}
 
-	// Convert historical to current metric
 	return localentities.DiskMetric{
 		Total:        metric.TotalBytes,
 		Used:         metric.UsedBytes,
@@ -61,22 +56,16 @@ func (r *diskRepository) GetLatestMetric(ctx context.Context) (localentities.Dis
 
 func (r *diskRepository) GetHistoricalMetrics(ctx context.Context, hours float64) ([]localentities.HistoricalDiskMetric, error) {
 	var metrics []localentities.HistoricalDiskMetric
-
-	query := r.db.WithContext(ctx).
-		Where("timestamp >= datetime('now', '-' || ? || ' hours')", hours).
+	err := database.TimeOffsetQuery(r.db.WithContext(ctx), hours).
 		Order("timestamp ASC").
-		Find(&metrics)
-
-	return metrics, query.Error
+		Find(&metrics).Error
+	return metrics, err
 }
 
 func (r *diskRepository) GetHistoricalMetricsByHost(ctx context.Context, hostId uint, hours float64) ([]localentities.HistoricalDiskMetric, error) {
 	var metrics []localentities.HistoricalDiskMetric
-
-	query := r.db.WithContext(ctx).
-		Where("host_id = ? AND timestamp >= datetime('now', '-' || ? || ' hours')", hostId, hours).
+	err := database.TimeOffsetQueryWithHost(r.db.WithContext(ctx), hostId, hours).
 		Order("timestamp ASC").
-		Find(&metrics)
-
-	return metrics, query.Error
+		Find(&metrics).Error
+	return metrics, err
 }

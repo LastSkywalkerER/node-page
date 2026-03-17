@@ -9,6 +9,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"system-stats/internal/app/database"
 	"system-stats/internal/modules/docker/domain/repositories"
 	localentities "system-stats/internal/modules/docker/infrastructure/entities"
 )
@@ -18,8 +19,6 @@ type dockerRepository struct {
 }
 
 func NewDockerRepository(db *gorm.DB) repositories.DockerRepository {
-	db.AutoMigrate(&localentities.DockerContainerEntity{})
-	db.AutoMigrate(&repositories.HistoricalDockerMetric{})
 	return &dockerRepository{db: db}
 }
 
@@ -196,42 +195,18 @@ func (r *dockerRepository) normalizeStackName(stackName string) string {
 	}
 }
 
-func (r *dockerRepository) GetHistoricalMetrics(ctx context.Context, hours float64) ([]interface{}, error) {
+func (r *dockerRepository) GetHistoricalMetrics(ctx context.Context, hours float64) ([]repositories.HistoricalDockerMetric, error) {
 	var metrics []repositories.HistoricalDockerMetric
-
-	query := r.db.WithContext(ctx).
-		Where("timestamp >= datetime('now', '-' || ? || ' hours')", hours).
+	err := database.TimeOffsetQuery(r.db.WithContext(ctx), hours).
 		Order("timestamp ASC").
-		Find(&metrics)
-
-	if query.Error != nil {
-		return nil, query.Error
-	}
-
-	// Convert to []interface{} for compatibility
-	result := make([]interface{}, len(metrics))
-	for i, metric := range metrics {
-		result[i] = metric
-	}
-	return result, nil
+		Find(&metrics).Error
+	return metrics, err
 }
 
-func (r *dockerRepository) GetHistoricalMetricsByHost(ctx context.Context, hostId uint, hours float64) ([]interface{}, error) {
+func (r *dockerRepository) GetHistoricalMetricsByHost(ctx context.Context, hostId uint, hours float64) ([]repositories.HistoricalDockerMetric, error) {
 	var metrics []repositories.HistoricalDockerMetric
-
-	query := r.db.WithContext(ctx).
-		Where("host_id = ? AND timestamp >= datetime('now', '-' || ? || ' hours')", hostId, hours).
+	err := database.TimeOffsetQueryWithHost(r.db.WithContext(ctx), hostId, hours).
 		Order("timestamp ASC").
-		Find(&metrics)
-
-	if query.Error != nil {
-		return nil, query.Error
-	}
-
-	// Convert to []interface{} for compatibility
-	result := make([]interface{}, len(metrics))
-	for i, metric := range metrics {
-		result[i] = metric
-	}
-	return result, nil
+		Find(&metrics).Error
+	return metrics, err
 }

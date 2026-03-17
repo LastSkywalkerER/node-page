@@ -1,15 +1,16 @@
-/**
- * Package di provides dependency injection container for managing application dependencies.
- * This package implements the dependency injection pattern to wire together all components
- * of the system statistics application, ensuring proper initialization and lifecycle management.
- */
+ // Package di provides dependency injection container for managing application dependencies.
+ // This package implements the dependency injection pattern to wire together all components
+ // of the system statistics application, ensuring proper initialization and lifecycle management.
 package di
 
 import (
 	"time"
 
+	"gorm.io/gorm"
+
 	"system-stats/internal/app/config"
 	"system-stats/internal/app/database"
+	"system-stats/internal/app/stream"
 
 	cpuservice "system-stats/internal/modules/cpu/application"
 	cpurepos "system-stats/internal/modules/cpu/infrastructure/repositories"
@@ -36,16 +37,15 @@ import (
 	"github.com/charmbracelet/log"
 )
 
-/**
- * Container represents the dependency injection container that holds all application dependencies.
- * This struct manages the lifecycle of all services, repositories, handlers, and infrastructure
- * components, providing getter methods for accessing initialized instances.
- */
+ // Container represents the dependency injection container that holds all application dependencies.
+ // This struct manages the lifecycle of all services, repositories, handlers, and infrastructure
+ // components, providing getter methods for accessing initialized instances.
 type Container struct {
-	/** logger provides structured logging throughout the application */
+	// logger provides structured logging throughout the application
 	logger *log.Logger
+	db     *gorm.DB
 
-	/** repositories for each metric type */
+	// repositories for each metric type
 	cpuRepository     cpurepos.CPURepository
 	memoryRepository  memoryrepos.MemoryRepository
 	diskRepository    diskrepos.DiskRepository
@@ -53,11 +53,11 @@ type Container struct {
 	dockerRepository  dockerdomain.DockerRepository
 	hostRepository    hostrepos.HostRepository
 
-	/** user repositories */
+	// user repositories
 	userRepository         userrepos.UserRepository
 	refreshTokenRepository userrepos.RefreshTokenRepository
 
-	/** individual services for each metric type */
+	// individual services for each metric type
 	cpuService     cpuservice.Service
 	memoryService  memoryservice.Service
 	diskService    diskservice.Service
@@ -66,36 +66,30 @@ type Container struct {
 	hostService    hostservice.Service
 	healthService  healthservice.Service
 
-	/** user services */
+	// user services
 	userService  userapp.UserService
 	tokenService userapp.TokenService
 
-	/** systemService provides aggregated system metrics */
+	// systemService provides aggregated system metrics
 	systemService systemsrv.Service
 
-	/** historicalMetricsService manages historical metrics collection and storage */
+	// historicalMetricsService manages historical metrics collection and storage
 	historicalMetricsService historycore.HistoricalMetricsService
 
 	// sensors service
 	sensorsService sensorsservice.Service
+
+	// broker for SSE real-time metrics streaming
+	broker *stream.Broker
 }
 
-/**
- * NewContainer creates a new dependency injection container with all application dependencies.
- * This constructor initializes the database, creates all repositories, services, collectors,
- * cache instances, and command/query handlers in the correct dependency order.
- *
- * @param logger The logger instance for structured logging
- * @param dbConfig The database configuration (type and connection details)
- * @param jwtSecret The JWT secret key for access tokens
- * @param refreshSecret The refresh secret key for refresh tokens
- * @param startTime The application start time for uptime calculations
- * @return *Container The initialized dependency injection container
- * @return error Returns an error if any dependency initialization fails
- */
+ // NewContainer creates a new dependency injection container with all application dependencies.
+ // This constructor initializes the database, creates all repositories, services, collectors,
+ // cache instances, and command/query handlers in the correct dependency order.
 func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret, refreshSecret string, startTime time.Time) (*Container, error) {
 	container := &Container{
 		logger: logger,
+		broker: stream.NewBroker(),
 	}
 
 	// Initialize GORM database connection
@@ -108,6 +102,8 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 	if err := database.Migrate(db); err != nil {
 		return nil, err
 	}
+
+	container.db = db
 
 	// Create repositories for each module
 	container.cpuRepository = cpurepos.NewCPURepository(db)
@@ -126,7 +122,7 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 	container.memoryService = memoryservice.NewService(container.logger, container.memoryRepository)
 	container.diskService = diskservice.NewService(container.logger, container.diskRepository)
 	container.networkService = networkservice.NewService(container.logger, container.networkRepository)
-	container.dockerService = dockerservice.NewService(container.logger, dockercollectors.NewDockerMetricsCollector(container.logger), dockerrepos.NewDockerRepository(db))
+	container.dockerService = dockerservice.NewService(container.logger, dockercollectors.NewDockerMetricsCollector(container.logger), container.dockerRepository)
 	container.hostService = hostservice.NewService(container.logger, container.hostRepository)
 	container.healthService = healthservice.NewService(container.logger, container.hostRepository, startTime)
 	container.sensorsService = sensorsservice.NewService(container.logger)
@@ -170,74 +166,47 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 
 // Dependency getters - provide access to initialized components
 
-/**
- * GetLogger returns the logger instance.
- * @return *log.Logger The logger instance
- */
+ // GetLogger returns the logger instance.
 func (c *Container) GetLogger() *log.Logger {
 	return c.logger
 }
 
-/**
- * GetCPUService returns the CPU metrics service instance.
- * @return cpuservice.Service The CPU service instance
- */
+ // GetCPUService returns the CPU metrics service instance.
 func (c *Container) GetCPUService() cpuservice.Service {
 	return c.cpuService
 }
 
-/**
- * GetMemoryService returns the memory metrics service instance.
- * @return memoryservice.Service The memory service instance
- */
+ // GetMemoryService returns the memory metrics service instance.
 func (c *Container) GetMemoryService() memoryservice.Service {
 	return c.memoryService
 }
 
-/**
- * GetDiskService returns the disk metrics service instance.
- * @return diskservice.Service The disk service instance
- */
+ // GetDiskService returns the disk metrics service instance.
 func (c *Container) GetDiskService() diskservice.Service {
 	return c.diskService
 }
 
-/**
- * GetNetworkService returns the network metrics service instance.
- * @return networkservice.Service The network service instance
- */
+ // GetNetworkService returns the network metrics service instance.
 func (c *Container) GetNetworkService() networkservice.Service {
 	return c.networkService
 }
 
-/**
- * GetDockerService returns the docker metrics service instance.
- * @return dockerservice.Service The docker service instance
- */
+ // GetDockerService returns the docker metrics service instance.
 func (c *Container) GetDockerService() dockerservice.Service {
 	return c.dockerService
 }
 
-/**
- * GetHostService returns the host service instance.
- * @return hostservice.Service The host service instance
- */
+ // GetHostService returns the host service instance.
 func (c *Container) GetHostService() hostservice.Service {
 	return c.hostService
 }
 
-/**
- * GetHealthService returns the health service instance.
- * @return healthservice.Service The health service instance
- */
+ // GetHealthService returns the health service instance.
 func (c *Container) GetHealthService() healthservice.Service {
 	return c.healthService
 }
 
-/**
- * GetSystemService returns the system metrics service instance.
- * @return systemsrv.Service The system service instance
- */
+ // GetSystemService returns the system metrics service instance.
 func (c *Container) GetSystemService() systemsrv.Service {
 	return c.systemService
 }
@@ -247,26 +216,27 @@ func (c *Container) GetSensorsService() sensorsservice.Service {
 	return c.sensorsService
 }
 
-/**
- * GetUserService returns the user service instance.
- * @return userapp.UserService The user service instance
- */
+ // GetUserService returns the user service instance.
 func (c *Container) GetUserService() userapp.UserService {
 	return c.userService
 }
 
-/**
- * GetTokenService returns the token service instance.
- * @return userapp.TokenService The token service instance
- */
+ // GetTokenService returns the token service instance.
 func (c *Container) GetTokenService() userapp.TokenService {
 	return c.tokenService
 }
 
-/**
- * GetHistoricalMetricsService returns the historical metrics service instance.
- * @return historycore.HistoricalMetricsService The historical metrics service instance
- */
+ // GetHistoricalMetricsService returns the historical metrics service instance.
 func (c *Container) GetHistoricalMetricsService() historycore.HistoricalMetricsService {
 	return c.historicalMetricsService
+}
+
+// GetDB returns the underlying GORM database instance.
+func (c *Container) GetDB() *gorm.DB {
+	return c.db
+}
+
+// GetBroker returns the SSE metrics broker.
+func (c *Container) GetBroker() *stream.Broker {
+	return c.broker
 }

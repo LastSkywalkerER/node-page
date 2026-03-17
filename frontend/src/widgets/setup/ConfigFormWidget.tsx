@@ -1,8 +1,8 @@
-import React from 'react';
-import { useForm } from 'react-hook-form';
-import { yupResolver } from '@hookform/resolvers/yup';
+import { useEffect, useRef } from 'react';
+import { useForm, useWatch } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
 import { Button } from '../../shared/ui/button';
-import { FormInputField, FormPasswordField, FormSelectField, FormField } from '../../shared/ui/form-field';
+import { FormInputField, FormSelectField, FormField } from '../../shared/ui/form-field';
 import { setupConfigSchema, SetupConfigFormData } from './schemas';
 import { DEFAULT_SETUP_CONFIG } from '../../shared/config/setup';
 import { PasswordInput } from '../../shared/ui/password-input';
@@ -24,22 +24,31 @@ export function ConfigFormWidget({
   onBack,
 }: ConfigFormWidgetProps) {
   const form = useForm<SetupConfigFormData>({
-    resolver: yupResolver(setupConfigSchema),
+    resolver: zodResolver(setupConfigSchema),
     defaultValues: {
       ...DEFAULT_SETUP_CONFIG,
       ...initialValues,
     },
   });
 
+  const dbType = useWatch({ control: form.control, name: 'db_type' });
+  const prevDbType = useRef(dbType);
+
+  useEffect(() => {
+    if (prevDbType.current !== dbType) {
+      prevDbType.current = dbType;
+      form.setValue('db_dsn', dbType === 'sqlite' ? 'stats.db' : '', { shouldValidate: false });
+    }
+  }, [dbType, form]);
+
   const handleGenerateSecret = (field: 'jwt_secret' | 'refresh_secret') => {
-    const secret = generateRandomSecret(32);
-    form.setValue(field, secret);
+    form.setValue(field, generateRandomSecret(32), { shouldValidate: true });
   };
 
   return (
     <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
       <FormField
-        label="JWT Secret"
+        label="Token Signing Secret"
         required
         error={form.formState.errors.jwt_secret}
         id="jwt_secret"
@@ -62,7 +71,7 @@ export function ConfigFormWidget({
       </FormField>
 
       <FormField
-        label="Refresh Secret"
+        label="Refresh Token Secret"
         required
         error={form.formState.errors.refresh_secret}
         id="refresh_secret"
@@ -103,22 +112,44 @@ export function ConfigFormWidget({
       />
 
       <FormSelectField
-        label="Debug Mode"
+        label="Debug Logging"
         register={form.register('debug')}
         name="debug"
         options={[
-          { value: 'false', label: 'False' },
-          { value: 'true', label: 'True' },
+          { value: 'false', label: 'Off' },
+          { value: 'true', label: 'On' },
         ]}
         error={form.formState.errors.debug}
       />
 
-      <FormInputField
-        label="Database File Path"
-        register={form.register('db_dsn')}
-        name="db_dsn"
-        error={form.formState.errors.db_dsn}
+      <FormSelectField
+        label="Database"
+        register={form.register('db_type')}
+        name="db_type"
+        options={[
+          { value: 'sqlite', label: 'SQLite (file)' },
+          { value: 'postgres', label: 'PostgreSQL' },
+        ]}
+        error={form.formState.errors.db_type}
       />
+
+      {dbType === 'sqlite' ? (
+        <FormInputField
+          label="Database File Path"
+          register={form.register('db_dsn')}
+          name="db_dsn"
+          inputProps={{ placeholder: 'stats.db' }}
+          error={form.formState.errors.db_dsn}
+        />
+      ) : (
+        <FormInputField
+          label="PostgreSQL Connection String"
+          register={form.register('db_dsn')}
+          name="db_dsn"
+          inputProps={{ placeholder: 'postgres://stats:secret@localhost:5432/node_stats?sslmode=disable' }}
+          error={form.formState.errors.db_dsn}
+        />
+      )}
 
       <div className="flex gap-2">
         <Button
@@ -147,4 +178,3 @@ function generateRandomSecret(length: number = 32): string {
   }
   return result;
 }
-

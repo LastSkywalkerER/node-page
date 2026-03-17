@@ -14,8 +14,8 @@ type Service interface {
 	Collect(ctx context.Context) (entities.DiskMetric, error)
 	Save(ctx context.Context, metric entities.DiskMetric, hostId uint) error
 	GetLatest(ctx context.Context) (entities.DiskMetric, error)
-	GetHistorical(ctx context.Context, hours float64) ([]interface{}, error)
-	GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]interface{}, error)
+	GetHistorical(ctx context.Context, hours float64) ([]entities.HistoricalDiskMetric, error)
+	GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]entities.HistoricalDiskMetric, error)
 	CollectAndSave(ctx context.Context, hostId uint) error
 }
 
@@ -34,70 +34,52 @@ func NewService(logger *log.Logger, diskRepository diskrepos.DiskRepository) Ser
 }
 
 func (s *service) Collect(ctx context.Context) (entities.DiskMetric, error) {
-	s.logger.Info("Collecting disk metrics")
+	s.logger.Debug("Collecting disk metrics")
 	metric, err := s.collector.CollectDiskMetrics(ctx)
 	if err != nil {
 		s.logger.Error("Failed to collect disk metrics", "error", err)
 		return entities.DiskMetric{}, err
 	}
-	s.logger.Info("Disk metrics collected successfully", "usage_percent", metric.UsagePercent)
+	s.logger.Debug("Disk metrics collected", "usage_percent", metric.UsagePercent)
 	return metric, nil
 }
 
 func (s *service) Save(ctx context.Context, metric entities.DiskMetric, hostId uint) error {
-	s.logger.Info("Saving disk metrics to repository", "usage_percent", metric.UsagePercent, "host_id", hostId)
+	s.logger.Debug("Saving disk metrics", "usage_percent", metric.UsagePercent, "host_id", hostId)
 	err := s.diskRepository.SaveCurrentMetric(ctx, metric, hostId)
 	if err != nil {
 		s.logger.Error("Failed to save disk metrics", "error", err, "host_id", hostId)
 		return err
 	}
-	s.logger.Info("Disk metrics saved successfully", "host_id", hostId)
+	s.logger.Debug("Disk metrics saved", "host_id", hostId)
 	return nil
 }
 
 func (s *service) GetLatest(ctx context.Context) (entities.DiskMetric, error) {
-	s.logger.Info("Getting latest disk metrics")
 	metric, err := s.diskRepository.GetLatestMetric(ctx)
 	if err != nil {
 		s.logger.Error("Failed to get latest disk metrics", "error", err)
 		return entities.DiskMetric{}, err
 	}
-	s.logger.Info("Latest disk metrics retrieved successfully")
 	return metric, nil
 }
 
-func (s *service) GetHistorical(ctx context.Context, hours float64) ([]interface{}, error) {
-	s.logger.Info("Getting historical disk metrics", "hours", hours)
+func (s *service) GetHistorical(ctx context.Context, hours float64) ([]entities.HistoricalDiskMetric, error) {
 	metrics, err := s.diskRepository.GetHistoricalMetrics(ctx, hours)
 	if err != nil {
 		s.logger.Error("Failed to get historical disk metrics", "error", err, "hours", hours)
 		return nil, err
 	}
-	s.logger.Info("Historical disk metrics retrieved successfully", "count", len(metrics))
-
-	// Convert to []interface{} for compatibility
-	result := make([]interface{}, len(metrics))
-	for i, metric := range metrics {
-		result[i] = metric
-	}
-	return result, nil
+	return metrics, nil
 }
 
-func (s *service) GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]interface{}, error) {
-	s.logger.Info("Getting historical disk metrics by host", "host_id", hostId, "hours", hours)
+func (s *service) GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]entities.HistoricalDiskMetric, error) {
 	metrics, err := s.diskRepository.GetHistoricalMetricsByHost(ctx, hostId, hours)
 	if err != nil {
 		s.logger.Error("Failed to get historical disk metrics by host", "error", err, "host_id", hostId, "hours", hours)
 		return nil, err
 	}
-	s.logger.Info("Historical disk metrics by host retrieved successfully", "host_id", hostId, "count", len(metrics))
-
-	// Convert to []interface{} for compatibility
-	result := make([]interface{}, len(metrics))
-	for i, metric := range metrics {
-		result[i] = metric
-	}
-	return result, nil
+	return metrics, nil
 }
 
 func (s *service) CollectAndSave(ctx context.Context, hostId uint) error {

@@ -10,36 +10,23 @@ import (
 	"system-stats/internal/modules/disk/infrastructure/entities"
 )
 
-/**
- * diskMetricsCollector implements the DiskMetricsCollector interface.
- * This collector gathers disk performance statistics using cross-platform
- * system monitoring libraries (gopsutil).
- */
+ // diskMetricsCollector implements the DiskMetricsCollector interface.
+ // This collector gathers disk performance statistics using cross-platform
+ // system monitoring libraries (gopsutil).
 type DiskMetricsCollector struct {
 	logger *log.Logger
 }
 
-/**
- * NewDiskMetricsCollector creates a new disk metrics collector instance.
- * This constructor initializes the collector for gathering disk statistics.
- *
- * @param logger The logger instance for logging collection operations
- * @return *diskMetricsCollector Returns the initialized disk collector
- */
+ // NewDiskMetricsCollector creates a new disk metrics collector instance.
+ // This constructor initializes the collector for gathering disk statistics.
 func NewDiskMetricsCollector(logger *log.Logger) *DiskMetricsCollector {
 	return &DiskMetricsCollector{logger: logger}
 }
 
-/**
- * CollectDiskMetrics gathers current disk performance statistics.
- * This method collects disk usage, free space, and usage percentages for the root filesystem.
- *
- * @param ctx The context for the operation
- * @return entities.DiskMetric The collected disk metrics
- * @return error Returns an error if disk metrics collection fails
- */
+ // CollectDiskMetrics gathers current disk performance statistics.
+ // This method collects disk usage, free space, and usage percentages for the root filesystem.
 func (c *DiskMetricsCollector) CollectDiskMetrics(ctx context.Context) (entities.DiskMetric, error) {
-	c.logger.Info("Collecting disk usage statistics for all partitions")
+	c.logger.Debug("Collecting disk usage statistics for all partitions")
 
 	// Partitions
 	parts, err := disk.PartitionsWithContext(ctx, true)
@@ -147,7 +134,7 @@ func (c *DiskMetricsCollector) CollectDiskMetrics(ctx context.Context) (entities
 		usagePercent = (float64(used) / float64(total)) * 100.0
 	}
 
-	c.logger.Info("Disk metrics collected successfully", "mounts", len(mounts), "devices", len(ioCounters))
+	c.logger.Debug("Disk metrics collected successfully", "mounts", len(mounts), "devices", len(ioCounters))
 	return entities.DiskMetric{
 		Total:        total,
 		Used:         used,

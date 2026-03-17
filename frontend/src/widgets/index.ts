@@ -10,4 +10,3 @@ export { default as SensorsWidget } from './sensors/SensorsWidget';
 
 // Auth widgets
 export { LoginWidget } from './auth/LoginWidget';
-export { RegisterWidget } from './auth/RegisterWidget';

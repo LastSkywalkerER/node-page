@@ -1,8 +1,6 @@
-/**
- * Package value_objects provides domain value objects for complex calculations and business rules.
- * This package contains immutable objects that encapsulate business logic and calculations,
- * particularly for network speed computations and other derived metrics.
- */
+ // Package value_objects provides domain value objects for complex calculations and business rules.
+ // This package contains immutable objects that encapsulate business logic and calculations,
+ // particularly for network speed computations and other derived metrics.
 package value_objects
 
 import (
@@ -10,113 +8,90 @@ import (
 	"time"
 )
 
-/**
- * NetworkSpeed represents calculated network interface speed and throughput metrics.
- * This value object encapsulates the results of network speed calculations,
- * providing both bandwidth speed and total throughput measurements.
- */
+ // NetworkSpeed represents calculated network interface speed and throughput metrics.
+ // This value object encapsulates the results of network speed calculations,
+ // providing both bandwidth speed and total throughput measurements.
 type NetworkSpeed struct {
-	/** SpeedMbps represents the calculated network speed in megabits per second */
+	// SpeedMbps represents the calculated network speed in megabits per second
 	SpeedMbps float64
 
-	/** Throughput represents the total data transfer rate in bytes */
+	// Throughput represents the total data transfer rate in bytes
 	Throughput float64
 
-	/** SpeedKbpsSent represents the upload speed in kilobits per second */
+	// SpeedKbpsSent represents the upload speed in kilobits per second
 	SpeedKbpsSent float64
 
-	/** SpeedKbpsRecv represents the download speed in kilobits per second */
+	// SpeedKbpsRecv represents the download speed in kilobits per second
 	SpeedKbpsRecv float64
 }
 
-/**
- * NetworkSpeedCalculator calculates network interface speeds based on historical data.
- * This calculator maintains state for multiple network interfaces and computes
- * speed metrics by comparing current measurements with previous snapshots.
- */
+ // NetworkSpeedCalculator calculates network interface speeds based on historical data.
+ // This calculator maintains state for multiple network interfaces and computes
+ // speed metrics by comparing current measurements with previous snapshots.
 type NetworkSpeedCalculator struct {
-	/** mu protects concurrent access to calculator internal state */
+	// mu protects concurrent access to calculator internal state
 	mu sync.RWMutex
 
-	/** lastTimestamp tracks the last time speed calculations were performed */
+	// lastTimestamp tracks the last time speed calculations were performed
 	lastTimestamp time.Time
 
-	/** interfaceData stores historical data for each network interface */
+	// interfaceData stores historical data for each network interface
 	interfaceData map[string]NetworkInterfaceData
 
-	/** pendingTimestamp stores the timestamp for the current calculation batch */
+	// pendingTimestamp stores the timestamp for the current calculation batch
 	pendingTimestamp time.Time
 }
 
-/**
- * NetworkInterfaceData stores network interface metrics for speed calculation.
- * This structure holds a snapshot of network interface statistics at a specific point in time,
- * used as reference data for calculating speed changes over time.
- */
+ // NetworkInterfaceData stores network interface metrics for speed calculation.
+ // This structure holds a snapshot of network interface statistics at a specific point in time,
+ // used as reference data for calculating speed changes over time.
 type NetworkInterfaceData struct {
-	/** Timestamp indicates when these interface metrics were recorded */
+	// Timestamp indicates when these interface metrics were recorded
 	Timestamp time.Time
 
-	/** BytesSent shows total bytes transmitted since system start at this timestamp */
+	// BytesSent shows total bytes transmitted since system start at this timestamp
 	BytesSent uint64
 
-	/** BytesRecv shows total bytes received since system start at this timestamp */
+	// BytesRecv shows total bytes received since system start at this timestamp
 	BytesRecv uint64
 
-	/** PacketsSent shows total packets transmitted since system start at this timestamp */
+	// PacketsSent shows total packets transmitted since system start at this timestamp
 	PacketsSent uint64
 
-	/** PacketsRecv shows total packets received since system start at this timestamp */
+	// PacketsRecv shows total packets received since system start at this timestamp
 	PacketsRecv uint64
 }
 
-/**
- * NewNetworkSpeedCalculator creates a new instance of the network speed calculator.
- * This constructor initializes the calculator with an empty interface data map
- * and prepares it for tracking network interface metrics.
- *
- * @return *NetworkSpeedCalculator Returns the initialized network speed calculator
- */
+ // NewNetworkSpeedCalculator creates a new instance of the network speed calculator.
+ // This constructor initializes the calculator with an empty interface data map
+ // and prepares it for tracking network interface metrics.
 func NewNetworkSpeedCalculator() *NetworkSpeedCalculator {
 	return &NetworkSpeedCalculator{
 		interfaceData: make(map[string]NetworkInterfaceData),
 	}
 }
 
-/**
- * BeginCalculationBatch starts a new batch of speed calculations with a consistent timestamp.
- * This method should be called before calculating speeds for multiple interfaces
- * to ensure all calculations use the same time reference.
- */
+ // BeginCalculationBatch starts a new batch of speed calculations with a consistent timestamp.
+ // This method should be called before calculating speeds for multiple interfaces
+ // to ensure all calculations use the same time reference.
 func (c *NetworkSpeedCalculator) BeginCalculationBatch() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.pendingTimestamp = time.Now()
 }
 
-/**
- * EndCalculationBatch completes a batch of speed calculations and updates the last timestamp.
- * This method should be called after calculating speeds for all interfaces in a batch.
- */
+ // EndCalculationBatch completes a batch of speed calculations and updates the last timestamp.
+ // This method should be called after calculating speeds for all interfaces in a batch.
 func (c *NetworkSpeedCalculator) EndCalculationBatch() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.lastTimestamp = c.pendingTimestamp
 }
 
-/**
- * CalculateSpeed calculates the network speed for a specific interface based on current metrics.
- * This method compares current network interface statistics with previously stored data
- * to compute bandwidth speed in Mbps and total throughput. The calculation requires
- * at least two data points to compute meaningful speed metrics.
- *
- * @param name The network interface name (e.g., "eth0", "wlan0")
- * @param currentBytesSent Current total bytes sent since system start
- * @param currentBytesRecv Current total bytes received since system start
- * @param currentPacketsSent Current total packets sent since system start
- * @param currentPacketsRecv Current total packets received since system start
- * @return NetworkSpeed The calculated speed and throughput metrics
- */
+ // CalculateSpeed calculates the network speed for a specific interface based on current metrics.
+ // This method compares current network interface statistics with previously stored data
+ // to compute bandwidth speed in Mbps and total throughput. The calculation requires
+ // at least two data points to compute meaningful speed metrics.
 func (c *NetworkSpeedCalculator) CalculateSpeed(
 	name string,
 	currentBytesSent, currentBytesRecv, currentPacketsSent, currentPacketsRecv uint64,

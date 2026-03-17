@@ -1,8 +1,6 @@
-/**
- * Package collectors provides metric collection implementations for various data sources.
- * This package contains collectors for system metrics, Docker containers, and other
- * external data sources used by the monitoring application.
- */
+ // Package collectors provides metric collection implementations for various data sources.
+ // This package contains collectors for system metrics, Docker containers, and other
+ // external data sources used by the monitoring application.
 package collectors
 
 import (
@@ -24,53 +22,44 @@ import (
 	"system-stats/internal/modules/docker/infrastructure/entities"
 )
 
-/**
- * dockerMetricsCollector implements the DockerMetricsCollector interface.
- * This collector gathers Docker container statistics and status information
- * using the Docker API client with caching for availability checks and CPU calculations.
- */
+ // dockerMetricsCollector implements the DockerMetricsCollector interface.
+ // This collector gathers Docker container statistics and status information
+ // using the Docker API client with caching for availability checks and CPU calculations.
 type dockerMetricsCollector struct {
-	/** logger provides structured logging for Docker operations */
+	// logger provides structured logging for Docker operations
 	logger *log.Logger
 
-	/** dockerAvailable caches whether Docker daemon is accessible */
+	// dockerAvailable caches whether Docker daemon is accessible
 	dockerAvailable bool
 
-	/** lastCheck tracks when Docker availability was last verified */
+	// lastCheck tracks when Docker availability was last verified
 	lastCheck time.Time
 
-	/** checkInterval defines how often to recheck Docker availability */
+	// checkInterval defines how often to recheck Docker availability
 	checkInterval time.Duration
 
-	/** containerCPUCache stores previous CPU stats for percentage calculations */
+	// containerCPUCache stores previous CPU stats for percentage calculations
 	containerCPUCache map[string]cpuStatsCache
 
-	/** cacheMutex protects concurrent access to CPU cache */
+	// cacheMutex protects concurrent access to CPU cache
 	cacheMutex sync.RWMutex
 }
 
-/**
- * cpuStatsCache stores CPU statistics for percentage calculation.
- * This structure holds previous CPU usage data needed to compute CPU percentages.
- */
+ // cpuStatsCache stores CPU statistics for percentage calculation.
+ // This structure holds previous CPU usage data needed to compute CPU percentages.
 type cpuStatsCache struct {
-	/** totalUsage stores the total CPU usage from previous measurement */
+	// totalUsage stores the total CPU usage from previous measurement
 	totalUsage uint64
 
-	/** systemUsage stores the system CPU usage from previous measurement */
+	// systemUsage stores the system CPU usage from previous measurement
 	systemUsage uint64
 
-	/** timestamp indicates when the previous measurement was taken */
+	// timestamp indicates when the previous measurement was taken
 	timestamp time.Time
 }
 
-/**
- * NewDockerMetricsCollector creates a new Docker metrics collector instance.
- * This constructor initializes the collector with default cache settings.
- *
- * @param logger The logger instance for logging collection operations
- * @return repositories.DockerMetricsCollector Returns the initialized Docker collector
- */
+ // NewDockerMetricsCollector creates a new Docker metrics collector instance.
+ // This constructor initializes the collector with default cache settings.
 func NewDockerMetricsCollector(logger *log.Logger) repositories.DockerMetricsCollector {
 	return &dockerMetricsCollector{
 		logger:            logger,
@@ -80,13 +69,8 @@ func NewDockerMetricsCollector(logger *log.Logger) repositories.DockerMetricsCol
 	}
 }
 
-/**
- * IsDockerAvailable checks if the Docker daemon is accessible and running.
- * This method caches the result for 5 seconds to avoid excessive API calls.
- *
- * @param ctx The context for the operation
- * @return bool Returns true if Docker is available, false otherwise
- */
+ // IsDockerAvailable checks if the Docker daemon is accessible and running.
+ // This method caches the result for 5 seconds to avoid excessive API calls.
 func (c *dockerMetricsCollector) IsDockerAvailable(ctx context.Context) bool {
 	c.cacheMutex.Lock()
 	defer c.cacheMutex.Unlock()
@@ -100,7 +84,7 @@ func (c *dockerMetricsCollector) IsDockerAvailable(ctx context.Context) bool {
 
 	c.lastCheck = now
 
-	/** cli is the Docker API client used to communicate with the Docker daemon */
+	// cli is the Docker API client used to communicate with the Docker daemon
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		c.dockerAvailable = false
@@ -115,17 +99,11 @@ func (c *dockerMetricsCollector) IsDockerAvailable(ctx context.Context) bool {
 	return c.dockerAvailable
 }
 
-/**
- * CollectDockerMetrics gathers Docker container statistics and status information.
- * This method retrieves information about all running containers including their
- * resource usage, network statistics, and metadata from the Docker API.
- *
- * @param ctx The context for the operation, used for cancellation and timeouts
- * @return entities.DockerMetric The collected Docker metrics data
- * @return error Returns an error if Docker API calls fail
- */
+ // CollectDockerMetrics gathers Docker container statistics and status information.
+ // This method retrieves information about all running containers including their
+ // resource usage, network statistics, and metadata from the Docker API.
 func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (entities.DockerMetric, error) {
-	c.logger.Info("Collecting Docker container metrics")
+	c.logger.Debug("Collecting Docker container metrics")
 
 	if !c.IsDockerAvailable(ctx) {
 		c.logger.Warn("Docker is not available, returning empty metrics")
@@ -136,7 +114,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (enti
 	}
 
 	// Create Docker client
-	/** cli is the Docker API client used to communicate with the Docker daemon */
+	// cli is the Docker API client used to communicate with the Docker daemon
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return entities.DockerMetric{
@@ -298,7 +276,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (enti
 		dockerStacks = append(dockerStacks, *stack)
 	}
 
-	c.logger.Info("Docker metrics collected successfully", "total_containers", len(containers), "running_containers", int(runningCount), "stacks", len(dockerStacks))
+	c.logger.Debug("Docker metrics collected successfully", "total_containers", len(containers), "running_containers", int(runningCount), "stacks", len(dockerStacks))
 
 	// Log full content of all stacks and containers
 	for i, stack := range dockerStacks {

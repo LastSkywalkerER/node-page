@@ -1,6 +1,6 @@
 import React from 'react';
 import { useForm } from 'react-hook-form';
-import { yupResolver } from '@hookform/resolvers/yup';
+import { zodResolver } from '@hookform/resolvers/zod';
 import { Button } from '../../shared/ui/button';
 import { FormInputField, FormPasswordField } from '../../shared/ui/form-field';
 import { adminUserSchema, AdminUserFormData } from './schemas';
@@ -17,7 +17,7 @@ interface AdminFormWidgetProps {
 
 export function AdminFormWidget({ onSubmit, onBack }: AdminFormWidgetProps) {
   const form = useForm<AdminUserFormData>({
-    resolver: yupResolver(adminUserSchema),
+    resolver: zodResolver(adminUserSchema),
     defaultValues: {
       email: '',
       password: '',

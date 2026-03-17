@@ -29,7 +29,7 @@ func NewService(logger *log.Logger, hostRepository hostrepos.HostRepository, sta
 }
 
 func (s *service) GetHealth(ctx context.Context, hostID *uint) (*entities.HealthResponse, error) {
-	s.logger.Info("Getting health information", "host_id", hostID)
+	s.logger.Debug("Getting health information", "host_id", hostID)
 
 	now := time.Now().UTC()
 	serverUptime := time.Since(s.startTime).String()
@@ -78,6 +78,6 @@ func (s *service) GetHealth(ctx context.Context, hostID *uint) (*entities.Health
 		LastSeen:   host.LastSeen,
 	}
 
-	s.logger.Info("Health information retrieved", "host_id", hostID, "status", status, "uptime", uptime)
+	s.logger.Debug("Health information retrieved", "host_id", hostID, "status", status, "uptime", uptime)
 	return health, nil
 }

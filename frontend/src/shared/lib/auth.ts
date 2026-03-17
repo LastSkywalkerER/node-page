@@ -8,19 +8,11 @@ export interface User {
 
 export interface AuthResponse {
   user: User;
-  access_token: string;
-  refresh_token: string;
   expires_in: number;
 }
 
 interface ApiEnvelope<T> {
   data: T;
-}
-
-export interface RefreshResponse {
-  access_token: string;
-  refresh_token: string;
-  expires_in: number;
 }
 
 class AuthService {
@@ -29,10 +21,7 @@ class AuthService {
       email,
       password,
     });
-
-    const payload = response.data.data;
-
-    return payload;
+    return response.data.data;
   }
 
   async login(email: string, password: string): Promise<AuthResponse> {
@@ -40,27 +29,17 @@ class AuthService {
       email,
       password,
     });
-
-    const payload = response.data.data;
-
-    return payload;
+    return response.data.data;
   }
 
-  async refresh(refreshToken: string): Promise<RefreshResponse> {
-    const response = await apiClient.post<ApiEnvelope<RefreshResponse>>('/auth/refresh', {
-      refresh_token: refreshToken,
-    });
-
-    const payload = response.data.data;
-
-    return payload;
+  async refresh(): Promise<void> {
+    // Cookie is sent automatically; server sets new cookies in response
+    await apiClient.post('/auth/refresh');
   }
 
-  async logout(refreshToken?: string): Promise<void> {
+  async logout(): Promise<void> {
     try {
-      if (refreshToken) {
-        await apiClient.post('/auth/logout', { refresh_token: refreshToken });
-      }
+      await apiClient.post('/auth/logout');
     } catch (error) {
       console.warn('Server logout failed:', error);
     }
@@ -73,4 +52,3 @@ class AuthService {
 }
 
 export const authService = new AuthService();
-

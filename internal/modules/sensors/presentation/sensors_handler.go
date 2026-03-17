@@ -31,7 +31,7 @@ func parseHostIdQuery(c *gin.Context) uint {
 
 func (h *SensorsHandler) HandleSensors(c *gin.Context) {
 	hostId := parseHostIdQuery(c)
-	h.logger.Info("Handling sensors request", "host_id", hostId)
+	h.logger.Debug("Handling sensors request", "host_id", hostId)
 	metric, err := h.service.Collect(c.Request.Context())
 	if err != nil {
 		h.logger.Error("Failed to collect sensors", "error", err)

@@ -26,7 +26,7 @@ func NewHealthHandler(logger *log.Logger, service healthservice.Service) *Health
 
 // HandleHealth returns health check information.
 func (h *HealthHandler) HandleHealth(c *gin.Context) {
-	h.logger.Info("Handling health check request", "client_ip", c.ClientIP(), "user_agent", c.GetHeader("User-Agent"))
+	h.logger.Debug("Handling health check request", "client_ip", c.ClientIP(), "user_agent", c.GetHeader("User-Agent"))
 
 	// Parse optional host_id query parameter
 	var hostID *uint
@@ -48,6 +48,6 @@ func (h *HealthHandler) HandleHealth(c *gin.Context) {
 		return
 	}
 
-	h.logger.Info("Health information retrieved successfully", "host_id", hostID, "status", health.Status)
+	h.logger.Debug("Health information retrieved successfully", "host_id", hostID, "status", health.Status)
 	c.JSON(http.StatusOK, health)
 }

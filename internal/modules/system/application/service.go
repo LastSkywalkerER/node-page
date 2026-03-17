@@ -40,7 +40,7 @@ func NewService(logger *log.Logger, cpuService cpuservice.Service, memoryService
 
 // CollectAllCurrent collects all current system metrics from individual services.
 func (s *service) CollectAllCurrent(ctx context.Context) (map[string]interface{}, error) {
-	s.logger.Info("Getting current system metrics")
+	s.logger.Debug("Getting current system metrics")
 
 	// Structure for parallel collection results
 	type collectResult struct {
@@ -100,7 +100,7 @@ func (s *service) CollectAllCurrent(ctx context.Context) (map[string]interface{}
 				return nil, result.err
 			}
 			cpuMetric = result.metric
-			s.logger.Info("Current CPU metrics collected")
+			s.logger.Debug("Current CPU metrics collected")
 
 		case "memory":
 			if result.err != nil {
@@ -108,7 +108,7 @@ func (s *service) CollectAllCurrent(ctx context.Context) (map[string]interface{}
 				return nil, result.err
 			}
 			memoryMetric = result.metric
-			s.logger.Info("Current memory metrics collected")
+			s.logger.Debug("Current memory metrics collected")
 
 		case "disk":
 			if result.err != nil {
@@ -116,7 +116,7 @@ func (s *service) CollectAllCurrent(ctx context.Context) (map[string]interface{}
 				return nil, result.err
 			}
 			diskMetric = result.metric
-			s.logger.Info("Current disk metrics collected")
+			s.logger.Debug("Current disk metrics collected")
 
 		case "network":
 			if result.err != nil {
@@ -124,7 +124,7 @@ func (s *service) CollectAllCurrent(ctx context.Context) (map[string]interface{}
 				return nil, result.err
 			}
 			networkMetric = result.metric
-			s.logger.Info("Current network metrics collected")
+			s.logger.Debug("Current network metrics collected")
 
 		case "docker":
 			if result.err != nil {
@@ -132,11 +132,11 @@ func (s *service) CollectAllCurrent(ctx context.Context) (map[string]interface{}
 				return nil, result.err
 			}
 			dockerMetric = result.metric
-			s.logger.Info("Current docker metrics collected")
+			s.logger.Debug("Current docker metrics collected")
 		}
 	}
 
-	s.logger.Info("Current metrics collected successfully")
+	s.logger.Debug("Current metrics collected successfully")
 	return map[string]interface{}{
 		"timestamp": time.Now(),
 		"cpu":       cpuMetric,

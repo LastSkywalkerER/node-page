@@ -9,32 +9,38 @@ import (
 	userservice "system-stats/internal/modules/users/application"
 )
 
-// AuthJWT middleware validates JWT tokens and sets user context
+// AuthJWT middleware validates JWT tokens and sets user context.
+// It reads the token from the access_token cookie first, then falls back to Authorization header.
 func AuthJWT(tokenService userservice.TokenService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Extract token from Authorization header
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"code":  "unauthorized",
-				"error": "Authorization header required",
-			})
-			c.Abort()
-			return
+		var tokenString string
+
+		// Prefer HttpOnly cookie
+		if cookie, err := c.Cookie("access_token"); err == nil && cookie != "" {
+			tokenString = cookie
+		} else {
+			// Fallback to Authorization header for API clients / backward compat
+			authHeader := c.GetHeader("Authorization")
+			if authHeader == "" {
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"code":  "unauthorized",
+					"error": "Authorization required",
+				})
+				c.Abort()
+				return
+			}
+			const bearerPrefix = "Bearer "
+			if !strings.HasPrefix(authHeader, bearerPrefix) {
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"code":  "unauthorized",
+					"error": "Invalid authorization header format",
+				})
+				c.Abort()
+				return
+			}
+			tokenString = strings.TrimPrefix(authHeader, bearerPrefix)
 		}
 
-		// Check Bearer token format
-		const bearerPrefix = "Bearer "
-		if !strings.HasPrefix(authHeader, bearerPrefix) {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"code":  "unauthorized",
-				"error": "Invalid authorization header format",
-			})
-			c.Abort()
-			return
-		}
-
-		tokenString := strings.TrimPrefix(authHeader, bearerPrefix)
 		if tokenString == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"code":  "unauthorized",

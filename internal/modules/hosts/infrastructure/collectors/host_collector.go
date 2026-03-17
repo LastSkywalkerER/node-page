@@ -12,35 +12,22 @@ import (
 	"system-stats/internal/modules/hosts/infrastructure/entities"
 )
 
-/**
- * HostCollector implements the HostCollector interface.
- * This collector gathers host information including hostname and MAC address.
- */
+ // HostCollector implements the HostCollector interface.
+ // This collector gathers host information including hostname and MAC address.
 type HostCollector struct {
 	logger *log.Logger
 }
 
-/**
- * NewHostCollector creates a new host collector instance.
- * This constructor initializes the collector for gathering host information.
- *
- * @param logger The logger instance for logging collection operations
- * @return *HostCollector Returns the initialized host collector
- */
+ // NewHostCollector creates a new host collector instance.
+ // This constructor initializes the collector for gathering host information.
 func NewHostCollector(logger *log.Logger) *HostCollector {
 	return &HostCollector{logger: logger}
 }
 
-/**
- * CollectHostInfo gathers current host information including hostname and MAC address.
- * This method collects host info using cross-platform system monitoring libraries (gopsutil).
- *
- * @param ctx The context for the operation
- * @return entities.HostInfo The collected host information
- * @return error Returns an error if host info collection fails
- */
+ // CollectHostInfo gathers current host information including hostname and MAC address.
+ // This method collects host info using cross-platform system monitoring libraries (gopsutil).
 func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo, error) {
-	c.logger.Info("Collecting host information")
+	c.logger.Debug("Collecting host information")
 
 	// Get hostname and system info
 	hostInfo, err := host.InfoWithContext(ctx)
@@ -94,7 +81,7 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo,
 				if ipStr == primaryIP {
 					macAddress = iface.HardwareAddr
 					ipv4 = ipStr
-					c.logger.Info("Selected primary interface by IPv4", "interface", iface.Name, "ip", ipStr, "mac", macAddress)
+					c.logger.Debug("Selected primary interface by IPv4", "interface", iface.Name, "ip", ipStr, "mac", macAddress)
 					break
 				}
 			}
@@ -158,7 +145,7 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo,
 					continue
 				}
 				macAddress = iface.HardwareAddr
-				c.logger.Info("Selected interface by received bytes (IPv4)", "interface", iface.Name, "rx_bytes", recvByName[iface.Name], "mac", macAddress)
+				c.logger.Debug("Selected interface by received bytes (IPv4)", "interface", iface.Name, "rx_bytes", recvByName[iface.Name], "mac", macAddress)
 				break
 			}
 		}
@@ -193,7 +180,7 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo,
 					continue
 				}
 				macAddress = iface.HardwareAddr
-				c.logger.Info("Fallback to first valid MAC address (IPv4)", "interface", iface.Name, "mac", macAddress)
+				c.logger.Debug("Fallback to first valid MAC address (IPv4)", "interface", iface.Name, "mac", macAddress)
 				break
 			}
 		}
@@ -204,7 +191,7 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo,
 		return entities.HostInfo{}, net.InvalidAddrError("no valid MAC address found")
 	}
 
-	c.logger.Info("Host information collected successfully", "hostname", hostname, "mac_address", macAddress)
+	c.logger.Debug("Host information collected successfully", "hostname", hostname, "mac_address", macAddress)
 	return entities.HostInfo{
 		Name:                 hostname,
 		MacAddress:           macAddress,

@@ -30,6 +30,7 @@ type historicalMetricsService struct {
 	logger           *log.Logger
 	metricsCollector *metricsCollector
 	hostService      hostservice.Service
+	afterCollect     func()
 	ticker           *time.Ticker
 	stopChan         chan struct{}
 	isRunning        bool
@@ -49,8 +50,16 @@ func NewHistoricalMetricsService(
 	}
 }
 
+// WithAfterCollect sets a hook called after every successful collection cycle.
+// Used to publish metrics to the SSE broker without coupling this service to the stream package.
+func WithAfterCollect(svc core.HistoricalMetricsService, fn func()) core.HistoricalMetricsService {
+	s := svc.(*historicalMetricsService)
+	s.afterCollect = fn
+	return s
+}
+
 func (s *historicalMetricsService) CollectAndSaveMetrics(ctx context.Context) error {
-	s.logger.Info("Starting metrics collection cycle for all modules")
+	s.logger.Debug("Starting metrics collection cycle for all modules")
 
 	// First, register or update current host
 	host, err := s.hostService.RegisterOrUpdateCurrentHost(ctx)
@@ -60,7 +69,7 @@ func (s *historicalMetricsService) CollectAndSaveMetrics(ctx context.Context) er
 	}
 
 	hostId := host.ID
-	s.logger.Info("Current host registered/updated", "host_id", hostId, "name", host.Name)
+	s.logger.Debug("Current host registered/updated", "host_id", hostId, "name", host.Name)
 
 	// Collect and save metrics for all modules with host_id
 	for _, service := range s.metricsCollector.services {
@@ -72,7 +81,9 @@ func (s *historicalMetricsService) CollectAndSaveMetrics(ctx context.Context) er
 		}
 	}
 
-	s.logger.Info("Metrics collection cycle completed for all modules", "host_id", hostId)
+	if s.afterCollect != nil {
+		s.afterCollect()
+	}
 	return nil
 }
 

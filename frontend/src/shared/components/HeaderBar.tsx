@@ -2,18 +2,10 @@ import { useUserStore } from '../store/user';
 import { Button } from '../ui/button';
 import { LogOut, User } from 'lucide-react';
 import { useLogout } from '../../widgets/auth/useLogout';
-import { useGetMe } from '../../widgets/auth/useGetMe';
-import { storageService } from '../lib/storage';
 
 export function HeaderBar() {
-  const { user, getRefreshToken } = useUserStore();
+  const { user } = useUserStore();
   const logoutMutation = useLogout();
-  
-  // Fetch user data if not available (e.g., after page reload)
-  // Only if we have a valid refresh token
-  // Interceptor will handle token refresh automatically if needed
-  const hasRefreshToken = !!getRefreshToken() && !storageService.isRefreshTokenExpired();
-  useGetMe({ enabled: !user && hasRefreshToken });
 
   const handleLogout = () => {
     logoutMutation.mutate();
@@ -54,4 +46,3 @@ export function HeaderBar() {
     </header>
   );
 }
-
