@@ -29,6 +29,18 @@ func parseHostIdQuery(c *gin.Context) uint {
 	return uint(hostId)
 }
 
+// HandleSensors returns temperature sensor readings.
+//
+// @Summary     Sensor readings
+// @Description Returns temperature sensor data. Returns an empty array on non-Linux hosts.
+// @Tags        metrics
+// @Produce     json
+// @Param       host_id  query    integer  false  "Host ID (ignored — sensors are local-only)"
+// @Success     200      {object} map[string]interface{}
+// @Failure     401      {object} map[string]string
+// @Failure     500      {object} map[string]string
+// @Security    BearerAuth
+// @Router      /sensors [get]
 func (h *SensorsHandler) HandleSensors(c *gin.Context) {
 	hostId := parseHostIdQuery(c)
 	h.logger.Debug("Handling sensors request", "host_id", hostId)

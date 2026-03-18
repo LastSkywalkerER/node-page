@@ -37,6 +37,10 @@ Environment Variables:
     DEBUG                   Enable debug logging: "true", "1", "false", or "0" (default: "false")
                             Example: DEBUG=true
 
+    PROMETHEUS_ENABLED      Expose Prometheus /metrics endpoint: "true", "1", "false", or "0" (default: "false")
+                            Exports HTTP request metrics, Go runtime metrics, and system metrics (CPU, RAM, disk, network).
+                            Example: PROMETHEUS_ENABLED=true
+
   Database Configuration:
     DB_TYPE                 Database type: "sqlite" (default: "sqlite")
                             Example: DB_TYPE=sqlite

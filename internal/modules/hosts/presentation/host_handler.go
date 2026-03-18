@@ -24,6 +24,16 @@ func NewHostHandler(logger *log.Logger, service hostservice.Service) *HostHandle
 }
 
 // HandleRegisterCurrentHost registers or updates the current host information.
+//
+// @Summary     Register current host
+// @Description Registers or updates the current host entry (hostname, OS, uptime, etc.).
+// @Tags        hosts
+// @Produce     json
+// @Success     200  {object} map[string]interface{}
+// @Failure     401  {object} map[string]string
+// @Failure     500  {object} map[string]string
+// @Security    BearerAuth
+// @Router      /hosts/register [post]
 func (h *HostHandler) HandleRegisterCurrentHost(c *gin.Context) {
 	h.logger.Debug("Handling register current host request", "client_ip", c.ClientIP(), "user_agent", c.GetHeader("User-Agent"))
 
@@ -41,6 +51,16 @@ func (h *HostHandler) HandleRegisterCurrentHost(c *gin.Context) {
 }
 
 // HandleGetCurrentHost returns information about the current host.
+//
+// @Summary     Current host info
+// @Description Returns hostname, OS, uptime, and hardware info for the host running this server.
+// @Tags        hosts
+// @Produce     json
+// @Success     200  {object} map[string]interface{}
+// @Failure     401  {object} map[string]string
+// @Failure     500  {object} map[string]string
+// @Security    BearerAuth
+// @Router      /hosts/current [get]
 func (h *HostHandler) HandleGetCurrentHost(c *gin.Context) {
 	h.logger.Debug("Handling get current host request", "client_ip", c.ClientIP(), "user_agent", c.GetHeader("User-Agent"))
 
@@ -58,6 +78,16 @@ func (h *HostHandler) HandleGetCurrentHost(c *gin.Context) {
 }
 
 // HandleGetAllHosts returns information about all registered hosts.
+//
+// @Summary     All registered hosts
+// @Description Returns the list of all hosts that have registered with this server.
+// @Tags        hosts
+// @Produce     json
+// @Success     200  {object} map[string]interface{}
+// @Failure     401  {object} map[string]string
+// @Failure     500  {object} map[string]string
+// @Security    BearerAuth
+// @Router      /hosts [get]
 func (h *HostHandler) HandleGetAllHosts(c *gin.Context) {
 	h.logger.Debug("Handling get all hosts request", "client_ip", c.ClientIP(), "user_agent", c.GetHeader("User-Agent"))
 

@@ -18,11 +18,15 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/gin-gonic/gin"
+	ginSwagger "github.com/swaggo/gin-swagger"
+	swaggerFiles "github.com/swaggo/files"
 
+	_ "system-stats/docs"
 	"system-stats/internal/app/config"
 	"system-stats/internal/app/di"
 	"system-stats/internal/app/help"
 	"system-stats/internal/app/middleware"
+	"system-stats/internal/app/prometheusmetrics"
 	"system-stats/internal/app/retention"
 	historyapp "system-stats/internal/modules/history_metrics/application"
 	cpumodule "system-stats/internal/modules/cpu/presentation"
@@ -189,6 +193,18 @@ func Run() {
 func setupRouter(container *di.Container, startTime time.Time, logger *log.Logger, cfg *config.Config, onSetupComplete func()) *gin.Engine {
 	router := gin.New()
 	router.Use(gin.Recovery())
+
+	var promHandler *prometheusmetrics.Metrics
+	if cfg.PrometheusEnabled {
+		promHandler = prometheusmetrics.New(
+			container.GetCPUService(),
+			container.GetMemoryService(),
+			container.GetDiskService(),
+			container.GetNetworkService(),
+		)
+		router.Use(promHandler.GinMiddleware())
+	}
+
 	router.Use(middleware.LoggingMiddleware(logger))
 	router.Use(middleware.CORSMiddleware(cfg.AllowOrigin, cfg.AllowOrigin != "*"))
 
@@ -215,8 +231,17 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	configWriter := setupapp.NewConfigWriter()
 	setupHandler := setupmodule.NewSetupHandler(configWriter, container.GetUserService(), onSetupComplete)
 
+	// Swagger UI (always available)
+	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+
 	api := router.Group("/api/v1")
 	{
+		// Prometheus metrics (public — scraped by Prometheus server)
+		if promHandler != nil {
+			api.GET("/metrics", gin.WrapH(promHandler.Handler()))
+			logger.Info("Prometheus metrics enabled", "endpoint", "/api/v1/metrics")
+		}
+
 		// Public: health check (no auth — used by load balancers and k8s probes)
 		api.GET("/health", healthHandler.HandleHealth)
 

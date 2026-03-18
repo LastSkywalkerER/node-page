@@ -1,0 +1,909 @@
+basePath: /api/v1
+definitions:
+  presentation.CompleteSetupRequest:
+    type: object
+  presentation.LoginRequest:
+    properties:
+      email:
+        type: string
+      password:
+        minLength: 8
+        type: string
+    required:
+    - email
+    - password
+    type: object
+  presentation.LogoutRequest:
+    properties:
+      refresh_token:
+        type: string
+    type: object
+  presentation.RefreshRequest:
+    properties:
+      refresh_token:
+        type: string
+    type: object
+  presentation.RegisterRequest:
+    properties:
+      email:
+        type: string
+      password:
+        minLength: 8
+        type: string
+    required:
+    - email
+    - password
+    type: object
+  presentation.UpdateRoleRequest:
+    properties:
+      role:
+        enum:
+        - ADMIN
+        - USER
+        type: string
+    required:
+    - role
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: Self-hosted system monitoring dashboard API. Provides CPU, memory,
+    disk, network, Docker, and sensor metrics with SSE streaming.
+  title: System Stats API
+  version: "1.0"
+paths:
+  /metrics:
+    get:
+      description: Returns Prometheus metrics in text format. Only available when
+        PROMETHEUS_ENABLED=true.
+      produces:
+      - text/plain
+      responses:
+        "200":
+          description: Prometheus text format metrics
+          schema:
+            type: string
+        "404":
+          description: Not Found — PROMETHEUS_ENABLED is false
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Prometheus metrics
+      tags:
+      - observability
+  /auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Authenticates a user and sets HttpOnly auth cookies. Also returns
+        tokens in the response body.
+      parameters:
+      - description: Login credentials
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/presentation.LoginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Login
+      tags:
+      - auth
+  /auth/logout:
+    post:
+      consumes:
+      - application/json
+      description: Revokes the refresh token and clears auth cookies.
+      parameters:
+      - description: Refresh token to revoke (optional)
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/presentation.LogoutRequest'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Logout
+      tags:
+      - auth
+  /auth/refresh:
+    post:
+      consumes:
+      - application/json
+      description: Issues a new access token using the refresh token from cookie or
+        request body.
+      parameters:
+      - description: Refresh token (optional if cookie is set)
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/presentation.RefreshRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Refresh token
+      tags:
+      - auth
+  /auth/register:
+    post:
+      consumes:
+      - application/json
+      description: Creates a new user account. Disabled when users already exist (first-time
+        setup only).
+      parameters:
+      - description: Registration credentials
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/presentation.RegisterRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Register user
+      tags:
+      - auth
+  /cpu:
+    get:
+      description: Returns latest CPU snapshot and historical usage data.
+      parameters:
+      - default: 0.0833
+        description: History window in hours
+        in: query
+        name: hours
+        type: number
+      - description: Host ID (0 = all hosts)
+        in: query
+        name: host_id
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: CPU metrics
+      tags:
+      - metrics
+  /disk:
+    get:
+      description: Returns latest disk usage snapshot and historical data.
+      parameters:
+      - default: 0.0833
+        description: History window in hours
+        in: query
+        name: hours
+        type: number
+      - description: Host ID (0 = all hosts)
+        in: query
+        name: host_id
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Disk metrics
+      tags:
+      - metrics
+  /docker:
+    get:
+      description: Returns Docker container stats (running count, resource usage)
+        with history.
+      parameters:
+      - default: 0.0833
+        description: History window in hours
+        in: query
+        name: hours
+        type: number
+      - description: Host ID (0 = all hosts)
+        in: query
+        name: host_id
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Docker metrics
+      tags:
+      - metrics
+  /health:
+    get:
+      description: Returns application and host health status. Used by load balancers
+        and Kubernetes probes.
+      parameters:
+      - description: Host ID (0 = current host)
+        in: query
+        name: host_id
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Health check
+      tags:
+      - health
+  /hosts:
+    get:
+      description: Returns the list of all hosts that have registered with this server.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: All registered hosts
+      tags:
+      - hosts
+  /hosts/current:
+    get:
+      description: Returns hostname, OS, uptime, and hardware info for the host running
+        this server.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Current host info
+      tags:
+      - hosts
+  /hosts/register:
+    post:
+      description: Registers or updates the current host entry (hostname, OS, uptime,
+        etc.).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Register current host
+      tags:
+      - hosts
+  /memory:
+    get:
+      description: Returns latest RAM snapshot and historical usage data.
+      parameters:
+      - default: 0.0833
+        description: History window in hours
+        in: query
+        name: hours
+        type: number
+      - description: Host ID (0 = all hosts)
+        in: query
+        name: host_id
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Memory metrics
+      tags:
+      - metrics
+  /metrics/current:
+    get:
+      description: Returns an aggregated snapshot of all live system metrics (CPU,
+        memory, disk, network, Docker).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Current system metrics
+      tags:
+      - metrics
+  /network:
+    get:
+      description: Returns latest network interface stats and historical traffic data.
+      parameters:
+      - default: 0.0833
+        description: History window in hours
+        in: query
+        name: hours
+        type: number
+      - description: Host ID (0 = all hosts)
+        in: query
+        name: host_id
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Network metrics
+      tags:
+      - metrics
+  /sensors:
+    get:
+      description: Returns temperature sensor data. Returns an empty array on non-Linux
+        hosts.
+      parameters:
+      - description: Host ID (ignored — sensors are local-only)
+        in: query
+        name: host_id
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Sensor readings
+      tags:
+      - metrics
+  /setup/complete:
+    post:
+      consumes:
+      - application/json
+      description: Writes the .env config file and creates the first admin user. Only
+        works when no users exist.
+      parameters:
+      - description: Setup configuration and admin credentials
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/presentation.CompleteSetupRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Complete setup
+      tags:
+      - setup
+  /setup/config:
+    get:
+      description: Returns the current configuration values for prefilling the setup
+        wizard. Only available before setup is complete.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Get config template
+      tags:
+      - setup
+  /setup/status:
+    get:
+      description: Returns whether initial setup is required (no users exist yet).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Setup status
+      tags:
+      - setup
+  /stream:
+    get:
+      description: Establishes a Server-Sent Events connection that pushes aggregated
+        system metrics every 5 seconds.
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: SSE event stream
+          schema:
+            type: string
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Live metrics stream (SSE)
+      tags:
+      - stream
+  /users:
+    get:
+      description: Returns a paginated list of all users. Admin role required.
+      parameters:
+      - default: 0
+        description: Pagination offset
+        in: query
+        name: offset
+        type: integer
+      - default: 20
+        description: Page size (max 100)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List users
+      tags:
+      - users
+  /users/{id}:
+    delete:
+      description: Permanently deletes a user account. Cannot delete your own account.
+        Admin role required.
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete user
+      tags:
+      - users
+    patch:
+      consumes:
+      - application/json
+      description: Changes the role of a user (ADMIN or USER). Admin role required.
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: New role
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/presentation.UpdateRoleRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update user role
+      tags:
+      - users
+  /users/me:
+    get:
+      description: Returns the profile of the currently authenticated user.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Current user
+      tags:
+      - users
+securityDefinitions:
+  BearerAuth:
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

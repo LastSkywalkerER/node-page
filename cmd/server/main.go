@@ -1,20 +1,23 @@
-/**
- * Main package for the system statistics monitoring application.
- * This is the entry point for the system-stats server that provides
- * real-time monitoring of system performance metrics including CPU,
- * memory, disk, network, and Docker container statistics.
- */
+// System Stats API Server — self-hosted system monitoring dashboard.
+//
+// Real-time monitoring of CPU, memory, disk, network, Docker containers, and sensors.
+// Metrics are collected every 5 seconds and streamed via SSE.
+//
+// @title           System Stats API
+// @version         1.0
+// @description     Self-hosted system monitoring dashboard API. Provides CPU, memory, disk, network, Docker, and sensor metrics with SSE streaming.
+// @host            localhost:8080
+// @BasePath        /api/v1
+//
+// @securityDefinitions.apikey BearerAuth
+// @in              header
+// @name            Authorization
 package main
 
 import (
 	"system-stats/internal/app/server"
 )
 
-/**
- * main is the application entry point.
- * This function initializes and starts the system statistics server,
- * which provides REST API endpoints for metrics collection and retrieval.
- */
 func main() {
 	server.Run()
 }

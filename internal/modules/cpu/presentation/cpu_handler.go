@@ -44,6 +44,18 @@ func NewCPUHandler(logger *log.Logger, service cpuservice.Service) *CPUHandler {
 }
 
 // HandleCPUStats returns current CPU metrics with latest and historical data.
+//
+// @Summary     CPU metrics
+// @Description Returns latest CPU snapshot and historical usage data.
+// @Tags        metrics
+// @Produce     json
+// @Param       hours    query    number   false  "History window in hours"  default(0.0833)
+// @Param       host_id  query    integer  false  "Host ID (0 = all hosts)"
+// @Success     200      {object} map[string]interface{}
+// @Failure     401      {object} map[string]string
+// @Failure     500      {object} map[string]string
+// @Security    BearerAuth
+// @Router      /cpu [get]
 func (h *CPUHandler) HandleCPUStats(c *gin.Context) {
 	hours := parseHoursQuery(c)
 	hostId := parseHostIdQuery(c)

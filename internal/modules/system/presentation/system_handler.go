@@ -24,6 +24,16 @@ func NewSystemHandler(logger *log.Logger, service systemsrv.Service) *SystemHand
 }
 
 // HandleCurrentMetrics returns current system metrics for the dashboard.
+//
+// @Summary     Current system metrics
+// @Description Returns an aggregated snapshot of all live system metrics (CPU, memory, disk, network, Docker).
+// @Tags        metrics
+// @Produce     json
+// @Success     200  {object} map[string]interface{}
+// @Failure     401  {object} map[string]string
+// @Failure     500  {object} map[string]string
+// @Security    BearerAuth
+// @Router      /metrics/current [get]
 func (h *SystemHandler) HandleCurrentMetrics(c *gin.Context) {
 	h.logger.Debug("Handling current metrics JSON request", "client_ip", c.ClientIP())
 	metrics, err := h.service.CollectAllCurrent(c.Request.Context())

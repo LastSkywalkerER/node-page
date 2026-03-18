@@ -49,6 +49,14 @@ type CompleteSetupResponse struct {
 }
 
 // Status checks if setup is needed (no users exist)
+//
+// @Summary     Setup status
+// @Description Returns whether initial setup is required (no users exist yet).
+// @Tags        setup
+// @Produce     json
+// @Success     200  {object} map[string]interface{}
+// @Failure     500  {object} map[string]string
+// @Router      /setup/status [get]
 func (h *SetupHandler) Status(c *gin.Context) {
 	ctx := c.Request.Context()
 	
@@ -72,6 +80,15 @@ func (h *SetupHandler) Status(c *gin.Context) {
 }
 
 // GetConfig returns current configuration values (only if setup is needed)
+//
+// @Summary     Get config template
+// @Description Returns the current configuration values for prefilling the setup wizard. Only available before setup is complete.
+// @Tags        setup
+// @Produce     json
+// @Success     200  {object} map[string]interface{}
+// @Failure     403  {object} map[string]string
+// @Failure     500  {object} map[string]string
+// @Router      /setup/config [get]
 func (h *SetupHandler) GetConfig(c *gin.Context) {
 	ctx := c.Request.Context()
 	
@@ -111,6 +128,19 @@ func (h *SetupHandler) GetConfig(c *gin.Context) {
 }
 
 // CompleteSetup completes the setup process
+//
+// @Summary     Complete setup
+// @Description Writes the .env config file and creates the first admin user. Only works when no users exist.
+// @Tags        setup
+// @Accept      json
+// @Produce     json
+// @Param       body  body      CompleteSetupRequest  true  "Setup configuration and admin credentials"
+// @Success     200   {object}  map[string]interface{}
+// @Failure     400   {object}  map[string]string
+// @Failure     403   {object}  map[string]string
+// @Failure     409   {object}  map[string]string
+// @Failure     500   {object}  map[string]string
+// @Router      /setup/complete [post]
 func (h *SetupHandler) CompleteSetup(c *gin.Context) {
 	ctx := c.Request.Context()
 	

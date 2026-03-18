@@ -71,6 +71,19 @@ func (h *AuthHandler) clearAuthCookies(c *gin.Context) {
 }
 
 // Register handles user registration
+//
+// @Summary     Register user
+// @Description Creates a new user account. Disabled when users already exist (first-time setup only).
+// @Tags        auth
+// @Accept      json
+// @Produce     json
+// @Param       body  body      RegisterRequest  true  "Registration credentials"
+// @Success     200   {object}  map[string]interface{}
+// @Failure     400   {object}  map[string]string
+// @Failure     403   {object}  map[string]string
+// @Failure     409   {object}  map[string]string
+// @Failure     500   {object}  map[string]string
+// @Router      /auth/register [post]
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -124,6 +137,18 @@ func (h *AuthHandler) Register(c *gin.Context) {
 }
 
 // Login handles user authentication
+//
+// @Summary     Login
+// @Description Authenticates a user and sets HttpOnly auth cookies. Also returns tokens in the response body.
+// @Tags        auth
+// @Accept      json
+// @Produce     json
+// @Param       body  body      LoginRequest  true  "Login credentials"
+// @Success     200   {object}  map[string]interface{}
+// @Failure     400   {object}  map[string]string
+// @Failure     401   {object}  map[string]string
+// @Failure     500   {object}  map[string]string
+// @Router      /auth/login [post]
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -169,6 +194,18 @@ func (h *AuthHandler) Login(c *gin.Context) {
 }
 
 // Refresh handles token refresh
+//
+// @Summary     Refresh token
+// @Description Issues a new access token using the refresh token from cookie or request body.
+// @Tags        auth
+// @Accept      json
+// @Produce     json
+// @Param       body  body      RefreshRequest  false  "Refresh token (optional if cookie is set)"
+// @Success     200   {object}  map[string]interface{}
+// @Failure     400   {object}  map[string]string
+// @Failure     401   {object}  map[string]string
+// @Failure     500   {object}  map[string]string
+// @Router      /auth/refresh [post]
 func (h *AuthHandler) Refresh(c *gin.Context) {
 	// Prefer refresh token from cookie; fall back to request body
 	refreshToken, err := c.Cookie("refresh_token")
@@ -216,6 +253,17 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 }
 
 // Logout handles user logout
+//
+// @Summary     Logout
+// @Description Revokes the refresh token and clears auth cookies.
+// @Tags        auth
+// @Accept      json
+// @Produce     json
+// @Param       body  body      LogoutRequest  false  "Refresh token to revoke (optional)"
+// @Success     204   "No Content"
+// @Failure     401   {object}  map[string]string
+// @Security    BearerAuth
+// @Router      /auth/logout [post]
 func (h *AuthHandler) Logout(c *gin.Context) {
 	var req LogoutRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

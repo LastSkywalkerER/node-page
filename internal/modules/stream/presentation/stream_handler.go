@@ -18,7 +18,15 @@ func NewStreamHandler(broker *stream.Broker) *StreamHandler {
 }
 
 // HandleStream streams live metrics to connected SSE clients.
-// GET /api/v1/stream
+//
+// @Summary     Live metrics stream (SSE)
+// @Description Establishes a Server-Sent Events connection that pushes aggregated system metrics every 5 seconds.
+// @Tags        stream
+// @Produce     text/event-stream
+// @Success     200  {string} string  "SSE event stream"
+// @Failure     401  {object} map[string]string
+// @Security    BearerAuth
+// @Router      /stream [get]
 func (h *StreamHandler) HandleStream(c *gin.Context) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")

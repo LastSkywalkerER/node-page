@@ -22,6 +22,16 @@ func NewUsersHandler(userService userservice.UserService) *UsersHandler {
 }
 
 // Me returns the current authenticated user
+//
+// @Summary     Current user
+// @Description Returns the profile of the currently authenticated user.
+// @Tags        users
+// @Produce     json
+// @Success     200  {object} map[string]interface{}
+// @Failure     401  {object} map[string]string
+// @Failure     500  {object} map[string]string
+// @Security    BearerAuth
+// @Router      /users/me [get]
 func (h *UsersHandler) Me(c *gin.Context) {
 	userID, exists := c.Get("userID")
 	if !exists {
@@ -58,6 +68,19 @@ func (h *UsersHandler) Me(c *gin.Context) {
 }
 
 // List returns a paginated list of users (admin only)
+//
+// @Summary     List users
+// @Description Returns a paginated list of all users. Admin role required.
+// @Tags        users
+// @Produce     json
+// @Param       offset  query    integer  false  "Pagination offset"  default(0)
+// @Param       limit   query    integer  false  "Page size (max 100)"  default(20)
+// @Success     200     {object} map[string]interface{}
+// @Failure     401     {object} map[string]string
+// @Failure     403     {object} map[string]string
+// @Failure     500     {object} map[string]string
+// @Security    BearerAuth
+// @Router      /users [get]
 func (h *UsersHandler) List(c *gin.Context) {
 	// Parse pagination parameters
 	offsetStr := c.DefaultQuery("offset", "0")
@@ -118,6 +141,22 @@ type UpdateRoleRequest struct {
 }
 
 // UpdateRole updates a user's role (admin only)
+//
+// @Summary     Update user role
+// @Description Changes the role of a user (ADMIN or USER). Admin role required.
+// @Tags        users
+// @Accept      json
+// @Produce     json
+// @Param       id    path      integer           true  "User ID"
+// @Param       body  body      UpdateRoleRequest true  "New role"
+// @Success     200   {object}  map[string]interface{}
+// @Failure     400   {object}  map[string]string
+// @Failure     401   {object}  map[string]string
+// @Failure     403   {object}  map[string]string
+// @Failure     404   {object}  map[string]string
+// @Failure     500   {object}  map[string]string
+// @Security    BearerAuth
+// @Router      /users/{id} [patch]
 func (h *UsersHandler) UpdateRole(c *gin.Context) {
 	userIDStr := c.Param("id")
 	userID, err := strconv.ParseUint(userIDStr, 10, 32)
@@ -175,6 +214,20 @@ func (h *UsersHandler) UpdateRole(c *gin.Context) {
 }
 
 // Delete deletes a user (admin only)
+//
+// @Summary     Delete user
+// @Description Permanently deletes a user account. Cannot delete your own account. Admin role required.
+// @Tags        users
+// @Produce     json
+// @Param       id   path     integer  true  "User ID"
+// @Success     204  "No Content"
+// @Failure     400  {object} map[string]string
+// @Failure     401  {object} map[string]string
+// @Failure     403  {object} map[string]string
+// @Failure     404  {object} map[string]string
+// @Failure     500  {object} map[string]string
+// @Security    BearerAuth
+// @Router      /users/{id} [delete]
 func (h *UsersHandler) Delete(c *gin.Context) {
 	userIDStr := c.Param("id")
 	userID, err := strconv.ParseUint(userIDStr, 10, 32)

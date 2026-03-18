@@ -25,6 +25,16 @@ func NewHealthHandler(logger *log.Logger, service healthservice.Service) *Health
 }
 
 // HandleHealth returns health check information.
+//
+// @Summary     Health check
+// @Description Returns application and host health status. Used by load balancers and Kubernetes probes.
+// @Tags        health
+// @Produce     json
+// @Param       host_id  query    integer  false  "Host ID (0 = current host)"
+// @Success     200      {object} map[string]interface{}
+// @Failure     400      {object} map[string]string
+// @Failure     500      {object} map[string]string
+// @Router      /health [get]
 func (h *HealthHandler) HandleHealth(c *gin.Context) {
 	h.logger.Debug("Handling health check request", "client_ip", c.ClientIP(), "user_agent", c.GetHeader("User-Agent"))
 

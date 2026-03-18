@@ -47,6 +47,9 @@ type Config struct {
 
 	// Data retention
 	RetentionDays int // METRICS_RETENTION_DAYS: how long to keep historical metrics, default 30
+
+	// Observability
+	PrometheusEnabled bool // PROMETHEUS_ENABLED: expose /metrics endpoint, default false
 }
 
  // Load loads application configuration from environment variables.
@@ -90,6 +93,10 @@ func Load() (*Config, error) {
 		retentionDays = 30
 	}
 	config.RetentionDays = retentionDays
+
+	// Observability
+	prometheusEnv := strings.ToLower(getEnv("PROMETHEUS_ENABLED", "false"))
+	config.PrometheusEnabled = prometheusEnv == "true" || prometheusEnv == "1"
 
 	// Validate required configuration
 	if err := config.validate(); err != nil {

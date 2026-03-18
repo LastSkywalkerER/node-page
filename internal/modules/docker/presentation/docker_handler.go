@@ -46,6 +46,18 @@ func NewDockerHandler(logger *log.Logger, service dockerservice.Service) *Docker
 }
 
 // HandleDockerStats returns Docker container statistics and status information with latest and historical data.
+//
+// @Summary     Docker metrics
+// @Description Returns Docker container stats (running count, resource usage) with history.
+// @Tags        metrics
+// @Produce     json
+// @Param       hours    query    number   false  "History window in hours"  default(0.0833)
+// @Param       host_id  query    integer  false  "Host ID (0 = all hosts)"
+// @Success     200      {object} map[string]interface{}
+// @Failure     401      {object} map[string]string
+// @Failure     500      {object} map[string]string
+// @Security    BearerAuth
+// @Router      /docker [get]
 func (h *DockerHandler) HandleDockerStats(c *gin.Context) {
 	hours := parseHoursQuery(c)
 	hostId := parseHostIdQuery(c)
