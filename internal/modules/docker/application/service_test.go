@@ -28,6 +28,15 @@ func (m *mockDockerRepository) SaveCurrentMetric(_ context.Context, _ entities.D
 func (m *mockDockerRepository) GetLatestMetric(_ context.Context) (entities.DockerMetric, error) {
 	return m.latestMetric, m.latestErr
 }
+
+func (m *mockDockerRepository) GetLatestMetricByHost(_ context.Context, _ uint) (*entities.DockerMetric, error) {
+	if m.latestErr != nil {
+		return nil, m.latestErr
+	}
+	cp := m.latestMetric
+	return &cp, nil
+}
+
 func (m *mockDockerRepository) GetHistoricalMetrics(_ context.Context, _ float64) ([]repositories.HistoricalDockerMetric, error) {
 	return m.historicalMetrics, m.historicalErr
 }

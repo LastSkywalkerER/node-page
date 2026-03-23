@@ -33,6 +33,12 @@ type Host struct {
 	// LastSeen indicates when this host was last active
 	LastSeen time.Time `json:"last_seen"`
 
+	// AgentSessionStartedAt is set on cluster agents: start of current "online" session after a push gap (>30s). Nil for non-agents or before first push.
+	AgentSessionStartedAt *time.Time `json:"agent_session_started_at,omitempty"`
+
+	// HasNodeCredential is set when listing hosts: this host can push to main (not a DB column).
+	HasNodeCredential bool `json:"has_node_credential" gorm:"-"`
+
 	// CreatedAt indicates when this host record was created
 	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`
 

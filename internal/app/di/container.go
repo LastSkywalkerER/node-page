@@ -24,6 +24,10 @@ import (
 	historyapp "system-stats/internal/modules/history_metrics/application"
 	historycore "system-stats/internal/modules/history_metrics/core"
 	hostservice "system-stats/internal/modules/hosts/application"
+	invservice "system-stats/internal/modules/invitations/application"
+	invrepos "system-stats/internal/modules/invitations/infrastructure/repositories"
+	nodeservice "system-stats/internal/modules/nodes/application"
+	noderepos "system-stats/internal/modules/nodes/infrastructure/repositories"
 	hostrepos "system-stats/internal/modules/hosts/infrastructure/repositories"
 	memoryservice "system-stats/internal/modules/memory/application"
 	memoryrepos "system-stats/internal/modules/memory/infrastructure/repositories"
@@ -70,6 +74,15 @@ type Container struct {
 	userService  userapp.UserService
 	tokenService userapp.TokenService
 
+	// invitation
+	invRepository invrepos.InvitationRepository
+	invService    invservice.Service
+
+	// nodes
+	nodeJoinTokenRepo noderepos.NodeJoinTokenRepository
+	nodeCredRepo      noderepos.NodeCredentialRepository
+	nodeService       nodeservice.Service
+
 	// systemService provides aggregated system metrics
 	systemService systemsrv.Service
 
@@ -112,6 +125,8 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 	container.networkRepository = networkrepos.NewNetworkRepository(db)
 	container.dockerRepository = dockerrepos.NewDockerRepository(db)
 	container.hostRepository = hostrepos.NewHostRepository(db)
+	container.nodeJoinTokenRepo = noderepos.NewNodeJoinTokenRepository(db)
+	container.nodeCredRepo = noderepos.NewNodeCredentialRepository(db)
 
 	// Create user repositories
 	container.userRepository = userrepos.NewUserRepository(db)
@@ -123,8 +138,8 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 	container.diskService = diskservice.NewService(container.logger, container.diskRepository)
 	container.networkService = networkservice.NewService(container.logger, container.networkRepository)
 	container.dockerService = dockerservice.NewService(container.logger, dockercollectors.NewDockerMetricsCollector(container.logger), container.dockerRepository)
-	container.hostService = hostservice.NewService(container.logger, container.hostRepository)
-	container.healthService = healthservice.NewService(container.logger, container.hostRepository, startTime)
+	container.hostService = hostservice.NewService(container.logger, container.hostRepository, container.nodeCredRepo)
+	container.healthService = healthservice.NewService(container.logger, container.hostRepository, container.nodeCredRepo, startTime)
 	container.sensorsService = sensorsservice.NewService(container.logger)
 
 	// Create user services (using JWT secrets from configuration)
@@ -135,7 +150,10 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 		15*time.Minute, // access TTL
 		720*time.Hour,  // refresh TTL (30 days)
 	)
-	container.userService = userapp.NewUserService(container.userRepository, container.tokenService)
+	container.invRepository = invrepos.NewInvitationRepository(db)
+	container.invService = invservice.NewService(logger, container.invRepository)
+	container.nodeService = nodeservice.NewService(logger, container.nodeJoinTokenRepo, container.nodeCredRepo, container.hostRepository)
+	container.userService = userapp.NewUserService(container.userRepository, container.tokenService, container.invService)
 
 	// Create system service that aggregates all metrics
 	container.systemService = systemsrv.NewService(
@@ -224,6 +242,16 @@ func (c *Container) GetUserService() userapp.UserService {
  // GetTokenService returns the token service instance.
 func (c *Container) GetTokenService() userapp.TokenService {
 	return c.tokenService
+}
+
+// GetInvitationService returns the invitation service instance.
+func (c *Container) GetInvitationService() invservice.Service {
+	return c.invService
+}
+
+// GetNodeService returns the nodes service instance.
+func (c *Container) GetNodeService() nodeservice.Service {
+	return c.nodeService
 }
 
  // GetHistoricalMetricsService returns the historical metrics service instance.

@@ -4,6 +4,7 @@ import { format } from 'date-fns'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from '@/components/ui/chart'
 import { MetricCardSkeleton } from '@/shared/components/MetricCardSkeleton'
+import { MetricWidgetEmpty } from '@/shared/components/MetricWidgetEmpty'
 import { CHART_COLORS } from '@/shared/lib/chartColors'
 import { formatBytes } from '@/shared/lib/utils'
 import { useDisk } from './useDisk'
@@ -19,6 +20,7 @@ function usageColor(pct: number) {
 export function DiskWidget({ hostId }: DiskWidgetProps) {
   const { data: metrics, isLoading } = useDisk(hostId)
   if (isLoading || !metrics) return <MetricCardSkeleton />
+  if (metrics.latest == null) return <MetricWidgetEmpty icon={HardDrive} label="Disk" />
 
   const pct = metrics.latest?.usage_percent ?? 0
   const color = usageColor(pct)

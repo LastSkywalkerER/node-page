@@ -30,6 +30,14 @@ func (m *mockCPURepository) GetLatestMetric(_ context.Context) (entities.CPUMetr
 	return m.latestMetric, m.latestErr
 }
 
+func (m *mockCPURepository) GetLatestMetricByHost(_ context.Context, _ uint) (*entities.CPUMetric, error) {
+	if m.latestErr != nil {
+		return nil, m.latestErr
+	}
+	cp := m.latestMetric
+	return &cp, nil
+}
+
 func (m *mockCPURepository) GetHistoricalMetrics(_ context.Context, _ float64) ([]entities.HistoricalCPUMetric, error) {
 	return m.historicalMetrics, m.historicalErr
 }

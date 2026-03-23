@@ -1,14 +1,16 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/charmbracelet/log"
 	"github.com/gin-gonic/gin"
 
+	"system-stats/internal/app/metricshost"
 	diskservice "system-stats/internal/modules/disk/application"
-	diskentities "system-stats/internal/modules/disk/infrastructure/entities"
+	hostservice "system-stats/internal/modules/hosts/application"
 )
 
 func parseHoursQuery(c *gin.Context) float64 {
@@ -33,13 +35,15 @@ func parseHostIdQuery(c *gin.Context) uint {
 type DiskHandler struct {
 	logger  *log.Logger
 	service diskservice.Service
+	hosts   hostservice.Service
 }
 
 // NewDiskHandler creates a new HTTP handler for disk metrics endpoints.
-func NewDiskHandler(logger *log.Logger, service diskservice.Service) *DiskHandler {
+func NewDiskHandler(logger *log.Logger, service diskservice.Service, hosts hostservice.Service) *DiskHandler {
 	return &DiskHandler{
 		logger:  logger,
 		service: service,
+		hosts:   hosts,
 	}
 }
 
@@ -50,7 +54,7 @@ func NewDiskHandler(logger *log.Logger, service diskservice.Service) *DiskHandle
 // @Tags        metrics
 // @Produce     json
 // @Param       hours    query    number   false  "History window in hours"  default(0.0833)
-// @Param       host_id  query    integer  false  "Host ID (0 = all hosts)"
+// @Param       host_id  query    integer  false  "Host ID (0 = this server instance)"
 // @Success     200      {object} map[string]interface{}
 // @Failure     401      {object} map[string]string
 // @Failure     500      {object} map[string]string
@@ -58,23 +62,29 @@ func NewDiskHandler(logger *log.Logger, service diskservice.Service) *DiskHandle
 // @Router      /disk [get]
 func (h *DiskHandler) HandleDiskStats(c *gin.Context) {
 	hours := parseHoursQuery(c)
-	hostId := parseHostIdQuery(c)
+	queryHost := parseHostIdQuery(c)
 
-	latestMetrics, err := h.service.GetLatest(c.Request.Context())
+	effective, err := metricshost.EffectiveHostID(c.Request.Context(), h.hosts, queryHost)
+	if errors.Is(err, metricshost.ErrHostNotFound) {
+		c.JSON(http.StatusOK, metricshost.EmptyDiskPayload())
+		return
+	}
+	if err != nil {
+		h.logger.Error("Failed to resolve host for disk metrics", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	latestMetrics, err := h.service.GetLatestByHost(c.Request.Context(), effective)
 	if err != nil {
 		h.logger.Error("Failed to fetch latest disk metrics", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	var historyMetrics []diskentities.HistoricalDiskMetric
-	if hostId > 0 {
-		historyMetrics, err = h.service.GetHistoricalByHost(c.Request.Context(), hostId, hours)
-	} else {
-		historyMetrics, err = h.service.GetHistorical(c.Request.Context(), hours)
-	}
+	historyMetrics, err := h.service.GetHistoricalByHost(c.Request.Context(), effective, hours)
 	if err != nil {
-		h.logger.Error("Failed to fetch historical disk metrics", "error", err, "hours", hours, "host_id", hostId)
+		h.logger.Error("Failed to fetch historical disk metrics", "error", err, "hours", hours, "host_id", effective)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

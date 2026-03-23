@@ -12,8 +12,10 @@ import (
 	dockerdomain "system-stats/internal/modules/docker/domain/repositories"
 	dockerentities "system-stats/internal/modules/docker/infrastructure/entities"
 	hostentities "system-stats/internal/modules/hosts/infrastructure/entities"
+	inventities "system-stats/internal/modules/invitations/infrastructure/entities"
 	memoryentities "system-stats/internal/modules/memory/infrastructure/entities"
 	networkentities "system-stats/internal/modules/network/infrastructure/entities"
+	nodeentities "system-stats/internal/modules/nodes/infrastructure/entities"
 	userentities "system-stats/internal/modules/users/infrastructure/entities"
 )
 
@@ -43,6 +45,19 @@ func Migrate(db *gorm.DB) error {
 	err = db.AutoMigrate(&userentities.RefreshToken{})
 	if err != nil {
 		return fmt.Errorf("failed to migrate refresh tokens: %w", err)
+	}
+
+	// Fix existing invitations with NULL email before adding NOT NULL constraint
+	_ = db.Exec("UPDATE user_invitations SET email = '' WHERE email IS NULL")
+
+	err = db.AutoMigrate(&inventities.UserInvitation{})
+	if err != nil {
+		return fmt.Errorf("failed to migrate user invitations: %w", err)
+	}
+
+	err = db.AutoMigrate(&nodeentities.NodeJoinToken{}, &nodeentities.NodeCredential{})
+	if err != nil {
+		return fmt.Errorf("failed to migrate node entities: %w", err)
 	}
 
 	return nil

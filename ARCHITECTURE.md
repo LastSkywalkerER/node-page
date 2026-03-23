@@ -88,7 +88,7 @@ GET    /hosts/current
 POST   /hosts/register
 GET    /stream              # SSE
 ```
-All metric endpoints accept `?hours=<float>` (default `0.0833` ≈ 5 min) and `?host_id=<uint>`.
+All metric endpoints accept `?hours=<float>` (default `0.0833` ≈ 5 min) and `?host_id=<uint>`. **`host_id=0` means this server instance** (resolved via current host MAC). Latest and history are always scoped to that host row; unknown `host_id` returns empty payloads (`latest: null`, empty history). Remote cluster hosts have no rows on main until ingestion exists — UI shows placeholders. SSE includes `collecting_host_id`; clients ignore events for other hosts. `/metrics/current` and `/sensors` return empty for remote hosts (no live collection on main).
 
 ### Environment variables
 | Variable | Default | Description |
@@ -210,6 +210,17 @@ const live = useMetricsStore(s => s.xxx)
 // 4. Charts via ChartContainer (see Charts section)
 ```
 Each widget in page components is wrapped in `<ErrorBoundary name="...">` to isolate crashes.
+
+### Machine stats data flow (SSE-first)
+- **REST** (`GET /cpu|memory|disk|network|docker?host_id=`): one load per visit — `latest` from DB + `history` for charts (`staleTime: Infinity`, no `refetchInterval`).
+- **SSE** (`GET /stream?host_id=`): each collector tick pushes a live snapshot with `collecting_host_id`; `useLiveMetricsQuerySync` merges it into the same React Query keys so widgets update without polling.
+- **Sensors**: not in SSE; single REST load per page (`/sensors?host_id=`).
+- **Health** (machine cards): poll every 5s. **`status: online`** only if `last_seen` is fresh: **45s** for hosts with `node_credentials` (cluster agents / push), **5 min** for local collector-only hosts. UI uses `status`, not HTTP success. **`is_cluster_agent`**: true when the host has push credentials on this server; UI **hides uptime** for those cards. **Local / non-agent** cards use JSON **`uptime`** (this API process uptime). Card stripe/icon: green online, **red offline**.
+- **Cluster push token**: On join, main returns a plaintext `node_access_token` once and stores **SHA256** in `node_credentials` (plaintext cannot be read back). **`GET /hosts`** includes **`has_node_credential`** per row. Admin **`GET /nodes/cluster-ui-status`** supplies **push URL**, **Connect** visibility, and when **`is_agent`**: **`main_node_url`** + **`node_access_token`** for the local UI. **`PUT /nodes/agent-cluster-config`** (admin) updates agent connection + `.env`. **`POST /nodes/hosts/:id/regenerate-token`** returns **`node_access_token`** only. Optional **`PUBLIC_BASE_URL`** on main when agents must use a different base than the browser host (e.g. Docker).
+- **Local collector host**: Metrics from **this** process always use **`hosts.id = 1`** (`LocalCollectorHostID`). **`UpsertLocalHost`** updates that row on every register/get-current; hostname/MAC may change (e.g. Docker) without creating new rows. **`UpsertHost`** (cluster **Join** only) never matches or overwrites id `1` (MAC/name lookup excludes reserved id). **`GetAllHosts`** orders local collector first.
+- **Docker agent env**: `docker-compose.yml` bind-mounts **`./.env.agent` → `/app/.env`** so `MAIN_NODE_URL` / `NODE_ACCESS_TOKEN` survive image rebuilds; **Connect** persists into that host file.
+- **Nodes admin**: `GET /nodes/cluster-ui-status` sets **Connect this node** visibility (hidden if this instance is an agent or if any other host has `node_credentials`). Agents see **Connected to main** (URL + token, save to `.env`). `DELETE /nodes/hosts/:id` (admin) removes a remote host, its credential, historical metrics (CPU/memory/disk/network/docker), and join-token `host_id` refs; cannot delete the local host.
+- Use `useXxx(..., { mode: 'poll' })` only if you need legacy interval refetch without a stream.
 
 ### Charts
 Recharts wrapped in shadcn `ChartContainer` from `@/components/ui/chart`.

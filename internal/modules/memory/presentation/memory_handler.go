@@ -1,14 +1,16 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/charmbracelet/log"
 	"github.com/gin-gonic/gin"
 
+	"system-stats/internal/app/metricshost"
+	hostservice "system-stats/internal/modules/hosts/application"
 	memoryservice "system-stats/internal/modules/memory/application"
-	memoryentities "system-stats/internal/modules/memory/infrastructure/entities"
 )
 
 func parseHoursQuery(c *gin.Context) float64 {
@@ -33,13 +35,15 @@ func parseHostIdQuery(c *gin.Context) uint {
 type MemoryHandler struct {
 	logger  *log.Logger
 	service memoryservice.Service
+	hosts   hostservice.Service
 }
 
 // NewMemoryHandler creates a new HTTP handler for memory metrics endpoints.
-func NewMemoryHandler(logger *log.Logger, service memoryservice.Service) *MemoryHandler {
+func NewMemoryHandler(logger *log.Logger, service memoryservice.Service, hosts hostservice.Service) *MemoryHandler {
 	return &MemoryHandler{
 		logger:  logger,
 		service: service,
+		hosts:   hosts,
 	}
 }
 
@@ -50,7 +54,7 @@ func NewMemoryHandler(logger *log.Logger, service memoryservice.Service) *Memory
 // @Tags        metrics
 // @Produce     json
 // @Param       hours    query    number   false  "History window in hours"  default(0.0833)
-// @Param       host_id  query    integer  false  "Host ID (0 = all hosts)"
+// @Param       host_id  query    integer  false  "Host ID (0 = this server instance)"
 // @Success     200      {object} map[string]interface{}
 // @Failure     401      {object} map[string]string
 // @Failure     500      {object} map[string]string
@@ -58,23 +62,29 @@ func NewMemoryHandler(logger *log.Logger, service memoryservice.Service) *Memory
 // @Router      /memory [get]
 func (h *MemoryHandler) HandleMemoryStats(c *gin.Context) {
 	hours := parseHoursQuery(c)
-	hostId := parseHostIdQuery(c)
+	queryHost := parseHostIdQuery(c)
 
-	latestMetrics, err := h.service.GetLatest(c.Request.Context())
+	effective, err := metricshost.EffectiveHostID(c.Request.Context(), h.hosts, queryHost)
+	if errors.Is(err, metricshost.ErrHostNotFound) {
+		c.JSON(http.StatusOK, metricshost.EmptyMemoryPayload())
+		return
+	}
+	if err != nil {
+		h.logger.Error("Failed to resolve host for memory metrics", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	latestMetrics, err := h.service.GetLatestByHost(c.Request.Context(), effective)
 	if err != nil {
 		h.logger.Error("Failed to fetch latest memory metrics", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	var historyMetrics []memoryentities.HistoricalMemoryMetric
-	if hostId > 0 {
-		historyMetrics, err = h.service.GetHistoricalByHost(c.Request.Context(), hostId, hours)
-	} else {
-		historyMetrics, err = h.service.GetHistorical(c.Request.Context(), hours)
-	}
+	historyMetrics, err := h.service.GetHistoricalByHost(c.Request.Context(), effective, hours)
 	if err != nil {
-		h.logger.Error("Failed to fetch historical memory metrics", "error", err, "hours", hours, "host_id", hostId)
+		h.logger.Error("Failed to fetch historical memory metrics", "error", err, "hours", hours, "host_id", effective)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

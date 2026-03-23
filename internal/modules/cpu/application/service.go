@@ -14,6 +14,7 @@ type Service interface {
 	Collect(ctx context.Context) (entities.CPUMetric, error)
 	Save(ctx context.Context, metric entities.CPUMetric, hostId uint) error
 	GetLatest(ctx context.Context) (entities.CPUMetric, error)
+	GetLatestByHost(ctx context.Context, hostId uint) (*entities.CPUMetric, error)
 	GetHistorical(ctx context.Context, hours float64) ([]entities.HistoricalCPUMetric, error)
 	GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]entities.HistoricalCPUMetric, error)
 	CollectAndSave(ctx context.Context, hostId uint) error
@@ -62,6 +63,10 @@ func (s *service) GetLatest(ctx context.Context) (entities.CPUMetric, error) {
 		return entities.CPUMetric{}, err
 	}
 	return metric, nil
+}
+
+func (s *service) GetLatestByHost(ctx context.Context, hostId uint) (*entities.CPUMetric, error) {
+	return s.cpuRepository.GetLatestMetricByHost(ctx, hostId)
 }
 
 func (s *service) GetHistorical(ctx context.Context, hours float64) ([]entities.HistoricalCPUMetric, error) {

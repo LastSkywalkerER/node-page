@@ -1,5 +1,5 @@
 import { Link, NavLink, useParams, useMatch } from 'react-router-dom'
-import { Sun, Moon, LogOut, ChevronLeft, LayoutGrid } from 'lucide-react'
+import { Sun, Moon, LogOut, ChevronLeft, LayoutGrid, Settings } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { useTheme } from '@/shared/hooks/useTheme'
@@ -84,6 +84,13 @@ export function AppHeader() {
 
         {/* Right actions */}
         <div className="flex items-center gap-0.5">
+          {user?.role === 'ADMIN' && (
+            <Link to="/admin/users">
+              <Button variant="ghost" size="icon-sm" aria-label="Admin">
+                <Settings className="h-[15px] w-[15px]" />
+              </Button>
+            </Link>
+          )}
           {user && (
             <span className="text-xs text-muted-foreground mr-2 hidden md:block">{user.email}</span>
           )}

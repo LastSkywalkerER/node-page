@@ -8,6 +8,7 @@ import {
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { MetricCardSkeleton } from '@/shared/components/MetricCardSkeleton'
+import { MetricWidgetEmpty } from '@/shared/components/MetricWidgetEmpty'
 import { getContainerStateColor } from '@/shared/lib/utils'
 import { useDocker } from './useDocker'
 
@@ -96,6 +97,7 @@ export function DockerWidget({ hostId }: DockerWidgetProps) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
   if (isLoading || !metrics) return <MetricCardSkeleton />
+  if (metrics.latest == null) return <MetricWidgetEmpty icon={Server} label="Docker" />
 
   const latest = metrics.latest
   const running = latest?.running_containers ?? 0

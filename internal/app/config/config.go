@@ -1,5 +1,5 @@
- // Package config provides application configuration management.
- // This package handles loading configuration from environment variables and .env files.
+// Package config provides application configuration management.
+// This package handles loading configuration from environment variables and .env files.
 package config
 
 import (
@@ -11,7 +11,7 @@ import (
 	"github.com/joho/godotenv"
 )
 
- // DatabaseType represents the type of database to use.
+// DatabaseType represents the type of database to use.
 type DatabaseType string
 
 const (
@@ -19,13 +19,13 @@ const (
 	DatabaseTypePostgres DatabaseType = "postgres"
 )
 
- // DatabaseConfig holds configuration for database connection.
+// DatabaseConfig holds configuration for database connection.
 type DatabaseConfig struct {
 	Type DatabaseType // Database type: "sqlite"
 	DSN  string       // Data Source Name: file path for SQLite database
 }
 
- // Config holds all application configuration loaded from environment variables.
+// Config holds all application configuration loaded from environment variables.
 type Config struct {
 	// Server configuration
 	Addr    string // HTTP server listening address
@@ -50,11 +50,18 @@ type Config struct {
 
 	// Observability
 	PrometheusEnabled bool // PROMETHEUS_ENABLED: expose /metrics endpoint, default false
+
+	// Cluster agent mode (push metrics to main node)
+	MainNodeURL     string // MAIN_NODE_URL: main server URL for push (e.g. https://main:8080)
+	NodeAccessToken string // NODE_ACCESS_TOKEN: token for push auth (set after join)
+
+	// Public URL of this server as seen by agents (Docker Desktop, reverse proxy). Used for join links and admin "agent setup".
+	PublicBaseURL string // PUBLIC_BASE_URL: optional override; if empty, derived from incoming HTTP request
 }
 
- // Load loads application configuration from environment variables.
- // It first attempts to load a .env file if it exists, then reads all configuration
- // from environment variables with appropriate defaults.
+// Load loads application configuration from environment variables.
+// It first attempts to load a .env file if it exists, then reads all configuration
+// from environment variables with appropriate defaults.
 func Load() (*Config, error) {
 	// Load .env file if it exists (ignore error if file doesn't exist)
 	_ = godotenv.Load()
@@ -98,6 +105,11 @@ func Load() (*Config, error) {
 	prometheusEnv := strings.ToLower(getEnv("PROMETHEUS_ENABLED", "false"))
 	config.PrometheusEnabled = prometheusEnv == "true" || prometheusEnv == "1"
 
+	// Cluster agent mode
+	config.MainNodeURL = strings.TrimSuffix(getEnv("MAIN_NODE_URL", ""), "/")
+	config.NodeAccessToken = getEnv("NODE_ACCESS_TOKEN", "")
+	config.PublicBaseURL = strings.TrimSuffix(strings.TrimSpace(getEnv("PUBLIC_BASE_URL", "")), "/")
+
 	// Validate required configuration
 	if err := config.validate(); err != nil {
 		return nil, err
@@ -106,7 +118,7 @@ func Load() (*Config, error) {
 	return config, nil
 }
 
- // loadDatabaseConfig loads database configuration from environment variables.
+// loadDatabaseConfig loads database configuration from environment variables.
 func loadDatabaseConfig() (*DatabaseConfig, error) {
 	config := &DatabaseConfig{}
 
@@ -127,7 +139,7 @@ func loadDatabaseConfig() (*DatabaseConfig, error) {
 	return config, nil
 }
 
- // validate validates that all required configuration values are present.
+// validate validates that all required configuration values are present.
 func (c *Config) validate() error {
 	if c.JWTSecret == "" {
 		return fmt.Errorf("JWT_SECRET environment variable is required")
@@ -138,8 +150,8 @@ func (c *Config) validate() error {
 	return nil
 }
 
- // MaskDSN masks sensitive information in a database connection string for logging.
- // This function replaces passwords in DSN strings with asterisks to prevent logging sensitive data.
+// MaskDSN masks sensitive information in a database connection string for logging.
+// This function replaces passwords in DSN strings with asterisks to prevent logging sensitive data.
 func MaskDSN(dsn string) string {
 	if dsn == "" {
 		return ""
@@ -160,7 +172,7 @@ func MaskDSN(dsn string) string {
 	return dsn
 }
 
- // getEnv gets an environment variable value or returns a default if not set.
+// getEnv gets an environment variable value or returns a default if not set.
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value

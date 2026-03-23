@@ -10,6 +10,10 @@ import { SetupPage } from './pages/SetupPage'
 import { MachineListPage } from './pages/MachineListPage'
 import { MachineStatsPage } from './pages/MachineStatsPage'
 import { MachineContainersPage } from './pages/MachineContainersPage'
+import { AdminPage } from './pages/AdminPage'
+import { UsersTab } from './widgets/admin/UsersTab'
+import { NodesTab } from './widgets/admin/NodesTab'
+import { AdminRoute } from './shared/guards/AdminRoute'
 
 function ProtectedLayout() {
   return (
@@ -51,6 +55,13 @@ function App() {
         <Route path="/machines" element={<MachineListPage />} />
         <Route path="/machines/:id/stats" element={<MachineStatsPage />} />
         <Route path="/machines/:id/containers" element={<MachineContainersPage />} />
+        <Route element={<AdminRoute />}>
+          <Route path="/admin" element={<AdminPage />}>
+            <Route index element={<Navigate to="users" replace />} />
+            <Route path="users" element={<UsersTab />} />
+            <Route path="nodes" element={<NodesTab />} />
+          </Route>
+        </Route>
       </Route>
 
       <Route

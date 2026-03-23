@@ -27,6 +27,15 @@ func (m *mockDiskRepository) SaveCurrentMetric(_ context.Context, _ entities.Dis
 func (m *mockDiskRepository) GetLatestMetric(_ context.Context) (entities.DiskMetric, error) {
 	return m.latestMetric, m.latestErr
 }
+
+func (m *mockDiskRepository) GetLatestMetricByHost(_ context.Context, _ uint) (*entities.DiskMetric, error) {
+	if m.latestErr != nil {
+		return nil, m.latestErr
+	}
+	cp := m.latestMetric
+	return &cp, nil
+}
+
 func (m *mockDiskRepository) GetHistoricalMetrics(_ context.Context, _ float64) ([]entities.HistoricalDiskMetric, error) {
 	return m.historicalMetrics, m.historicalErr
 }

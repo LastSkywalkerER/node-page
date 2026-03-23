@@ -1,18 +1,21 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '../../shared/lib/api';
+import type { MetricFetchMode } from '../../shared/types/metricFetch';
 
-// Hook for Docker metrics - updates every 5 seconds
-export function useDocker(hostId?: number | null) {
-  const queryKey = hostId ? ['docker-metrics', hostId] : ['docker-metrics'];
+export function useDocker(hostId?: number | null, options?: { mode?: MetricFetchMode }) {
+  const mode = options?.mode ?? 'snapshot';
+  const poll = mode === 'poll';
+  const queryKey = hostId != null ? ['docker-metrics', hostId] : ['docker-metrics'];
 
   return useQuery({
     queryKey,
     queryFn: async () => {
-      const url = hostId ? `/docker?host_id=${hostId}` : '/docker';
+      const url = hostId != null ? `/docker?host_id=${hostId}` : '/docker';
       const { data } = await apiClient.get(url);
       return data;
     },
-    refetchInterval: 5000,
-    staleTime: 1000,
+    refetchInterval: poll ? 5000 : false,
+    staleTime: poll ? 1000 : Infinity,
+    refetchOnWindowFocus: poll,
   });
 }

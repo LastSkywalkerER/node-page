@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"gorm.io/gorm"
@@ -13,6 +14,7 @@ import (
 type DiskRepository interface {
 	SaveCurrentMetric(ctx context.Context, metric localentities.DiskMetric, hostId uint) error
 	GetLatestMetric(ctx context.Context) (localentities.DiskMetric, error)
+	GetLatestMetricByHost(ctx context.Context, hostId uint) (*localentities.DiskMetric, error)
 	GetHistoricalMetrics(ctx context.Context, hours float64) ([]localentities.HistoricalDiskMetric, error)
 	GetHistoricalMetricsByHost(ctx context.Context, hostId uint, hours float64) ([]localentities.HistoricalDiskMetric, error)
 }
@@ -47,6 +49,26 @@ func (r *diskRepository) GetLatestMetric(ctx context.Context) (localentities.Dis
 	}
 
 	return localentities.DiskMetric{
+		Total:        metric.TotalBytes,
+		Used:         metric.UsedBytes,
+		Free:         metric.TotalBytes - metric.UsedBytes,
+		UsagePercent: metric.UsagePercent,
+	}, nil
+}
+
+func (r *diskRepository) GetLatestMetricByHost(ctx context.Context, hostId uint) (*localentities.DiskMetric, error) {
+	var metric localentities.HistoricalDiskMetric
+	err := r.db.WithContext(ctx).
+		Where("host_id = ?", hostId).
+		Order("timestamp DESC").
+		First(&metric).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &localentities.DiskMetric{
 		Total:        metric.TotalBytes,
 		Used:         metric.UsedBytes,
 		Free:         metric.TotalBytes - metric.UsedBytes,

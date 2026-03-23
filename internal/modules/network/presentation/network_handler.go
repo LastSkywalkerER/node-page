@@ -9,8 +9,9 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/gin-gonic/gin"
 
+	"system-stats/internal/app/metricshost"
+	hostservice "system-stats/internal/modules/hosts/application"
 	networkservice "system-stats/internal/modules/network/application"
-	networkentities "system-stats/internal/modules/network/infrastructure/entities"
 )
 
 func parseHoursQuery(c *gin.Context) float64 {
@@ -35,13 +36,15 @@ func parseHostIdQuery(c *gin.Context) uint {
 type NetworkHandler struct {
 	logger  *log.Logger
 	service networkservice.Service
+	hosts   hostservice.Service
 }
 
 // NewNetworkHandler creates a new HTTP handler for network metrics endpoints.
-func NewNetworkHandler(logger *log.Logger, service networkservice.Service) *NetworkHandler {
+func NewNetworkHandler(logger *log.Logger, service networkservice.Service, hosts hostservice.Service) *NetworkHandler {
 	return &NetworkHandler{
 		logger:  logger,
 		service: service,
+		hosts:   hosts,
 	}
 }
 
@@ -52,7 +55,7 @@ func NewNetworkHandler(logger *log.Logger, service networkservice.Service) *Netw
 // @Tags        metrics
 // @Produce     json
 // @Param       hours    query    number   false  "History window in hours"  default(0.0833)
-// @Param       host_id  query    integer  false  "Host ID (0 = all hosts)"
+// @Param       host_id  query    integer  false  "Host ID (0 = this server instance)"
 // @Success     200      {object} map[string]interface{}
 // @Failure     401      {object} map[string]string
 // @Failure     500      {object} map[string]string
@@ -60,10 +63,21 @@ func NewNetworkHandler(logger *log.Logger, service networkservice.Service) *Netw
 // @Router      /network [get]
 func (h *NetworkHandler) HandleNetworkStats(c *gin.Context) {
 	hours := parseHoursQuery(c)
-	hostId := parseHostIdQuery(c)
-
+	queryHost := parseHostIdQuery(c)
 	ctx := c.Request.Context()
-	latestMetrics, err := h.service.GetLatest(ctx)
+
+	effective, err := metricshost.EffectiveHostID(ctx, h.hosts, queryHost)
+	if errors.Is(err, metricshost.ErrHostNotFound) {
+		c.JSON(http.StatusOK, metricshost.EmptyNetworkPayload())
+		return
+	}
+	if err != nil {
+		h.logger.Error("Failed to resolve host for network metrics", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	latestMetrics, err := h.service.GetLatestByHost(ctx, effective)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			h.logger.Info("Client canceled request while fetching latest network metrics")
@@ -74,18 +88,13 @@ func (h *NetworkHandler) HandleNetworkStats(c *gin.Context) {
 		return
 	}
 
-	var historyMetrics []networkentities.NetworkMetric
-	if hostId > 0 {
-		historyMetrics, err = h.service.GetHistoricalByHost(ctx, hostId, hours)
-	} else {
-		historyMetrics, err = h.service.GetHistorical(ctx, hours)
-	}
+	historyMetrics, err := h.service.GetHistoricalByHost(ctx, effective, hours)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			h.logger.Info("Client canceled request while fetching historical network metrics")
 			return
 		}
-		h.logger.Error("Failed to fetch historical network metrics", "error", err, "hours", hours, "host_id", hostId)
+		h.logger.Error("Failed to fetch historical network metrics", "error", err, "hours", hours, "host_id", effective)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

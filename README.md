@@ -46,6 +46,15 @@ Node Stats is perfect for:
 - ✅ User authentication (registration, login, refresh tokens, user management)
 - ✅ SQLite database for historical metrics storage
 - ✅ Application configuration via UI on first launch (setup wizard for initial configuration)
+- ✅ Prometheus metrics export (`/api/v1/metrics`, enabled via `PROMETHEUS_ENABLED=true`)
+- ✅ Swagger UI for API documentation (`/swagger/`)
+- ✅ PostgreSQL database support (alternative to SQLite via `DB_TYPE=postgres`)
+- ✅ Health check endpoint (`/api/v1/health`) for load balancers and Kubernetes probes
+- ✅ Live metrics stream via Server-Sent Events (`/api/v1/stream`)
+- ✅ Configurable data retention (`METRICS_RETENTION_DAYS` for automatic cleanup of old metrics)
+- ✅ Hosts registration and management (API ready, UI pending)
+- ✅ Admin/user roles (API ready, UI pending)
+- ❌ Unit tests
 - ❌ Multi-node statistics synchronization and aggregation (push-based model where each node sends metrics to a central server, eliminating the need to expose individual nodes to the internet for secure centralized collection)
 - ❌ Alert system (configurable notifications when metric thresholds are exceeded)
 - ❌ Container logs monitoring (real-time viewing and filtering of Docker container logs)
@@ -113,6 +122,23 @@ docker-compose up -d
 ```
 
 The application will be available at `http://localhost:8080` by default. You can change the port by setting the `ADDR` environment variable (e.g., `ADDR=:9090`).
+
+#### Cluster: Docker agent + main on your machine
+
+If **main** runs on the host (e.g. `./scripts/dev` on `:8080`) and the **agent** runs in Docker (`docker compose` on `:9090`), the agent has its **own** SQLite DB. After **Connect** on the agent (paste join link), main returns a **unique push token** once; the agent saves `MAIN_NODE_URL` and `NODE_ACCESS_TOKEN` to its local `.env` (in the container that is often **not** persisted across image rebuilds — use compose `env_file` / env vars for durability).
+
+**On main (admin → Nodes):** expand **Agent URL & token** under each host. You always see the **base URL** and **push URL**. The plaintext token is **not** stored on main (only a hash), so it cannot be “viewed” later — use **Regenerate token** to issue a new one (old token stops working) and copy the `.env` snippet.
+
+**Main env (optional):** `PUBLIC_BASE_URL` — if set, join links and the admin “agent setup” URLs use this instead of the browser `Host` header. Use when agents must call a different host than the UI (e.g. `http://host.docker.internal:8080`).
+
+**Docker agent env:** edit **`.env.agent`** in the repo root (tracked template with empty token). Compose mounts it as **`/app/.env`** in the container, so **Connect** and restarts keep the same file on disk. Copy from **`.env.agent.example`** if you remove the file. Do not commit production tokens.
+
+| Variable | Example | Notes |
+|----------|---------|--------|
+| `MAIN_NODE_URL` | `http://host.docker.internal:8080` | Must match what main shows in admin (or `PUBLIC_BASE_URL` on main) |
+| `NODE_ACCESS_TOKEN` | from Connect or **Regenerate** in admin | `Authorization: Bearer …` on `POST /api/v1/nodes/push` |
+
+If either is missing, the agent collects locally but does not push; the server logs a **one-time warning**.
 
 ### Local Development
 
@@ -219,8 +245,10 @@ Node Stats is configured via environment variables:
 - `JWT_SECRET` - Secret key for JWT access tokens (required)
 - `REFRESH_SECRET` - Secret key for JWT refresh tokens (required)
 - `DB_TYPE` - Database type (default: `sqlite`)
-- `DB_DSN` - Database connection string or file path (default: `stats.db`)
+- `DB_DSN` - Database connection string or file path. Local dev: `stats.db`; Docker: `/app/stats.db` (mounted from `./data/docker/stats.db`)
 - `DEBUG` - Enable debug mode: `true` or `false` (default: `false`)
+- Cluster agent: `MAIN_NODE_URL`, `NODE_ACCESS_TOKEN` — after join, change via Admin → Nodes → **Save connection** or `PUT /api/v1/nodes/agent-cluster-config`.
+- **Local metrics host id**: This server always stores its own collected metrics under **`hosts.id = 1`**. Rebuilds update that row (same DB file); use Admin → Nodes to remove stale remote rows if needed.
 
 ## Architecture & Technology Stack
 

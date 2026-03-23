@@ -10,8 +10,10 @@ services:
     # and comment out ports section for better host metrics access
     # network_mode: host
     volumes:
-      # Mount database file for persistence
-      - ./stats.db:/app/stats.db
+      # Agent cluster config: persists on the host across rebuilds (loaded as /app/.env in the container)
+      - ./.env.agent:/app/.env
+      # Mount database directory (file mount creates dir if missing → "is a directory" error)
+      - ./data/docker:/app/data
       # Mount Docker socket for Docker metrics
       - /var/run/docker.sock:/var/run/docker.sock:ro
       # Mount host filesystem for system metrics
@@ -20,15 +22,18 @@ services:
     # On macOS, these may have limited functionality
     pid: host
     ipc: host
+    # host.docker.internal for NODE_HOST_ALIAS (Linux needs this; Mac/Win have it by default)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     environment:
       # Server configuration
-      - ADDR=${ADDR:-:9090}
+      - ADDR=:9090
       - GIN_MODE=${GIN_MODE:-release}
       - DEBUG=${DEBUG:-false}
       # Database configuration
       - DB_TYPE=${DB_TYPE:-sqlite}
-      - DB_DSN=${DB_DSN:-/app/stats.db}
+      - DB_DSN=/app/data/stats.db
       # Authentication configuration (required)
       - JWT_SECRET=${JWT_SECRET:-your-jwt-secret-key-change-in-production}
       - REFRESH_SECRET=${REFRESH_SECRET:-your-refresh-secret-key-change-in-production}
@@ -36,3 +41,6 @@ services:
       - HOST_PROC=/host/proc
       - HOST_SYS=/host/sys
       - HOST_ETC=/host/etc
+      # When connecting to main on host, replace localhost with host (macOS/Windows Docker)
+      - NODE_HOST_ALIAS=host.docker.internal
+      # MAIN_NODE_URL / NODE_ACCESS_TOKEN: use bind-mounted ./.env.agent → /app/.env (not Compose env, so values are not overridden by empty vars)

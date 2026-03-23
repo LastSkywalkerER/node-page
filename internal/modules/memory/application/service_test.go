@@ -27,6 +27,15 @@ func (m *mockMemoryRepository) SaveCurrentMetric(_ context.Context, _ entities.M
 func (m *mockMemoryRepository) GetLatestMetric(_ context.Context) (entities.MemoryMetric, error) {
 	return m.latestMetric, m.latestErr
 }
+
+func (m *mockMemoryRepository) GetLatestMetricByHost(_ context.Context, _ uint) (*entities.MemoryMetric, error) {
+	if m.latestErr != nil {
+		return nil, m.latestErr
+	}
+	cp := m.latestMetric
+	return &cp, nil
+}
+
 func (m *mockMemoryRepository) GetHistoricalMetrics(_ context.Context, _ float64) ([]entities.HistoricalMemoryMetric, error) {
 	return m.historicalMetrics, m.historicalErr
 }

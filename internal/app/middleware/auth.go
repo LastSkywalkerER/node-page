@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	nodeservice "system-stats/internal/modules/nodes/application"
 	userservice "system-stats/internal/modules/users/application"
 )
 
@@ -100,5 +101,52 @@ func RequireRole(requiredRole string) gin.HandlerFunc {
 // RequireAdmin middleware checks if the user has admin role
 func RequireAdmin() gin.HandlerFunc {
 	return RequireRole("ADMIN")
+}
+
+// AuthNodeToken middleware validates node access tokens for push endpoint.
+// Expects Authorization: Bearer {node_access_token}, sets hostID in context.
+func AuthNodeToken(nodeService nodeservice.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"code":  "unauthorized",
+				"error": "Authorization required",
+			})
+			c.Abort()
+			return
+		}
+		const bearerPrefix = "Bearer "
+		if !strings.HasPrefix(authHeader, bearerPrefix) {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"code":  "unauthorized",
+				"error": "Invalid authorization header format",
+			})
+			c.Abort()
+			return
+		}
+		token := strings.TrimPrefix(authHeader, bearerPrefix)
+		if token == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"code":  "unauthorized",
+				"error": "Token required",
+			})
+			c.Abort()
+			return
+		}
+
+		hostID, err := nodeService.ValidateNodeToken(c.Request.Context(), token)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"code":  "unauthorized",
+				"error": "Invalid node token",
+			})
+			c.Abort()
+			return
+		}
+
+		c.Set("hostID", hostID)
+		c.Next()
+	}
 }
 

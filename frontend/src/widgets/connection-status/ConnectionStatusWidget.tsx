@@ -6,9 +6,9 @@ interface ConnectionStatusWidgetProps {
 }
 
 export default function ConnectionStatusWidget({ hostId }: ConnectionStatusWidgetProps) {
-  const { isConnected, latency, uptime } = useConnectionStatus(hostId)
+  const { isConnected, latency, uptime, showUptime } = useConnectionStatus(hostId)
 
-  const fmtUptime = (u: string | null) => u ? u.split('.')[0] : '--'
+  const fmtUptime = (u: string | null) => u ?? '--'
   const fmtLatency = (ms: number | null) => ms == null || ms < 0 ? '--' : ms < 1 ? '<1ms' : `${Math.round(ms)}ms`
 
   return (
@@ -18,7 +18,7 @@ export default function ConnectionStatusWidget({ hostId }: ConnectionStatusWidge
       {isConnected && latency !== null && (
         <span className="text-xs text-muted-foreground">{fmtLatency(latency)}</span>
       )}
-      {isConnected && uptime && (
+      {isConnected && showUptime && uptime && (
         <span className="text-xs text-muted-foreground">up {fmtUptime(uptime)}</span>
       )}
     </div>

@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"gorm.io/gorm"
@@ -13,6 +14,7 @@ import (
 type MemoryRepository interface {
 	SaveCurrentMetric(ctx context.Context, metric localentities.MemoryMetric, hostId uint) error
 	GetLatestMetric(ctx context.Context) (localentities.MemoryMetric, error)
+	GetLatestMetricByHost(ctx context.Context, hostId uint) (*localentities.MemoryMetric, error)
 	GetHistoricalMetrics(ctx context.Context, hours float64) ([]localentities.HistoricalMemoryMetric, error)
 	GetHistoricalMetricsByHost(ctx context.Context, hostId uint, hours float64) ([]localentities.HistoricalMemoryMetric, error)
 }
@@ -47,6 +49,27 @@ func (r *memoryRepository) GetLatestMetric(ctx context.Context) (localentities.M
 	}
 
 	return localentities.MemoryMetric{
+		Total:        metric.TotalBytes,
+		Used:         metric.UsedBytes,
+		UsagePercent: metric.UsagePercent,
+		Available:    metric.TotalBytes - metric.UsedBytes,
+		Free:         metric.TotalBytes - metric.UsedBytes,
+	}, nil
+}
+
+func (r *memoryRepository) GetLatestMetricByHost(ctx context.Context, hostId uint) (*localentities.MemoryMetric, error) {
+	var metric localentities.HistoricalMemoryMetric
+	err := r.db.WithContext(ctx).
+		Where("host_id = ?", hostId).
+		Order("timestamp DESC").
+		First(&metric).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &localentities.MemoryMetric{
 		Total:        metric.TotalBytes,
 		Used:         metric.UsedBytes,
 		UsagePercent: metric.UsagePercent,

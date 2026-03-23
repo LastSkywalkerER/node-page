@@ -1,50 +1,12 @@
 import { create } from 'zustand';
 
-// Minimal metric type shapes matching backend JSON output
-interface CPUMetric {
-  usage_percent: number;
-  cores: number;
-  load_avg_1: number;
-  load_avg_5: number;
-  load_avg_15: number;
-}
-
-interface MemoryMetric {
-  usage_percent: number;
-  total: number;
-  used: number;
-  available: number;
-}
-
-interface DiskMetric {
-  usage_percent: number;
-  total: number;
-  used: number;
-  free: number;
-}
-
-interface NetworkInterface {
-  name: string;
-  bytes_sent: number;
-  bytes_recv: number;
-}
-
-interface NetworkMetric {
-  interfaces: NetworkInterface[];
-}
-
-interface DockerMetric {
-  total_containers: number;
-  running_containers: number;
-  docker_available: boolean;
-}
-
-interface MetricsPayload {
-  cpu?: CPUMetric;
-  memory?: MemoryMetric;
-  disk?: DiskMetric;
-  network?: NetworkMetric;
-  docker?: DockerMetric;
+// Live snapshot keys match CollectAllCurrent /api JSON (partial merge into REST `latest`).
+export interface MetricsPayload {
+  cpu?: Record<string, unknown>;
+  memory?: Record<string, unknown>;
+  disk?: Record<string, unknown>;
+  network?: Record<string, unknown>;
+  docker?: Record<string, unknown>;
 }
 
 interface MetricsState extends MetricsPayload {
@@ -59,3 +21,14 @@ export const useMetricsStore = create<MetricsState>((set) => ({
   docker: undefined,
   setMetrics: (data) => set((state) => ({ ...state, ...data })),
 }));
+
+/** Clears live SSE snapshot (call when switching machine or reconnecting stream). */
+export function resetLiveMetrics() {
+  useMetricsStore.setState({
+    cpu: undefined,
+    memory: undefined,
+    disk: undefined,
+    network: undefined,
+    docker: undefined,
+  });
+}

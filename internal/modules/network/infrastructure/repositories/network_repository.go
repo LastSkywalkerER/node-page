@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"gorm.io/gorm"
@@ -13,6 +14,7 @@ import (
 type NetworkRepository interface {
 	SaveCurrentMetric(ctx context.Context, metric localentities.NetworkMetric, hostId uint) error
 	GetLatestMetric(ctx context.Context) (localentities.NetworkMetric, error)
+	GetLatestMetricByHost(ctx context.Context, hostId uint) (*localentities.NetworkMetric, error)
 	GetHistoricalMetrics(ctx context.Context, hours float64) ([]localentities.NetworkMetric, error)
 	GetHistoricalMetricsByHost(ctx context.Context, hostId uint, hours float64) ([]localentities.NetworkMetric, error)
 }
@@ -47,6 +49,21 @@ func (r *networkRepository) GetLatestMetric(ctx context.Context) (localentities.
 	return localentities.NetworkMetric{
 		Interfaces: metric.Interfaces,
 	}, nil
+}
+
+func (r *networkRepository) GetLatestMetricByHost(ctx context.Context, hostId uint) (*localentities.NetworkMetric, error) {
+	var metric localentities.HistoricalNetworkMetric
+	err := r.db.WithContext(ctx).
+		Where("host_id = ?", hostId).
+		Order("timestamp DESC").
+		First(&metric).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &localentities.NetworkMetric{Interfaces: metric.Interfaces}, nil
 }
 
 func (r *networkRepository) GetHistoricalMetrics(ctx context.Context, hours float64) ([]localentities.NetworkMetric, error) {

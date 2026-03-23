@@ -16,11 +16,15 @@ interface ApiEnvelope<T> {
 }
 
 class AuthService {
-  async register(email: string, password: string): Promise<AuthResponse> {
-    const response = await apiClient.post<ApiEnvelope<AuthResponse>>('/auth/register', {
+  async register(email: string, password: string, inviteToken?: string): Promise<AuthResponse> {
+    const body: { email: string; password: string; invite_token?: string } = {
       email,
       password,
-    });
+    };
+    if (inviteToken) {
+      body.invite_token = inviteToken;
+    }
+    const response = await apiClient.post<ApiEnvelope<AuthResponse>>('/auth/register', body);
     return response.data.data;
   }
 

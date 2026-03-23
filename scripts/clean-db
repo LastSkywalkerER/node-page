@@ -14,6 +14,7 @@ if [[ -f ".env" ]]; then
 fi
 
 DB_TYPE="${DB_TYPE:-sqlite}"
+# Local: stats.db | Docker: ./data/docker/stats.db (set DB_DSN for Docker)
 DB_DSN="${DB_DSN:-stats.db}"
 
 if [[ "$DB_TYPE" != "sqlite" ]]; then

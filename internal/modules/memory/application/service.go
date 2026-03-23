@@ -14,6 +14,7 @@ type Service interface {
 	Collect(ctx context.Context) (entities.MemoryMetric, error)
 	Save(ctx context.Context, metric entities.MemoryMetric, hostId uint) error
 	GetLatest(ctx context.Context) (entities.MemoryMetric, error)
+	GetLatestByHost(ctx context.Context, hostId uint) (*entities.MemoryMetric, error)
 	GetHistorical(ctx context.Context, hours float64) ([]entities.HistoricalMemoryMetric, error)
 	GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]entities.HistoricalMemoryMetric, error)
 	CollectAndSave(ctx context.Context, hostId uint) error
@@ -63,6 +64,10 @@ func (s *service) GetLatest(ctx context.Context) (entities.MemoryMetric, error) 
 		return entities.MemoryMetric{}, err
 	}
 	return metric, nil
+}
+
+func (s *service) GetLatestByHost(ctx context.Context, hostId uint) (*entities.MemoryMetric, error) {
+	return s.memoryRepository.GetLatestMetricByHost(ctx, hostId)
 }
 
 func (s *service) GetHistorical(ctx context.Context, hours float64) ([]entities.HistoricalMemoryMetric, error) {

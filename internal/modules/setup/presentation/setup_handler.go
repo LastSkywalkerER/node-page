@@ -225,7 +225,7 @@ func (h *SetupHandler) CompleteSetup(c *gin.Context) {
 	}
 
 	// Create first admin user
-	user, err := h.userService.Register(ctx, req.AdminEmail, req.AdminPassword)
+	user, err := h.userService.Register(ctx, req.AdminEmail, req.AdminPassword, nil)
 	if err != nil {
 		// Try to clean up .env file if user creation fails
 		// (but don't fail if cleanup fails)

@@ -33,8 +33,9 @@ func NewAuthHandler(userService userservice.UserService, tokenService userservic
 
 // RegisterRequest represents a user registration request
 type RegisterRequest struct {
-	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required,min=8"`
+	Email       string `json:"email" binding:"required,email"`
+	Password    string `json:"password" binding:"required,min=8"`
+	InviteToken string `json:"invite_token"`
 }
 
 // LoginRequest represents a user login request
@@ -95,7 +96,17 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	user, err := h.userService.Register(c.Request.Context(), req.Email, req.Password)
+	// Allow invite_token from query param as fallback (e.g. when form doesn't include it)
+	if req.InviteToken == "" {
+		req.InviteToken = c.Query("invite")
+	}
+
+	var invitePtr *string
+	if req.InviteToken != "" {
+		invitePtr = &req.InviteToken
+	}
+
+	user, err := h.userService.Register(c.Request.Context(), req.Email, req.Password, invitePtr)
 	if err != nil {
 		status := http.StatusInternalServerError
 		code := "internal_error"
@@ -105,6 +116,21 @@ func (h *AuthHandler) Register(c *gin.Context) {
 			status = http.StatusForbidden
 			code = "registration_disabled"
 			errorMsg = "Registration is disabled. Users already exist in the system."
+		} else if strings.Contains(err.Error(), "invalid invitation") {
+			status = http.StatusBadRequest
+			code = "invalid_invitation"
+			errorMsg = "Invalid or already used invitation link."
+		} else if strings.Contains(err.Error(), "invitation email mismatch") {
+			status = http.StatusBadRequest
+			code = "invitation_email_mismatch"
+			// Extract expected email from "invitation is for user@example.com"
+			if idx := strings.Index(err.Error(), "invitation is for "); idx >= 0 {
+				expectedEmail := strings.TrimSpace(err.Error()[idx+len("invitation is for "):])
+				errorMsg = "This invitation is for " + expectedEmail + ". Please use that email."
+				c.JSON(status, gin.H{"code": code, "error": errorMsg, "expected_email": expectedEmail})
+				return
+			}
+			errorMsg = "Email must match the invited address."
 		} else if strings.Contains(err.Error(), "already exists") {
 			status = http.StatusConflict
 			code = "email_already_exists"

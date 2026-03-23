@@ -4,9 +4,12 @@ system-stats
 */node_modules
 bin
 *.db
+data/
 # npm
 package-lock.json
 # yarn
 .yarn-integrity
 .env
+.env.agent
 *.db*
+tmp

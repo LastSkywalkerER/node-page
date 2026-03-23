@@ -4,6 +4,7 @@ import { format } from 'date-fns'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from '@/components/ui/chart'
 import { MetricCardSkeleton } from '@/shared/components/MetricCardSkeleton'
+import { MetricWidgetEmpty } from '@/shared/components/MetricWidgetEmpty'
 import { CHART_COLORS } from '@/shared/lib/chartColors'
 import { useCPU } from './useCPU'
 
@@ -34,6 +35,7 @@ function usageColor(pct: number) {
 export function CPUWidget({ hostId }: CPUWidgetProps) {
   const { data: metrics, isLoading } = useCPU(hostId)
   if (isLoading || !metrics) return <MetricCardSkeleton />
+  if (metrics.latest == null) return <MetricWidgetEmpty icon={Cpu} label="CPU" />
 
   const pct = metrics.latest?.usage_percent ?? 0
   const color = usageColor(pct)

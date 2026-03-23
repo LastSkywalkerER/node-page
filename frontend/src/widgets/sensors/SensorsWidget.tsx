@@ -1,6 +1,7 @@
 import { Thermometer } from 'lucide-react'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { MetricCardSkeleton } from '@/shared/components/MetricCardSkeleton'
+import { MetricWidgetEmpty } from '@/shared/components/MetricWidgetEmpty'
 import { useSensors } from './useSensors'
 import { TemperatureStat } from './schemas'
 
@@ -17,6 +18,16 @@ function tempColor(temp: number, high?: number | null, critical?: number | null)
 export default function SensorsWidget({ hostId }: SensorsWidgetProps) {
   const { data, isLoading } = useSensors(hostId)
   if (isLoading || !data) return <MetricCardSkeleton />
+
+  if (data?.sensors == null) {
+    return (
+      <MetricWidgetEmpty
+        icon={Thermometer}
+        label="Sensors"
+        message="No sensor data for this host. Temperatures are only collected on the machine running this server (usually Linux)."
+      />
+    )
+  }
 
   const sensors: TemperatureStat[] = data?.sensors?.sensors ?? []
   const hottest = sensors.length > 0

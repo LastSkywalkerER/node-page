@@ -1,7 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { useQuery } from '@tanstack/react-query';
 import { AxiosError } from 'axios';
+import { apiClient } from '@/shared/lib/api';
 import { Button } from '@/components/ui/button';
 import { FormInputField, FormPasswordField } from '@/components/ui/form-field';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -10,19 +12,44 @@ import { useRegister } from './useRegister';
 import { registerSchema, RegisterFormData } from './schemas';
 
 interface RegisterWidgetProps {
+  inviteToken?: string;
   onSwitchToLogin: () => void;
 }
 
-export function RegisterWidget({ onSwitchToLogin }: RegisterWidgetProps) {
+export function RegisterWidget({ inviteToken, onSwitchToLogin }: RegisterWidgetProps) {
   const [error, setError] = useState<string | null>(null);
+
+  const {
+    data: inviteData,
+    error: inviteError,
+    isLoading: inviteLoading,
+  } = useQuery({
+    queryKey: ['invite-validate', inviteToken],
+    queryFn: async () => {
+      const res = await apiClient.get<{ data: { email: string } }>(
+        `/invitations/validate?token=${encodeURIComponent(inviteToken!)}`,
+      );
+      return res.data.data;
+    },
+    enabled: !!inviteToken,
+    retry: false,
+  });
 
   const {
     register,
     handleSubmit,
     formState: { errors, isSubmitting },
+    setValue,
   } = useForm<RegisterFormData>({
     resolver: zodResolver(registerSchema),
+    defaultValues: { email: '' },
   });
+
+  useEffect(() => {
+    if (inviteData?.email) {
+      setValue('email', inviteData.email);
+    }
+  }, [inviteData?.email, setValue]);
 
   const registerMutation = useRegister();
 
@@ -32,6 +59,7 @@ export function RegisterWidget({ onSwitchToLogin }: RegisterWidgetProps) {
       await registerMutation.mutateAsync({
         email: data.email,
         password: data.password,
+        inviteToken: inviteToken ?? undefined,
       });
     } catch (err) {
       let errorMessage = 'Registration failed';
@@ -45,8 +73,17 @@ export function RegisterWidget({ onSwitchToLogin }: RegisterWidgetProps) {
     }
   };
 
+  const inviteInvalid = !!inviteToken && !!inviteError;
+
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+      {inviteInvalid && (
+        <Alert variant="destructive">
+          <AlertDescription>
+            Invalid or already used invitation link. Please request a new one.
+          </AlertDescription>
+        </Alert>
+      )}
       {error && (
         <Alert variant="destructive">
           <AlertDescription>{error}</AlertDescription>
@@ -61,6 +98,7 @@ export function RegisterWidget({ onSwitchToLogin }: RegisterWidgetProps) {
           type: 'email',
           placeholder: 'Enter your email',
           className: 'bg-slate-700 border-slate-600 text-white placeholder:text-slate-400',
+          readOnly: !!inviteToken,
         }}
         error={errors.email}
       />
@@ -90,7 +128,7 @@ export function RegisterWidget({ onSwitchToLogin }: RegisterWidgetProps) {
       <Button
         type="submit"
         className="w-full bg-green-600 hover:bg-green-700"
-        disabled={isSubmitting}
+        disabled={isSubmitting || (!!inviteToken && !inviteData)}
       >
         {isSubmitting ? (
           <>
@@ -102,15 +140,17 @@ export function RegisterWidget({ onSwitchToLogin }: RegisterWidgetProps) {
         )}
       </Button>
 
-      <div className="text-center">
-        <button
-          type="button"
-          onClick={onSwitchToLogin}
-          className="text-sm text-blue-400 hover:text-blue-300"
-        >
-          Already have an account? Sign in
-        </button>
-      </div>
+      {onSwitchToLogin && (
+        <div className="text-center">
+          <button
+            type="button"
+            onClick={onSwitchToLogin}
+            className="text-sm text-blue-400 hover:text-blue-300"
+          >
+            Already have an account? Sign in
+          </button>
+        </div>
+      )}
     </form>
   );
 }

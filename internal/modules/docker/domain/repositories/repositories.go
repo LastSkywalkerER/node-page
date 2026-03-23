@@ -20,6 +20,7 @@ type DockerMetricsCollector interface {
 type DockerRepository interface {
 	SaveCurrentMetric(ctx context.Context, metric localentities.DockerMetric, hostId uint) error
 	GetLatestMetric(ctx context.Context) (localentities.DockerMetric, error)
+	GetLatestMetricByHost(ctx context.Context, hostId uint) (*localentities.DockerMetric, error)
 	GetHistoricalMetrics(ctx context.Context, hours float64) ([]HistoricalDockerMetric, error)
 	GetHistoricalMetricsByHost(ctx context.Context, hostId uint, hours float64) ([]HistoricalDockerMetric, error)
 }

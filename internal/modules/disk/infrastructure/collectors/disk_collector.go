@@ -60,6 +60,10 @@ func (c *DiskMetricsCollector) CollectDiskMetrics(ctx context.Context) (entities
 	for _, p := range parts {
 		u, uerr := disk.UsageWithContext(ctx, p.Mountpoint)
 		if uerr != nil {
+			// In Docker/containers many host mounts are inaccessible — skip silently
+			if strings.Contains(uerr.Error(), "no such file or directory") {
+				continue
+			}
 			c.logger.Warn("Failed to collect usage for mount", "mount", p.Mountpoint, "error", uerr)
 			continue
 		}

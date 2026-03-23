@@ -16,6 +16,7 @@ type Service interface {
 	Collect(ctx context.Context) (entities.NetworkMetric, error)
 	Save(ctx context.Context, metric entities.NetworkMetric, hostId uint) error
 	GetLatest(ctx context.Context) (entities.NetworkMetric, error)
+	GetLatestByHost(ctx context.Context, hostId uint) (*entities.NetworkMetric, error)
 	GetHistorical(ctx context.Context, hours float64) ([]entities.NetworkMetric, error)
 	GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]entities.NetworkMetric, error)
 	CollectAndSave(ctx context.Context, hostId uint) error
@@ -90,6 +91,36 @@ func (s *service) GetLatest(ctx context.Context) (entities.NetworkMetric, error)
 		}
 		return entities.NetworkMetric{}, err
 	}
+	return metric, nil
+}
+
+func (s *service) GetLatestByHost(ctx context.Context, hostId uint) (*entities.NetworkMetric, error) {
+	metric, err := s.networkRepository.GetLatestMetricByHost(ctx, hostId)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			s.logger.Debug("Context canceled while getting latest network metrics by host")
+		} else {
+			s.logger.Error("Failed to get latest network metrics by host", "error", err, "host_id", hostId)
+		}
+		return nil, err
+	}
+	if metric == nil {
+		return nil, nil
+	}
+	s.speedCalculator.BeginCalculationBatch()
+	for i := range metric.Interfaces {
+		iface := &metric.Interfaces[i]
+		speed := s.speedCalculator.CalculateSpeed(
+			iface.Name,
+			iface.BytesSent,
+			iface.BytesRecv,
+			iface.PacketsSent,
+			iface.PacketsRecv,
+		)
+		iface.SpeedKbpsSent = speed.SpeedKbpsSent
+		iface.SpeedKbpsRecv = speed.SpeedKbpsRecv
+	}
+	s.speedCalculator.EndCalculationBatch()
 	return metric, nil
 }
 

@@ -4,6 +4,7 @@ import { format } from 'date-fns'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from '@/components/ui/chart'
 import { MetricCardSkeleton } from '@/shared/components/MetricCardSkeleton'
+import { MetricWidgetEmpty } from '@/shared/components/MetricWidgetEmpty'
 import { CHART_COLORS } from '@/shared/lib/chartColors'
 import { useNetwork } from './useNetwork'
 import { NetworkInterface } from './schemas'
@@ -28,6 +29,7 @@ const chartConfig: ChartConfig = {
 export function NetworkWidget({ hostId }: NetworkWidgetProps) {
   const { data: metrics, isLoading } = useNetwork(hostId)
   if (isLoading || !metrics) return <MetricCardSkeleton />
+  if (metrics.latest == null) return <MetricWidgetEmpty icon={Network} label="Network" />
 
   const ifaces: NetworkInterface[] = metrics.latest?.interfaces ?? []
   const primary = getPrimary(ifaces)

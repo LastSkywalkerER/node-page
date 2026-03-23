@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"gorm.io/gorm"
@@ -13,6 +14,8 @@ import (
 type CPURepository interface {
 	SaveCurrentMetric(ctx context.Context, metric localentities.CPUMetric, hostId uint) error
 	GetLatestMetric(ctx context.Context) (localentities.CPUMetric, error)
+	// GetLatestMetricByHost returns the newest snapshot for hostId, or nil when none exist.
+	GetLatestMetricByHost(ctx context.Context, hostId uint) (*localentities.CPUMetric, error)
 	GetHistoricalMetrics(ctx context.Context, hours float64) ([]localentities.HistoricalCPUMetric, error)
 	GetHistoricalMetricsByHost(ctx context.Context, hostId uint, hours float64) ([]localentities.HistoricalCPUMetric, error)
 }
@@ -50,6 +53,28 @@ func (r *cpuRepository) GetLatestMetric(ctx context.Context) (localentities.CPUM
 	}
 
 	return localentities.CPUMetric{
+		UsagePercent: metric.Usage,
+		Cores:        metric.Cores,
+		LoadAvg1:     metric.LoadAvg1,
+		LoadAvg5:     metric.LoadAvg5,
+		LoadAvg15:    metric.LoadAvg15,
+		Temperature:  metric.Temperature,
+	}, nil
+}
+
+func (r *cpuRepository) GetLatestMetricByHost(ctx context.Context, hostId uint) (*localentities.CPUMetric, error) {
+	var metric localentities.HistoricalCPUMetric
+	err := r.db.WithContext(ctx).
+		Where("host_id = ?", hostId).
+		Order("timestamp DESC").
+		First(&metric).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &localentities.CPUMetric{
 		UsagePercent: metric.Usage,
 		Cores:        metric.Cores,
 		LoadAvg1:     metric.LoadAvg1,

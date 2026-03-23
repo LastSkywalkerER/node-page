@@ -6,6 +6,7 @@ import { useUserStore } from '../../shared/store/user';
 interface RegisterData {
   email: string;
   password: string;
+  inviteToken?: string;
 }
 
 export function useRegister() {
@@ -13,10 +14,11 @@ export function useRegister() {
   const { setAuthFromResponse } = useUserStore();
 
   return useMutation({
-    mutationFn: async (data: RegisterData) => authService.register(data.email, data.password),
+    mutationFn: async (data: RegisterData) =>
+      authService.register(data.email, data.password, data.inviteToken),
     onSuccess: (payload) => {
       setAuthFromResponse(payload);
-      navigate('/dashboard');
+      navigate('/machines');
     },
     onError: (error) => {
       console.error('Registration error:', error);

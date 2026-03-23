@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strconv"
 	"strings"
@@ -123,6 +124,60 @@ func (r *dockerRepository) GetLatestMetric(ctx context.Context) (localentities.D
 		RunningContainers: metric.RunningContainers,
 		DockerAvailable:   metric.DockerAvailable,
 	}, nil
+}
+
+func (r *dockerRepository) GetLatestMetricByHost(ctx context.Context, hostId uint) (*localentities.DockerMetric, error) {
+	var metric repositories.HistoricalDockerMetric
+	err := r.db.WithContext(ctx).
+		Preload("Containers").
+		Where("host_id = ?", hostId).
+		Order("timestamp DESC").
+		First(&metric).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	containerMap := make(map[string][]localentities.DockerContainer)
+	for _, entity := range metric.Containers {
+		container, err := entity.ToDockerContainer()
+		if err != nil {
+			return nil, err
+		}
+		stackName := r.extractStackNameFromContainerName(container.Name)
+		stackName = r.normalizeStackName(stackName)
+		containerMap[stackName] = append(containerMap[stackName], container)
+	}
+	var stacks []localentities.DockerStack
+	for stackName, containers := range containerMap {
+		sort.Slice(containers, func(i, j int) bool {
+			return containers[i].Name < containers[j].Name
+		})
+		totalContainers := len(containers)
+		runningContainers := 0
+		for _, container := range containers {
+			if container.State == "running" {
+				runningContainers++
+			}
+		}
+		stacks = append(stacks, localentities.DockerStack{
+			Name:              stackName,
+			Containers:        containers,
+			TotalContainers:   totalContainers,
+			RunningContainers: runningContainers,
+		})
+	}
+	sort.Slice(stacks, func(i, j int) bool {
+		return stacks[i].Name < stacks[j].Name
+	})
+	out := localentities.DockerMetric{
+		Stacks:            stacks,
+		TotalContainers:   metric.TotalContainers,
+		RunningContainers: metric.RunningContainers,
+		DockerAvailable:   metric.DockerAvailable,
+	}
+	return &out, nil
 }
 
 // extractStackNameFromContainerName attempts to extract stack name from container name

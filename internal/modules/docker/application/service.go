@@ -14,6 +14,7 @@ type Service interface {
 	Collect(ctx context.Context) (entities.DockerMetric, error)
 	Save(ctx context.Context, metric entities.DockerMetric, hostId uint) error
 	GetLatest(ctx context.Context) (entities.DockerMetric, error)
+	GetLatestByHost(ctx context.Context, hostId uint) (*entities.DockerMetric, error)
 	GetHistorical(ctx context.Context, hours float64) ([]repositories.HistoricalDockerMetric, error)
 	GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]repositories.HistoricalDockerMetric, error)
 	CollectAndSave(ctx context.Context, hostId uint) error
@@ -64,6 +65,19 @@ func (s *service) GetLatest(ctx context.Context) (entities.DockerMetric, error) 
 			s.logger.Error("Failed to get latest Docker metrics", "error", err)
 		}
 		return entities.DockerMetric{}, err
+	}
+	return metric, nil
+}
+
+func (s *service) GetLatestByHost(ctx context.Context, hostId uint) (*entities.DockerMetric, error) {
+	metric, err := s.dockerRepository.GetLatestMetricByHost(ctx, hostId)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			s.logger.Debug("Context canceled while getting latest Docker metrics by host")
+		} else {
+			s.logger.Error("Failed to get latest Docker metrics by host", "error", err, "host_id", hostId)
+		}
+		return nil, err
 	}
 	return metric, nil
 }

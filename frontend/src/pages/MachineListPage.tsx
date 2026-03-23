@@ -8,15 +8,7 @@ import { useConnectionStatus } from '@/widgets/connection-status/useConnectionSt
 
 function fmtUptime(u: string | null): string {
   if (!u) return '--'
-  // if raw seconds number
-  const n = Number(u)
-  if (!isNaN(n)) {
-    const d = Math.floor(n / 86400), h = Math.floor((n % 86400) / 3600), m = Math.floor((n % 3600) / 60)
-    if (d > 0) return `${d}d ${h}h`
-    if (h > 0) return `${h}h ${m}m`
-    return `${m}m`
-  }
-  return u.split('.')[0]
+  return u
 }
 
 function fmtLatency(ms: number | null): string {
@@ -26,7 +18,7 @@ function fmtLatency(ms: number | null): string {
 }
 
 function HostCard({ host }: { host: any }) {
-  const { isConnected, latency, uptime, isLoading: connLoading } = useConnectionStatus(host.id)
+  const { isConnected, latency, uptime, showUptime, isLoading: connLoading } = useConnectionStatus(host.id)
 
   return (
     <Link to={`/machines/${host.id}/stats`} className="group block">
@@ -34,12 +26,12 @@ function HostCard({ host }: { host: any }) {
         'relative flex flex-col rounded-xl border bg-card overflow-hidden',
         'transition-all duration-200',
         'hover:border-primary/30 hover:shadow-lg hover:shadow-black/10 hover:-translate-y-0.5',
-        isConnected ? 'border-border' : 'border-border opacity-70'
+        isConnected ? 'border-border' : 'border-border opacity-90'
       )}>
         {/* Status stripe */}
         <div className={cn(
           'absolute top-0 left-0 right-0 h-0.5',
-          isConnected ? 'bg-green-500' : 'bg-muted-foreground/30'
+          isConnected ? 'bg-green-500' : 'bg-red-500'
         )} />
 
         <div className="p-4 pt-5 flex-1">
@@ -57,7 +49,7 @@ function HostCard({ host }: { host: any }) {
             </div>
             <span className={cn(
               'shrink-0 mt-0.5',
-              isConnected ? 'text-green-500' : 'text-muted-foreground/40'
+              isConnected ? 'text-green-500' : 'text-red-500'
             )}>
               {isConnected ? <Wifi className="h-4 w-4" /> : <WifiOff className="h-4 w-4" />}
             </span>
@@ -69,6 +61,14 @@ function HostCard({ host }: { host: any }) {
               <div className="flex justify-between items-center">
                 <span className="text-muted-foreground">IPv4</span>
                 <span className="font-mono text-[11px]">{host.ipv4}</span>
+              </div>
+            )}
+            {host.mac_address && (
+              <div className="flex justify-between items-center gap-2">
+                <span className="text-muted-foreground shrink-0">MAC</span>
+                <span className="font-mono text-[11px] text-right break-all min-w-0">
+                  {host.mac_address}
+                </span>
               </div>
             )}
             {host.kernel_version && (
@@ -107,10 +107,12 @@ function HostCard({ host }: { host: any }) {
                 <Zap className="h-3 w-3 text-amber-500" />
                 {fmtLatency(latency)}
               </span>
-              <span className="flex items-center gap-1.5">
-                <Clock className="h-3 w-3 text-sky-500" />
-                {fmtUptime(uptime)}
-              </span>
+              {showUptime && (
+                <span className="flex items-center gap-1.5">
+                  <Clock className="h-3 w-3 text-sky-500" />
+                  {fmtUptime(uptime)}
+                </span>
+              )}
             </>
           )}
         </div>
