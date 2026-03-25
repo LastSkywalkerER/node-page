@@ -5,6 +5,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import { useHosts } from '@/widgets/hosts/useHosts'
 import { useConnectionStatus } from '@/widgets/connection-status/useConnectionStatus'
+import type { Host } from '@/widgets/hosts/schemas'
 
 function fmtUptime(u: string | null): string {
   if (!u) return '--'
@@ -17,7 +18,7 @@ function fmtLatency(ms: number | null): string {
   return `${Math.round(ms)}ms`
 }
 
-function HostCard({ host }: { host: any }) {
+function HostCard({ host }: { host: Host }) {
   const { isConnected, latency, uptime, showUptime, isLoading: connLoading } = useConnectionStatus(host.id)
 
   return (
@@ -123,7 +124,7 @@ function HostCard({ host }: { host: any }) {
 
 export function MachineListPage() {
   const { data: hostsData, isLoading } = useHosts()
-  const hosts: any[] = hostsData?.hosts ?? []
+  const hosts: Host[] = hostsData?.hosts ?? []
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-8">

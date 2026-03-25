@@ -3,33 +3,15 @@ package handlers
 import (
 	"errors"
 	"net/http"
-	"strconv"
 
 	"github.com/charmbracelet/log"
 	"github.com/gin-gonic/gin"
 
+	"system-stats/internal/app/httputil"
 	"system-stats/internal/app/metricshost"
 	cpuservice "system-stats/internal/modules/cpu/application"
 	hostservice "system-stats/internal/modules/hosts/application"
 )
-
-func parseHoursQuery(c *gin.Context) float64 {
-	hoursStr := c.DefaultQuery("hours", "0.0833")
-	hours, err := strconv.ParseFloat(hoursStr, 64)
-	if err != nil {
-		return 0.0833
-	}
-	return hours
-}
-
-func parseHostIdQuery(c *gin.Context) uint {
-	hostIdStr := c.DefaultQuery("host_id", "0")
-	hostId, err := strconv.ParseUint(hostIdStr, 10, 32)
-	if err != nil {
-		return 0
-	}
-	return uint(hostId)
-}
 
 // CPUHandler handles HTTP requests for CPU metrics.
 type CPUHandler struct {
@@ -61,8 +43,8 @@ func NewCPUHandler(logger *log.Logger, service cpuservice.Service, hosts hostser
 // @Security    BearerAuth
 // @Router      /cpu [get]
 func (h *CPUHandler) HandleCPUStats(c *gin.Context) {
-	hours := parseHoursQuery(c)
-	queryHost := parseHostIdQuery(c)
+	hours := httputil.ParseHoursQuery(c)
+	queryHost := httputil.ParseHostIdQuery(c)
 
 	effective, err := metricshost.EffectiveHostID(c.Request.Context(), h.hosts, queryHost)
 	if errors.Is(err, metricshost.ErrHostNotFound) {

@@ -4,7 +4,7 @@ import { apiClient } from '@/shared/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useHosts } from '@/widgets/hosts/useHosts'
-import { Copy, Check, Link2, Server, Trash2, Eye, EyeOff, Save } from 'lucide-react'
+import { Copy, Check, Link2, Server, Trash2, Eye, EyeOff, Save, Unplug } from 'lucide-react'
 import { toast } from 'sonner'
 
 type ClusterUIStatus = {
@@ -47,6 +47,19 @@ function AgentConnectionSettings({ clusterUi }: { clusterUi: ClusterUIStatus }) 
     },
   })
 
+  const disconnectMutation = useMutation({
+    mutationFn: async () => {
+      await apiClient.delete('/nodes/agent-cluster-config')
+    },
+    onSuccess: () => {
+      toast.success('Disconnected from main node')
+      queryClient.invalidateQueries({ queryKey: ['nodes-cluster-ui-status'] })
+    },
+    onError: (err: Error & { response?: { data?: { error?: string } } }) => {
+      toast.error(err.response?.data?.error || err.message || 'Disconnect failed')
+    },
+  })
+
   return (
     <div className="rounded-xl border bg-card p-5 space-y-4">
       <h3 className="font-medium text-sm">Connected to main</h3>
@@ -85,15 +98,30 @@ function AgentConnectionSettings({ clusterUi }: { clusterUi: ClusterUIStatus }) 
           </Button>
         </div>
       </div>
-      <Button
-        type="button"
-        size="sm"
-        disabled={saveMutation.isPending || !mainUrl.trim() || !token.trim()}
-        onClick={() => saveMutation.mutate()}
-      >
-        <Save className="h-4 w-4 mr-2" />
-        Save connection
-      </Button>
+      <div className="flex gap-2">
+        <Button
+          type="button"
+          size="sm"
+          disabled={saveMutation.isPending || !mainUrl.trim() || !token.trim()}
+          onClick={() => saveMutation.mutate()}
+        >
+          <Save className="h-4 w-4 mr-2" />
+          Save connection
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="destructive"
+          disabled={disconnectMutation.isPending}
+          onClick={() => {
+            if (!confirm('Disconnect from main node? Push will stop and connection credentials will be cleared.')) return
+            disconnectMutation.mutate()
+          }}
+        >
+          <Unplug className="h-4 w-4 mr-2" />
+          Disconnect
+        </Button>
+      </div>
     </div>
   )
 }

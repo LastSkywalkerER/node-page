@@ -31,13 +31,16 @@ func NewConfigWriter() *ConfigWriter {
 
 // ConfigValues represents all configuration values
 type ConfigValues struct {
-	JWTSecret     string `json:"jwt_secret"`
-	RefreshSecret string `json:"refresh_secret"`
-	Addr          string `json:"addr"`
-	GinMode       string `json:"gin_mode"`
-	Debug         string `json:"debug"`
-	DBType        string `json:"db_type"`
-	DBDSN         string `json:"db_dsn"`
+	JWTSecret         string `json:"jwt_secret"`
+	RefreshSecret     string `json:"refresh_secret"`
+	Addr              string `json:"addr"`
+	GinMode           string `json:"gin_mode"`
+	Debug             string `json:"debug"`
+	DBType            string `json:"db_type"`
+	DBDSN             string `json:"db_dsn"`
+	PrometheusEnabled string `json:"prometheus_enabled"`
+	PrometheusAuth    string `json:"prometheus_auth"`
+	PrometheusToken   string `json:"prometheus_token"`
 }
 
 // ReadCurrentConfig reads current configuration from .env file or environment variables
@@ -46,13 +49,16 @@ func (cw *ConfigWriter) ReadCurrentConfig() (*ConfigValues, error) {
 	_ = godotenv.Load(cw.envPath)
 
 	config := &ConfigValues{
-		JWTSecret:     os.Getenv("JWT_SECRET"),
-		RefreshSecret: os.Getenv("REFRESH_SECRET"),
-		Addr:          getEnv("ADDR", ":8080"),
-		GinMode:       getEnv("GIN_MODE", "release"),
-		Debug:         getEnv("DEBUG", "false"),
-		DBType:        getEnv("DB_TYPE", "sqlite"),
-		DBDSN:         getEnv("DB_DSN", "stats.db"),
+		JWTSecret:         os.Getenv("JWT_SECRET"),
+		RefreshSecret:     os.Getenv("REFRESH_SECRET"),
+		Addr:              getEnv("ADDR", ":8080"),
+		GinMode:           getEnv("GIN_MODE", "release"),
+		Debug:             getEnv("DEBUG", "false"),
+		DBType:            getEnv("DB_TYPE", "sqlite"),
+		DBDSN:             getEnv("DB_DSN", "stats.db"),
+		PrometheusEnabled: getEnv("PROMETHEUS_ENABLED", "false"),
+		PrometheusAuth:    getEnv("PROMETHEUS_AUTH", "false"),
+		PrometheusToken:   os.Getenv("PROMETHEUS_TOKEN"),
 	}
 
 	return config, nil
@@ -85,6 +91,14 @@ func (cw *ConfigWriter) WriteConfigFile(config *ConfigValues) error {
 	lines = append(lines, "# Authentication Configuration")
 	lines = append(lines, fmt.Sprintf("JWT_SECRET=%s", escapeValue(config.JWTSecret)))
 	lines = append(lines, fmt.Sprintf("REFRESH_SECRET=%s", escapeValue(config.RefreshSecret)))
+	lines = append(lines, "")
+
+	lines = append(lines, "# Prometheus Configuration")
+	lines = append(lines, fmt.Sprintf("PROMETHEUS_ENABLED=%s", escapeValue(config.PrometheusEnabled)))
+	lines = append(lines, fmt.Sprintf("PROMETHEUS_AUTH=%s", escapeValue(config.PrometheusAuth)))
+	if config.PrometheusToken != "" {
+		lines = append(lines, fmt.Sprintf("PROMETHEUS_TOKEN=%s", escapeValue(config.PrometheusToken)))
+	}
 
 	content := strings.Join(lines, "\n") + "\n"
 

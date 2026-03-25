@@ -8,6 +8,7 @@ import { MetricWidgetEmpty } from '@/shared/components/MetricWidgetEmpty'
 import { CHART_COLORS } from '@/shared/lib/chartColors'
 import { formatBytes } from '@/shared/lib/utils'
 import { useDisk } from './useDisk'
+import type { DiskMetric } from './schemas'
 
 interface DiskWidgetProps { hostId: number }
 
@@ -24,11 +25,13 @@ export function DiskWidget({ hostId }: DiskWidgetProps) {
 
   const pct = metrics.latest?.usage_percent ?? 0
   const color = usageColor(pct)
-  const latest = (metrics as any)?.latest ?? {}
-  const mounts: any[] = Array.isArray(latest?.mounts) ? latest.mounts : []
-  const ioCounters: any[] = Array.isArray(latest?.io_counters) ? latest.io_counters : []
-  const topRead = ioCounters.reduce((b: any, d: any) => (b?.read_bytes > d.read_bytes ? b : d), null)
-  const topWrite = ioCounters.reduce((b: any, d: any) => (b?.write_bytes > d.write_bytes ? b : d), null)
+  const latest = metrics.latest!
+  type Mount = DiskMetric['mounts'][number]
+  type IOCounter = DiskMetric['io_counters'][number]
+  const mounts: Mount[] = Array.isArray(latest.mounts) ? latest.mounts : []
+  const ioCounters: IOCounter[] = Array.isArray(latest.io_counters) ? latest.io_counters : []
+  const topRead = ioCounters.reduce<IOCounter | null>((b, d) => (b && b.read_bytes > d.read_bytes ? b : d), null)
+  const topWrite = ioCounters.reduce<IOCounter | null>((b, d) => (b && b.write_bytes > d.write_bytes ? b : d), null)
   const sortedMounts = mounts.slice().sort((a, b) => b.used_percent - a.used_percent).slice(0, 3)
 
   const chartConfig: ChartConfig = { used: { label: 'Used', color } }
@@ -69,7 +72,7 @@ export function DiskWidget({ hostId }: DiskWidgetProps) {
               <span className="font-medium">{formatBytes(latest.free)}</span>
             </div>
           )}
-          {sortedMounts.map((m: any) => {
+          {sortedMounts.map((m) => {
             const mc = usageColor(m.used_percent)
             return (
               <div key={m.path}>
@@ -98,7 +101,7 @@ export function DiskWidget({ hostId }: DiskWidgetProps) {
         </div>
         {metrics.history && metrics.history.length > 0 && (
           <ChartContainer config={chartConfig} className="h-20 w-full">
-            <AreaChart data={metrics.history.map((p: any) => {
+            <AreaChart data={metrics.history.map((p) => {
               const d = new Date(p.timestamp)
               return { time: isNaN(d.getTime()) ? '' : format(d, 'HH:mm'), used: p.used_bytes }
             })} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>

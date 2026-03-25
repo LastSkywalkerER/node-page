@@ -9,10 +9,10 @@ import (
  // used for trend analysis and historical reporting.
 type HistoricalCPUMetric struct {
 	// HostID is the foreign key referencing the host that recorded this metric
-	HostID *uint `json:"host_id" gorm:"default:null"`
+	HostID *uint `json:"host_id" gorm:"default:null;index;index:idx_cpu_host_ts"`
 
 	// Timestamp indicates when this CPU metric was recorded (primary key)
-	Timestamp time.Time `json:"timestamp" gorm:"primaryKey"`
+	Timestamp time.Time `json:"timestamp" gorm:"primaryKey;index;index:idx_cpu_host_ts"`
 
 	// Usage shows the CPU utilization percentage at the time of recording
 	Usage float64 `json:"usage" gorm:"column:usage"`

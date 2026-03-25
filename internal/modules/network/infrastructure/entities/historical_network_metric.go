@@ -8,10 +8,10 @@ import (
  // This structure contains complete network interface statistics recorded at a specific time.
 type HistoricalNetworkMetric struct {
 	// HostID is the foreign key referencing the host that recorded this metric
-	HostID *uint `json:"host_id" gorm:"default:null"`
+	HostID *uint `json:"host_id" gorm:"default:null;index;index:idx_net_host_ts"`
 
 	// Timestamp indicates when this network metric was recorded (primary key)
-	Timestamp time.Time `json:"timestamp" gorm:"primaryKey"`
+	Timestamp time.Time `json:"timestamp" gorm:"primaryKey;index;index:idx_net_host_ts"`
 
 	// Interfaces contains metrics for each network interface at this timestamp
 	Interfaces []NetworkInterface `json:"interfaces" gorm:"serializer:json"`

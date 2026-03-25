@@ -49,7 +49,9 @@ type Config struct {
 	RetentionDays int // METRICS_RETENTION_DAYS: how long to keep historical metrics, default 30
 
 	// Observability
-	PrometheusEnabled bool // PROMETHEUS_ENABLED: expose /metrics endpoint, default false
+	PrometheusEnabled bool   // PROMETHEUS_ENABLED: expose /metrics endpoint, default false
+	PrometheusAuth    bool   // PROMETHEUS_AUTH: require Bearer token for /metrics, default false
+	PrometheusToken   string // PROMETHEUS_TOKEN: bearer token value when auth is enabled
 
 	// Cluster agent mode (push metrics to main node)
 	MainNodeURL     string // MAIN_NODE_URL: main server URL for push (e.g. https://main:8080)
@@ -104,6 +106,9 @@ func Load() (*Config, error) {
 	// Observability
 	prometheusEnv := strings.ToLower(getEnv("PROMETHEUS_ENABLED", "false"))
 	config.PrometheusEnabled = prometheusEnv == "true" || prometheusEnv == "1"
+	prometheusAuthEnv := strings.ToLower(getEnv("PROMETHEUS_AUTH", "false"))
+	config.PrometheusAuth = prometheusAuthEnv == "true" || prometheusAuthEnv == "1"
+	config.PrometheusToken = os.Getenv("PROMETHEUS_TOKEN")
 
 	// Cluster agent mode
 	config.MainNodeURL = strings.TrimSuffix(getEnv("MAIN_NODE_URL", ""), "/")

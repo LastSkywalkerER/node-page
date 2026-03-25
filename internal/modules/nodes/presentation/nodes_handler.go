@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"system-stats/internal/app/apperror"
 	hostservice "system-stats/internal/modules/hosts/application"
 	hostentities "system-stats/internal/modules/hosts/infrastructure/entities"
 	nodeservice "system-stats/internal/modules/nodes/application"
@@ -85,28 +86,18 @@ type JoinRequest struct {
 func (h *NodesHandler) Join(c *gin.Context) {
 	token := c.Query("token")
 	if token == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":  "token_required",
-			"error": "Join token is required",
-		})
+		_ = c.Error(apperror.BadRequest("token_required", "Join token is required"))
 		return
 	}
 
 	var req JoinRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":   "validation_error",
-			"error":  "Invalid request data",
-			"detail": err.Error(),
-		})
+		_ = c.Error(apperror.WithDetail(apperror.BadRequest("validation_error", "Invalid request data"), err.Error()))
 		return
 	}
 
 	if req.Name == "" || req.MacAddress == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":  "validation_error",
-			"error": "name and mac_address are required",
-		})
+		_ = c.Error(apperror.BadRequest("validation_error", "name and mac_address are required"))
 		return
 	}
 
@@ -126,16 +117,11 @@ func (h *NodesHandler) Join(c *gin.Context) {
 
 	hostID, nodeToken, err := h.nodeService.Join(c.Request.Context(), token, hostInfo)
 	if err != nil {
-		status := http.StatusBadRequest
 		if strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "expired") {
-			status = http.StatusBadRequest
+			_ = c.Error(apperror.BadRequest("join_failed", err.Error()))
 		} else {
-			status = http.StatusInternalServerError
+			_ = c.Error(apperror.Internal("join_failed", err.Error()))
 		}
-		c.JSON(status, gin.H{
-			"code":  "join_failed",
-			"error": err.Error(),
-		})
 		return
 	}
 
@@ -162,10 +148,7 @@ func (h *NodesHandler) Join(c *gin.Context) {
 func (h *NodesHandler) CreateInvite(c *gin.Context) {
 	userID, exists := c.Get("userID")
 	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"code":  "unauthorized",
-			"error": "Authentication required",
-		})
+		_ = c.Error(apperror.Unauthorized("unauthorized", "Authentication required"))
 		return
 	}
 	adminID := userID.(uint)
@@ -174,10 +157,7 @@ func (h *NodesHandler) CreateInvite(c *gin.Context) {
 
 	link, err := h.nodeService.CreateNodeInvite(c.Request.Context(), adminID, baseURL)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":  "internal_error",
-			"error": err.Error(),
-		})
+		_ = c.Error(apperror.Internal("internal_error", err.Error()))
 		return
 	}
 
@@ -213,28 +193,18 @@ type PushRequest struct {
 func (h *NodesHandler) Push(c *gin.Context) {
 	hostID, exists := c.Get("hostID")
 	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"code":  "unauthorized",
-			"error": "Host ID not set",
-		})
+		_ = c.Error(apperror.Unauthorized("unauthorized", "Host ID not set"))
 		return
 	}
 
 	var req PushRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":   "validation_error",
-			"error":  "Invalid request data",
-			"detail": err.Error(),
-		})
+		_ = c.Error(apperror.WithDetail(apperror.BadRequest("validation_error", "Invalid request data"), err.Error()))
 		return
 	}
 
 	if err := h.nodeService.HandlePush(c.Request.Context(), hostID.(uint)); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":  "internal_error",
-			"error": err.Error(),
-		})
+		_ = c.Error(apperror.Internal("internal_error", err.Error()))
 		return
 	}
 
@@ -264,29 +234,19 @@ type ConnectRequest struct {
 func (h *NodesHandler) Connect(c *gin.Context) {
 	var req ConnectRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":   "validation_error",
-			"error":  "join_link is required",
-			"detail": err.Error(),
-		})
+		_ = c.Error(apperror.WithDetail(apperror.BadRequest("validation_error", "join_link is required"), err.Error()))
 		return
 	}
 
 	u, err := url.Parse(strings.TrimSpace(req.JoinLink))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":  "invalid_url",
-			"error": "Invalid join link URL",
-		})
+		_ = c.Error(apperror.BadRequest("invalid_url", "Invalid join link URL"))
 		return
 	}
 
 	token := u.Query().Get("token")
 	if token == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":  "token_required",
-			"error": "Join link must contain token parameter",
-		})
+		_ = c.Error(apperror.BadRequest("token_required", "Join link must contain token parameter"))
 		return
 	}
 
@@ -306,10 +266,7 @@ func (h *NodesHandler) Connect(c *gin.Context) {
 
 	hostInfo, err := h.hostService.GetCurrentHostInfo(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":  "internal_error",
-			"error": "Failed to get host info: " + err.Error(),
-		})
+		_ = c.Error(apperror.Internal("internal_error", "Failed to get host info: "+err.Error()))
 		return
 	}
 
@@ -331,20 +288,14 @@ func (h *NodesHandler) Connect(c *gin.Context) {
 	joinURL := baseURL + "/api/v1/nodes/join?token=" + url.QueryEscape(token)
 	req2, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, joinURL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":  "internal_error",
-			"error": err.Error(),
-		})
+		_ = c.Error(apperror.Internal("internal_error", err.Error()))
 		return
 	}
 	req2.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req2)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":  "join_failed",
-			"error": "Failed to connect to main node: " + err.Error(),
-		})
+		_ = c.Error(apperror.BadRequest("join_failed", "Failed to connect to main node: "+err.Error()))
 		return
 	}
 	defer resp.Body.Close()
@@ -356,10 +307,7 @@ func (h *NodesHandler) Connect(c *gin.Context) {
 		if e, ok := errBody["error"].(string); ok {
 			errMsg = e
 		}
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":  "join_failed",
-			"error": fmt.Sprintf("Main node returned %d: %s", resp.StatusCode, errMsg),
-		})
+		_ = c.Error(apperror.BadRequest("join_failed", fmt.Sprintf("Main node returned %d: %s", resp.StatusCode, errMsg)))
 		return
 	}
 
@@ -370,18 +318,12 @@ func (h *NodesHandler) Connect(c *gin.Context) {
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&joinResp); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":  "internal_error",
-			"error": "Invalid response from main node",
-		})
+		_ = c.Error(apperror.Internal("internal_error", "Invalid response from main node"))
 		return
 	}
 
 	if err := cluster_config.Update(baseURL, joinResp.Data.NodeAccessToken); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":  "internal_error",
-			"error": "Failed to save config: " + err.Error(),
-		})
+		_ = c.Error(apperror.Internal("internal_error", "Failed to save config: "+err.Error()))
 		return
 	}
 
@@ -398,10 +340,7 @@ func parseHostIDParam(c *gin.Context) (uint, bool) {
 	idStr := c.Param("id")
 	id64, err := strconv.ParseUint(idStr, 10, 32)
 	if err != nil || id64 == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":  "invalid_host_id",
-			"error": "Invalid host id",
-		})
+		_ = c.Error(apperror.BadRequest("invalid_host_id", "Invalid host id"))
 		return 0, false
 	}
 	return uint(id64), true
@@ -415,16 +354,16 @@ func (h *NodesHandler) RegenerateAgentToken(c *gin.Context) {
 	}
 	if _, err := h.hostService.GetHostByID(c.Request.Context(), hostID); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"code": "not_found", "error": "Host not found"})
+			_ = c.Error(apperror.NotFound("not_found", "Host not found"))
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": err.Error()})
+		_ = c.Error(apperror.Internal("internal_error", err.Error()))
 		return
 	}
 
 	plain, err := h.nodeService.RegenerateNodeAccessToken(c.Request.Context(), hostID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": err.Error()})
+		_ = c.Error(apperror.Internal("internal_error", err.Error()))
 		return
 	}
 
@@ -439,13 +378,13 @@ func (h *NodesHandler) RegenerateAgentToken(c *gin.Context) {
 func (h *NodesHandler) GetClusterUIStatus(c *gin.Context) {
 	host, err := h.hostService.GetCurrentHost(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": err.Error()})
+		_ = c.Error(apperror.Internal("internal_error", err.Error()))
 		return
 	}
 	base := h.resolvePublicBaseURL(c)
 	status, err := h.nodeService.GetClusterUIStatus(c.Request.Context(), host.ID, base)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": err.Error()})
+		_ = c.Error(apperror.Internal("internal_error", err.Error()))
 		return
 	}
 	out := gin.H{
@@ -467,15 +406,24 @@ type AgentClusterConfigBody struct {
 	NodeAccessToken  string `json:"node_access_token" binding:"required"`
 }
 
+// DeleteAgentClusterConfig clears MAIN_NODE_URL and NODE_ACCESS_TOKEN on this agent (admin).
+func (h *NodesHandler) DeleteAgentClusterConfig(c *gin.Context) {
+	if err := h.nodeService.ClearAgentClusterConfig(); err != nil {
+		_ = c.Error(apperror.Internal("internal_error", err.Error()))
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 // UpdateAgentClusterConfig updates MAIN_NODE_URL and NODE_ACCESS_TOKEN on this agent (admin).
 func (h *NodesHandler) UpdateAgentClusterConfig(c *gin.Context) {
 	var body AgentClusterConfigBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": err.Error()})
+		_ = c.Error(apperror.BadRequest("validation_error", err.Error()))
 		return
 	}
 	if err := h.nodeService.UpdateAgentClusterConfig(body.MainNodeURL, body.NodeAccessToken); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_config", "error": err.Error()})
+		_ = c.Error(apperror.BadRequest("invalid_config", err.Error()))
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -489,20 +437,20 @@ func (h *NodesHandler) DeleteRemoteHost(c *gin.Context) {
 	}
 	current, err := h.hostService.GetCurrentHost(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": err.Error()})
+		_ = c.Error(apperror.Internal("internal_error", err.Error()))
 		return
 	}
 	err = h.nodeService.DeleteRemoteHost(c.Request.Context(), hostID, current.ID)
 	if err != nil {
 		if errors.Is(err, nodeservice.ErrCannotDeleteLocalHost) {
-			c.JSON(http.StatusForbidden, gin.H{"code": "forbidden", "error": err.Error()})
+			_ = c.Error(apperror.Forbidden("forbidden", err.Error()))
 			return
 		}
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"code": "not_found", "error": "Host not found"})
+			_ = c.Error(apperror.NotFound("not_found", "Host not found"))
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": err.Error()})
+		_ = c.Error(apperror.Internal("internal_error", err.Error()))
 		return
 	}
 	c.Status(http.StatusNoContent)

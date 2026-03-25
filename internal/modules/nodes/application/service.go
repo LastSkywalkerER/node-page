@@ -31,6 +31,7 @@ type Service interface {
 	GetClusterUIStatus(ctx context.Context, currentHostID uint, publicBaseURL string) (ClusterUIStatus, error)
 	DeleteRemoteHost(ctx context.Context, hostID, currentHostID uint) error
 	UpdateAgentClusterConfig(mainNodeURL, nodeAccessToken string) error
+	ClearAgentClusterConfig() error
 }
 
 type service struct {
@@ -179,4 +180,8 @@ func (s *service) UpdateAgentClusterConfig(mainNodeURL, nodeAccessToken string) 
 		return errors.New("main_node_url and node_access_token are required")
 	}
 	return clusterconfig.Update(mainNodeURL, nodeAccessToken)
+}
+
+func (s *service) ClearAgentClusterConfig() error {
+	return clusterconfig.Clear()
 }

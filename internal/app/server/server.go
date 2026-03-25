@@ -222,6 +222,7 @@ func Run() {
 func setupRouter(container *di.Container, startTime time.Time, logger *log.Logger, cfg *config.Config, onSetupComplete func()) *gin.Engine {
 	router := gin.New()
 	router.Use(gin.Recovery())
+	router.Use(middleware.ErrorHandler())
 
 	var promHandler *prometheusmetrics.Metrics
 	if cfg.PrometheusEnabled {
@@ -267,10 +268,15 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 
 	api := router.Group("/api/v1")
 	{
-		// Prometheus metrics (public — scraped by Prometheus server)
+		// Prometheus metrics (scraped by Prometheus server)
 		if promHandler != nil {
-			api.GET("/metrics", gin.WrapH(promHandler.Handler()))
-			logger.Info("Prometheus metrics enabled", "endpoint", "/api/v1/metrics")
+			metricsHandlers := []gin.HandlerFunc{}
+			if cfg.PrometheusAuth && cfg.PrometheusToken != "" {
+				metricsHandlers = append(metricsHandlers, middleware.AuthBearerToken(cfg.PrometheusToken))
+			}
+			metricsHandlers = append(metricsHandlers, gin.WrapH(promHandler.Handler()))
+			api.GET("/metrics", metricsHandlers...)
+			logger.Info("Prometheus metrics enabled", "endpoint", "/api/v1/metrics", "auth", cfg.PrometheusAuth)
 		}
 
 		// Public: health check (no auth — used by load balancers and k8s probes)
@@ -346,6 +352,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		// Agent manual setup on main (admin): URLs + regenerate push token
 		authAPI.GET("/nodes/cluster-ui-status", middleware.RequireAdmin(), nodesHandler.GetClusterUIStatus)
 		authAPI.PUT("/nodes/agent-cluster-config", middleware.RequireAdmin(), nodesHandler.UpdateAgentClusterConfig)
+		authAPI.DELETE("/nodes/agent-cluster-config", middleware.RequireAdmin(), nodesHandler.DeleteAgentClusterConfig)
 		authAPI.POST("/nodes/hosts/:id/regenerate-token", middleware.RequireAdmin(), nodesHandler.RegenerateAgentToken)
 		authAPI.DELETE("/nodes/hosts/:id", middleware.RequireAdmin(), nodesHandler.DeleteRemoteHost)
 		// Node connect (agent connects to main using join link)

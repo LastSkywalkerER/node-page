@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
 function MachineNav() {
   const { id } = useParams<{ id: string }>()
   const { data: hostsData } = useHosts()
-  const hostName = hostsData?.hosts?.find((h: any) => h.id === Number(id))?.name ?? `#${id}`
+  const hostName = hostsData?.hosts?.find((h) => h.id === Number(id))?.name ?? `#${id}`
 
   return (
     <div className="flex items-center gap-2 min-w-0">

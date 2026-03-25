@@ -54,6 +54,24 @@ export function ReviewWidget({
             <span className="text-slate-400">Refresh Secret:</span>
             <span className="text-white">••••••••</span>
           </div>
+          <div className="flex justify-between">
+            <span className="text-slate-400">Prometheus:</span>
+            <span className="text-white">{configData.prometheus_enabled === 'true' ? 'Enabled' : 'Disabled'}</span>
+          </div>
+          {configData.prometheus_enabled === 'true' && (
+            <>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Prometheus Auth:</span>
+                <span className="text-white">{configData.prometheus_auth === 'true' ? 'Bearer Token' : 'Off'}</span>
+              </div>
+              {configData.prometheus_auth === 'true' && configData.prometheus_token && (
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Prometheus Token:</span>
+                  <span className="text-white">••••••••</span>
+                </div>
+              )}
+            </>
+          )}
         </div>
       </div>
 

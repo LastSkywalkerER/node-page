@@ -4,33 +4,15 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strconv"
 
 	"github.com/charmbracelet/log"
 	"github.com/gin-gonic/gin"
 
+	"system-stats/internal/app/httputil"
 	"system-stats/internal/app/metricshost"
 	hostservice "system-stats/internal/modules/hosts/application"
 	networkservice "system-stats/internal/modules/network/application"
 )
-
-func parseHoursQuery(c *gin.Context) float64 {
-	hoursStr := c.DefaultQuery("hours", "0.0833")
-	hours, err := strconv.ParseFloat(hoursStr, 64)
-	if err != nil {
-		return 0.0833
-	}
-	return hours
-}
-
-func parseHostIdQuery(c *gin.Context) uint {
-	hostIdStr := c.DefaultQuery("host_id", "0")
-	hostId, err := strconv.ParseUint(hostIdStr, 10, 32)
-	if err != nil {
-		return 0
-	}
-	return uint(hostId)
-}
 
 // NetworkHandler handles HTTP requests for network metrics.
 type NetworkHandler struct {
@@ -62,8 +44,8 @@ func NewNetworkHandler(logger *log.Logger, service networkservice.Service, hosts
 // @Security    BearerAuth
 // @Router      /network [get]
 func (h *NetworkHandler) HandleNetworkStats(c *gin.Context) {
-	hours := parseHoursQuery(c)
-	queryHost := parseHostIdQuery(c)
+	hours := httputil.ParseHoursQuery(c)
+	queryHost := httputil.ParseHostIdQuery(c)
 	ctx := c.Request.Context()
 
 	effective, err := metricshost.EffectiveHostID(ctx, h.hosts, queryHost)

@@ -26,24 +26,3 @@ export interface HistoricalData {
   network: HistoricalNetworkMetric[];
 }
 
-// UI State types
-export type ThemeType = 'glass-aurora' | 'neon-terminal' | 'slate-pro' | 'cards-flow';
-
-export type TimeRange = '5m' | '1h' | '24h' | '7d';
-
-export interface DashboardFilters {
-  timeRange: TimeRange;
-  host?: string;
-  showSystem: boolean;
-  showDocker: boolean;
-  showNetwork: boolean;
-}
-
-export interface Alert {
-  id: string;
-  level: 'info' | 'warn' | 'crit';
-  message: string;
-  timestamp: string;
-  metric?: string;
-  value?: number;
-}

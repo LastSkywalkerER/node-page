@@ -213,6 +213,12 @@ func (h *SetupHandler) CompleteSetup(c *gin.Context) {
 	if req.Config.DBDSN == "" {
 		req.Config.DBDSN = "stats.db"
 	}
+	if req.Config.PrometheusEnabled == "" {
+		req.Config.PrometheusEnabled = "false"
+	}
+	if req.Config.PrometheusAuth == "" {
+		req.Config.PrometheusAuth = "false"
+	}
 
 	// Write configuration to .env file
 	if err := h.configWriter.WriteConfigFile(req.Config); err != nil {

@@ -16,10 +16,8 @@ export function useLogin() {
     mutationFn: async (data: LoginData) => authService.login(data.email, data.password),
     onSuccess: (payload) => {
       setAuthFromResponse(payload);
-      navigate('/dashboard');
+      navigate('/machines');
     },
-    onError: (error) => {
-      console.error('Login error:', error);
-    },
+    onError: () => {},
   });
 }

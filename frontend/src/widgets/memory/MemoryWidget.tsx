@@ -33,7 +33,7 @@ export function MemoryWidget({ hostId }: MemoryWidgetProps) {
 
   const pct = metrics.latest?.usage_percent ?? 0
   const color = usageColor(pct)
-  const latest = metrics.latest ?? {} as Record<string, unknown>
+  const latest = metrics.latest as Record<string, unknown>
   const details = SHOW_KEYS
     .filter(k => latest[k] != null && latest[k] !== 0)
     .map(k => ({
@@ -73,7 +73,7 @@ export function MemoryWidget({ hostId }: MemoryWidgetProps) {
         )}
         {metrics.history && metrics.history.length > 0 && (
           <ChartContainer config={chartConfig} className="h-20 w-full">
-            <AreaChart data={metrics.history.map((p: any) => {
+            <AreaChart data={metrics.history.map((p) => {
               const d = new Date(p.timestamp)
               return { time: isNaN(d.getTime()) ? '' : format(d, 'HH:mm'), used: p.used_bytes }
             })} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>

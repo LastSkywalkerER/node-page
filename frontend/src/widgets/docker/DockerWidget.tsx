@@ -11,6 +11,7 @@ import { MetricCardSkeleton } from '@/shared/components/MetricCardSkeleton'
 import { MetricWidgetEmpty } from '@/shared/components/MetricWidgetEmpty'
 import { getContainerStateColor } from '@/shared/lib/utils'
 import { useDocker } from './useDocker'
+import type { DockerPort, DockerStack, DockerContainer } from './schemas'
 
 interface DockerWidgetProps { hostId: number }
 
@@ -28,11 +29,11 @@ function fmtUptime(created: string) {
   return `${m}m`
 }
 
-function fmtPorts(ports: any[]): string {
+function fmtPorts(ports: DockerPort[]): string {
   if (!ports?.length) return ''
   return ports
-    .filter((p: any) => p.public_port)
-    .map((p: any) => `:${p.public_port}→${p.private_port}`)
+    .filter((p) => p.public_port)
+    .map((p) => `:${p.public_port}→${p.private_port}`)
     .slice(0, 3)
     .join(' ')
 }
@@ -102,7 +103,7 @@ export function DockerWidget({ hostId }: DockerWidgetProps) {
   const latest = metrics.latest
   const running = latest?.running_containers ?? 0
   const total = latest?.total_containers ?? 0
-  const stacks: any[] = latest?.stacks ?? []
+  const stacks: DockerStack[] = latest?.stacks ?? []
 
   const toggle = (name: string) => setExpanded(prev => {
     const next = new Set(prev)
@@ -127,7 +128,7 @@ export function DockerWidget({ hostId }: DockerWidgetProps) {
       <CardContent className="space-y-1.5 pt-0">
         {stacks.length === 0 ? (
           <p className="text-xs text-muted-foreground">No containers</p>
-        ) : stacks.map((stack: any) => (
+        ) : stacks.map((stack) => (
           <div key={stack.name} className="rounded-md border border-border overflow-hidden">
             <button
               className="w-full flex items-center justify-between px-2.5 py-2 text-left hover:bg-muted/40 transition-colors"
@@ -146,8 +147,8 @@ export function DockerWidget({ hostId }: DockerWidgetProps) {
 
             {expanded.has(stack.name) && (
               <div className="border-t border-border divide-y divide-border/60">
-                {stack.containers.map((c: any) => {
-                  const cpu = c.stats.cpu_percent_of_limit ?? 0
+                {stack.containers.map((c: DockerContainer) => {
+                  const cpu = c.stats.cpu_percent ?? 0
                   const mem = c.stats.memory_percent ?? 0
                   const cpuColor = metricColor(cpu)
                   const memColor = metricColor(mem)

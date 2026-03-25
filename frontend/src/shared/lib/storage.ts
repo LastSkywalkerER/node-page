@@ -1,4 +1,5 @@
-// Storage service for managing authentication tokens and user data
+import type { User } from './auth';
+
 class StorageService {
   private readonly ACCESS_TOKEN_KEY = 'app:access';
   private readonly REFRESH_TOKEN_KEY = 'app:refresh';
@@ -37,12 +38,12 @@ class StorageService {
   }
 
   // User data methods
-  getUser(): any | null {
+  getUser(): User | null {
     const userStr = localStorage.getItem(this.USER_KEY);
     return userStr ? JSON.parse(userStr) : null;
   }
 
-  setUser(user: any): void {
+  setUser(user: User): void {
     localStorage.setItem(this.USER_KEY, JSON.stringify(user));
   }
 

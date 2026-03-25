@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"system-stats/internal/app/metrics"
 	"system-stats/internal/modules/network/infrastructure/collectors"
 	"system-stats/internal/modules/network/infrastructure/entities"
 	networkrepos "system-stats/internal/modules/network/infrastructure/repositories"
@@ -22,11 +23,17 @@ type Service interface {
 	CollectAndSave(ctx context.Context, hostId uint) error
 }
 
+type networkCollectorAdapter struct {
+	c *collectors.NetworkMetricsCollector
+}
+
+func (a *networkCollectorAdapter) Collect(ctx context.Context) (entities.NetworkMetric, error) {
+	return a.c.CollectNetworkMetrics(ctx)
+}
+
 type service struct {
-	logger            *log.Logger
-	collector         *collectors.NetworkMetricsCollector
-	networkRepository networkrepos.NetworkRepository
-	speedCalculator   *value_objects.NetworkSpeedCalculator
+	metrics.Service[entities.NetworkMetric, entities.NetworkMetric]
+	speedCalculator *value_objects.NetworkSpeedCalculator
 }
 
 func NewService(
@@ -34,23 +41,23 @@ func NewService(
 	networkRepository networkrepos.NetworkRepository,
 ) Service {
 	return &service{
-		logger:            logger,
-		collector:         collectors.NewNetworkMetricsCollector(logger),
-		networkRepository: networkRepository,
-		speedCalculator:   value_objects.NewNetworkSpeedCalculator(),
+		Service: metrics.Service[entities.NetworkMetric, entities.NetworkMetric]{
+			Logger:    logger,
+			Name:      "network",
+			Collector: &networkCollectorAdapter{c: collectors.NewNetworkMetricsCollector(logger)},
+			Repo:      networkRepository,
+		},
+		speedCalculator: value_objects.NewNetworkSpeedCalculator(),
 	}
 }
 
 func (s *service) Collect(ctx context.Context) (entities.NetworkMetric, error) {
-	s.logger.Debug("Collecting network metrics")
-	metric, err := s.collector.CollectNetworkMetrics(ctx)
+	metric, err := s.Service.Collect(ctx)
 	if err != nil {
-		s.logger.Error("Failed to collect network metrics", "error", err)
 		return entities.NetworkMetric{}, err
 	}
 
 	s.speedCalculator.BeginCalculationBatch()
-
 	for i := range metric.Interfaces {
 		iface := &metric.Interfaces[i]
 		speed := s.speedCalculator.CalculateSpeed(
@@ -63,31 +70,16 @@ func (s *service) Collect(ctx context.Context) (entities.NetworkMetric, error) {
 		iface.SpeedKbpsSent = speed.SpeedKbpsSent
 		iface.SpeedKbpsRecv = speed.SpeedKbpsRecv
 	}
-
 	s.speedCalculator.EndCalculationBatch()
 
-	s.logger.Debug("Network metrics collected", "interfaces_count", len(metric.Interfaces))
 	return metric, nil
 }
 
-func (s *service) Save(ctx context.Context, metric entities.NetworkMetric, hostId uint) error {
-	s.logger.Debug("Saving network metrics", "interfaces_count", len(metric.Interfaces))
-	err := s.networkRepository.SaveCurrentMetric(ctx, metric, hostId)
-	if err != nil {
-		s.logger.Error("Failed to save network metrics", "error", err)
-		return err
-	}
-	s.logger.Debug("Network metrics saved")
-	return nil
-}
-
 func (s *service) GetLatest(ctx context.Context) (entities.NetworkMetric, error) {
-	metric, err := s.networkRepository.GetLatestMetric(ctx)
+	metric, err := s.Service.GetLatest(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			s.logger.Debug("Context canceled while getting latest network metrics")
-		} else {
-			s.logger.Error("Failed to get latest network metrics", "error", err)
+			s.Logger.Debug("Context canceled while getting latest network metrics")
 		}
 		return entities.NetworkMetric{}, err
 	}
@@ -95,18 +87,19 @@ func (s *service) GetLatest(ctx context.Context) (entities.NetworkMetric, error)
 }
 
 func (s *service) GetLatestByHost(ctx context.Context, hostId uint) (*entities.NetworkMetric, error) {
-	metric, err := s.networkRepository.GetLatestMetricByHost(ctx, hostId)
+	metric, err := s.Service.GetLatestByHost(ctx, hostId)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			s.logger.Debug("Context canceled while getting latest network metrics by host")
+			s.Logger.Debug("Context canceled while getting latest network metrics by host")
 		} else {
-			s.logger.Error("Failed to get latest network metrics by host", "error", err, "host_id", hostId)
+			s.Logger.Error("Failed to get latest network metrics by host", "error", err, "host_id", hostId)
 		}
 		return nil, err
 	}
 	if metric == nil {
 		return nil, nil
 	}
+
 	s.speedCalculator.BeginCalculationBatch()
 	for i := range metric.Interfaces {
 		iface := &metric.Interfaces[i]
@@ -121,35 +114,27 @@ func (s *service) GetLatestByHost(ctx context.Context, hostId uint) (*entities.N
 		iface.SpeedKbpsRecv = speed.SpeedKbpsRecv
 	}
 	s.speedCalculator.EndCalculationBatch()
+
 	return metric, nil
 }
 
 func (s *service) GetHistorical(ctx context.Context, hours float64) ([]entities.NetworkMetric, error) {
-	metrics, err := s.networkRepository.GetHistoricalMetrics(ctx, hours)
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			s.logger.Debug("Context canceled while getting historical network metrics")
-		} else {
-			s.logger.Error("Failed to get historical network metrics", "error", err, "hours", hours)
-		}
-		return nil, err
+	m, err := s.Service.GetHistorical(ctx, hours)
+	if err != nil && errors.Is(err, context.Canceled) {
+		s.Logger.Debug("Context canceled while getting historical network metrics")
 	}
-	return metrics, nil
+	return m, err
 }
 
 func (s *service) GetHistoricalByHost(ctx context.Context, hostId uint, hours float64) ([]entities.NetworkMetric, error) {
-	metrics, err := s.networkRepository.GetHistoricalMetricsByHost(ctx, hostId, hours)
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			s.logger.Debug("Context canceled while getting historical network metrics by host")
-		} else {
-			s.logger.Error("Failed to get historical network metrics by host", "error", err, "host_id", hostId, "hours", hours)
-		}
-		return nil, err
+	m, err := s.Service.GetHistoricalByHost(ctx, hostId, hours)
+	if err != nil && errors.Is(err, context.Canceled) {
+		s.Logger.Debug("Context canceled while getting historical network metrics by host")
 	}
-	return metrics, nil
+	return m, err
 }
 
+// CollectAndSave overrides the embedded method to use the speed-enriched Collect.
 func (s *service) CollectAndSave(ctx context.Context, hostId uint) error {
 	metric, err := s.Collect(ctx)
 	if err != nil {

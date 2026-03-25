@@ -52,9 +52,9 @@ Node Stats is perfect for:
 - ✅ Health check endpoint (`/api/v1/health`) for load balancers and Kubernetes probes
 - ✅ Live metrics stream via Server-Sent Events (`/api/v1/stream`)
 - ✅ Configurable data retention (`METRICS_RETENTION_DAYS` for automatic cleanup of old metrics)
-- ✅ Hosts registration and management (API ready, UI pending)
-- ✅ Admin/user roles (API ready, UI pending)
-- ❌ Unit tests
+- ✅ Hosts registration and management
+- ✅ Admin/user roles
+- ✅ Backend unit tests for service layer
 - ❌ Multi-node statistics synchronization and aggregation (push-based model where each node sends metrics to a central server, eliminating the need to expose individual nodes to the internet for secure centralized collection)
 - ❌ Alert system (configurable notifications when metric thresholds are exceeded)
 - ❌ Container logs monitoring (real-time viewing and filtering of Docker container logs)
@@ -256,9 +256,9 @@ Node Stats is built using modern web technologies and follows Clean Architecture
 
 ### Technology Stack
 
-- **Frontend**: React 18 + TypeScript + Tailwind CSS for a modern, responsive user interface
+- **Frontend**: React 19 + TypeScript 5.9 + Tailwind CSS for a modern, responsive user interface
 - **Backend**: Go (Golang) with Gin web framework for high-performance API server
-- **Database**: SQLite with GORM ORM for lightweight, file-based data storage
+- **Database**: SQLite (default) or PostgreSQL via GORM
 - **Monitoring**: Real-time system metrics collection using native Go libraries
 - **Authentication**: JWT-based authentication with refresh token support
 - **Containerization**: Docker and Docker Compose for easy deployment
@@ -267,7 +267,7 @@ Node Stats is built using modern web technologies and follows Clean Architecture
 
 - **Clean Architecture**: Separation of concerns with domain, application, infrastructure, and presentation layers
 - **RESTful API Design**: Standard REST endpoints for all system metrics
-- **Real-time Updates**: WebSocket or polling-based real-time metric updates
+- **Real-time Updates**: Server-Sent Events (SSE) for real-time metric streaming
 - **Modular Design**: Feature-based module structure for easy extensibility
 
 ## Development

@@ -59,23 +59,22 @@ func (s *userService) Register(ctx context.Context, email, password string, invi
 	if inviteToken != nil && *inviteToken != "" {
 		inv, err := s.invService.ValidateToken(ctx, *inviteToken)
 		if err != nil {
-			return nil, fmt.Errorf("invalid invitation: %w", err)
+			return nil, fmt.Errorf("%w: %w", ErrInvalidInvitation, err)
 		}
 		invitedEmail := strings.ToLower(strings.TrimSpace(inv.Email))
 		userEmail := strings.ToLower(strings.TrimSpace(email))
 		if invitedEmail != userEmail {
-			return nil, fmt.Errorf("invitation email mismatch: invitation is for %s", inv.Email)
+			return nil, fmt.Errorf("%w: invitation is for %s", ErrInvitationEmailMismatch, inv.Email)
 		}
 		invID = inv.ID
 		role = "USER"
 	} else {
-		// No invite: registration only allowed when no users exist
 		count, err := s.Count(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to check user count: %w", err)
 		}
 		if count > 0 {
-			return nil, errors.New("registration is disabled: users already exist")
+			return nil, fmt.Errorf("%w: users already exist", ErrRegistrationDisabled)
 		}
 	}
 
@@ -91,6 +90,9 @@ func (s *userService) Register(ctx context.Context, email, password string, invi
 	}
 
 	if err := s.userRepo.Create(ctx, user); err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") || strings.Contains(err.Error(), "duplicate") {
+			return nil, fmt.Errorf("%w: %w", ErrEmailExists, err)
+		}
 		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
 
@@ -114,12 +116,11 @@ func (s *userService) Login(ctx context.Context, email, password string) (*local
 		return nil, fmt.Errorf("failed to find user: %w", err)
 	}
 	if user == nil {
-		return nil, errors.New("invalid credentials")
+		return nil, ErrInvalidCredentials
 	}
 
-	// Verify password
 	if err := s.VerifyPassword(user.PasswordHash, password); err != nil {
-		return nil, errors.New("invalid credentials")
+		return nil, ErrInvalidCredentials
 	}
 
 	return user, nil

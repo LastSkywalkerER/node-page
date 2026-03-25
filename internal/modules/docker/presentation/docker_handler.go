@@ -4,33 +4,15 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strconv"
 
 	"github.com/charmbracelet/log"
 	"github.com/gin-gonic/gin"
 
+	"system-stats/internal/app/httputil"
 	"system-stats/internal/app/metricshost"
 	dockerservice "system-stats/internal/modules/docker/application"
 	hostservice "system-stats/internal/modules/hosts/application"
 )
-
-func parseHoursQuery(c *gin.Context) float64 {
-	hoursStr := c.DefaultQuery("hours", "0.0833")
-	hours, err := strconv.ParseFloat(hoursStr, 64)
-	if err != nil {
-		return 0.0833
-	}
-	return hours
-}
-
-func parseHostIdQuery(c *gin.Context) uint {
-	hostIdStr := c.DefaultQuery("host_id", "0")
-	hostId, err := strconv.ParseUint(hostIdStr, 10, 32)
-	if err != nil {
-		return 0
-	}
-	return uint(hostId)
-}
 
 // DockerHandler handles HTTP requests for Docker container metrics.
 type DockerHandler struct {
@@ -62,8 +44,8 @@ func NewDockerHandler(logger *log.Logger, service dockerservice.Service, hosts h
 // @Security    BearerAuth
 // @Router      /docker [get]
 func (h *DockerHandler) HandleDockerStats(c *gin.Context) {
-	hours := parseHoursQuery(c)
-	queryHost := parseHostIdQuery(c)
+	hours := httputil.ParseHoursQuery(c)
+	queryHost := httputil.ParseHostIdQuery(c)
 	ctx := c.Request.Context()
 
 	effective, err := metricshost.EffectiveHostID(ctx, h.hosts, queryHost)

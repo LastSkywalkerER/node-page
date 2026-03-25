@@ -9,6 +9,9 @@ export const DEFAULT_SETUP_CONFIG = {
   debug: 'false',
   db_type: 'sqlite',
   db_dsn: 'stats.db',
+  prometheus_enabled: 'false',
+  prometheus_auth: 'false',
+  prometheus_token: '',
 } as const;
 
 export type DefaultSetupConfig = typeof DEFAULT_SETUP_CONFIG;

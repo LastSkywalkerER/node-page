@@ -8,16 +8,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/log"
-	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 
+	"system-stats/internal/modules/docker/domain"
 	"system-stats/internal/modules/docker/domain/repositories"
 	"system-stats/internal/modules/docker/infrastructure/entities"
 )
@@ -26,23 +26,13 @@ import (
  // This collector gathers Docker container statistics and status information
  // using the Docker API client with caching for availability checks and CPU calculations.
 type dockerMetricsCollector struct {
-	// logger provides structured logging for Docker operations
-	logger *log.Logger
-
-	// dockerAvailable caches whether Docker daemon is accessible
-	dockerAvailable bool
-
-	// lastCheck tracks when Docker availability was last verified
-	lastCheck time.Time
-
-	// checkInterval defines how often to recheck Docker availability
-	checkInterval time.Duration
-
-	// containerCPUCache stores previous CPU stats for percentage calculations
+	logger            *log.Logger
+	client            *client.Client
+	dockerAvailable   bool
+	lastCheck         time.Time
+	checkInterval     time.Duration
 	containerCPUCache map[string]cpuStatsCache
-
-	// cacheMutex protects concurrent access to CPU cache
-	cacheMutex sync.RWMutex
+	cacheMutex        sync.RWMutex
 }
 
  // cpuStatsCache stores CPU statistics for percentage calculation.
@@ -58,14 +48,16 @@ type cpuStatsCache struct {
 	timestamp time.Time
 }
 
- // NewDockerMetricsCollector creates a new Docker metrics collector instance.
- // This constructor initializes the collector with default cache settings.
 func NewDockerMetricsCollector(logger *log.Logger) repositories.DockerMetricsCollector {
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		logger.Warn("failed to create Docker client at startup", "error", err)
+	}
 	return &dockerMetricsCollector{
 		logger:            logger,
-		checkInterval:     5 * time.Second, // Check Docker availability every 5 seconds
+		client:            cli,
+		checkInterval:     5 * time.Second,
 		containerCPUCache: make(map[string]cpuStatsCache),
-		// cacheMutex is initialized automatically (zero value)
 	}
 }
 
@@ -84,16 +76,12 @@ func (c *dockerMetricsCollector) IsDockerAvailable(ctx context.Context) bool {
 
 	c.lastCheck = now
 
-	// cli is the Docker API client used to communicate with the Docker daemon
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
+	if c.client == nil {
 		c.dockerAvailable = false
 		return false
 	}
-	defer cli.Close()
 
-	// Check Docker availability
-	_, err = cli.Ping(ctx)
+	_, err := c.client.Ping(ctx)
 	c.dockerAvailable = err == nil
 
 	return c.dockerAvailable
@@ -113,19 +101,14 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (enti
 		}, nil
 	}
 
-	// Create Docker client
-	// cli is the Docker API client used to communicate with the Docker daemon
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
+	if c.client == nil {
 		return entities.DockerMetric{
 			DockerAvailable: false,
-			Error:           fmt.Sprintf("Failed to create Docker client: %v", err),
+			Error:           "Docker client not initialized",
 		}, nil
 	}
-	defer cli.Close()
 
-	// Get list of all containers
-	containers, err := cli.ContainerList(ctx, types.ContainerListOptions{All: true})
+	containers, err := c.client.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
 		return entities.DockerMetric{
 			DockerAvailable: true,
@@ -145,23 +128,23 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (enti
 	var runningCount int32 = 0
 
 	// Function for parallel processing of one container
-	processContainer := func(containerInfo types.Container) {
+	processContainer := func(containerInfo container.Summary) {
 		defer func() {
 			if r := recover(); r != nil {
 				results <- containerResult{err: fmt.Errorf("panic processing container %s: %v", containerInfo.ID, r)}
 			}
 		}()
 
-		// Get detailed container information
-		containerJSON, err := cli.ContainerInspect(ctx, containerInfo.ID)
+		containerJSON, err := c.client.ContainerInspect(ctx, containerInfo.ID)
 		if err != nil {
 			results <- containerResult{err: fmt.Errorf("failed to inspect container %s: %v", containerInfo.ID, err)}
 			return
 		}
 
-		// Output containerJSON to console
-		containerJSONBytes, _ := json.Marshal(containerJSON)
-		c.logger.Debug("Container JSON details", "container_id", containerInfo.ID, "json", string(containerJSONBytes))
+		if c.logger.GetLevel() <= log.DebugLevel {
+			containerJSONBytes, _ := json.Marshal(containerJSON)
+			c.logger.Debug("Container JSON details", "container_id", containerInfo.ID, "json", string(containerJSONBytes))
+		}
 
 		// Parse container name (remove "/" prefix)
 		var name string
@@ -174,8 +157,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (enti
 		// Extract stack name from compose labels first
 		stackName := c.extractStackName(containerJSON.Config.Labels)
 		if stackName == "" {
-			// If no compose project found, try to extract from container name
-			stackName = c.extractStackNameFromContainerName(name)
+			stackName = domain.ExtractStackNameFromContainerName(name)
 		}
 
 		// Convert ports (with nil protection)
@@ -195,7 +177,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (enti
 
 		if isRunning {
 			// Safely get statistics with panic protection
-			containerStats = c.getContainerResourceStats(ctx, cli, containerInfo.ID, cpuLimit)
+			containerStats = c.getContainerResourceStats(ctx, c.client, containerInfo.ID, cpuLimit)
 		} else {
 			// For stopped containers, use empty statistics but keep CPU limit
 			containerStats = entities.DockerStats{
@@ -326,7 +308,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (enti
 }
 
 // getCPULimit extracts CPU limit from container configuration
-func (c *dockerMetricsCollector) getCPULimit(containerJSON types.ContainerJSON) float64 {
+func (c *dockerMetricsCollector) getCPULimit(containerJSON container.InspectResponse) float64 {
 	hostConfig := containerJSON.HostConfig
 
 	// Check NanoCPUs (for --cpus flag)
@@ -345,7 +327,7 @@ func (c *dockerMetricsCollector) getCPULimit(containerJSON types.ContainerJSON) 
 }
 
 // convertPorts converts Docker ports to our structure
-func (c *dockerMetricsCollector) convertPorts(dockerPorts []types.Port) []entities.DockerPort {
+func (c *dockerMetricsCollector) convertPorts(dockerPorts []container.Port) []entities.DockerPort {
 	ports := make([]entities.DockerPort, 0, len(dockerPorts))
 	for _, port := range dockerPorts {
 		dockerPort := entities.DockerPort{
@@ -370,7 +352,7 @@ func (c *dockerMetricsCollector) getContainerResourceStats(ctx context.Context, 
 	}
 	defer stats.Body.Close()
 
-	var containerStats types.StatsJSON
+	var containerStats container.StatsResponse
 	decoder := json.NewDecoder(stats.Body)
 	if err := decoder.Decode(&containerStats); err != nil {
 		return entities.DockerStats{} // Return empty statistics on error
@@ -406,11 +388,10 @@ func (c *dockerMetricsCollector) getContainerResourceStats(ctx context.Context, 
 		}
 	}
 
-	// Calculate CPU usage percentage relative to entire system
-	// Add panic protection
+	// Panic protection for CPU calculation
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Printf("Panic in CPU calculation for container %s: %v\n", containerID, r)
+			c.logger.Error("panic in CPU calculation", "container", containerID, "error", r)
 		}
 	}()
 	cpuPercent := c.calculateCPUPercentWithCache(containerID, &containerStats)
@@ -433,7 +414,7 @@ func (c *dockerMetricsCollector) getContainerResourceStats(ctx context.Context, 
 }
 
 // calculateCPUPercentWithCache calculates CPU usage percentage using cached previous values (thread-safe)
-func (c *dockerMetricsCollector) calculateCPUPercentWithCache(containerID string, stats *types.StatsJSON) float64 {
+func (c *dockerMetricsCollector) calculateCPUPercentWithCache(containerID string, stats *container.StatsResponse) float64 {
 	currentTotal := stats.CPUStats.CPUUsage.TotalUsage
 	currentSystem := stats.CPUStats.SystemUsage
 	currentTime := time.Now()
@@ -485,7 +466,7 @@ func (c *dockerMetricsCollector) calculateCPUPercentWithCache(containerID string
 
 // calculateCPUPercentOfLimit calculates CPU usage percentage relative to container limit
 // If limit is not set, calculates relative to total system CPU cores
-func (c *dockerMetricsCollector) calculateCPUPercentOfLimit(stats *types.StatsJSON, cpuLimit float64) float64 {
+func (c *dockerMetricsCollector) calculateCPUPercentOfLimit(stats *container.StatsResponse, cpuLimit float64) float64 {
 	// If limit is not set, use system core count as "allocated to Docker daemon"
 	actualLimit := cpuLimit
 	if cpuLimit <= 0 {
@@ -524,22 +505,6 @@ func (c *dockerMetricsCollector) calculateCPUPercentOfLimit(stats *types.StatsJS
 	c.logger.Debug("CPU percent of limit calculated", "cpu_usage_cores", cpuUsageCores, "actual_limit", actualLimit, "result", result)
 
 	return result
-}
-
-// calculateCPUPercentUnix calculates CPU usage percentage for Unix systems (deprecated function)
-func (c *dockerMetricsCollector) calculateCPUPercentUnix(stats *types.StatsJSON) float64 {
-	cpuPercent := 0.0
-
-	// calculate the change for the cpu usage of the container in between readings
-	cpuDelta := float64(stats.CPUStats.CPUUsage.TotalUsage) - float64(stats.PreCPUStats.CPUUsage.TotalUsage)
-	// calculate the change for the entire system between readings
-	systemDelta := float64(stats.CPUStats.SystemUsage) - float64(stats.PreCPUStats.SystemUsage)
-
-	if systemDelta > 0.0 && cpuDelta > 0.0 {
-		cpuPercent = (cpuDelta / systemDelta) * float64(len(stats.CPUStats.CPUUsage.PercpuUsage)) * 100.0
-	}
-
-	return cpuPercent
 }
 
 // parseContainerCreatedTime parses container creation time from string and returns string
@@ -619,36 +584,6 @@ func (c *dockerMetricsCollector) extractStackName(labels map[string]string) stri
 	return ""
 }
 
-// extractStackNameFromContainerName attempts to extract stack name from container name
-// For containers created by docker-compose, the name typically follows pattern: project-service-instance
-// This function uses heuristic patterns to identify stack names without hardcoded values
-func (c *dockerMetricsCollector) extractStackNameFromContainerName(containerName string) string {
-	if containerName == "" {
-		return containerName
-	}
-
-	// Split by hyphens (most common separator in docker-compose names)
-	parts := strings.Split(containerName, "-")
-
-	// If no hyphens or only one part, return as is (standalone container)
-	if len(parts) < 2 {
-		return containerName
-	}
-
-	// Check if last part is a number (instance number like -1, -2, etc)
-	if _, err := strconv.Atoi(parts[len(parts)-1]); err == nil {
-		// Has number at the end, pattern like: stack-service-1
-		// Take everything except the last part (instance number)
-		if len(parts) >= 3 {
-			return strings.Join(parts[:len(parts)-2], "-")
-		}
-		// If only 2 parts and last is number, take first part
-		return parts[0]
-	}
-
-	// If no pattern matches, return first part
-	return parts[0]
-}
 
 // mergeStacksByCommonPrefix merges stacks that have common prefixes in their names
 // For example: myapp-web, myapp-api, myapp-db -> merged into myapp stack
@@ -777,4 +712,11 @@ func (c *dockerMetricsCollector) removeDuplicates(items []string) []string {
 	}
 
 	return result
+}
+
+func (c *dockerMetricsCollector) Close() error {
+	if c.client != nil {
+		return c.client.Close()
+	}
+	return nil
 }

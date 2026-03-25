@@ -39,7 +39,7 @@ export function CPUWidget({ hostId }: CPUWidgetProps) {
 
   const pct = metrics.latest?.usage_percent ?? 0
   const color = usageColor(pct)
-  const latest = metrics.latest ?? {} as Record<string, unknown>
+  const latest = metrics.latest as Record<string, unknown>
   const details = SHOW_KEYS
     .filter(k => latest[k] != null && latest[k] !== 0 && latest[k] !== '')
     .map(k => ({ key: k, label: LABEL_MAP[k] ?? k, value: fmt(k, latest[k]) }))
@@ -75,7 +75,7 @@ export function CPUWidget({ hostId }: CPUWidgetProps) {
         )}
         {metrics.history && metrics.history.length > 0 && (
           <ChartContainer config={chartConfig} className="h-20 w-full">
-            <AreaChart data={metrics.history.map((p: any) => {
+            <AreaChart data={metrics.history.map((p) => {
               const d = new Date(p.timestamp)
               return { time: isNaN(d.getTime()) ? '' : format(d, 'HH:mm'), usage: p.usage }
             })} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>

@@ -35,8 +35,8 @@ services:
       - DB_TYPE=${DB_TYPE:-sqlite}
       - DB_DSN=/app/data/stats.db
       # Authentication configuration (required)
-      - JWT_SECRET=${JWT_SECRET:-your-jwt-secret-key-change-in-production}
-      - REFRESH_SECRET=${REFRESH_SECRET:-your-refresh-secret-key-change-in-production}
+      - JWT_SECRET=${JWT_SECRET}
+      - REFRESH_SECRET=${REFRESH_SECRET}
       # Host filesystem paths for system metrics
       - HOST_PROC=/host/proc
       - HOST_SYS=/host/sys

@@ -9,6 +9,9 @@ export const setupConfigSchema = z.object({
   debug: z.enum(['true', 'false'], { message: 'Debug must be true or false' }),
   db_type: z.string(),
   db_dsn: z.string(),
+  prometheus_enabled: z.enum(['true', 'false']),
+  prometheus_auth: z.enum(['true', 'false']),
+  prometheus_token: z.string(),
 });
 
 const passwordSchema = z
@@ -48,6 +51,9 @@ export interface ConfigResponse {
     debug: string;
     db_type: string;
     db_dsn: string;
+    prometheus_enabled: string;
+    prometheus_auth: string;
+    prometheus_token: string;
   };
 }
 

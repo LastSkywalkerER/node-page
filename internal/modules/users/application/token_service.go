@@ -197,7 +197,7 @@ func (s *tokenService) ValidateRefreshToken(ctx context.Context, tokenString str
 	return dbToken, nil
 }
 
-// HashRefreshToken creates a bcrypt hash of the refresh token
+// HashRefreshToken creates a SHA-256 hash of the refresh token
 func (s *tokenService) HashRefreshToken(token string) (string, error) {
     sum := sha256.Sum256([]byte(token))
     return hex.EncodeToString(sum[:]), nil

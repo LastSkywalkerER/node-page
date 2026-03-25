@@ -41,6 +41,42 @@ func Update(mainNodeURL, nodeAccessToken string) error {
 	return nil
 }
 
+// Clear removes the cluster agent config from the in-memory store and the .env file.
+func Clear() error {
+	store.mu.Lock()
+	store.mainNodeURL = ""
+	store.nodeToken = ""
+	store.mu.Unlock()
+
+	wd, err := os.Getwd()
+	if err != nil {
+		wd = "."
+	}
+	envPath := filepath.Join(wd, ".env")
+
+	lines := make([]string, 0)
+	if f, err := os.Open(envPath); err == nil {
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			line := scanner.Text()
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "MAIN_NODE_URL=") ||
+				strings.HasPrefix(trimmed, "NODE_ACCESS_TOKEN=") ||
+				trimmed == "# Cluster agent (push to main node)" {
+				continue
+			}
+			lines = append(lines, line)
+		}
+		f.Close()
+	}
+
+	content := strings.Join(lines, "\n")
+	if len(content) > 0 && content[len(content)-1] != '\n' {
+		content += "\n"
+	}
+	return os.WriteFile(envPath, []byte(content), 0600)
+}
+
 // Load reads config from env (call at startup, after godotenv.Load).
 func Load() {
 	store.mu.Lock()

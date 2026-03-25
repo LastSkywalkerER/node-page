@@ -18,7 +18,7 @@ const isActiveIface = (i: NetworkInterface) => i.speed_kbps_sent > 0 || i.speed_
 
 function getPrimary(ifaces: NetworkInterface[]) {
   if (!ifaces.length) return null
-  const primary = ifaces.find((i: any) => i.is_primary)
+  const primary = ifaces.find((i) => i.is_primary)
   return primary ?? ifaces.reduce((b, c) => totalTraffic(c) > totalTraffic(b) ? c : b)
 }
 
@@ -63,10 +63,10 @@ export function NetworkWidget({ hostId }: NetworkWidgetProps) {
         <div className="space-y-1 text-xs">
           {primary && (
             <>
-              {(primary as any).ips?.length > 0 && (
+              {primary.ips.length > 0 && (
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">IP</span>
-                  <span className="font-mono font-medium">{(primary as any).ips.find((ip: string) => ip.includes('.')) ?? (primary as any).ips[0]}</span>
+                  <span className="font-mono font-medium">{primary.ips.find((ip) => ip.includes('.')) ?? primary.ips[0]}</span>
                 </div>
               )}
               <div className="flex justify-between">
@@ -94,8 +94,8 @@ export function NetworkWidget({ hostId }: NetworkWidgetProps) {
         </div>
         {metrics.history && metrics.history.length > 0 && primary && (
           <ChartContainer config={chartConfig} className="h-20 w-full">
-            <AreaChart data={metrics.history.slice(-20).map((p: any) => {
-              const iface = p.interfaces?.find((i: any) => i.name === primary.name)
+            <AreaChart data={metrics.history.slice(-20).map((p) => {
+              const iface = p.interfaces?.find((i) => i.name === primary.name)
               const d = new Date(p.timestamp)
               return {
                 time: isNaN(d.getTime()) ? '' : format(d, 'HH:mm'),

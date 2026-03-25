@@ -14,6 +14,7 @@ export const HostSchema = z.object({
   virtualization_role: z.string().optional().default(''),
   system_host_id: z.string().optional().default(''),
   last_seen: z.string().optional().default(''),
+  has_node_credential: z.boolean().optional().default(false),
   created_at: z.string(),
   updated_at: z.string(),
 });

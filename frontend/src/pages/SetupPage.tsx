@@ -46,6 +46,11 @@ export function SetupPage() {
           ? configResponse.config.debug : DEFAULT_SETUP_CONFIG.debug,
         db_type: configResponse.config.db_type || DEFAULT_SETUP_CONFIG.db_type,
         db_dsn: configResponse.config.db_dsn || DEFAULT_SETUP_CONFIG.db_dsn,
+        prometheus_enabled: (configResponse.config.prometheus_enabled === 'true' || configResponse.config.prometheus_enabled === 'false')
+          ? configResponse.config.prometheus_enabled : DEFAULT_SETUP_CONFIG.prometheus_enabled,
+        prometheus_auth: (configResponse.config.prometheus_auth === 'true' || configResponse.config.prometheus_auth === 'false')
+          ? configResponse.config.prometheus_auth : DEFAULT_SETUP_CONFIG.prometheus_auth,
+        prometheus_token: configResponse.config.prometheus_token || DEFAULT_SETUP_CONFIG.prometheus_token,
       }
     }
     return {}

@@ -1,11 +1,13 @@
-import { useEffect, useRef } from 'react';
-import { useForm, useWatch } from 'react-hook-form';
+import { useEffect, useRef, type ReactNode } from 'react';
+import { useForm, useWatch, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
 import { FormInputField, FormSelectField, FormField } from '@/components/ui/form-field';
+import { Switch } from '@/shared/ui/switch';
+import { PasswordInput } from '@/shared/ui/password-input';
 import { setupConfigSchema, SetupConfigFormData } from './schemas';
 import { DEFAULT_SETUP_CONFIG } from '../../shared/config/setup';
-import { PasswordInput } from '@/shared/ui/password-input';
 
 export const CONFIG_STEP_META = {
   title: 'Configuration',
@@ -18,11 +20,65 @@ interface ConfigFormWidgetProps {
   onBack: () => void;
 }
 
-export function ConfigFormWidget({
-  initialValues,
-  onSubmit,
-  onBack,
-}: ConfigFormWidgetProps) {
+interface ToggleRowProps {
+  label: string;
+  description?: string;
+  checked: boolean;
+  onCheckedChange: (val: boolean) => void;
+  id: string;
+}
+
+interface SectionDividerProps {
+  label: string;
+}
+
+function ToggleRow({ label, description, checked, onCheckedChange, id }: ToggleRowProps) {
+  return (
+    <div className="flex items-center justify-between gap-4 py-0.5">
+      <div className="flex flex-col gap-0.5">
+        <Label htmlFor={id} className="cursor-pointer text-sm text-slate-200">
+          {label}
+        </Label>
+        {description && (
+          <span className="text-xs text-slate-400">{description}</span>
+        )}
+      </div>
+      <Switch id={id} checked={checked} onCheckedChange={onCheckedChange} />
+    </div>
+  );
+}
+
+interface AccordionProps {
+  open: boolean;
+  children: ReactNode;
+}
+
+function Accordion({ open, children }: AccordionProps) {
+  return (
+    <div
+      className="overflow-hidden transition-all duration-300 ease-in-out"
+      style={{
+        maxHeight: open ? '800px' : '0px',
+        opacity: open ? 1 : 0,
+      }}
+    >
+      <div className="pt-3 space-y-4">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function SectionDivider({ label }: SectionDividerProps) {
+  return (
+    <div className="flex items-center gap-3 pt-1">
+      <span className="text-xs font-medium uppercase tracking-wider text-slate-500">{label}</span>
+      <div className="flex-1 border-t border-slate-700" />
+    </div>
+  );
+}
+
+export function ConfigFormWidget({ initialValues, onSubmit, onBack }: ConfigFormWidgetProps) {
   const form = useForm<SetupConfigFormData>({
     resolver: zodResolver(setupConfigSchema),
     defaultValues: {
@@ -32,8 +88,11 @@ export function ConfigFormWidget({
   });
 
   const dbType = useWatch({ control: form.control, name: 'db_type' });
-  const prevDbType = useRef(dbType);
+  const prometheusEnabled = useWatch({ control: form.control, name: 'prometheus_enabled' });
+  const prometheusAuth = useWatch({ control: form.control, name: 'prometheus_auth' });
+  const prometheusToken = useWatch({ control: form.control, name: 'prometheus_token' });
 
+  const prevDbType = useRef(dbType);
   useEffect(() => {
     if (prevDbType.current !== dbType) {
       prevDbType.current = dbType;
@@ -41,29 +100,35 @@ export function ConfigFormWidget({
     }
   }, [dbType, form]);
 
-  const handleGenerateSecret = (field: 'jwt_secret' | 'refresh_secret') => {
-    form.setValue(field, generateRandomSecret(32), { shouldValidate: true });
+  const generateSecret = (length = 32) => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
+    const array = new Uint8Array(length);
+    crypto.getRandomValues(array);
+    return Array.from(array, (b) => chars[b % chars.length]).join('');
   };
 
+  const isPrometheusOn = prometheusEnabled === 'true';
+  const isPrometheusAuthOn = prometheusAuth === 'true';
+
   return (
-    <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+    <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5">
+
+      {/* === Secrets === */}
+      <SectionDivider label="Secrets" />
+
       <FormField
         label="Token Signing Secret"
         required
         error={form.formState.errors.jwt_secret}
         id="jwt_secret"
       >
-        <div className="flex gap-2 w-full">
-          <PasswordInput
-            id="jwt_secret"
-            {...form.register('jwt_secret')}
-            className="flex-1"
-          />
+        <div className="flex gap-2">
+          <PasswordInput id="jwt_secret" {...form.register('jwt_secret')} className="flex-1" />
           <Button
             type="button"
             variant="secondary"
-            onClick={() => handleGenerateSecret('jwt_secret')}
-            className="bg-slate-700 text-white hover:bg-slate-600 border-slate-600"
+            onClick={() => form.setValue('jwt_secret', generateSecret(), { shouldValidate: true })}
+            className="bg-slate-700 text-white hover:bg-slate-600 border-slate-600 shrink-0"
           >
             Generate
           </Button>
@@ -76,25 +141,24 @@ export function ConfigFormWidget({
         error={form.formState.errors.refresh_secret}
         id="refresh_secret"
       >
-        <div className="flex gap-2 w-full">
-          <PasswordInput
-            id="refresh_secret"
-            {...form.register('refresh_secret')}
-            className="flex-1"
-          />
+        <div className="flex gap-2">
+          <PasswordInput id="refresh_secret" {...form.register('refresh_secret')} className="flex-1" />
           <Button
             type="button"
             variant="secondary"
-            onClick={() => handleGenerateSecret('refresh_secret')}
-            className="bg-slate-700 text-white hover:bg-slate-600 border-slate-600"
+            onClick={() => form.setValue('refresh_secret', generateSecret(), { shouldValidate: true })}
+            className="bg-slate-700 text-white hover:bg-slate-600 border-slate-600 shrink-0"
           >
             Generate
           </Button>
         </div>
       </FormField>
 
+      {/* === Server === */}
+      <SectionDivider label="Server" />
+
       <FormInputField
-        label="Server Address"
+        label="Address"
         register={form.register('addr')}
         name="addr"
         error={form.formState.errors.addr}
@@ -111,19 +175,25 @@ export function ConfigFormWidget({
         error={form.formState.errors.gin_mode}
       />
 
-      <FormSelectField
-        label="Debug Logging"
-        register={form.register('debug')}
+      <Controller
+        control={form.control}
         name="debug"
-        options={[
-          { value: 'false', label: 'Off' },
-          { value: 'true', label: 'On' },
-        ]}
-        error={form.formState.errors.debug}
+        render={({ field }) => (
+          <ToggleRow
+            id="debug"
+            label="Debug Logging"
+            description="Verbose logs — keep off in production"
+            checked={field.value === 'true'}
+            onCheckedChange={(val) => field.onChange(val ? 'true' : 'false')}
+          />
+        )}
       />
 
+      {/* === Database === */}
+      <SectionDivider label="Database" />
+
       <FormSelectField
-        label="Database"
+        label="Type"
         register={form.register('db_type')}
         name="db_type"
         options={[
@@ -133,7 +203,7 @@ export function ConfigFormWidget({
         error={form.formState.errors.db_type}
       />
 
-      {dbType === 'sqlite' ? (
+      <Accordion open={dbType === 'sqlite'}>
         <FormInputField
           label="Database File Path"
           register={form.register('db_dsn')}
@@ -141,7 +211,9 @@ export function ConfigFormWidget({
           inputProps={{ placeholder: 'stats.db' }}
           error={form.formState.errors.db_dsn}
         />
-      ) : (
+      </Accordion>
+
+      <Accordion open={dbType === 'postgres'}>
         <FormInputField
           label="PostgreSQL Connection String"
           register={form.register('db_dsn')}
@@ -149,9 +221,78 @@ export function ConfigFormWidget({
           inputProps={{ placeholder: 'postgres://stats:secret@localhost:5432/node_stats?sslmode=disable' }}
           error={form.formState.errors.db_dsn}
         />
-      )}
+      </Accordion>
 
-      <div className="flex gap-2">
+      {/* === Prometheus === */}
+      <SectionDivider label="Prometheus" />
+
+      <Controller
+        control={form.control}
+        name="prometheus_enabled"
+        render={({ field }) => (
+          <ToggleRow
+            id="prometheus_enabled"
+            label="Enable Prometheus Metrics"
+            description="Exposes /api/v1/metrics for scraping"
+            checked={field.value === 'true'}
+            onCheckedChange={(val) => {
+              field.onChange(val ? 'true' : 'false');
+              if (!val) {
+                form.setValue('prometheus_auth', 'false');
+                form.setValue('prometheus_token', '');
+              }
+            }}
+          />
+        )}
+      />
+
+      <Accordion open={isPrometheusOn}>
+        <Controller
+          control={form.control}
+          name="prometheus_auth"
+          render={({ field }) => (
+            <ToggleRow
+              id="prometheus_auth"
+              label="Require Bearer Token"
+              description="Protect the /metrics endpoint with a static token"
+              checked={field.value === 'true'}
+              onCheckedChange={(val) => {
+                field.onChange(val ? 'true' : 'false');
+                if (!val) form.setValue('prometheus_token', '');
+              }}
+            />
+          )}
+        />
+
+        <Accordion open={isPrometheusAuthOn}>
+          <FormField
+            label="Bearer Token"
+            error={form.formState.errors.prometheus_token}
+            id="prometheus_token"
+          >
+            <div className="flex gap-2">
+              <PasswordInput
+                id="prometheus_token"
+                {...form.register('prometheus_token')}
+                className="flex-1"
+                placeholder="Paste or generate a secure token"
+              />
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => form.setValue('prometheus_token', generateSecret(), { shouldValidate: true })}
+                className="bg-slate-700 text-white hover:bg-slate-600 border-slate-600 shrink-0"
+                disabled={!!prometheusToken && prometheusToken.length > 0 && false}
+              >
+                Generate
+              </Button>
+            </div>
+          </FormField>
+        </Accordion>
+      </Accordion>
+
+      {/* === Actions === */}
+      <div className="flex gap-2 pt-2">
         <Button
           type="button"
           variant="secondary"
@@ -166,15 +307,4 @@ export function ConfigFormWidget({
       </div>
     </form>
   );
-}
-
-function generateRandomSecret(length: number = 32): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
-  let result = '';
-  const array = new Uint8Array(length);
-  crypto.getRandomValues(array);
-  for (let i = 0; i < length; i++) {
-    result += chars[array[i] % chars.length];
-  }
-  return result;
 }

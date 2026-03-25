@@ -1,11 +1,12 @@
 package presentation
 
 import (
+	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 
+	"system-stats/internal/app/apperror"
 	userservice "system-stats/internal/modules/users/application"
 )
 
@@ -88,11 +89,7 @@ func (h *AuthHandler) clearAuthCookies(c *gin.Context) {
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":   "validation_error",
-			"error":  "Invalid request data",
-			"detail": err.Error(),
-		})
+		_ = c.Error(apperror.WithDetail(apperror.BadRequest("validation_error", "Invalid request data"), err.Error()))
 		return
 	}
 
@@ -108,49 +105,24 @@ func (h *AuthHandler) Register(c *gin.Context) {
 
 	user, err := h.userService.Register(c.Request.Context(), req.Email, req.Password, invitePtr)
 	if err != nil {
-		status := http.StatusInternalServerError
-		code := "internal_error"
-		errorMsg := "Failed to register user"
-
-		if strings.Contains(err.Error(), "registration is disabled") {
-			status = http.StatusForbidden
-			code = "registration_disabled"
-			errorMsg = "Registration is disabled. Users already exist in the system."
-		} else if strings.Contains(err.Error(), "invalid invitation") {
-			status = http.StatusBadRequest
-			code = "invalid_invitation"
-			errorMsg = "Invalid or already used invitation link."
-		} else if strings.Contains(err.Error(), "invitation email mismatch") {
-			status = http.StatusBadRequest
-			code = "invitation_email_mismatch"
-			// Extract expected email from "invitation is for user@example.com"
-			if idx := strings.Index(err.Error(), "invitation is for "); idx >= 0 {
-				expectedEmail := strings.TrimSpace(err.Error()[idx+len("invitation is for "):])
-				errorMsg = "This invitation is for " + expectedEmail + ". Please use that email."
-				c.JSON(status, gin.H{"code": code, "error": errorMsg, "expected_email": expectedEmail})
-				return
-			}
-			errorMsg = "Email must match the invited address."
-		} else if strings.Contains(err.Error(), "already exists") {
-			status = http.StatusConflict
-			code = "email_already_exists"
-			errorMsg = "User with this email already exists"
-		} else if strings.Contains(err.Error(), "password") {
-			status = http.StatusBadRequest
-			code = "validation_error"
-			errorMsg = err.Error()
+		switch {
+		case errors.Is(err, userservice.ErrRegistrationDisabled):
+			_ = c.Error(apperror.Forbidden("registration_disabled", "Registration is disabled. Users already exist in the system."))
+		case errors.Is(err, userservice.ErrInvitationEmailMismatch):
+			_ = c.Error(apperror.BadRequest("invitation_email_mismatch", "Email must match the invited address."))
+		case errors.Is(err, userservice.ErrInvalidInvitation):
+			_ = c.Error(apperror.BadRequest("invalid_invitation", "Invalid or already used invitation link."))
+		case errors.Is(err, userservice.ErrEmailExists):
+			_ = c.Error(apperror.Conflict("email_already_exists", "User with this email already exists"))
+		default:
+			_ = c.Error(apperror.Internal("internal_error", "Failed to register user"))
 		}
-
-		c.JSON(status, gin.H{"code": code, "error": errorMsg})
 		return
 	}
 
 	tokenPair, err := h.tokenService.GenerateTokens(c.Request.Context(), user)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":  "token_generation_error",
-			"error": "Failed to generate tokens",
-		})
+		_ = c.Error(apperror.Internal("token_generation_error", "Failed to generate tokens"))
 		return
 	}
 
@@ -178,36 +150,23 @@ func (h *AuthHandler) Register(c *gin.Context) {
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":   "validation_error",
-			"error":  "Invalid request data",
-			"detail": err.Error(),
-		})
+		_ = c.Error(apperror.WithDetail(apperror.BadRequest("validation_error", "Invalid request data"), err.Error()))
 		return
 	}
 
 	user, err := h.userService.Login(c.Request.Context(), req.Email, req.Password)
 	if err != nil {
-		status := http.StatusInternalServerError
-		code := "internal_error"
-		errorMsg := "Failed to authenticate user"
-
-		if strings.Contains(err.Error(), "invalid credentials") {
-			status = http.StatusUnauthorized
-			code = "invalid_credentials"
-			errorMsg = "Invalid email or password"
+		if errors.Is(err, userservice.ErrInvalidCredentials) {
+			_ = c.Error(apperror.Unauthorized("invalid_credentials", "Invalid email or password"))
+		} else {
+			_ = c.Error(apperror.Internal("internal_error", "Failed to authenticate user"))
 		}
-
-		c.JSON(status, gin.H{"code": code, "error": errorMsg})
 		return
 	}
 
 	tokenPair, err := h.tokenService.GenerateTokens(c.Request.Context(), user)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":  "token_generation_error",
-			"error": "Failed to generate tokens",
-		})
+		_ = c.Error(apperror.Internal("token_generation_error", "Failed to generate tokens"))
 		return
 	}
 
@@ -238,10 +197,7 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 	if err != nil || refreshToken == "" {
 		var req RefreshRequest
 		if err := c.ShouldBindJSON(&req); err != nil || req.RefreshToken == "" {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"code":  "validation_error",
-				"error": "Refresh token required",
-			})
+			_ = c.Error(apperror.BadRequest("validation_error", "Refresh token required"))
 			return
 		}
 		refreshToken = req.RefreshToken
@@ -250,19 +206,13 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 	dbToken, err := h.tokenService.ValidateRefreshToken(c.Request.Context(), refreshToken)
 	if err != nil {
 		h.clearAuthCookies(c)
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"code":  "invalid_or_revoked_refresh",
-			"error": "Invalid or revoked refresh token",
-		})
+		_ = c.Error(apperror.Unauthorized("invalid_or_revoked_refresh", "Invalid or revoked refresh token"))
 		return
 	}
 
 	tokenPair, err := h.tokenService.GenerateTokens(c.Request.Context(), &dbToken.User)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":  "token_generation_error",
-			"error": "Failed to generate tokens",
-		})
+		_ = c.Error(apperror.Internal("token_generation_error", "Failed to generate tokens"))
 		return
 	}
 
@@ -305,10 +255,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 
 	userID, exists := c.Get("userID")
 	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"code":  "unauthorized",
-			"error": "Authentication required",
-		})
+		_ = c.Error(apperror.Unauthorized("unauthorized", "Authentication required"))
 		return
 	}
 
@@ -323,5 +270,5 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 
 	h.clearAuthCookies(c)
 
-	c.JSON(http.StatusNoContent, nil)
+	c.Status(http.StatusNoContent)
 }
