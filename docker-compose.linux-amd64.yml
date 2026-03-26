@@ -21,12 +21,7 @@ services:
     restart: unless-stopped
     environment:
       - ADDR=:9090
-      - GIN_MODE=${GIN_MODE:-release}
-      - DEBUG=${DEBUG:-false}
-      - DB_TYPE=${DB_TYPE:-sqlite}
-      - DB_DSN=/app/data/stats.db
-      - JWT_SECRET=${JWT_SECRET}
-      - REFRESH_SECRET=${REFRESH_SECRET}
+      
       - HOST_PROC=/host/proc
       - HOST_SYS=/host/sys
       - HOST_ETC=/host/etc
