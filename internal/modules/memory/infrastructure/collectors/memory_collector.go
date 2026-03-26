@@ -27,6 +27,13 @@ func NewMemoryMetricsCollector(logger *log.Logger) *MemoryMetricsCollector {
  // cached memory, buffers, and swap information.
 func (c *MemoryMetricsCollector) CollectMemoryMetrics(ctx context.Context) (entities.MemoryMetric, error) {
 	c.logger.Debug("Collecting memory statistics")
+
+	// Docker + /host: /host/proc/meminfo is often still cgroup-scoped for the reader; meminfo via
+	// host PID 1's mount namespace matches real host RAM (see host_init_meminfo_linux.go).
+	if m, ok := tryVirtualMemoryFromHostInit(c.logger); ok {
+		return m, nil
+	}
+
 	memStat, err := mem.VirtualMemoryWithContext(ctx)
 	if err != nil {
 		c.logger.Error("Failed to collect memory statistics", "error", err)

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -259,6 +260,14 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (enti
 	for _, stack := range mergedStackMap {
 		dockerStacks = append(dockerStacks, *stack)
 	}
+	for i := range dockerStacks {
+		sort.Slice(dockerStacks[i].Containers, func(a, b int) bool {
+			return dockerStacks[i].Containers[a].Name < dockerStacks[i].Containers[b].Name
+		})
+	}
+	sort.Slice(dockerStacks, func(i, j int) bool {
+		return dockerStacks[i].Name < dockerStacks[j].Name
+	})
 
 	c.logger.Debug("Docker metrics collected successfully", "total_containers", len(containers), "running_containers", int(runningCount), "stacks", len(dockerStacks))
 

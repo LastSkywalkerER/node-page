@@ -44,6 +44,22 @@ export function MemoryWidget({ hostId }: MemoryWidgetProps) {
 
   const chartConfig: ChartConfig = { used: { label: 'Used', color } }
 
+  const chartData = metrics.history.map((p) => {
+    const d = new Date(p.timestamp)
+    return { time: isNaN(d.getTime()) ? '' : format(d, 'HH:mm:ss'), used: p.used_bytes }
+  })
+  const usedSeries = chartData.map((r) => r.used).filter((v) => Number.isFinite(v))
+  let yMin = 0
+  let yMax = 1
+  if (usedSeries.length > 0) {
+    const lo = Math.min(...usedSeries)
+    const hi = Math.max(...usedSeries)
+    const span = hi - lo
+    const pad = span > 0 ? Math.max(span * 0.12, hi * 0.02) : Math.max(hi * 0.05, 1024 * 1024)
+    yMin = Math.max(0, lo - pad)
+    yMax = hi + pad
+  }
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -73,10 +89,7 @@ export function MemoryWidget({ hostId }: MemoryWidgetProps) {
         )}
         {metrics.history && metrics.history.length > 0 && (
           <ChartContainer config={chartConfig} className="h-20 w-full">
-            <AreaChart data={metrics.history.map((p) => {
-              const d = new Date(p.timestamp)
-              return { time: isNaN(d.getTime()) ? '' : format(d, 'HH:mm:ss'), used: p.used_bytes }
-            })} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
+            <AreaChart data={chartData} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
               <defs>
                 <linearGradient id="memGrad" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="var(--color-used)" stopOpacity={0.25} />
@@ -84,7 +97,15 @@ export function MemoryWidget({ hostId }: MemoryWidgetProps) {
                 </linearGradient>
               </defs>
               <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fontSize: 9 }} interval="preserveStartEnd" />
-              <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 9 }} tickFormatter={v => formatBytes(v)} width={36} />
+              <YAxis
+                domain={[yMin, yMax]}
+                allowDataOverflow
+                axisLine={false}
+                tickLine={false}
+                tick={{ fontSize: 9 }}
+                tickFormatter={(v) => formatBytes(Number(v))}
+                width={36}
+              />
               <ChartTooltip cursor={false} content={<ChartTooltipContent hideLabel formatter={(v) => formatBytes(Number(v))} />} />
               <Area type="monotone" dataKey="used" stroke="var(--color-used)" fill="url(#memGrad)" strokeWidth={1.5} dot={false} />
             </AreaChart>

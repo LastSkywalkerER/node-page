@@ -67,6 +67,7 @@ type Config struct {
 func Load() (*Config, error) {
 	// Load .env file if it exists (ignore error if file doesn't exist)
 	_ = godotenv.Load()
+	applyHostProcFromBindMount()
 
 	config := &Config{}
 
