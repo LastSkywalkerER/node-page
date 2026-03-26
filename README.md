@@ -63,21 +63,46 @@ Node Stats is perfect for:
 
 ## Screenshots
 
-### Neon Terminal Theme
+UI collage (dark glass / neon and light themes). Click an image on GitHub to open the full-size PNG.
 
-![Neon Terminal Theme](assets/neon-terminal.png)
-
-### Glass Aurora Theme
-
-![Glass Aurora Theme](assets/glass-aurora.png)
-
-### Cards Flow Theme
-
-![Cards Flow Theme](assets/cards-flow.png)
-
-### Slate Pro Theme
-
-![Slate Pro Theme](assets/slate-pro.png)
+<table>
+<tr>
+<td align="center" valign="top" width="50%">
+<a href="assets/sign-in.png"><img src="assets/sign-in.png" width="100%" alt="Sign in"/></a><br/>
+<sub><b>Sign in</b> — NODE-STATS logo, email/password fields, primary Sign In action.</sub>
+</td>
+<td align="center" valign="top" width="50%">
+<a href="assets/machines-overview.png"><img src="assets/machines-overview.png" width="100%" alt="Machines overview"/></a><br/>
+<sub><b>Machines</b> — fleet cards: hostname, OS, IP/MAC, kernel, last seen, latency, uptime.</sub>
+</td>
+</tr>
+<tr>
+<td align="center" valign="top" width="50%">
+<a href="assets/live-metrics-dark-theme.png"><img src="assets/live-metrics-dark-theme.png" width="100%" alt="Live metrics dark theme"/></a><br/>
+<sub><b>Live metrics (dark)</b> — CPU, memory, disk, network, sensors with sparklines and load.</sub>
+</td>
+<td align="center" valign="top" width="50%">
+<a href="assets/docker-containers.png"><img src="assets/docker-containers.png" width="100%" alt="Docker containers"/></a><br/>
+<sub><b>Containers</b> — Docker compose groups, running/total, CPU/memory rings, ports, I/O.</sub>
+</td>
+</tr>
+<tr>
+<td align="center" valign="top" width="50%">
+<a href="assets/live-metrics-light-theme.png"><img src="assets/live-metrics-light-theme.png" width="100%" alt="Live metrics light theme"/></a><br/>
+<sub><b>Live metrics (light)</b> — same metrics layout on a light, patterned dashboard theme.</sub>
+</td>
+<td align="center" valign="top" width="50%">
+<a href="assets/admin-users.png"><img src="assets/admin-users.png" width="100%" alt="Admin users"/></a><br/>
+<sub><b>Admin · Users</b> — email invites, one-time links, directory with roles (e.g. Admin).</sub>
+</td>
+</tr>
+<tr>
+<td align="center" valign="top" colspan="2">
+<a href="assets/admin-nodes.png"><img src="assets/admin-nodes.png" width="50%" alt="Admin nodes"/></a><br/>
+<sub><b>Admin · Nodes</b> — generate join links, push URL, registered hosts, token regen &amp; remove.</sub>
+</td>
+</tr>
+</table>
 
 ## Installation & Quick Start
 
