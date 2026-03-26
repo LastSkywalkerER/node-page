@@ -49,10 +49,9 @@ type cpuStatsCache struct {
 }
 
 func NewDockerMetricsCollector(logger *log.Logger) repositories.DockerMetricsCollector {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		logger.Warn("failed to create Docker client at startup", "error", err)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	cli := tryOpenDockerClient(ctx, logger)
 	return &dockerMetricsCollector{
 		logger:            logger,
 		client:            cli,
@@ -76,14 +75,17 @@ func (c *dockerMetricsCollector) IsDockerAvailable(ctx context.Context) bool {
 
 	c.lastCheck = now
 
-	if c.client == nil {
-		c.dockerAvailable = false
-		return false
+	if c.client != nil {
+		if _, err := c.client.Ping(ctx); err == nil {
+			c.dockerAvailable = true
+			return true
+		}
+		_ = c.client.Close()
+		c.client = nil
 	}
 
-	_, err := c.client.Ping(ctx)
-	c.dockerAvailable = err == nil
-
+	c.client = tryOpenDockerClient(ctx, c.logger)
+	c.dockerAvailable = c.client != nil
 	return c.dockerAvailable
 }
 
@@ -97,7 +99,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (enti
 		c.logger.Warn("Docker is not available, returning empty metrics")
 		return entities.DockerMetric{
 			DockerAvailable: false,
-			Error:           "Docker is not available or not running",
+			Error:           "Cannot reach Docker daemon. Start Docker or set DOCKER_HOST.",
 		}, nil
 	}
 

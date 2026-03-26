@@ -19,7 +19,17 @@ export const useMetricsStore = create<MetricsState>((set) => ({
   disk: undefined,
   network: undefined,
   docker: undefined,
-  setMetrics: (data) => set((state) => ({ ...state, ...data })),
+  // Do not assign undefined — a partial SSE envelope must not wipe keys that were omitted from JSON.
+  setMetrics: (data) =>
+    set((state) => {
+      const next = { ...state } as MetricsState;
+      (['cpu', 'memory', 'disk', 'network', 'docker'] as const).forEach((k) => {
+        if (k in data && data[k] !== undefined) {
+          next[k] = data[k] as never;
+        }
+      });
+      return next;
+    }),
 }));
 
 /** Clears live SSE snapshot (call when switching machine or reconnecting stream). */

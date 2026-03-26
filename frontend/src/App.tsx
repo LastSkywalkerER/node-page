@@ -14,16 +14,19 @@ import { AdminPage } from './pages/AdminPage'
 import { UsersTab } from './widgets/admin/UsersTab'
 import { NodesTab } from './widgets/admin/NodesTab'
 import { AdminRoute } from './shared/guards/AdminRoute'
+import { CyberBackdrop } from './shared/components/CyberBackdrop'
 
 function ProtectedLayout() {
   return (
     <SetupRoute>
       <ProtectedRoute>
-        <div className="min-h-screen bg-background">
-          <AppHeader />
-          <main>
-            <Outlet />
-          </main>
+        <div className="app-shell app-shell--fill bg-transparent">
+          <div className="app-protected-frame">
+            <AppHeader />
+            <main className="app-main">
+              <Outlet />
+            </main>
+          </div>
         </div>
       </ProtectedRoute>
     </SetupRoute>
@@ -39,7 +42,10 @@ function App() {
   }, [initializeAuth])
 
   return (
-    <Routes>
+    <div className="app-mount">
+      <CyberBackdrop />
+      <div className="app-route-outlet">
+      <Routes>
       <Route path="/setup" element={<SetupPage />} />
 
       <Route
@@ -73,6 +79,8 @@ function App() {
         }
       />
     </Routes>
+      </div>
+    </div>
   )
 }
 

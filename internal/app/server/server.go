@@ -359,7 +359,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.POST("/nodes/connect", nodesHandler.Connect)
 	}
 
-	// Static files for React app
+	// Static files for React app (hashed bundles from Vite)
 	router.Static("/assets", filepath.Join(distPath, "assets"))
 
 	// SPA fallback routing
@@ -368,7 +368,18 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 			c.JSON(404, gin.H{"error": "API endpoint not found"})
 			return
 		}
+		m := c.Request.Method
+		if m == http.MethodGet || m == http.MethodHead {
+			if abs, ok := resolveDistStaticFile(distPath, c.Request.URL.Path); ok {
+				c.File(abs)
+				return
+			}
+		}
 		if strings.HasPrefix(c.Request.URL.Path, "/assets/") {
+			c.Status(404)
+			return
+		}
+		if pathLooksLikeMissingStaticAsset(c.Request.URL.Path) {
 			c.Status(404)
 			return
 		}
@@ -376,4 +387,48 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	})
 
 	return router
+}
+
+// resolveDistStaticFile serves a single file from dist root (Vite copies frontend/public there on build).
+func resolveDistStaticFile(distPath, urlPath string) (absFile string, ok bool) {
+	rel := strings.TrimPrefix(urlPath, "/")
+	if rel == "" || strings.Contains(rel, "..") {
+		return "", false
+	}
+	candidate := filepath.Join(distPath, filepath.FromSlash(rel))
+	absDist, err := filepath.Abs(distPath)
+	if err != nil {
+		return "", false
+	}
+	absFile, err = filepath.Abs(candidate)
+	if err != nil {
+		return "", false
+	}
+	relResult, err := filepath.Rel(absDist, absFile)
+	if err != nil || strings.HasPrefix(relResult, "..") {
+		return "", false
+	}
+	fi, err := os.Stat(absFile)
+	if err != nil || fi.IsDir() {
+		return "", false
+	}
+	return absFile, true
+}
+
+func pathLooksLikeMissingStaticAsset(urlPath string) bool {
+	baseName := filepath.Base(strings.Split(urlPath, "?")[0])
+	if baseName == "" || baseName == "." || baseName == "/" {
+		return false
+	}
+	i := strings.LastIndex(baseName, ".")
+	if i < 0 {
+		return false
+	}
+	ext := strings.ToLower(baseName[i:])
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".ico", ".svg", ".webmanifest", ".json", ".css", ".js", ".map", ".woff", ".woff2", ".ttf", ".txt":
+		return true
+	default:
+		return false
+	}
 }

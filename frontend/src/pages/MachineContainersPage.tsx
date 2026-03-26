@@ -3,6 +3,7 @@ import { useMetricsStream } from '@/shared/hooks/useEventSource'
 import { useLiveMetricsQuerySync } from '@/shared/hooks/useLiveMetricsQuerySync'
 import { ErrorBoundary } from '@/shared/components/ErrorBoundary'
 import { DockerWidget } from '@/widgets/docker/DockerWidget'
+import { MachineWorkspaceBar } from '@/shared/components/MachineWorkspaceBar'
 
 export function MachineContainersPage() {
   const { id } = useParams<{ id: string }>()
@@ -12,10 +13,13 @@ export function MachineContainersPage() {
   useLiveMetricsQuerySync(hostId)
 
   return (
-    <div className="mx-auto max-w-5xl px-4 py-6">
-      <ErrorBoundary name="Docker">
-        <DockerWidget hostId={hostId} />
-      </ErrorBoundary>
+    <div className="mx-auto max-w-5xl">
+      <MachineWorkspaceBar section="containers" />
+      <div className="px-4 pb-10 pt-2">
+        <ErrorBoundary name="Docker">
+          <DockerWidget hostId={hostId} />
+        </ErrorBoundary>
+      </div>
     </div>
   )
 }

@@ -6,6 +6,17 @@ import { Input } from '@/components/ui/input'
 import { useHosts } from '@/widgets/hosts/useHosts'
 import { Copy, Check, Link2, Server, Trash2, Eye, EyeOff, Save, Unplug } from 'lucide-react'
 import { toast } from 'sonner'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion'
+
+const nodeAccordionTrigger =
+  'py-3 text-sm hover:no-underline font-display tracking-wide [&_[data-slot=accordion-trigger-icon]]:text-primary/80'
 
 type ClusterUIStatus = {
   show_connect_block: boolean
@@ -61,8 +72,8 @@ function AgentConnectionSettings({ clusterUi }: { clusterUi: ClusterUIStatus }) 
   })
 
   return (
-    <div className="rounded-xl border bg-card p-5 space-y-4">
-      <h3 className="font-medium text-sm">Connected to main</h3>
+    <div className="space-y-4 pt-0.5">
+      <h3 className="font-display text-sm font-medium tracking-wide">Connected to main</h3>
       <p className="text-xs text-muted-foreground">
         This instance pushes metrics to the URL below. Update after regenerating a token on the main node.
       </p>
@@ -316,107 +327,173 @@ export function NodesTab() {
 
   const connectVisible = clusterUi !== undefined && clusterUi.show_connect_block
 
+  const accordionDefault = [
+    ...(clusterUi?.is_agent ? ['agent'] : ['ingest']),
+    ...(hosts.length > 0 ? ['hosts'] : []),
+    ...(connectVisible ? ['connect'] : []),
+  ]
+
   return (
-    <div className="space-y-6">
-      <h2 className="text-lg font-semibold">Nodes</h2>
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="font-display text-lg tracking-wide">Nodes</CardTitle>
+        <CardDescription>
+          Join links and push URL on the main node; agent connection if this instance reports upstream; host list and
+          one-time connect when applicable.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="pt-0">
+        <Accordion
+          key={`${Boolean(clusterUi?.is_agent)}-${hosts.length}-${connectVisible}`}
+          multiple
+          defaultValue={accordionDefault}
+          className="w-full"
+        >
+          {clusterUi?.is_agent && (
+            <AccordionItem value="agent" className="border-border/50 dark:border-white/10">
+              <AccordionTrigger className={nodeAccordionTrigger}>This instance → main (agent)</AccordionTrigger>
+              <AccordionContent className="pb-4">
+                <AgentConnectionSettings clusterUi={clusterUi} />
+              </AccordionContent>
+            </AccordionItem>
+          )}
 
-      {/* Fixed-height block: link fills the same field after Generate (no layout jump). */}
-      <div className="rounded-xl border bg-card p-4 space-y-3">
-        <h3 className="text-sm font-medium">One-time join link</h3>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
-          <Input
-            readOnly
-            value={joinLinkGenerated ?? ''}
-            placeholder="Click Generate to create a link"
-            className="font-mono text-sm min-h-10 flex-1 min-w-0"
-            aria-label="Generated join link"
-          />
-          <div className="flex gap-2 shrink-0">
-            <Button
-              type="button"
-              size="sm"
-              className="sm:self-stretch"
-              onClick={() => createInviteMutation.mutate()}
-              disabled={createInviteMutation.isPending}
-            >
-              <Link2 className="h-4 w-4 mr-2" />
-              Generate
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="sm:self-stretch px-3"
-              disabled={!joinLinkGenerated}
-              onClick={handleCopyGeneratedLink}
-              title="Copy link"
-            >
-              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-            </Button>
-          </div>
-        </div>
-      </div>
+          {!clusterUi?.is_agent && (
+            <AccordionItem value="ingest" className="border-border/50 dark:border-white/10">
+              <AccordionTrigger className={nodeAccordionTrigger}>Join links &amp; push URL</AccordionTrigger>
+              <AccordionContent className="space-y-4 pb-4">
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground">One-time link for a new machine to join this server.</p>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <Input
+                      readOnly
+                      value={joinLinkGenerated ?? ''}
+                      placeholder="Click Generate to create a link"
+                      className="h-9 min-h-0 flex-1 min-w-0 font-mono text-sm"
+                      aria-label="Generated join link"
+                    />
+                    <div className="flex w-full gap-2 shrink-0 sm:w-auto">
+                      <Button
+                        type="button"
+                        size="lg"
+                        className="h-9 flex-1 sm:flex-initial sm:px-4"
+                        onClick={() => createInviteMutation.mutate()}
+                        disabled={createInviteMutation.isPending}
+                      >
+                        <Link2 className="h-4 w-4 mr-2" />
+                        Generate
+                      </Button>
+                      <Button
+                        type="button"
+                        size="lg"
+                        variant="outline"
+                        className="h-9 w-10 shrink-0 border-primary/40 text-primary hover:bg-primary/10 px-0"
+                        disabled={!joinLinkGenerated}
+                        onClick={handleCopyGeneratedLink}
+                        title="Copy link"
+                        aria-label="Copy join link"
+                      >
+                        {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
 
-      {clusterUi?.is_agent && <AgentConnectionSettings clusterUi={clusterUi} />}
+                {clusterUi?.push_url && (
+                  <div className="flex flex-col gap-2 rounded-lg border border-border/60 bg-muted/20 px-3 py-3 sm:flex-row sm:items-center dark:border-white/10">
+                    <span className="shrink-0 text-xs font-medium text-muted-foreground">Push URL</span>
+                    <code className="min-w-0 flex-1 truncate font-mono text-xs">{clusterUi.push_url}</code>
+                    <Button
+                      type="button"
+                      size="lg"
+                      variant="outline"
+                      className="h-9 w-full shrink-0 border-primary/35 sm:w-auto sm:px-3"
+                      onClick={handleCopyPush}
+                    >
+                      {pushCopied ? (
+                        <>
+                          <Check className="h-4 w-4 sm:mr-1.5" />
+                          <span className="sm:inline">Copied</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-4 w-4 sm:mr-1.5" />
+                          <span className="sm:inline">Copy</span>
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                )}
+              </AccordionContent>
+            </AccordionItem>
+          )}
 
-      {clusterUi?.push_url && !clusterUi.is_agent && (
-        <div className="flex items-center gap-2 text-xs rounded-lg border bg-card px-3 py-2">
-          <span className="text-muted-foreground shrink-0">Push URL</span>
-          <code className="flex-1 min-w-0 truncate font-mono">{clusterUi.push_url}</code>
-          <Button type="button" size="sm" variant="outline" className="h-7 px-2 shrink-0" onClick={handleCopyPush}>
-            {pushCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-          </Button>
-        </div>
-      )}
-
-      {hosts.length > 0 && (
-        <div className="border rounded-xl divide-y overflow-hidden">
-          {hosts.map(
-            (host: { id: number; name: string; platform?: string; has_node_credential?: boolean }) => (
-              <div key={host.id} className="hover:bg-muted/20 transition-colors px-4 py-3">
-                <div className="flex flex-col gap-2 min-[480px]:flex-row min-[480px]:items-center min-[480px]:justify-between">
-                  <div className="min-w-0">
-                    <span className="font-medium truncate block">{host.name}</span>
-                    {host.platform && (
-                      <span className="text-xs text-muted-foreground">{host.platform}</span>
+          {hosts.length > 0 && (
+            <AccordionItem value="hosts" className="border-border/50 dark:border-white/10">
+              <AccordionTrigger className={nodeAccordionTrigger}>
+                Registered hosts
+                <span className="ml-2 font-mono text-xs font-normal text-muted-foreground tabular-nums">
+                  ({hosts.length})
+                </span>
+              </AccordionTrigger>
+              <AccordionContent className="pb-4">
+                <ScrollArea className="h-[min(48vh,420px)] rounded-lg border border-border/60 dark:border-white/10">
+                  <div className="divide-y divide-border/60 dark:divide-white/10">
+                    {hosts.map(
+                      (host: { id: number; name: string; platform?: string; has_node_credential?: boolean }) => (
+                        <div key={host.id} className="px-4 py-3 transition-colors hover:bg-muted/20">
+                          <div className="flex flex-col gap-2 min-[480px]:flex-row min-[480px]:items-center min-[480px]:justify-between">
+                            <div className="min-w-0">
+                              <span className="block truncate font-medium">{host.name}</span>
+                              {host.platform && (
+                                <span className="text-xs text-muted-foreground">{host.platform}</span>
+                              )}
+                            </div>
+                            {localHostId !== undefined && host.id !== localHostId && (
+                              <RemoteAgentActions
+                                hostId={host.id}
+                                hasNodeCredential={Boolean(host.has_node_credential)}
+                              />
+                            )}
+                          </div>
+                        </div>
+                      )
                     )}
                   </div>
-                  {localHostId !== undefined && host.id !== localHostId && (
-                    <RemoteAgentActions
-                      hostId={host.id}
-                      hasNodeCredential={Boolean(host.has_node_credential)}
-                    />
-                  )}
-                </div>
-              </div>
-            )
+                </ScrollArea>
+              </AccordionContent>
+            </AccordionItem>
           )}
-        </div>
-      )}
 
-      {connectVisible && (
-        <div className="rounded-xl border bg-card p-5 space-y-4">
-          <h3 className="font-medium text-sm">Connect this node</h3>
-          <p className="text-xs text-muted-foreground">Paste the join link from the main node. One-time per link.</p>
-          <div className="flex gap-2">
-            <Input
-              placeholder="https://main.example.com:8080/api/v1/nodes/join?token=..."
-              value={joinLink}
-              onChange={(e) => setJoinLink(e.target.value)}
-              className="font-mono text-sm flex-1 min-w-0"
-            />
-            <Button
-              size="sm"
-              onClick={handleConnect}
-              disabled={connectMutation.isPending || !joinLink.trim()}
-              className="shrink-0"
-            >
-              <Server className="h-4 w-4 mr-2" />
-              Connect
-            </Button>
-          </div>
-        </div>
-      )}
-    </div>
+          {connectVisible && (
+            <AccordionItem value="connect" className="border-border/50 dark:border-white/10">
+              <AccordionTrigger className={nodeAccordionTrigger}>Connect this node to main</AccordionTrigger>
+              <AccordionContent className="space-y-3 pb-4">
+                <p className="text-xs text-muted-foreground">
+                  Paste the join link from the main node. Each link works once.
+                </p>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <Input
+                    placeholder="https://main.example.com:8080/api/v1/nodes/join?token=..."
+                    value={joinLink}
+                    onChange={(e) => setJoinLink(e.target.value)}
+                    className="h-9 min-w-0 flex-1 font-mono text-sm"
+                  />
+                  <Button
+                    size="lg"
+                    className="h-9 w-full shrink-0 sm:w-auto"
+                    onClick={handleConnect}
+                    disabled={connectMutation.isPending || !joinLink.trim()}
+                  >
+                    <Server className="h-4 w-4 mr-2" />
+                    Connect
+                  </Button>
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+          )}
+        </Accordion>
+      </CardContent>
+    </Card>
   )
 }

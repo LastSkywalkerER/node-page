@@ -126,7 +126,9 @@ export function DockerWidget({ hostId }: DockerWidgetProps) {
         </div>
       </CardHeader>
       <CardContent className="space-y-1.5 pt-0">
-        {stacks.length === 0 ? (
+        {latest.docker_available === false && latest.error ? (
+          <p className="text-xs text-amber-700/90 dark:text-amber-400/90 leading-relaxed">{latest.error}</p>
+        ) : stacks.length === 0 ? (
           <p className="text-xs text-muted-foreground">No containers</p>
         ) : stacks.map((stack) => (
           <div key={stack.name} className="rounded-md border border-border overflow-hidden">

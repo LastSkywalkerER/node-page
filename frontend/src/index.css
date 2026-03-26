@@ -1,11 +1,14 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500;600&family=Orbitron:wght@400;500;600;700&display=swap");
+
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "@fontsource-variable/geist";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {
-  --font-sans: "Geist Variable", sans-serif;
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Orbitron", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -29,71 +32,434 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-neon-cyan: var(--neon-cyan);
+  --color-neon-magenta: var(--neon-magenta);
 }
 
-/* ── Light mode ─────────────────────────────────────────── */
+/* ── Light: frosted lab / daylight HUD ───────────────────── */
 :root {
-  --radius: 0.5rem;
-  --background:        oklch(0.91 0.006 264);
-  --foreground:        oklch(0.15 0.012 264);
-  --card:              oklch(0.95 0.005 264);
-  --card-foreground:   oklch(0.15 0.012 264);
-  --popover:           oklch(0.95 0.005 264);
-  --popover-foreground:oklch(0.15 0.012 264);
-  --primary:           oklch(0.22 0.04 264);
-  --primary-foreground:oklch(0.97 0 0);
-  --secondary:         oklch(0.86 0.008 264);
-  --secondary-foreground:oklch(0.22 0.04 264);
-  --muted:             oklch(0.86 0.008 264);
-  --muted-foreground:  oklch(0.48 0.022 264);
-  --accent:            oklch(0.86 0.008 264);
-  --accent-foreground: oklch(0.22 0.04 264);
-  --destructive:       oklch(0.55 0.22 27);
-  --destructive-foreground: oklch(0.98 0 0);
-  --border:            oklch(0.81 0.010 264);
-  --input:             oklch(0.81 0.010 264);
-  --ring:              oklch(0.50 0.028 264);
+  --radius: 0.65rem;
+  --neon-cyan: oklch(0.55 0.14 195);
+  --neon-magenta: oklch(0.55 0.22 320);
+  --background: oklch(0.93 0.02 285);
+  --foreground: oklch(0.22 0.04 285);
+  --card: oklch(0.99 0.008 285 / 0.72);
+  --card-foreground: oklch(0.22 0.04 285);
+  --popover: oklch(0.99 0.008 285 / 0.92);
+  --popover-foreground: oklch(0.22 0.04 285);
+  --primary: oklch(0.45 0.14 195);
+  --primary-foreground: oklch(0.99 0.01 200);
+  --secondary: oklch(0.94 0.03 310 / 0.85);
+  --secondary-foreground: oklch(0.28 0.08 310);
+  --muted: oklch(0.92 0.02 285 / 0.9);
+  --muted-foreground: oklch(0.42 0.04 270);
+  --accent: oklch(0.92 0.04 320 / 0.85);
+  --accent-foreground: oklch(0.3 0.1 320);
+  --destructive: oklch(0.55 0.2 25);
+  --destructive-foreground: oklch(0.99 0 0);
+  --border: oklch(0.35 0.06 285 / 0.12);
+  --input: oklch(0.35 0.06 285 / 0.14);
+  --ring: oklch(0.5 0.14 195);
 }
 
-/* ── Dark mode ──────────────────────────────────────────── */
+/* ── Dark: cyberpunk glass (visible depth — not flat black) ─ */
 .dark {
-  --background:        oklch(0.17 0.014 264);
-  --foreground:        oklch(0.92 0.006 264);
-  --card:              oklch(0.22 0.016 264);
-  --card-foreground:   oklch(0.92 0.006 264);
-  --popover:           oklch(0.25 0.016 264);
-  --popover-foreground:oklch(0.92 0.006 264);
-  --primary:           oklch(0.92 0.006 264);
-  --primary-foreground:oklch(0.22 0.016 264);
-  --secondary:         oklch(0.30 0.018 264);
-  --secondary-foreground:oklch(0.92 0.006 264);
-  --muted:             oklch(0.28 0.016 264);
-  --muted-foreground:  oklch(0.62 0.018 264);
-  --accent:            oklch(0.30 0.018 264);
-  --accent-foreground: oklch(0.92 0.006 264);
-  --destructive:       oklch(0.65 0.18 22);
-  --destructive-foreground: oklch(0.98 0 0);
-  --border:            oklch(1 0 0 / 11%);
-  --input:             oklch(1 0 0 / 13%);
-  --ring:              oklch(0.62 0.018 264);
+  --background: oklch(0.115 0.055 285);
+  --foreground: oklch(0.93 0.02 200);
+  --card: oklch(0.2 0.055 285 / 0.52);
+  --card-foreground: oklch(0.93 0.02 200);
+  --popover: oklch(0.16 0.05 285 / 0.75);
+  --popover-foreground: oklch(0.93 0.02 200);
+  --primary: oklch(0.78 0.15 195);
+  --primary-foreground: oklch(0.1 0.04 285);
+  --secondary: oklch(0.22 0.07 310 / 0.45);
+  --secondary-foreground: oklch(0.92 0.04 320);
+  --muted: oklch(0.18 0.04 285 / 0.55);
+  --muted-foreground: oklch(0.62 0.04 260);
+  --accent: oklch(0.28 0.12 320 / 0.5);
+  --accent-foreground: oklch(0.95 0.03 320);
+  --destructive: oklch(0.62 0.2 22);
+  --destructive-foreground: oklch(0.99 0 0);
+  --border: oklch(1 0 0 / 0.11);
+  --input: oklch(1 0 0 / 0.14);
+  --ring: oklch(0.78 0.15 195);
+  --neon-cyan: oklch(0.78 0.15 195);
+  --neon-magenta: oklch(0.72 0.22 320);
 }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
   }
+  html {
+    min-height: 100dvh;
+  }
+
   body {
     @apply bg-background text-foreground font-sans antialiased;
+    min-height: 100dvh;
+  }
+
+  /* CyberBackdrop portals to body at z-0; keep app above it */
+  #root {
+    position: relative;
+    z-index: 1;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Fills #root next to portaled UI (e.g. toaster); single flex column for nested min-h-0 main */
+  #root .app-mount {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-width: 0;
+    width: 100%;
+    min-height: 100dvh;
+  }
+
+  #root .app-route-outlet {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    min-width: 0;
+  }
+
+  h1,
+  h2,
+  .font-display {
+    font-family: var(--font-display), var(--font-sans);
+    letter-spacing: 0.02em;
+  }
+  .font-mono {
+    font-family: var(--font-mono), ui-monospace, monospace;
   }
 }
 
+/* Page shell: stacks above CyberBackdrop (z-0) */
+.app-shell {
+  position: relative;
+  isolation: isolate;
+}
+
+/* Fills #root flex column without min-h-screen + header margin overflowing the viewport */
+.app-shell--fill {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.app-shell-content {
+  position: relative;
+  z-index: 10;
+}
+
+/* Protected app only (Auth/Setup reuse .app-shell-content without these flex rules) */
+.app-protected-frame {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding-top: 0.75rem;
+  padding-left: 0.75rem;
+  padding-right: 0.75rem;
+}
+
+@media (min-width: 768px) {
+  .app-protected-frame {
+    padding-top: 1rem;
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
+  }
+}
+
+.app-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ── CyberBackdrop layers (readable UI, visible atmosphere) ─ */
+.cyber-bg-base {
+  background-color: var(--background);
+}
+
+/* Raster: two bundled JPEGs; only one visible per theme (see CyberBackdrop) */
+.cyber-bg-photo-light {
+  opacity: 0.32;
+  mix-blend-mode: multiply;
+}
+
+html.dark .cyber-bg-photo-light {
+  opacity: 0;
+  visibility: hidden;
+}
+
+.cyber-bg-photo-dark {
+  opacity: 0;
+  visibility: hidden;
+}
+
+html.dark .cyber-bg-photo-dark {
+  opacity: 0.52;
+  visibility: visible;
+  mix-blend-mode: normal;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cyber-bg-photo-light {
+    opacity: 0.22;
+  }
+
+  html.dark .cyber-bg-photo-dark {
+    opacity: 0.46;
+  }
+}
+
+/* Dark base: tint over the JPEG (photo opacity tuned with this) */
+.dark .cyber-bg-base {
+  background: linear-gradient(
+    165deg,
+    oklch(0.17 0.055 285) 0%,
+    oklch(0.125 0.05 275) 52%,
+    oklch(0.105 0.05 300) 100%
+  );
+}
+
+.cyber-bg-aurora {
+  inset: -25%;
+  opacity: 0.72;
+  filter: blur(56px);
+  will-change: transform, opacity;
+  background:
+    radial-gradient(closest-side at 25% 35%, oklch(0.52 0.2 300 / 0.32), transparent 70%),
+    radial-gradient(closest-side at 78% 22%, oklch(0.48 0.16 195 / 0.26), transparent 68%),
+    radial-gradient(closest-side at 62% 88%, oklch(0.5 0.2 330 / 0.22), transparent 72%);
+  animation: cyber-aurora-drift 32s ease-in-out infinite alternate;
+}
+
+/* Dark: minimal color haze on top of the photo */
+.dark .cyber-bg-aurora {
+  opacity: 0.18;
+  filter: blur(44px);
+  background:
+    radial-gradient(closest-side at 30% 40%, oklch(0.5 0.12 300 / 0.08), transparent 78%),
+    radial-gradient(closest-side at 72% 28%, oklch(0.48 0.1 195 / 0.06), transparent 76%),
+    radial-gradient(closest-side at 55% 88%, oklch(0.52 0.1 330 / 0.05), transparent 80%);
+  animation: cyber-aurora-drift-dark 40s ease-in-out infinite alternate;
+}
+
+:root:not(.dark) .cyber-bg-aurora {
+  opacity: 0.42;
+  filter: blur(64px);
+  background:
+    radial-gradient(closest-side at 20% 30%, oklch(0.72 0.1 285 / 0.2), transparent 72%),
+    radial-gradient(closest-side at 85% 25%, oklch(0.7 0.12 195 / 0.14), transparent 70%),
+    radial-gradient(closest-side at 55% 85%, oklch(0.75 0.08 320 / 0.1), transparent 75%);
+}
+
+.cyber-bg-grid {
+  opacity: 0.42;
+  background-image:
+    linear-gradient(oklch(1 0 0 / 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, oklch(1 0 0 / 0.055) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse 88% 78% at 50% 36%, black, transparent 82%);
+}
+
+.dark .cyber-bg-grid {
+  opacity: 0.09;
+  mask-image: radial-gradient(ellipse 130% 125% at 50% 45%, black 55%, transparent 100%);
+}
+
+:root:not(.dark) .cyber-bg-grid {
+  background-image:
+    linear-gradient(oklch(0.25 0.04 285 / 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, oklch(0.25 0.04 285 / 0.055) 1px, transparent 1px);
+  opacity: 0.55;
+}
+
+/* Soften edges without crushing the whole viewport to black */
+.cyber-bg-vignette {
+  background: radial-gradient(
+    ellipse 92% 88% at 50% 42%,
+    transparent 32%,
+    color-mix(in oklch, var(--background) 88%, transparent) 100%
+  );
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.dark .cyber-bg-vignette {
+  opacity: 0.18;
+  background: radial-gradient(
+    ellipse 115% 105% at 50% 42%,
+    transparent 62%,
+    color-mix(in oklch, var(--background) 32%, transparent) 100%
+  );
+}
+
+/* Very light scan texture — was fighting ::before on same node; now isolated */
+.cyber-bg-scan {
+  opacity: 0.14;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    oklch(1 0 0 / 0.022) 2px,
+    oklch(1 0 0 / 0.022) 3px
+  );
+  mask-image: radial-gradient(ellipse 88% 75% at 50% 40%, black, transparent 85%);
+}
+
+.dark .cyber-bg-scan {
+  opacity: 0.035;
+  mask-image: radial-gradient(ellipse 100% 100% at 50% 45%, black 40%, transparent 98%);
+}
+
+:root:not(.dark) .cyber-bg-scan {
+  opacity: 0.1;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    oklch(0.2 0.03 285 / 0.04) 2px,
+    oklch(0.2 0.03 285 / 0.04) 3px
+  );
+}
+
+@keyframes cyber-aurora-drift {
+  0% {
+    transform: translate3d(-2%, -1%, 0) scale(1);
+    opacity: 0.55;
+  }
+  100% {
+    transform: translate3d(2.5%, 2%, 0) scale(1.06);
+    opacity: 0.72;
+  }
+}
+
+@keyframes cyber-aurora-drift-dark {
+  0% {
+    transform: translate3d(-0.8%, -0.4%, 0) scale(1);
+    opacity: 0.14;
+  }
+  100% {
+    transform: translate3d(0.9%, 0.8%, 0) scale(1.02);
+    opacity: 0.2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cyber-bg-aurora {
+    animation: none;
+    opacity: 0.62;
+    transform: none;
+  }
+
+  .dark .cyber-bg-aurora {
+    opacity: 0.16;
+    transform: none;
+  }
+  [data-slot="skeleton"] {
+    animation: none;
+  }
+}
+
+/* Glass panels — shadcn Card + machine tiles */
+[data-slot="card"] {
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid color-mix(in oklch, var(--foreground) 10%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in oklch, var(--foreground) 6%, transparent),
+    0 20px 50px -18px oklch(0 0 0 / 0.45);
+}
+
+/* Light: one soft lift — avoid stacked heavy shadows */
+:root:not(.dark) [data-slot="card"] {
+  box-shadow: 0 1px 2px oklch(0 0 0 / 0.04), 0 6px 20px -6px oklch(0 0 0 / 0.1);
+}
+
+.dark [data-slot="card"] {
+  border-color: oklch(1 0 0 / 0.12);
+  background: color-mix(in oklch, var(--card) 88%, transparent);
+  box-shadow:
+    0 0 0 1px oklch(1 0 0 / 0.07),
+    0 0 56px -18px oklch(0.72 0.16 195 / 0.22),
+    0 24px 56px -24px oklch(0 0 0 / 0.55);
+}
+
+[data-slot="card-footer"] {
+  background: color-mix(in oklch, var(--muted) 65%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* HUD corner brackets for machine cards */
+.cyber-frame {
+  position: relative;
+}
+
+/* Same geometry in light & dark; only stroke/glow differs by theme */
+.cyber-frame::before,
+.cyber-frame::after {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  pointer-events: none;
+  z-index: 1;
+  border-style: solid;
+  border-width: 0;
+  opacity: 0.82;
+}
+
+.cyber-frame::before {
+  top: 11px;
+  left: 11px;
+  border-top-width: 1px;
+  border-left-width: 1px;
+  border-color: color-mix(in oklch, var(--neon-cyan) 72%, transparent);
+  box-shadow: -1px -1px 10px color-mix(in oklch, var(--neon-cyan) 32%, transparent);
+}
+
+.cyber-frame::after {
+  bottom: 11px;
+  right: 11px;
+  border-bottom-width: 1px;
+  border-right-width: 1px;
+  border-color: color-mix(in oklch, var(--neon-magenta) 65%, transparent);
+  box-shadow: 1px 1px 10px color-mix(in oklch, var(--neon-magenta) 28%, transparent);
+}
+
+:root:not(.dark) .cyber-frame::before {
+  border-color: color-mix(in oklch, var(--primary) 58%, transparent);
+  box-shadow: none;
+}
+
+:root:not(.dark) .cyber-frame::after {
+  border-color: color-mix(in oklch, var(--neon-magenta) 48%, transparent);
+  box-shadow: none;
+}
+
 /* Custom scrollbar */
-::-webkit-scrollbar { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
 ::-webkit-scrollbar-thumb {
-  background: oklch(from var(--muted-foreground) l c h / 0.25);
+  background: oklch(from var(--muted-foreground) l c h / 0.28);
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: oklch(from var(--muted-foreground) l c h / 0.45);
+  background: oklch(from var(--neon-cyan) l c h / 0.35);
 }

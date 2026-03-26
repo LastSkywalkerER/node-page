@@ -11,7 +11,6 @@ import {
   SuccessWidget, SUCCESS_STEP_META,
 } from '../widgets/setup'
 import { DEFAULT_SETUP_CONFIG } from '../shared/config/setup'
-
 type Step = 'welcome' | 'config' | 'admin' | 'review' | 'success'
 
 const STEP_META = {
@@ -76,18 +75,20 @@ export function SetupPage() {
 
   if (statusLoading || configLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <p className="text-muted-foreground text-sm">Loading...</p>
+      <div className="app-shell app-shell--fill relative flex min-h-0 flex-1 items-center justify-center">
+        <div className="app-shell-content">
+          <p className="text-muted-foreground text-sm font-mono">Loading...</p>
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
-      <div className="w-full max-w-2xl">
+    <div className="app-shell app-shell--fill relative flex min-h-0 flex-1 items-center justify-center p-4">
+      <div className="app-shell-content w-full max-w-2xl">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold mb-1">node-stats</h1>
-          <p className="text-muted-foreground text-sm">Initial Setup</p>
+          <h1 className="text-3xl font-bold font-display tracking-wide mb-1 uppercase">node-stats</h1>
+          <p className="text-muted-foreground text-xs tracking-[0.25em] uppercase">Initial setup</p>
         </div>
         <Card>
           <CardHeader>

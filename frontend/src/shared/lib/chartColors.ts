@@ -1,8 +1,8 @@
 export const CHART_COLORS = {
-  cpu: '#3b82f6',
-  memory: '#8b5cf6',
-  disk: '#f59e0b',
-  network: '#14b8a6',
-  sensors: '#ef4444',
-  docker: '#22c55e',
+  cpu: '#22d3ee',
+  memory: '#e879f9',
+  disk: '#fbbf24',
+  network: '#34d399',
+  sensors: '#fb7185',
+  docker: '#a78bfa',
 } as const
