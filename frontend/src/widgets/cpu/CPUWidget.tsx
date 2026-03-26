@@ -77,7 +77,7 @@ export function CPUWidget({ hostId }: CPUWidgetProps) {
           <ChartContainer config={chartConfig} className="h-20 w-full">
             <AreaChart data={metrics.history.map((p) => {
               const d = new Date(p.timestamp)
-              return { time: isNaN(d.getTime()) ? '' : format(d, 'HH:mm'), usage: p.usage }
+              return { time: isNaN(d.getTime()) ? '' : format(d, 'HH:mm:ss'), usage: p.usage }
             })} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
               <defs>
                 <linearGradient id="cpuGrad" x1="0" y1="0" x2="0" y2="1">

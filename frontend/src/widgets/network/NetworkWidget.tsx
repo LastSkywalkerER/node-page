@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from 'react'
 import { AreaChart, Area, XAxis, YAxis } from 'recharts'
 import { Network, ArrowUp, ArrowDown } from 'lucide-react'
 import { format } from 'date-fns'
@@ -28,54 +29,90 @@ const chartConfig: ChartConfig = {
 
 export function NetworkWidget({ hostId }: NetworkWidgetProps) {
   const { data: metrics, isLoading } = useNetwork(hostId)
+  const [ifacePick, setIfacePick] = useState<string | null>(null)
+
+  const ifaces: NetworkInterface[] = metrics?.latest?.interfaces ?? []
+  const primaryDefault = getPrimary(ifaces)
+
+  const selected = useMemo(() => {
+    if (!ifaces.length) return null
+    if (ifacePick && ifaces.some((i) => i.name === ifacePick)) {
+      return ifaces.find((i) => i.name === ifacePick) ?? null
+    }
+    return primaryDefault
+  }, [ifaces, ifacePick, primaryDefault])
+
+  useEffect(() => {
+    if (ifacePick && !ifaces.some((i) => i.name === ifacePick)) {
+      setIfacePick(null)
+    }
+  }, [ifaces, ifacePick])
+
   if (isLoading || !metrics) return <MetricCardSkeleton />
   if (metrics.latest == null) return <MetricWidgetEmpty icon={Network} label="Network" />
 
-  const ifaces: NetworkInterface[] = metrics.latest?.interfaces ?? []
-  const primary = getPrimary(ifaces)
-  const active = ifaces.filter(i => isActiveIface(i) && i.name !== primary?.name)
-  const inactive = ifaces.filter(i => !isActiveIface(i) && i.name !== primary?.name)
+  const active = ifaces.filter(i => isActiveIface(i) && i.name !== selected?.name)
+  const inactive = ifaces.filter(i => !isActiveIface(i) && i.name !== selected?.name)
 
   return (
     <Card>
       <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Network className="h-4 w-4 text-muted-foreground" />
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <Network className="h-4 w-4 shrink-0 text-muted-foreground" />
             <span className="text-sm font-medium text-muted-foreground">Network</span>
           </div>
-          {primary && (
-            <span className="text-xs font-mono text-muted-foreground">{primary.name}</span>
+          {ifaces.length > 0 && (
+            <label className="flex items-center gap-1.5 min-w-0 shrink">
+              <span className="sr-only">Interface</span>
+              <select
+                className="max-w-36 truncate rounded-md border border-input bg-transparent py-1 pr-6 pl-2 text-xs font-mono text-muted-foreground outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 dark:bg-input/30"
+                value={selected?.name ?? ''}
+                onChange={(e) => setIfacePick(e.target.value || null)}
+                aria-label="Network interface"
+              >
+                {ifaces.map((i) => (
+                  <option key={i.name} value={i.name}>
+                    {i.name}
+                    {i.is_primary ? ' (default)' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
           )}
         </div>
-        {primary && (
+        {selected && (
           <div className="mt-2 flex items-center gap-3 text-sm">
             <span className="flex items-center gap-1 font-medium tabular-nums" style={{ color: CHART_COLORS.network }}>
-              <ArrowUp className="h-3 w-3" />{fmtSpeed(primary.speed_kbps_sent)}
+              <ArrowUp className="h-3 w-3" />{fmtSpeed(selected.speed_kbps_sent)}
             </span>
             <span className="flex items-center gap-1 font-medium tabular-nums text-muted-foreground">
-              <ArrowDown className="h-3 w-3" />{fmtSpeed(primary.speed_kbps_recv)}
+              <ArrowDown className="h-3 w-3" />{fmtSpeed(selected.speed_kbps_recv)}
             </span>
           </div>
         )}
       </CardHeader>
       <CardContent className="space-y-3 pt-0">
         <div className="space-y-1 text-xs">
-          {primary && (
+          {selected && (
             <>
-              {primary.ips.length > 0 && (
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">IP</span>
-                  <span className="font-mono font-medium">{primary.ips.find((ip) => ip.includes('.')) ?? primary.ips[0]}</span>
+              {selected.ips.length > 0 && (
+                <div className="flex justify-between gap-2">
+                  <span className="text-muted-foreground shrink-0">IP</span>
+                  <span className="font-mono font-medium text-right truncate">{selected.ips.find((ip) => ip.includes('.')) ?? selected.ips[0]}</span>
                 </div>
               )}
               <div className="flex justify-between">
+                <span className="text-muted-foreground">MAC</span>
+                <span className="font-mono font-medium truncate max-w-[60%] text-right">{selected.mac || '—'}</span>
+              </div>
+              <div className="flex justify-between">
                 <span className="text-muted-foreground">Total sent</span>
-                <span className="font-medium">{fmtBytes(primary.bytes_sent)}</span>
+                <span className="font-medium">{fmtBytes(selected.bytes_sent)}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Total recv</span>
-                <span className="font-medium">{fmtBytes(primary.bytes_recv)}</span>
+                <span className="font-medium">{fmtBytes(selected.bytes_recv)}</span>
               </div>
             </>
           )}
@@ -92,13 +129,13 @@ export function NetworkWidget({ hostId }: NetworkWidgetProps) {
             </div>
           )}
         </div>
-        {metrics.history && metrics.history.length > 0 && primary && (
+        {metrics.history && metrics.history.length > 0 && selected && (
           <ChartContainer config={chartConfig} className="h-20 w-full">
             <AreaChart data={metrics.history.slice(-20).map((p) => {
-              const iface = p.interfaces?.find((i) => i.name === primary.name)
+              const iface = p.interfaces?.find((i) => i.name === selected.name)
               const d = new Date(p.timestamp)
               return {
-                time: isNaN(d.getTime()) ? '' : format(d, 'HH:mm'),
+                time: isNaN(d.getTime()) ? '' : format(d, 'HH:mm:ss'),
                 speed: iface ? iface.speed_kbps_sent / 1024 : 0,
               }
             })} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>

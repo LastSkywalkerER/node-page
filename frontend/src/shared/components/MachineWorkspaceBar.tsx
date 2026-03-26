@@ -1,27 +1,23 @@
 import { useParams } from 'react-router-dom'
 import { useHosts } from '@/widgets/hosts/useHosts'
+import { getHostNavLabel } from '@/shared/lib/hostDisplay'
 import ConnectionStatusWidget from '@/widgets/connection-status/ConnectionStatusWidget'
 import { cn } from '@/lib/utils'
 
 type Section = 'stats' | 'containers'
 
-const SECTION_COPY: Record<Section, { title: string; subtitle: string }> = {
-  stats: {
-    title: 'Live metrics',
-    subtitle: 'CPU, memory, disk, network, sensors — stream + short history',
-  },
-  containers: {
-    title: 'Containers',
-    subtitle: 'Docker workloads for this host',
-  },
+const SECTION_TITLE: Record<Section, string> = {
+  stats: 'Live metrics',
+  containers: 'Containers',
 }
 
 export function MachineWorkspaceBar({ section }: { section: Section }) {
   const { id } = useParams<{ id: string }>()
   const hostId = Number(id)
   const { data: hostsData } = useHosts()
-  const hostName = hostsData?.hosts?.find((h) => h.id === hostId)?.name ?? `Host #${id}`
-  const copy = SECTION_COPY[section]
+  const hostRow = hostsData?.hosts?.find((h) => h.id === hostId)
+  const hostName = hostRow ? getHostNavLabel(hostRow) : `Host #${id}`
+  const title = SECTION_TITLE[section]
 
   return (
     <div
@@ -35,11 +31,8 @@ export function MachineWorkspaceBar({ section }: { section: Section }) {
           {hostName}
         </p>
         <h1 className="font-display text-lg font-semibold tracking-wide sm:text-xl">
-          {copy.title}
+          {title}
         </h1>
-        <p className="text-xs text-muted-foreground leading-relaxed max-w-xl">
-          {copy.subtitle}
-        </p>
       </div>
       <div className="shrink-0 rounded-lg border border-border/60 bg-card/40 px-3 py-2 backdrop-blur-md dark:border-white/10 dark:bg-black/25">
         <ConnectionStatusWidget hostId={hostId} />

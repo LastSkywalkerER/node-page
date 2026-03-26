@@ -39,6 +39,10 @@ type Host struct {
 	// HasNodeCredential is set when listing hosts: this host can push to main (not a DB column).
 	HasNodeCredential bool `json:"has_node_credential" gorm:"-"`
 
+	// DisplayName is set for the local collector row when NODE_STATS_HOSTNAME is set (not a DB column).
+	// UI uses it for the machine card title; when empty, the card omits the title for host id 1.
+	DisplayName string `json:"display_name,omitempty" gorm:"-"`
+
 	// CreatedAt indicates when this host record was created
 	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`
 

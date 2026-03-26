@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react'
 import { useForm, useWatch, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Button } from '@/components/ui/button';
@@ -7,7 +7,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { FormInputField, FormSelectField, FormField } from '@/components/ui/form-field';
 import { Switch } from '@/shared/ui/switch';
 import { PasswordInput } from '@/shared/ui/password-input';
-import { setupConfigSchema, SetupConfigFormData } from './schemas';
+import { setupConfigSchema, SetupConfigFormData, type MachineHintsResponse } from './schemas';
 import { DEFAULT_SETUP_CONFIG } from '../../shared/config/setup';
 
 export const CONFIG_STEP_META = {
@@ -19,6 +19,8 @@ interface ConfigFormWidgetProps {
   initialValues?: Partial<SetupConfigFormData>;
   /** When true (server detected a container), show optional Docker host-metrics preset. */
   runningInDocker?: boolean;
+  /** Server-suggested hostname / IPv4 from GET /setup/status (prefills empty fields once). */
+  machineHints?: MachineHintsResponse | null;
   onSubmit: (data: SetupConfigFormData) => void;
   onBack: () => void;
 }
@@ -81,7 +83,7 @@ function SectionDivider({ label }: SectionDividerProps) {
   );
 }
 
-export function ConfigFormWidget({ initialValues, runningInDocker, onSubmit, onBack }: ConfigFormWidgetProps) {
+export function ConfigFormWidget({ initialValues, runningInDocker, machineHints, onSubmit, onBack }: ConfigFormWidgetProps) {
   const form = useForm<SetupConfigFormData>({
     resolver: zodResolver(setupConfigSchema),
     defaultValues: {
@@ -89,6 +91,20 @@ export function ConfigFormWidget({ initialValues, runningInDocker, onSubmit, onB
       ...initialValues,
     },
   });
+
+  const hintsApplied = useRef(false);
+  useEffect(() => {
+    if (hintsApplied.current || !machineHints) return;
+    const h = form.getValues('node_stats_hostname');
+    const ip = form.getValues('node_stats_ipv4');
+    if (!h.trim() && machineHints.suggested_hostname) {
+      form.setValue('node_stats_hostname', machineHints.suggested_hostname, { shouldValidate: true });
+    }
+    if (!ip.trim() && machineHints.suggested_ipv4) {
+      form.setValue('node_stats_ipv4', machineHints.suggested_ipv4, { shouldValidate: true });
+    }
+    hintsApplied.current = true;
+  }, [machineHints, form]);
 
   const dbType = useWatch({ control: form.control, name: 'db_type' });
   const prometheusEnabled = useWatch({ control: form.control, name: 'prometheus_enabled' });
@@ -192,17 +208,60 @@ export function ConfigFormWidget({ initialValues, runningInDocker, onSubmit, onB
         )}
       />
 
+      <SectionDivider label="Machine identity" />
+      <p className="text-xs text-slate-400 leading-relaxed">
+        Optional labels for the local collector host. Leave hostname empty to use auto-detected name on the machine card and in breadcrumbs; set it to override (e.g. friendly name in Docker).
+        Leave IPv4 empty for automatic detection. Non-empty values are written as{' '}
+        <code className="rounded bg-black/30 px-1 font-mono text-[0.65rem]">NODE_STATS_HOSTNAME</code> and{' '}
+        <code className="rounded bg-black/30 px-1 font-mono text-[0.65rem]">NODE_STATS_IPV4</code> in <code className="font-mono text-[0.65rem]">.env</code>.
+      </p>
+      <FormInputField
+        label="Display hostname (optional)"
+        register={form.register('node_stats_hostname')}
+        name="node_stats_hostname"
+        inputProps={{ placeholder: 'e.g. my-server', autoComplete: 'off' }}
+        error={form.formState.errors.node_stats_hostname}
+      />
+      <FormInputField
+        label="IPv4 override (optional)"
+        register={form.register('node_stats_ipv4')}
+        name="node_stats_ipv4"
+        inputProps={{ placeholder: 'e.g. 192.168.1.10', autoComplete: 'off' }}
+        error={form.formState.errors.node_stats_ipv4}
+      />
+
       {runningInDocker && (
         <>
           <SectionDivider label="Docker" />
           <Alert className="border-amber-800/60 bg-amber-950/40 text-amber-100">
-            <AlertDescription className="text-xs leading-relaxed text-amber-100/95">
-              This setup wizard is running inside a container. Enable the option below to add{' '}
-              <code className="rounded bg-black/30 px-1 py-0.5 font-mono text-[0.7rem]">HOST_*</code> paths,{' '}
-              <code className="rounded bg-black/30 px-1 py-0.5 font-mono text-[0.7rem]">NODE_HOST_ALIAS</code>, and a
-              typical SQLite path under <code className="font-mono text-[0.7rem]">/app/data</code> to the generated{' '}
-              <code className="font-mono text-[0.7rem]">.env</code>. You still need to mount host <code className="font-mono text-[0.7rem]">/</code>{' '}
-              at <code className="font-mono text-[0.7rem]">/host</code> and the Docker socket in your deployment.
+            <AlertDescription className="text-xs leading-relaxed text-amber-100/95 space-y-2">
+              <p>
+                This setup wizard is running inside a container. Enable the option below to add{' '}
+                <code className="rounded bg-black/30 px-1 py-0.5 font-mono text-[0.7rem]">HOST_PROC</code>,{' '}
+                <code className="rounded bg-black/30 px-1 py-0.5 font-mono text-[0.7rem]">HOST_SYS</code>,{' '}
+                <code className="rounded bg-black/30 px-1 py-0.5 font-mono text-[0.7rem]">HOST_ETC</code>,{' '}
+                <code className="rounded bg-black/30 px-1 py-0.5 font-mono text-[0.7rem]">HOST_ROOT=/host</code>,{' '}
+                <code className="rounded bg-black/30 px-1 py-0.5 font-mono text-[0.7rem]">NODE_HOST_ALIAS</code>, and a
+                typical SQLite path under <code className="font-mono text-[0.7rem]">/app/data</code> to the generated{' '}
+                <code className="font-mono text-[0.7rem]">.env</code>.
+              </p>
+              <p className="font-medium text-amber-50/95">Match your <code className="font-mono text-[0.7rem]">docker-compose.yml</code> to that:</p>
+              <ul className="list-disc pl-4 space-y-1 text-amber-100/90">
+                <li>
+                  <span className="font-medium">Volumes:</span> bind-mount host root read-only, e.g.{' '}
+                  <code className="rounded bg-black/30 px-1 py-0.5 font-mono text-[0.65rem]">/:/host:ro</code>; mount{' '}
+                  <code className="font-mono text-[0.65rem]">/var/run/docker.sock</code> for Docker metrics.
+                </li>
+                <li>
+                  <span className="font-medium">Environment:</span> the preset aligns with{' '}
+                  <code className="rounded bg-black/30 px-1 py-0.5 font-mono text-[0.65rem]">HOST_ROOT=/host</code> (disk totals use the host bind-mount, not the container overlay).
+                </li>
+                <li>
+                  <span className="font-medium">Linux:</span> add{' '}
+                  <code className="rounded bg-black/30 px-1 py-0.5 font-mono text-[0.65rem]">extra_hosts: [&quot;host.docker.internal:host-gateway&quot;]</code>{' '}
+                  if the app must reach the host by name.
+                </li>
+              </ul>
             </AlertDescription>
           </Alert>
           <Controller
@@ -212,7 +271,7 @@ export function ConfigFormWidget({ initialValues, runningInDocker, onSubmit, onB
               <ToggleRow
                 id="docker_host_metrics_compat"
                 label="Docker host metrics compatibility"
-                description="Append HOST_PROC, HOST_SYS, HOST_ETC, NODE_HOST_ALIAS; use /app/data/stats.db for SQLite when DSN is still the default file name"
+                description="Append HOST_PROC, HOST_SYS, HOST_ETC, HOST_ROOT, NODE_HOST_ALIAS; use /app/data/stats.db for SQLite when DSN is still the default file name"
                 checked={field.value}
                 onCheckedChange={(enabled) => {
                   field.onChange(enabled);

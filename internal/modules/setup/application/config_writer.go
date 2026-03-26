@@ -43,6 +43,10 @@ type ConfigValues struct {
 	PrometheusToken   string `json:"prometheus_token"`
 	// DockerHostMetricsCompat adds HOST_* and NODE_HOST_ALIAS for bind-mounted host root at /host.
 	DockerHostMetricsCompat bool `json:"docker_host_metrics_compat"`
+	// NodeStatsHostname optional; written as NODE_STATS_HOSTNAME when non-empty.
+	NodeStatsHostname string `json:"node_stats_hostname"`
+	// NodeStatsIPv4 optional; written as NODE_STATS_IPV4 when non-empty.
+	NodeStatsIPv4 string `json:"node_stats_ipv4"`
 }
 
 // ReadCurrentConfig reads current configuration from .env file or environment variables
@@ -61,6 +65,11 @@ func (cw *ConfigWriter) ReadCurrentConfig() (*ConfigValues, error) {
 		PrometheusEnabled: getEnv("PROMETHEUS_ENABLED", "false"),
 		PrometheusAuth:    getEnv("PROMETHEUS_AUTH", "false"),
 		PrometheusToken:   os.Getenv("PROMETHEUS_TOKEN"),
+		NodeStatsHostname: os.Getenv("NODE_STATS_HOSTNAME"),
+		NodeStatsIPv4:     os.Getenv("NODE_STATS_IPV4"),
+	}
+	if strings.TrimSpace(os.Getenv("HOST_PROC")) == "/host/proc" {
+		config.DockerHostMetricsCompat = true
 	}
 
 	return config, nil
@@ -150,7 +159,19 @@ func buildEnvFileContent(config *ConfigValues) string {
 		lines = append(lines, fmt.Sprintf("HOST_PROC=%s", escapeValue("/host/proc")))
 		lines = append(lines, fmt.Sprintf("HOST_SYS=%s", escapeValue("/host/sys")))
 		lines = append(lines, fmt.Sprintf("HOST_ETC=%s", escapeValue("/host/etc")))
+		lines = append(lines, fmt.Sprintf("HOST_ROOT=%s", escapeValue("/host")))
 		lines = append(lines, fmt.Sprintf("NODE_HOST_ALIAS=%s", escapeValue("host.docker.internal")))
+	}
+
+	if strings.TrimSpace(config.NodeStatsHostname) != "" || strings.TrimSpace(config.NodeStatsIPv4) != "" {
+		lines = append(lines, "")
+		lines = append(lines, "# Optional: machine list card (set hostname to show a label; IPv4 overrides auto-detect)")
+		if strings.TrimSpace(config.NodeStatsHostname) != "" {
+			lines = append(lines, fmt.Sprintf("NODE_STATS_HOSTNAME=%s", escapeValue(strings.TrimSpace(config.NodeStatsHostname))))
+		}
+		if strings.TrimSpace(config.NodeStatsIPv4) != "" {
+			lines = append(lines, fmt.Sprintf("NODE_STATS_IPV4=%s", escapeValue(strings.TrimSpace(config.NodeStatsIPv4))))
+		}
 	}
 
 	return strings.Join(lines, "\n") + "\n"

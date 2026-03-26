@@ -13,6 +13,7 @@ import {
 import { useTheme } from '@/shared/hooks/useTheme'
 import { useUserStore } from '@/shared/store/user'
 import { useHosts } from '@/widgets/hosts/useHosts'
+import { getHostNavLabel } from '@/shared/lib/hostDisplay'
 import { authService } from '@/shared/lib/auth'
 import { cn } from '@/lib/utils'
 
@@ -103,7 +104,8 @@ function MachineNav() {
   const { id } = useParams<{ id: string }>()
   const { pathname } = useLocation()
   const { data: hostsData } = useHosts()
-  const hostName = hostsData?.hosts?.find((h) => h.id === Number(id))?.name ?? `#${id}`
+  const hostRow = hostsData?.hosts?.find((h) => h.id === Number(id))
+  const hostName = hostRow ? getHostNavLabel(hostRow) : `#${id}`
   const isContainers = pathname.endsWith('/containers')
   const sectionLabel = isContainers ? 'Containers' : 'Metrics'
 

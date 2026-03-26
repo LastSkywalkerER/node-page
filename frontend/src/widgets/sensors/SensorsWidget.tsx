@@ -29,10 +29,11 @@ export default function SensorsWidget({ hostId }: SensorsWidgetProps) {
     )
   }
 
-  const sensors: TemperatureStat[] = data?.sensors?.sensors ?? []
-  const hottest = sensors.length > 0
-    ? sensors.reduce((max, s) => s.temperature > max.temperature ? s : max)
-    : null
+  const sensorsSorted: TemperatureStat[] = [...(data?.sensors?.sensors ?? [])].sort(
+    (a, b) => b.temperature - a.temperature
+  )
+  const visible = sensorsSorted.slice(0, 8)
+  const hottest = sensorsSorted[0] ?? null
   const hottestColor = hottest ? tempColor(hottest.temperature, hottest.high, hottest.critical) : '#22c55e'
 
   return (
@@ -49,11 +50,11 @@ export default function SensorsWidget({ hostId }: SensorsWidgetProps) {
         </div>
       </CardHeader>
       <CardContent className="pt-0">
-        {sensors.length === 0 ? (
+        {sensorsSorted.length === 0 ? (
           <p className="text-xs text-muted-foreground">No sensor data (Linux only)</p>
         ) : (
           <div className="space-y-1">
-            {sensors.slice(0, 8).map(s => {
+            {visible.map(s => {
               const color = tempColor(s.temperature, s.high, s.critical)
               return (
                 <div key={s.sensor_key} className="flex justify-between text-xs">

@@ -175,6 +175,9 @@ type PushRequest struct {
 	UptimeSeconds      int64   `json:"uptime_seconds"`
 	CPUUsagePercent    float64 `json:"cpu_usage_percent"`
 	MemoryUsagePercent float64 `json:"memory_usage_percent"`
+	// HostName / HostIPv4: effective labels from the agent (CollectHostInfo, includes NODE_STATS_*), kept in sync on main.
+	HostName string `json:"host_name,omitempty"`
+	HostIPv4 string `json:"host_ipv4,omitempty"`
 }
 
 // Push handles metrics push from agent nodes.
@@ -203,7 +206,7 @@ func (h *NodesHandler) Push(c *gin.Context) {
 		return
 	}
 
-	if err := h.nodeService.HandlePush(c.Request.Context(), hostID.(uint)); err != nil {
+	if err := h.nodeService.HandlePush(c.Request.Context(), hostID.(uint), req.HostName, req.HostIPv4); err != nil {
 		_ = c.Error(apperror.Internal("internal_error", err.Error()))
 		return
 	}

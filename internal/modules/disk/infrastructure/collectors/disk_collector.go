@@ -2,6 +2,7 @@ package collectors
 
 import (
 	"context"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/log"
@@ -21,6 +22,16 @@ type DiskMetricsCollector struct {
  // This constructor initializes the collector for gathering disk statistics.
 func NewDiskMetricsCollector(logger *log.Logger) *DiskMetricsCollector {
 	return &DiskMetricsCollector{logger: logger}
+}
+
+func hostDiskRoot() string {
+	if r := strings.TrimSpace(os.Getenv("HOST_ROOT")); r != "" {
+		return r
+	}
+	if st, err := os.Stat("/host"); err == nil && st.IsDir() {
+		return "/host"
+	}
+	return ""
 }
 
  // CollectDiskMetrics gathers current disk performance statistics.
@@ -51,10 +62,18 @@ func (c *DiskMetricsCollector) CollectDiskMetrics(ctx context.Context) (entities
 	var best *disk.UsageStat
 	var bestTotal uint64
 
-	// Prefer root filesystem totals first (reliable in VMs/containers)
-	if ru, rerr := disk.UsageWithContext(ctx, "/"); rerr == nil && ru != nil {
-		if ru.Total > 0 { // accept even if fstype is empty
+	// Prefer host bind-mount (e.g. Docker /:/host:ro) so totals match the real machine, not the container overlay.
+	if hr := hostDiskRoot(); hr != "" {
+		if ru, rerr := disk.UsageWithContext(ctx, hr); rerr == nil && ru != nil && ru.Total > 0 {
 			primary = ru
+			c.logger.Debug("Disk primary from host root bind", "path", hr)
+		}
+	}
+	if primary == nil {
+		if ru, rerr := disk.UsageWithContext(ctx, "/"); rerr == nil && ru != nil {
+			if ru.Total > 0 { // accept even if fstype is empty
+				primary = ru
+			}
 		}
 	}
 	for _, p := range parts {

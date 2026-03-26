@@ -56,6 +56,14 @@ Environment Variables:
     REFRESH_SECRET          Secret key for JWT refresh tokens (same rules as JWT_SECRET).
                             Example: REFRESH_SECRET=your-refresh-secret-key-change-in-production
 
+  Docker / host metrics (optional, when bind-mounting the host at /host):
+    HOST_PROC               Path to host /proc (default /proc). Example: /host/proc
+    HOST_SYS                Path to host /sys (default /sys). Example: /host/sys
+    HOST_ETC                Path to host /etc for hostname file. Example: /host/etc
+    HOST_ROOT               Host root bind-mount for disk totals. Example: /host
+    NODE_STATS_HOSTNAME     Override UI/API hostname (container ID otherwise)
+    NODE_STATS_IPV4         Override host IPv4 on the machine card (Docker bridge IP otherwise)
+
 Example .env file:
 
   # Server Configuration

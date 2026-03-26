@@ -1,6 +1,15 @@
 // Validation schemas for setup wizard
 import { z } from 'zod';
 
+const optionalIPv4 = z.string().refine(
+  (s) => {
+    const t = s.trim()
+    if (t === '') return true
+    return /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$/.test(t)
+  },
+  { message: 'Invalid IPv4 address' }
+)
+
 export const setupConfigSchema = z.object({
   jwt_secret: z.string().min(16, 'JWT secret must be at least 16 characters'),
   refresh_secret: z.string().min(16, 'Refresh secret must be at least 16 characters'),
@@ -13,6 +22,8 @@ export const setupConfigSchema = z.object({
   prometheus_auth: z.enum(['true', 'false']),
   prometheus_token: z.string(),
   docker_host_metrics_compat: z.boolean(),
+  node_stats_hostname: z.string(),
+  node_stats_ipv4: optionalIPv4,
 });
 
 const passwordSchema = z
@@ -39,9 +50,15 @@ export type SetupConfigFormData = z.infer<typeof setupConfigSchema>;
 export type AdminUserFormData = z.infer<typeof adminUserSchema>;
 export type CompleteSetupFormData = z.infer<typeof completeSetupSchema>;
 
+export interface MachineHintsResponse {
+  suggested_hostname: string;
+  suggested_ipv4: string;
+}
+
 export interface SetupStatusResponse {
   setup_needed: boolean;
   running_in_docker?: boolean;
+  machine_hints: MachineHintsResponse;
 }
 
 export interface ConfigResponse {
@@ -56,6 +73,9 @@ export interface ConfigResponse {
     prometheus_enabled: string;
     prometheus_auth: string;
     prometheus_token: string;
+    docker_host_metrics_compat: boolean;
+    node_stats_hostname: string;
+    node_stats_ipv4: string;
   };
 }
 
@@ -77,5 +97,7 @@ export function toSetupConfigApiPayload(config: SetupConfigFormData) {
     prometheus_auth: config.prometheus_auth || 'false',
     prometheus_token: config.prometheus_token || '',
     docker_host_metrics_compat: config.docker_host_metrics_compat,
+    node_stats_hostname: config.node_stats_hostname.trim(),
+    node_stats_ipv4: config.node_stats_ipv4.trim(),
   };
 }

@@ -29,8 +29,9 @@ func NewSetupHandler(configWriter *setupapp.ConfigWriter, userService userservic
 
 // SetupStatusResponse represents the setup status response
 type SetupStatusResponse struct {
-	SetupNeeded       bool `json:"setup_needed"`
-	RunningInDocker   bool `json:"running_in_docker"`
+	SetupNeeded       bool                  `json:"setup_needed"`
+	RunningInDocker   bool                  `json:"running_in_docker"`
+	MachineHints      setupapp.MachineHints `json:"machine_hints"`
 }
 
 // ConfigResponse represents the current configuration response
@@ -83,11 +84,16 @@ func (h *SetupHandler) Status(c *gin.Context) {
 	}
 
 	setupNeeded := count == 0
-	
+	hints := setupapp.MachineHints{}
+	if setupNeeded {
+		hints = setupapp.DetectMachineHints(ctx)
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"data": SetupStatusResponse{
 			SetupNeeded:     setupNeeded,
 			RunningInDocker: dockerenv.Running(),
+			MachineHints:    hints,
 		},
 	})
 }
@@ -299,13 +305,19 @@ func (h *SetupHandler) CompleteSetup(c *gin.Context) {
 		// Try to clean up .env file if user creation fails
 		// (but don't fail if cleanup fails)
 		_ = h.configWriter.WriteConfigFile(&setupapp.ConfigValues{
-			JWTSecret:     "",
-			RefreshSecret: "",
-			Addr:          req.Config.Addr,
-			GinMode:       req.Config.GinMode,
-			Debug:         req.Config.Debug,
-			DBType:        req.Config.DBType,
-			DBDSN:         req.Config.DBDSN,
+			JWTSecret:               "",
+			RefreshSecret:           "",
+			Addr:                    req.Config.Addr,
+			GinMode:                 req.Config.GinMode,
+			Debug:                   req.Config.Debug,
+			DBType:                  req.Config.DBType,
+			DBDSN:                   req.Config.DBDSN,
+			PrometheusEnabled:       req.Config.PrometheusEnabled,
+			PrometheusAuth:          req.Config.PrometheusAuth,
+			PrometheusToken:         req.Config.PrometheusToken,
+			DockerHostMetricsCompat: req.Config.DockerHostMetricsCompat,
+			NodeStatsHostname:       req.Config.NodeStatsHostname,
+			NodeStatsIPv4:           req.Config.NodeStatsIPv4,
 		})
 
 		status := http.StatusInternalServerError

@@ -3,7 +3,10 @@ package collectors
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/charmbracelet/log"
 	"github.com/shirou/gopsutil/v4/host"
@@ -37,6 +40,18 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo,
 	}
 
 	hostname := hostInfo.Hostname
+	if override := strings.TrimSpace(os.Getenv("NODE_STATS_HOSTNAME")); override != "" {
+		hostname = override
+		c.logger.Debug("Hostname from NODE_STATS_HOSTNAME", "hostname", hostname)
+	} else if hostEtc := strings.TrimSpace(os.Getenv("HOST_ETC")); hostEtc != "" {
+		path := filepath.Join(hostEtc, "hostname")
+		if data, err := os.ReadFile(path); err == nil {
+			if h := strings.TrimSpace(strings.ReplaceAll(string(data), "\n", "")); h != "" {
+				hostname = h
+				c.logger.Debug("Hostname from HOST_ETC", "path", path, "hostname", hostname)
+			}
+		}
+	}
 
 	// Determine primary local IP via UDP dial trick
 	// This does not actually send traffic but lets kernel pick the outbound interface
@@ -189,6 +204,13 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (entities.HostInfo,
 	if macAddress == "" {
 		c.logger.Error("No valid MAC address found")
 		return entities.HostInfo{}, net.InvalidAddrError("no valid MAC address found")
+	}
+
+	if v := strings.TrimSpace(os.Getenv("NODE_STATS_IPV4")); v != "" {
+		if ip := net.ParseIP(v); ip != nil && ip.To4() != nil {
+			ipv4 = v
+			c.logger.Debug("IPv4 from NODE_STATS_IPV4", "ipv4", ipv4)
+		}
 	}
 
 	c.logger.Debug("Host information collected successfully", "hostname", hostname, "mac_address", macAddress)

@@ -141,7 +141,13 @@ func Run() {
 
 		// Push to main node if cluster config is set (from env at startup or after connect)
 		if mainURL, token := clusterconfig.Get(); mainURL != "" && token != "" {
-			go pusher.Push(context.Background(), logger, mainURL, token, metrics)
+			pushCtx := context.Background()
+			hostName, hostIPv4 := "", ""
+			if hi, herr := container.GetHostService().GetCurrentHostInfo(pushCtx); herr == nil {
+				hostName = hi.Name
+				hostIPv4 = hi.IPv4
+			}
+			go pusher.Push(pushCtx, logger, mainURL, token, metrics, hostName, hostIPv4)
 		}
 	})
 

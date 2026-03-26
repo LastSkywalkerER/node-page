@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import { useHosts } from '@/widgets/hosts/useHosts'
 import { useConnectionStatus } from '@/widgets/connection-status/useConnectionStatus'
 import type { Host } from '@/widgets/hosts/schemas'
+import { getHostCardTitle } from '@/shared/lib/hostDisplay'
 
 function fmtUptime(u: string | null): string {
   if (!u) return '--'
@@ -20,6 +21,7 @@ function fmtLatency(ms: number | null): string {
 
 function HostCard({ host }: { host: Host }) {
   const { isConnected, latency, uptime, showUptime, isLoading: connLoading } = useConnectionStatus(host.id)
+  const cardTitle = getHostCardTitle(host)
 
   return (
     <Link to={`/machines/${host.id}/stats`} className="group block cursor-pointer">
@@ -50,11 +52,13 @@ function HostCard({ host }: { host: Host }) {
           <div className="relative z-2 flex-1 p-4 pt-7">
             <div className="flex items-start justify-between gap-3 mb-3">
               <div className="min-w-0">
-                <h2 className="font-display font-semibold text-base leading-tight truncate group-hover:text-primary transition-colors duration-200 tracking-wide">
-                  {host.name}
-                </h2>
+                {cardTitle && (
+                  <h2 className="font-display font-semibold text-base leading-tight truncate group-hover:text-primary transition-colors duration-200 tracking-wide">
+                    {cardTitle}
+                  </h2>
+                )}
                 {(host.platform || host.os) && (
-                  <p className="text-xs text-muted-foreground mt-0.5 font-mono">
+                  <p className={cn('text-xs text-muted-foreground font-mono', cardTitle ? 'mt-0.5' : '')}>
                     {host.platform || host.os}{host.platform_version ? ` ${host.platform_version}` : ''}
                   </p>
                 )}

@@ -25,7 +25,8 @@ function imgDebugHandlers(label: 'light' | 'dark', src: string) {
 
 /**
  * Full-viewport ambient layers behind UI. Portals to document.body so `position:fixed`
- * is not affected by ancestor stacking (`isolation` on .app-shell).
+ * is not affected by ancestor stacking. Avoid `isolation: isolate` on a parent of glass
+ * cards — it forms a backdrop root and prevents backdrop-filter from sampling this layer.
  * Rasters: bundled under /assets via Vite (?url). Regenerate: scripts/generate-cyber-atmosphere.py.
  */
 export function CyberBackdrop() {

@@ -138,10 +138,11 @@
   }
 }
 
-/* Page shell: stacks above CyberBackdrop (z-0) */
+/* Page shell: stacks above CyberBackdrop (z-0).
+   Do NOT use isolation: isolate here — it creates a CSS backdrop root so
+   backdrop-filter on cards cannot sample the portaled CyberBackdrop (flat glass). */
 .app-shell {
   position: relative;
-  isolation: isolate;
 }
 
 /* Fills #root flex column without min-h-screen + header margin overflowing the viewport */

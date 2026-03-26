@@ -16,8 +16,15 @@ export function useMetricsStream(hostId?: number | null) {
         if (hostId != null && cid !== undefined && Number(cid) !== Number(hostId)) {
           return;
         }
-        const { collecting_host_id: _ignored, timestamp: _ts, ...rest } = data;
+        const { collecting_host_id: _ignored, timestamp: tsRaw, ...rest } = data;
+        let streamTimestamp: string | undefined;
+        if (typeof tsRaw === 'string' && tsRaw.length > 0) {
+          streamTimestamp = tsRaw;
+        } else if (typeof tsRaw === 'number' && Number.isFinite(tsRaw)) {
+          streamTimestamp = new Date(tsRaw).toISOString();
+        }
         useMetricsStore.getState().setMetrics({
+          streamTimestamp,
           cpu: rest.cpu as Record<string, unknown> | undefined,
           memory: rest.memory as Record<string, unknown> | undefined,
           disk: rest.disk as Record<string, unknown> | undefined,

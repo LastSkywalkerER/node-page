@@ -3,6 +3,7 @@ import { z } from 'zod';
 export const HostSchema = z.object({
   id: z.number(),
   name: z.string(),
+  display_name: z.string().optional().default(''),
   mac_address: z.string(),
   ipv4: z.string().optional().default(''),
   os: z.string().optional().default(''),

@@ -36,21 +36,27 @@ export function SetupPage() {
 
   const getInitialConfigValues = (): Partial<SetupConfigFormData> => {
     if (configResponse?.config) {
+      const c = configResponse.config
       return {
-        jwt_secret: configResponse.config.jwt_secret || DEFAULT_SETUP_CONFIG.jwt_secret,
-        refresh_secret: configResponse.config.refresh_secret || DEFAULT_SETUP_CONFIG.refresh_secret,
-        addr: configResponse.config.addr || DEFAULT_SETUP_CONFIG.addr,
-        gin_mode: (configResponse.config.gin_mode === 'debug' || configResponse.config.gin_mode === 'release')
-          ? configResponse.config.gin_mode : DEFAULT_SETUP_CONFIG.gin_mode,
-        debug: (configResponse.config.debug === 'true' || configResponse.config.debug === 'false')
-          ? configResponse.config.debug : DEFAULT_SETUP_CONFIG.debug,
-        db_type: configResponse.config.db_type || DEFAULT_SETUP_CONFIG.db_type,
-        db_dsn: configResponse.config.db_dsn || DEFAULT_SETUP_CONFIG.db_dsn,
-        prometheus_enabled: (configResponse.config.prometheus_enabled === 'true' || configResponse.config.prometheus_enabled === 'false')
-          ? configResponse.config.prometheus_enabled : DEFAULT_SETUP_CONFIG.prometheus_enabled,
-        prometheus_auth: (configResponse.config.prometheus_auth === 'true' || configResponse.config.prometheus_auth === 'false')
-          ? configResponse.config.prometheus_auth : DEFAULT_SETUP_CONFIG.prometheus_auth,
-        prometheus_token: configResponse.config.prometheus_token || DEFAULT_SETUP_CONFIG.prometheus_token,
+        jwt_secret: c.jwt_secret || DEFAULT_SETUP_CONFIG.jwt_secret,
+        refresh_secret: c.refresh_secret || DEFAULT_SETUP_CONFIG.refresh_secret,
+        addr: c.addr || DEFAULT_SETUP_CONFIG.addr,
+        gin_mode: (c.gin_mode === 'debug' || c.gin_mode === 'release')
+          ? c.gin_mode : DEFAULT_SETUP_CONFIG.gin_mode,
+        debug: (c.debug === 'true' || c.debug === 'false')
+          ? c.debug : DEFAULT_SETUP_CONFIG.debug,
+        db_type: c.db_type || DEFAULT_SETUP_CONFIG.db_type,
+        db_dsn: c.db_dsn || DEFAULT_SETUP_CONFIG.db_dsn,
+        prometheus_enabled: (c.prometheus_enabled === 'true' || c.prometheus_enabled === 'false')
+          ? c.prometheus_enabled : DEFAULT_SETUP_CONFIG.prometheus_enabled,
+        prometheus_auth: (c.prometheus_auth === 'true' || c.prometheus_auth === 'false')
+          ? c.prometheus_auth : DEFAULT_SETUP_CONFIG.prometheus_auth,
+        prometheus_token: c.prometheus_token || DEFAULT_SETUP_CONFIG.prometheus_token,
+        docker_host_metrics_compat: typeof c.docker_host_metrics_compat === 'boolean'
+          ? c.docker_host_metrics_compat
+          : DEFAULT_SETUP_CONFIG.docker_host_metrics_compat,
+        node_stats_hostname: c.node_stats_hostname ?? DEFAULT_SETUP_CONFIG.node_stats_hostname,
+        node_stats_ipv4: c.node_stats_ipv4 ?? DEFAULT_SETUP_CONFIG.node_stats_ipv4,
       }
     }
     return {}
@@ -102,6 +108,7 @@ export function SetupPage() {
               <ConfigFormWidget
                 initialValues={getInitialConfigValues()}
                 runningInDocker={statusData?.running_in_docker === true}
+                machineHints={statusData?.machine_hints ?? { suggested_hostname: '', suggested_ipv4: '' }}
                 onSubmit={(data) => { setConfigData(data); setStep('admin') }}
                 onBack={() => setStep('welcome')}
               />

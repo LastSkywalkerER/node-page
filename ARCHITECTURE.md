@@ -61,8 +61,9 @@ Existing modules: `cpu`, `memory`, `disk`, `network`, `docker`, `sensors`, `host
 **Public:**
 ```
 GET  /health
-GET  /setup/status
+GET  /setup/status          # includes machine_hints (suggested hostname / IPv4) while setup_needed
 GET  /setup/config
+POST /setup/preview-env
 POST /setup/complete
 POST /auth/register
 POST /auth/login
@@ -103,8 +104,12 @@ All metric endpoints accept `?hours=<float>` (default `0.0833` ≈ 5 min) and `?
 | `METRICS_RETENTION_DAYS` | `30` | History retention |
 | `COOKIE_SECURE` | `false` | Secure flag on auth cookies |
 | `ALLOW_ORIGIN` | `*` | CORS origin |
-| `HOST_PROC` | `/proc` | Host `/proc` path (Docker deployments) |
+| `HOST_PROC` | `/proc` | Host `/proc` path (Docker deployments; gopsutil reads from env) |
 | `HOST_SYS` | `/sys` | Host `/sys` path (Docker deployments) |
+| `HOST_ETC` | `/etc` | Host `/etc` (optional; used to read `hostname` for display when bind-mounted) |
+| `HOST_ROOT` | — | Host root bind-mount path (e.g. `/host`); disk primary totals use this before `/` |
+| `NODE_STATS_HOSTNAME` | — | Optional; when set, collector uses it and API adds `display_name` (overrides card/breadcrumb label). When unset, UI uses registered `name` from the host row. |
+| `NODE_STATS_IPV4` | — | Optional override for registered IPv4; omit for auto-detect. |
 
 ---
 
@@ -218,6 +223,7 @@ Each widget in page components is wrapped in `<ErrorBoundary name="...">` to iso
 - **Health** (machine cards): poll every 5s. **`status: online`** only if `last_seen` is fresh: **45s** for hosts with `node_credentials` (cluster agents / push), **5 min** for local collector-only hosts. UI uses `status`, not HTTP success. **`is_cluster_agent`**: true when the host has push credentials on this server; UI **hides uptime** for those cards. **Local / non-agent** cards use JSON **`uptime`** (this API process uptime). Card stripe/icon: green online, **red offline**.
 - **Cluster push token**: On join, main returns a plaintext `node_access_token` once and stores **SHA256** in `node_credentials` (plaintext cannot be read back). **`GET /hosts`** includes **`has_node_credential`** per row. Admin **`GET /nodes/cluster-ui-status`** supplies **push URL**, **Connect** visibility, and when **`is_agent`**: **`main_node_url`** + **`node_access_token`** for the local UI. **`PUT /nodes/agent-cluster-config`** (admin) updates agent connection + `.env`. **`POST /nodes/hosts/:id/regenerate-token`** returns **`node_access_token`** only. Optional **`PUBLIC_BASE_URL`** on main when agents must use a different base than the browser host (e.g. Docker).
 - **Local collector host**: Metrics from **this** process always use **`hosts.id = 1`** (`LocalCollectorHostID`). **`UpsertLocalHost`** updates that row on every register/get-current; hostname/MAC may change (e.g. Docker) without creating new rows. **`UpsertHost`** (cluster **Join** only) never matches or overwrites id `1` (MAC/name lookup excludes reserved id). **`GetAllHosts`** orders local collector first.
+- **Cluster agent host labels**: **Join** sends **`GetCurrentHostInfo`** (includes **`NODE_STATS_HOSTNAME`** / **`NODE_STATS_IPV4`** from the agent `.env`). Each metrics-cycle **push** to **`POST /nodes/push`** also sends **`host_name`** and **`host_ipv4`** from the same collector so main’s `hosts` row stays in sync after `.env` changes (skipped for `id=1`; empty fields are not applied).
 - **Docker agent env**: `docker-compose.yml` bind-mounts **`./.env.agent` → `/app/.env`** so `MAIN_NODE_URL` / `NODE_ACCESS_TOKEN` survive image rebuilds; **Connect** persists into that host file.
 - **Nodes admin**: `GET /nodes/cluster-ui-status` sets **Connect this node** visibility (hidden if this instance is an agent or if any other host has `node_credentials`). Agents see **Connected to main** (URL + token, save to `.env`). `DELETE /nodes/hosts/:id` (admin) removes a remote host, its credential, historical metrics (CPU/memory/disk/network/docker), and join-token `host_id` refs; cannot delete the local host.
 - Use `useXxx(..., { mode: 'poll' })` only if you need legacy interval refetch without a stream.

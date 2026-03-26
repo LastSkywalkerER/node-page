@@ -16,7 +16,11 @@ export function useSetupStatus() {
     queryKey: ['setup', 'status'],
     queryFn: async () => {
       const response = await apiClient.get<{ data: SetupStatusResponse }>('/setup/status');
-      return response.data.data;
+      const d = response.data.data;
+      return {
+        ...d,
+        machine_hints: d.machine_hints ?? { suggested_hostname: '', suggested_ipv4: '' },
+      };
     },
     retry: false,
     refetchOnWindowFocus: false,

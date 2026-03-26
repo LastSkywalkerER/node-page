@@ -20,10 +20,13 @@ type PushPayload struct {
 	UptimeSeconds      int64   `json:"uptime_seconds"`
 	CPUUsagePercent    float64 `json:"cpu_usage_percent"`
 	MemoryUsagePercent float64 `json:"memory_usage_percent"`
+	HostName           string  `json:"host_name,omitempty"`
+	HostIPv4           string  `json:"host_ipv4,omitempty"`
 }
 
 // Push sends metrics to the main node. Non-blocking; runs in goroutine.
-func Push(ctx context.Context, logger *log.Logger, mainURL, token string, metrics map[string]interface{}) {
+// hostName and hostIPv4 should be the agent's effective CollectHostInfo values (wizard NODE_STATS_* included).
+func Push(ctx context.Context, logger *log.Logger, mainURL, token string, metrics map[string]interface{}, hostName, hostIPv4 string) {
 	if mainURL == "" || token == "" {
 		loggedPushDisabled.Do(func() {
 			logger.Warn("Cluster push is disabled — set MAIN_NODE_URL and NODE_ACCESS_TOKEN so the main node receives heartbeats (last_seen). Connect from the agent UI or add these to .env / Docker env.")
@@ -31,7 +34,7 @@ func Push(ctx context.Context, logger *log.Logger, mainURL, token string, metric
 		return
 	}
 
-	payload := buildPayload(metrics)
+	payload := buildPayload(metrics, hostName, hostIPv4)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		logger.Error("Failed to marshal push payload", "error", err)
@@ -60,10 +63,12 @@ func Push(ctx context.Context, logger *log.Logger, mainURL, token string, metric
 	}
 }
 
-func buildPayload(metrics map[string]interface{}) PushPayload {
+func buildPayload(metrics map[string]interface{}, hostName, hostIPv4 string) PushPayload {
 	payload := PushPayload{
 		Status:        "ok",
 		UptimeSeconds: 0,
+		HostName:      hostName,
+		HostIPv4:      hostIPv4,
 	}
 
 	if cpu, ok := metrics["cpu"].(map[string]interface{}); ok {

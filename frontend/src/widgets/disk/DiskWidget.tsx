@@ -103,7 +103,7 @@ export function DiskWidget({ hostId }: DiskWidgetProps) {
           <ChartContainer config={chartConfig} className="h-20 w-full">
             <AreaChart data={metrics.history.map((p) => {
               const d = new Date(p.timestamp)
-              return { time: isNaN(d.getTime()) ? '' : format(d, 'HH:mm'), used: p.used_bytes }
+              return { time: isNaN(d.getTime()) ? '' : format(d, 'HH:mm:ss'), used: p.used_bytes }
             })} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
               <defs>
                 <linearGradient id="diskGrad" x1="0" y1="0" x2="0" y2="1">

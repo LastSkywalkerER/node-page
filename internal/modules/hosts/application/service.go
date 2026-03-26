@@ -2,6 +2,8 @@ package hosts
 
 import (
 	"context"
+	"os"
+	"strings"
 
 	"github.com/charmbracelet/log"
 
@@ -96,6 +98,14 @@ func (s *service) GetAllHosts(ctx context.Context) ([]entities.Host, error) {
 		for i := range hosts {
 			if _, ok := credHosts[hosts[i].ID]; ok {
 				hosts[i].HasNodeCredential = true
+			}
+		}
+	}
+	if dn := strings.TrimSpace(os.Getenv("NODE_STATS_HOSTNAME")); dn != "" {
+		for i := range hosts {
+			if hosts[i].ID == entities.LocalCollectorHostID {
+				hosts[i].DisplayName = dn
+				break
 			}
 		}
 	}

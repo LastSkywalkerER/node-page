@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -28,6 +29,8 @@ type HostRepository interface {
 	UpdateLastSeen(ctx context.Context, hostID uint) error
 	// UpdateLastSeenAndAgentSession updates last_seen and agent_session_started_at (for node push heartbeats).
 	UpdateLastSeenAndAgentSession(ctx context.Context, hostID uint, lastSeen time.Time, agentSessionStarted *time.Time) error
+	// UpdateHostLabelsFromAgentPush updates name and/or ipv4 from cluster agent push (non-empty values only). Skips local collector id.
+	UpdateHostLabelsFromAgentPush(ctx context.Context, hostID uint, name, ipv4 string) error
 	// DeleteHostCascade removes a host row, node credentials, and all stored metrics scoped to that host_id.
 	DeleteHostCascade(ctx context.Context, hostID uint) error
 }
@@ -240,6 +243,26 @@ func (r *hostRepository) UpdateLastSeenAndAgentSession(ctx context.Context, host
 	if agentSessionStarted != nil {
 		updates["agent_session_started_at"] = *agentSessionStarted
 	}
+	return r.db.WithContext(ctx).Model(&localentities.Host{}).
+		Where("id = ?", hostID).
+		Updates(updates).Error
+}
+
+func (r *hostRepository) UpdateHostLabelsFromAgentPush(ctx context.Context, hostID uint, name, ipv4 string) error {
+	if hostID == localentities.LocalCollectorHostID {
+		return nil
+	}
+	updates := map[string]interface{}{}
+	if n := strings.TrimSpace(name); n != "" {
+		updates["name"] = n
+	}
+	if ip := strings.TrimSpace(ipv4); ip != "" {
+		updates["ipv4"] = ip
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	updates["updated_at"] = time.Now().UTC()
 	return r.db.WithContext(ctx).Model(&localentities.Host{}).
 		Where("id = ?", hostID).
 		Updates(updates).Error

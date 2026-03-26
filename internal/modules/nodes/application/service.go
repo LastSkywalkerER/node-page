@@ -25,7 +25,7 @@ type Service interface {
 	CreateNodeInvite(ctx context.Context, adminUserID uint, baseURL string) (link string, err error)
 	Join(ctx context.Context, token string, hostInfo hostentities.HostInfo) (hostID uint, nodeAccessToken string, err error)
 	ValidateNodeToken(ctx context.Context, token string) (hostID uint, err error)
-	HandlePush(ctx context.Context, hostID uint) error
+	HandlePush(ctx context.Context, hostID uint, hostName, hostIPv4 string) error
 	// RegenerateNodeAccessToken replaces the push token; returns plaintext once (old token stops working immediately).
 	RegenerateNodeAccessToken(ctx context.Context, hostID uint) (nodeAccessToken string, err error)
 	GetClusterUIStatus(ctx context.Context, currentHostID uint, publicBaseURL string) (ClusterUIStatus, error)
@@ -120,7 +120,13 @@ func (s *service) Join(ctx context.Context, token string, hostInfo hostentities.
 }
 
 // HandlePush updates last_seen and agent_session_started_at (new session if gap > health.AgentPushGapSessionReset).
-func (s *service) HandlePush(ctx context.Context, hostID uint) error {
+// hostName/hostIPv4 come from the agent's current CollectHostInfo (includes NODE_STATS_*); main stores them on the host row.
+func (s *service) HandlePush(ctx context.Context, hostID uint, hostName, hostIPv4 string) error {
+	if hostName != "" || hostIPv4 != "" {
+		if err := s.hostRepo.UpdateHostLabelsFromAgentPush(ctx, hostID, hostName, hostIPv4); err != nil {
+			s.logger.Warn("Failed to sync host name/IPv4 from agent push", "host_id", hostID, "error", err)
+		}
+	}
 	host, err := s.hostRepo.GetHostByID(ctx, hostID)
 	if err != nil {
 		return err
