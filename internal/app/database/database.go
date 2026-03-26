@@ -4,14 +4,31 @@ package database
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
+	"log"
 
 	"system-stats/internal/app/config"
 )
+
+// quietLogger returns a GORM logger that suppresses ErrRecordNotFound noise.
+// "record not found" is a normal, expected condition in repository code; logging it
+// as a warning on every health-poll or token lookup clutters the output and
+// makes real errors harder to spot.
+func quietLogger() gormlogger.Interface {
+	return gormlogger.New(
+		log.New(os.Stdout, "\r\n", log.LstdFlags),
+		gormlogger.Config{
+			LogLevel:                  gormlogger.Warn,
+			IgnoreRecordNotFoundError: true,
+		},
+	)
+}
 
 // Initialize creates a new database connection based on the provided configuration.
 func Initialize(dbConfig config.DatabaseConfig) (*gorm.DB, error) {
@@ -31,7 +48,7 @@ func initSQLite(dbConfig config.DatabaseConfig) (*gorm.DB, error) {
 		dsn = "stats.db"
 	}
 
-	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: quietLogger()})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to SQLite database: %w", err)
 	}
@@ -61,7 +78,7 @@ func initPostgres(dbConfig config.DatabaseConfig) (*gorm.DB, error) {
 		return nil, fmt.Errorf("DB_DSN is required for postgres (e.g. host=localhost user=stats password=... dbname=node_stats port=5432 sslmode=disable)")
 	}
 
-	db, err := gorm.Open(postgres.Open(dbConfig.DSN), &gorm.Config{})
+	db, err := gorm.Open(postgres.Open(dbConfig.DSN), &gorm.Config{Logger: quietLogger()})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to PostgreSQL database: %w", err)
 	}

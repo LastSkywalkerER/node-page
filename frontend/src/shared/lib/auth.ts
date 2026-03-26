@@ -36,9 +36,10 @@ class AuthService {
     return response.data.data;
   }
 
-  async refresh(): Promise<void> {
+  async refresh(): Promise<number> {
     // Cookie is sent automatically; server sets new cookies in response
-    await apiClient.post('/auth/refresh');
+    const response = await apiClient.post<{ data: { expires_in: number } }>('/auth/refresh');
+    return response.data.data.expires_in;
   }
 
   async logout(): Promise<void> {

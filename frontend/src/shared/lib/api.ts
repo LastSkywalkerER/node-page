@@ -1,4 +1,4 @@
-import axios, { AxiosInstance, InternalAxiosRequestConfig, AxiosError } from 'axios';
+import axios, { AxiosInstance, InternalAxiosRequestConfig, AxiosError, AxiosResponse } from 'axios';
 import { useUserStore } from '../store/user';
 
 const apiClient: AxiosInstance = axios.create({
@@ -29,10 +29,16 @@ apiClient.interceptors.response.use(
 
       if (!refreshPromise) {
         refreshPromise = apiClient
-          .post('/auth/refresh')
-          .then(() => {})
-          .catch(() => {
+          .post<{ data: { expires_in: number } }>('/auth/refresh')
+          .then((res: AxiosResponse<{ data: { expires_in: number } }>) => {
+            const expiresIn = res.data?.data?.expires_in;
+            if (typeof expiresIn === 'number') {
+              useUserStore.getState().scheduleTokenRefresh(expiresIn);
+            }
+          })
+          .catch((err: unknown) => {
             useUserStore.getState().clearAuth();
+            throw err; // re-throw so refreshPromise rejects and callers see the failure
           })
           .finally(() => {
             refreshPromise = null;
