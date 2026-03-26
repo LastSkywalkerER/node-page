@@ -48,6 +48,16 @@ type CompleteSetupResponse struct {
 	Message string `json:"message"`
 }
 
+// PreviewEnvRequest is the body for POST /setup/preview-env.
+type PreviewEnvRequest struct {
+	Config *setupapp.ConfigValues `json:"config" binding:"required"`
+}
+
+// PreviewEnvResponse returns the generated .env file text.
+type PreviewEnvResponse struct {
+	Content string `json:"content"`
+}
+
 // Status checks if setup is needed (no users exist)
 //
 // @Summary     Setup status
@@ -127,6 +137,77 @@ func (h *SetupHandler) GetConfig(c *gin.Context) {
 	})
 }
 
+// PreviewEnv renders the .env file that setup would write (for copy/paste in the wizard).
+func (h *SetupHandler) PreviewEnv(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	count, err := h.userService.Count(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":  "internal_error",
+			"error": "Failed to check setup status",
+		})
+		return
+	}
+
+	if count > 0 {
+		c.JSON(http.StatusForbidden, gin.H{
+			"code":  "setup_already_completed",
+			"error": "Setup has already been completed",
+		})
+		return
+	}
+
+	var req PreviewEnvRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":   "validation_error",
+			"error":  "Invalid request data",
+			"detail": err.Error(),
+		})
+		return
+	}
+
+	if req.Config == nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":  "validation_error",
+			"error": "Config is required",
+		})
+		return
+	}
+
+	if req.Config.JWTSecret == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":  "validation_error",
+			"error": "JWT_SECRET is required",
+		})
+		return
+	}
+
+	if req.Config.RefreshSecret == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":  "validation_error",
+			"error": "REFRESH_SECRET is required",
+		})
+		return
+	}
+
+	content, err := h.configWriter.FormatEnvFile(req.Config)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":   "validation_error",
+			"error":  err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data": PreviewEnvResponse{
+			Content: content,
+		},
+	})
+}
+
 // CompleteSetup completes the setup process
 //
 // @Summary     Complete setup
@@ -197,28 +278,7 @@ func (h *SetupHandler) CompleteSetup(c *gin.Context) {
 		return
 	}
 
-	// Set defaults for optional fields
-	if req.Config.Addr == "" {
-		req.Config.Addr = ":8080"
-	}
-	if req.Config.GinMode == "" {
-		req.Config.GinMode = "release"
-	}
-	if req.Config.Debug == "" {
-		req.Config.Debug = "false"
-	}
-	if req.Config.DBType == "" {
-		req.Config.DBType = "sqlite"
-	}
-	if req.Config.DBDSN == "" {
-		req.Config.DBDSN = "stats.db"
-	}
-	if req.Config.PrometheusEnabled == "" {
-		req.Config.PrometheusEnabled = "false"
-	}
-	if req.Config.PrometheusAuth == "" {
-		req.Config.PrometheusAuth = "false"
-	}
+	setupapp.ApplySetupDefaults(req.Config)
 
 	// Write configuration to .env file
 	if err := h.configWriter.WriteConfigFile(req.Config); err != nil {

@@ -60,3 +60,19 @@ export interface ConfigResponse {
 export interface CompleteSetupResponse {
   message: string;
 }
+
+/** API body.config shape (snake_case) for setup preview and complete. */
+export function toSetupConfigApiPayload(config: SetupConfigFormData) {
+  return {
+    jwt_secret: config.jwt_secret,
+    refresh_secret: config.refresh_secret,
+    addr: config.addr || ':8080',
+    gin_mode: config.gin_mode || 'release',
+    debug: config.debug || 'false',
+    db_type: config.db_type || 'sqlite',
+    db_dsn: config.db_dsn || 'stats.db',
+    prometheus_enabled: config.prometheus_enabled || 'false',
+    prometheus_auth: config.prometheus_auth || 'false',
+    prometheus_token: config.prometheus_token || '',
+  };
+}

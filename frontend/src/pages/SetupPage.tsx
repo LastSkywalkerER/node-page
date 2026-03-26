@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { useSetupStatus, useSetupConfig, useCompleteSetup } from '../widgets/setup/useSetup'
+import { useSetupStatus, useSetupConfig, useCompleteSetup, useSetupEnvPreview } from '../widgets/setup/useSetup'
 import { SetupConfigFormData, AdminUserFormData } from '../widgets/setup/schemas'
 import {
   WelcomeWidget, WELCOME_STEP_META,
@@ -32,6 +32,7 @@ export function SetupPage() {
     enabled: statusData?.setup_needed === true,
   })
   const completeSetup = useCompleteSetup()
+  const envPreview = useSetupEnvPreview(configData, step === 'review' && configData !== null)
 
   const getInitialConfigValues = (): Partial<SetupConfigFormData> => {
     if (configResponse?.config) {
@@ -112,8 +113,10 @@ export function SetupPage() {
             )}
             {step === 'review' && configData && adminData && (
               <ReviewWidget
-                configData={configData}
                 adminData={adminData}
+                envContent={envPreview.data}
+                envLoading={envPreview.isLoading}
+                envError={envPreview.error}
                 onBack={() => setStep('admin')}
                 onComplete={handleCompleteSetup}
                 isCompleting={completeSetup.isPending}

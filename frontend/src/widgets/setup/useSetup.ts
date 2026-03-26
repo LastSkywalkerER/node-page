@@ -1,10 +1,11 @@
 import { useQuery, useMutation, UseQueryOptions } from '@tanstack/react-query';
 import { apiClient } from '../../shared/lib/api';
-import { 
-  SetupStatusResponse, 
-  ConfigResponse, 
+import {
+  SetupStatusResponse,
+  ConfigResponse,
   CompleteSetupResponse,
-  CompleteSetupFormData 
+  CompleteSetupFormData,
+  toSetupConfigApiPayload,
 } from './schemas';
 
 /**
@@ -45,22 +46,29 @@ export function useCompleteSetup() {
   return useMutation<CompleteSetupResponse, Error, CompleteSetupFormData>({
     mutationFn: async (data: CompleteSetupFormData) => {
       const response = await apiClient.post<{ data: CompleteSetupResponse }>('/setup/complete', {
-        config: {
-          jwt_secret: data.config.jwt_secret,
-          refresh_secret: data.config.refresh_secret,
-          addr: data.config.addr || ':8080',
-          gin_mode: data.config.gin_mode || 'release',
-          debug: data.config.debug || 'false',
-          db_type: data.config.db_type || 'sqlite',
-          db_dsn: data.config.db_dsn || 'stats.db',
-          prometheus_enabled: data.config.prometheus_enabled || 'false',
-          prometheus_auth: data.config.prometheus_auth || 'false',
-          prometheus_token: data.config.prometheus_token || '',
-        },
+        config: toSetupConfigApiPayload(data.config),
         admin_email: data.admin_email,
         admin_password: data.admin_password,
       });
       return response.data.data;
+    },
+  });
+}
+
+/**
+ * Fetches the exact .env file body the server will write (for the review step).
+ */
+export function useSetupEnvPreview(config: CompleteSetupFormData['config'] | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ['setup', 'preview-env', config],
+    enabled: enabled && config !== null,
+    staleTime: Infinity,
+    gcTime: 5 * 60 * 1000,
+    queryFn: async () => {
+      const response = await apiClient.post<{ data: { content: string } }>('/setup/preview-env', {
+        config: toSetupConfigApiPayload(config!),
+      });
+      return response.data.data.content;
     },
   });
 }

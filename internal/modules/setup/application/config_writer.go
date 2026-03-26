@@ -64,30 +64,58 @@ func (cw *ConfigWriter) ReadCurrentConfig() (*ConfigValues, error) {
 	return config, nil
 }
 
-// WriteConfigFile writes configuration values to .env file
-func (cw *ConfigWriter) WriteConfigFile(config *ConfigValues) error {
-	// Validate required fields
-	if config.JWTSecret == "" {
-		return fmt.Errorf("JWT_SECRET is required")
+// ApplySetupDefaults fills empty optional fields the same way as setup completion.
+func ApplySetupDefaults(cv *ConfigValues) {
+	if cv.Addr == "" {
+		cv.Addr = ":8080"
 	}
-	if config.RefreshSecret == "" {
-		return fmt.Errorf("REFRESH_SECRET is required")
+	if cv.GinMode == "" {
+		cv.GinMode = "release"
 	}
+	if cv.Debug == "" {
+		cv.Debug = "false"
+	}
+	if cv.DBType == "" {
+		cv.DBType = "sqlite"
+	}
+	if cv.DBDSN == "" {
+		cv.DBDSN = "stats.db"
+	}
+	if cv.PrometheusEnabled == "" {
+		cv.PrometheusEnabled = "false"
+	}
+	if cv.PrometheusAuth == "" {
+		cv.PrometheusAuth = "false"
+	}
+}
 
-	// Build .env file content
+// FormatEnvFile returns the exact .env body that WriteConfigFile would persist (after defaults).
+func (cw *ConfigWriter) FormatEnvFile(config *ConfigValues) (string, error) {
+	cv := *config
+	ApplySetupDefaults(&cv)
+	if cv.JWTSecret == "" {
+		return "", fmt.Errorf("JWT_SECRET is required")
+	}
+	if cv.RefreshSecret == "" {
+		return "", fmt.Errorf("REFRESH_SECRET is required")
+	}
+	return buildEnvFileContent(&cv), nil
+}
+
+func buildEnvFileContent(config *ConfigValues) string {
 	var lines []string
-	
+
 	lines = append(lines, "# Server Configuration")
 	lines = append(lines, fmt.Sprintf("ADDR=%s", escapeValue(config.Addr)))
 	lines = append(lines, fmt.Sprintf("GIN_MODE=%s", escapeValue(config.GinMode)))
 	lines = append(lines, fmt.Sprintf("DEBUG=%s", escapeValue(config.Debug)))
 	lines = append(lines, "")
-	
+
 	lines = append(lines, "# Database Configuration")
 	lines = append(lines, fmt.Sprintf("DB_TYPE=%s", escapeValue(config.DBType)))
 	lines = append(lines, fmt.Sprintf("DB_DSN=%s", escapeValue(config.DBDSN)))
 	lines = append(lines, "")
-	
+
 	lines = append(lines, "# Authentication Configuration")
 	lines = append(lines, fmt.Sprintf("JWT_SECRET=%s", escapeValue(config.JWTSecret)))
 	lines = append(lines, fmt.Sprintf("REFRESH_SECRET=%s", escapeValue(config.RefreshSecret)))
@@ -100,14 +128,18 @@ func (cw *ConfigWriter) WriteConfigFile(config *ConfigValues) error {
 		lines = append(lines, fmt.Sprintf("PROMETHEUS_TOKEN=%s", escapeValue(config.PrometheusToken)))
 	}
 
-	content := strings.Join(lines, "\n") + "\n"
+	return strings.Join(lines, "\n") + "\n"
+}
 
-	// Write to file
-	err := os.WriteFile(cw.envPath, []byte(content), 0600)
+// WriteConfigFile writes configuration values to .env file
+func (cw *ConfigWriter) WriteConfigFile(config *ConfigValues) error {
+	content, err := cw.FormatEnvFile(config)
 	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(cw.envPath, []byte(content), 0600); err != nil {
 		return fmt.Errorf("failed to write .env file: %w", err)
 	}
-
 	return nil
 }
 

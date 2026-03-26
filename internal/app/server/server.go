@@ -292,6 +292,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		{
 			setup.GET("/status", setupHandler.Status)
 			setup.GET("/config", setupHandler.GetConfig)
+			setup.POST("/preview-env", setupHandler.PreviewEnv)
 			setup.POST("/complete", setupHandler.CompleteSetup)
 		}
 
