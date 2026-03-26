@@ -11,7 +11,7 @@ services:
     # network_mode: host
     volumes:
       # Agent cluster config: persists on the host across rebuilds (loaded as /app/.env in the container)
-      - ./.env.agent:/app/.env
+      - ./.env:/app/.env
       # Mount database directory (file mount creates dir if missing → "is a directory" error)
       - ./data/docker:/app/data
       # Mount Docker socket for Docker metrics
