@@ -28,8 +28,8 @@ func NewMemoryMetricsCollector(logger *log.Logger) *MemoryMetricsCollector {
 func (c *MemoryMetricsCollector) CollectMemoryMetrics(ctx context.Context) (entities.MemoryMetric, error) {
 	c.logger.Debug("Collecting memory statistics")
 
-	// Docker + /host: /host/proc/meminfo is often still cgroup-scoped for the reader; meminfo via
-	// host PID 1's mount namespace matches real host RAM (see host_init_meminfo_linux.go).
+	// Docker + /host: prefer PID-1 meminfo when MemTotal matches sysfs RAM; if MemTotal looks like a
+	// cgroup cap (LXC/Docker), use sysfs block total + host cgroup v2 memory.current (see host_init_meminfo_linux.go).
 	if m, ok := tryVirtualMemoryFromHostInit(c.logger); ok {
 		return m, nil
 	}
