@@ -1,0 +1,32 @@
+# Linux x86_64 (amd64): host networking, native metrics, explicit image platform.
+# Use on AMD64 servers (not macOS Docker Desktop). Example:
+#   docker compose -f docker-compose.linux-amd64.yml --env-file .env up -d --build
+services:
+  node-stats:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+    network_mode: host
+    volumes:
+      - ./.env.agent:/app/.env
+      - ./data/docker:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/host:ro
+    pid: host
+    ipc: host
+    restart: unless-stopped
+    environment:
+      - ADDR=:9090
+      - GIN_MODE=${GIN_MODE:-release}
+      - DEBUG=${DEBUG:-false}
+      - DB_TYPE=${DB_TYPE:-sqlite}
+      - DB_DSN=/app/data/stats.db
+      - JWT_SECRET=${JWT_SECRET}
+      - REFRESH_SECRET=${REFRESH_SECRET}
+      - HOST_PROC=/host/proc
+      - HOST_SYS=/host/sys
+      - HOST_ETC=/host/etc
+      - HOST_ROOT=/host
+      # With network_mode: host, container localhost is the host; no host.docker.internal alias needed.
+      # MAIN_NODE_URL / NODE_ACCESS_TOKEN: ./.env.agent → /app/.env
