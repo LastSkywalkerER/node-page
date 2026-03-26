@@ -1,5 +1,6 @@
-# Linux x86_64 (amd64): host networking, native metrics, explicit image platform.
-# Use on AMD64 servers (not macOS Docker Desktop). Example:
+# Linux amd64 for Dokploy / Traefik: do NOT use network_mode: host here — Dokploy injects
+# `networks:` and Traefik labels; host + networks is invalid in Compose.
+# Metrics still use /host, pid: host, ipc: host. Traefik → container:9090 (or file provider to host IP).
 #   docker compose -f docker-compose.linux-amd64.yml --env-file .env up -d --build
 services:
   node-stats:
@@ -7,7 +8,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    network_mode: host
+    # network_mode: host
     volumes:
       - ./.env:/app/.env
       - ./data/docker:/app/data
@@ -15,6 +16,8 @@ services:
       - /:/host:ro
     pid: host
     ipc: host
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     environment:
       - ADDR=:9090
@@ -28,5 +31,4 @@ services:
       - HOST_SYS=/host/sys
       - HOST_ETC=/host/etc
       - HOST_ROOT=/host
-      # With network_mode: host, container localhost is the host; no host.docker.internal alias needed.
-      # MAIN_NODE_URL / NODE_ACCESS_TOKEN: ./.env → /app/.env
+      - NODE_HOST_ALIAS=host.docker.internal
