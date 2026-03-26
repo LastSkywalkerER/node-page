@@ -122,7 +122,11 @@ func (h *AuthHandler) Register(c *gin.Context) {
 
 	tokenPair, err := h.tokenService.GenerateTokens(c.Request.Context(), user)
 	if err != nil {
-		_ = c.Error(apperror.Internal("token_generation_error", "Failed to generate tokens"))
+		if errors.Is(err, userservice.ErrAuthSecretsNotConfigured) {
+			_ = c.Error(apperror.Wrap(err, "auth_not_configured", "Complete initial setup or set JWT_SECRET and REFRESH_SECRET, then restart the server.", http.StatusServiceUnavailable))
+		} else {
+			_ = c.Error(apperror.Internal("token_generation_error", "Failed to generate tokens"))
+		}
 		return
 	}
 
@@ -166,7 +170,11 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 	tokenPair, err := h.tokenService.GenerateTokens(c.Request.Context(), user)
 	if err != nil {
-		_ = c.Error(apperror.Internal("token_generation_error", "Failed to generate tokens"))
+		if errors.Is(err, userservice.ErrAuthSecretsNotConfigured) {
+			_ = c.Error(apperror.Wrap(err, "auth_not_configured", "Complete initial setup or set JWT_SECRET and REFRESH_SECRET, then restart the server.", http.StatusServiceUnavailable))
+		} else {
+			_ = c.Error(apperror.Internal("token_generation_error", "Failed to generate tokens"))
+		}
 		return
 	}
 
@@ -206,13 +214,21 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 	dbToken, err := h.tokenService.ValidateRefreshToken(c.Request.Context(), refreshToken)
 	if err != nil {
 		h.clearAuthCookies(c)
-		_ = c.Error(apperror.Unauthorized("invalid_or_revoked_refresh", "Invalid or revoked refresh token"))
+		if errors.Is(err, userservice.ErrAuthSecretsNotConfigured) {
+			_ = c.Error(apperror.Wrap(err, "auth_not_configured", "Complete initial setup or set JWT_SECRET and REFRESH_SECRET, then restart the server.", http.StatusServiceUnavailable))
+		} else {
+			_ = c.Error(apperror.Unauthorized("invalid_or_revoked_refresh", "Invalid or revoked refresh token"))
+		}
 		return
 	}
 
 	tokenPair, err := h.tokenService.GenerateTokens(c.Request.Context(), &dbToken.User)
 	if err != nil {
-		_ = c.Error(apperror.Internal("token_generation_error", "Failed to generate tokens"))
+		if errors.Is(err, userservice.ErrAuthSecretsNotConfigured) {
+			_ = c.Error(apperror.Wrap(err, "auth_not_configured", "Complete initial setup or set JWT_SECRET and REFRESH_SECRET, then restart the server.", http.StatusServiceUnavailable))
+		} else {
+			_ = c.Error(apperror.Internal("token_generation_error", "Failed to generate tokens"))
+		}
 		return
 	}
 

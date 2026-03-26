@@ -171,6 +171,11 @@ func Run() {
 		logger.Fatal("Failed to check setup status", "error", err)
 	}
 	setupMode := userCount == 0
+	if !setupMode {
+		if err := cfg.RequireAuthSecrets(); err != nil {
+			logger.Fatal("Invalid configuration for existing installation", "error", err)
+		}
+	}
 
 	// onSetupComplete is passed to the setup handler and called once setup finishes.
 	var onSetupComplete func()

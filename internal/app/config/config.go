@@ -115,11 +115,6 @@ func Load() (*Config, error) {
 	config.NodeAccessToken = getEnv("NODE_ACCESS_TOKEN", "")
 	config.PublicBaseURL = strings.TrimSuffix(strings.TrimSpace(getEnv("PUBLIC_BASE_URL", "")), "/")
 
-	// Validate required configuration
-	if err := config.validate(); err != nil {
-		return nil, err
-	}
-
 	return config, nil
 }
 
@@ -144,8 +139,9 @@ func loadDatabaseConfig() (*DatabaseConfig, error) {
 	return config, nil
 }
 
-// validate validates that all required configuration values are present.
-func (c *Config) validate() error {
+// RequireAuthSecrets returns an error if JWT signing secrets are missing.
+// Call this after DB checks when at least one user exists (post-setup runtime).
+func (c *Config) RequireAuthSecrets() error {
 	if c.JWTSecret == "" {
 		return fmt.Errorf("JWT_SECRET environment variable is required")
 	}

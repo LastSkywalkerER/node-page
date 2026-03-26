@@ -3,7 +3,8 @@ package application
 import "errors"
 
 var (
-	ErrRegistrationDisabled    = errors.New("registration is disabled")
+	ErrAuthSecretsNotConfigured = errors.New("authentication secrets are not configured")
+	ErrRegistrationDisabled     = errors.New("registration is disabled")
 	ErrEmailExists             = errors.New("email already exists")
 	ErrInvalidCredentials      = errors.New("invalid credentials")
 	ErrInvalidInvitation       = errors.New("invalid invitation")

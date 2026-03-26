@@ -49,10 +49,11 @@ Environment Variables:
                             Example: DB_DSN=./data/stats.db
 
   Authentication Configuration:
-    JWT_SECRET              Secret key for JWT access tokens (required)
+    JWT_SECRET              Secret key for JWT access tokens. Optional on first boot (setup wizard writes .env);
+                            required once at least one user exists — set in env or complete setup, then restart.
                             Example: JWT_SECRET=your-jwt-secret-key-change-in-production
 
-    REFRESH_SECRET          Secret key for JWT refresh tokens (required)
+    REFRESH_SECRET          Secret key for JWT refresh tokens (same rules as JWT_SECRET).
                             Example: REFRESH_SECRET=your-refresh-secret-key-change-in-production
 
 Example .env file:

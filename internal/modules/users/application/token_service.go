@@ -69,6 +69,9 @@ func NewTokenService(
 
 // GenerateTokens generates a new pair of access and refresh tokens
 func (s *tokenService) GenerateTokens(ctx context.Context, user *localentities.User) (*TokenPair, error) {
+	if len(s.accessSecret) == 0 || len(s.refreshSecret) == 0 {
+		return nil, fmt.Errorf("%w", ErrAuthSecretsNotConfigured)
+	}
 	now := time.Now()
 	accessExp := now.Add(s.accessTTL)
 	refreshExp := now.Add(s.refreshTTL)
@@ -145,6 +148,9 @@ func (s *tokenService) GenerateTokens(ctx context.Context, user *localentities.U
 
 // ValidateAccessToken validates an access token and returns claims
 func (s *tokenService) ValidateAccessToken(tokenString string) (*Claims, error) {
+	if len(s.accessSecret) == 0 {
+		return nil, fmt.Errorf("%w", ErrAuthSecretsNotConfigured)
+	}
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -165,6 +171,9 @@ func (s *tokenService) ValidateAccessToken(tokenString string) (*Claims, error) 
 
 // ValidateRefreshToken validates a refresh token against the database
 func (s *tokenService) ValidateRefreshToken(ctx context.Context, tokenString string) (*localentities.RefreshToken, error) {
+	if len(s.refreshSecret) == 0 {
+		return nil, fmt.Errorf("%w", ErrAuthSecretsNotConfigured)
+	}
 	// Parse token to get JTI
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		return s.refreshSecret, nil
