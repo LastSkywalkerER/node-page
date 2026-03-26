@@ -12,6 +12,7 @@ export const setupConfigSchema = z.object({
   prometheus_enabled: z.enum(['true', 'false']),
   prometheus_auth: z.enum(['true', 'false']),
   prometheus_token: z.string(),
+  docker_host_metrics_compat: z.boolean(),
 });
 
 const passwordSchema = z
@@ -40,6 +41,7 @@ export type CompleteSetupFormData = z.infer<typeof completeSetupSchema>;
 
 export interface SetupStatusResponse {
   setup_needed: boolean;
+  running_in_docker?: boolean;
 }
 
 export interface ConfigResponse {
@@ -74,5 +76,6 @@ export function toSetupConfigApiPayload(config: SetupConfigFormData) {
     prometheus_enabled: config.prometheus_enabled || 'false',
     prometheus_auth: config.prometheus_auth || 'false',
     prometheus_token: config.prometheus_token || '',
+    docker_host_metrics_compat: config.docker_host_metrics_compat,
   };
 }

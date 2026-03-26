@@ -3,6 +3,7 @@ import { useForm, useWatch, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { FormInputField, FormSelectField, FormField } from '@/components/ui/form-field';
 import { Switch } from '@/shared/ui/switch';
 import { PasswordInput } from '@/shared/ui/password-input';
@@ -16,6 +17,8 @@ export const CONFIG_STEP_META = {
 
 interface ConfigFormWidgetProps {
   initialValues?: Partial<SetupConfigFormData>;
+  /** When true (server detected a container), show optional Docker host-metrics preset. */
+  runningInDocker?: boolean;
   onSubmit: (data: SetupConfigFormData) => void;
   onBack: () => void;
 }
@@ -78,7 +81,7 @@ function SectionDivider({ label }: SectionDividerProps) {
   );
 }
 
-export function ConfigFormWidget({ initialValues, onSubmit, onBack }: ConfigFormWidgetProps) {
+export function ConfigFormWidget({ initialValues, runningInDocker, onSubmit, onBack }: ConfigFormWidgetProps) {
   const form = useForm<SetupConfigFormData>({
     resolver: zodResolver(setupConfigSchema),
     defaultValues: {
@@ -188,6 +191,46 @@ export function ConfigFormWidget({ initialValues, onSubmit, onBack }: ConfigForm
           />
         )}
       />
+
+      {runningInDocker && (
+        <>
+          <SectionDivider label="Docker" />
+          <Alert className="border-amber-800/60 bg-amber-950/40 text-amber-100">
+            <AlertDescription className="text-xs leading-relaxed text-amber-100/95">
+              This setup wizard is running inside a container. Enable the option below to add{' '}
+              <code className="rounded bg-black/30 px-1 py-0.5 font-mono text-[0.7rem]">HOST_*</code> paths,{' '}
+              <code className="rounded bg-black/30 px-1 py-0.5 font-mono text-[0.7rem]">NODE_HOST_ALIAS</code>, and a
+              typical SQLite path under <code className="font-mono text-[0.7rem]">/app/data</code> to the generated{' '}
+              <code className="font-mono text-[0.7rem]">.env</code>. You still need to mount host <code className="font-mono text-[0.7rem]">/</code>{' '}
+              at <code className="font-mono text-[0.7rem]">/host</code> and the Docker socket in your deployment.
+            </AlertDescription>
+          </Alert>
+          <Controller
+            control={form.control}
+            name="docker_host_metrics_compat"
+            render={({ field }) => (
+              <ToggleRow
+                id="docker_host_metrics_compat"
+                label="Docker host metrics compatibility"
+                description="Append HOST_PROC, HOST_SYS, HOST_ETC, NODE_HOST_ALIAS; use /app/data/stats.db for SQLite when DSN is still the default file name"
+                checked={field.value}
+                onCheckedChange={(enabled) => {
+                  field.onChange(enabled);
+                  const dsn = form.getValues('db_dsn');
+                  const dtype = form.getValues('db_type');
+                  if (enabled) {
+                    if (dtype === 'sqlite' && (dsn === '' || dsn === 'stats.db')) {
+                      form.setValue('db_dsn', '/app/data/stats.db', { shouldValidate: true });
+                    }
+                  } else if (dsn === '/app/data/stats.db') {
+                    form.setValue('db_dsn', 'stats.db', { shouldValidate: true });
+                  }
+                }}
+              />
+            )}
+          />
+        </>
+      )}
 
       {/* === Database === */}
       <SectionDivider label="Database" />

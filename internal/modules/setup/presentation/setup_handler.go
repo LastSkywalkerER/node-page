@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"system-stats/internal/app/dockerenv"
 	setupapp "system-stats/internal/modules/setup/application"
 	userservice "system-stats/internal/modules/users/application"
 )
@@ -28,7 +29,8 @@ func NewSetupHandler(configWriter *setupapp.ConfigWriter, userService userservic
 
 // SetupStatusResponse represents the setup status response
 type SetupStatusResponse struct {
-	SetupNeeded bool `json:"setup_needed"`
+	SetupNeeded       bool `json:"setup_needed"`
+	RunningInDocker   bool `json:"running_in_docker"`
 }
 
 // ConfigResponse represents the current configuration response
@@ -84,7 +86,8 @@ func (h *SetupHandler) Status(c *gin.Context) {
 	
 	c.JSON(http.StatusOK, gin.H{
 		"data": SetupStatusResponse{
-			SetupNeeded: setupNeeded,
+			SetupNeeded:     setupNeeded,
+			RunningInDocker: dockerenv.Running(),
 		},
 	})
 }

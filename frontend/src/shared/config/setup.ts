@@ -12,6 +12,7 @@ export const DEFAULT_SETUP_CONFIG = {
   prometheus_enabled: 'false',
   prometheus_auth: 'false',
   prometheus_token: '',
+  docker_host_metrics_compat: false,
 } as const;
 
 export type DefaultSetupConfig = typeof DEFAULT_SETUP_CONFIG;

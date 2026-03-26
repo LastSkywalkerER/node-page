@@ -101,6 +101,7 @@ export function SetupPage() {
             {step === 'config' && (
               <ConfigFormWidget
                 initialValues={getInitialConfigValues()}
+                runningInDocker={statusData?.running_in_docker === true}
                 onSubmit={(data) => { setConfigData(data); setStep('admin') }}
                 onBack={() => setStep('welcome')}
               />

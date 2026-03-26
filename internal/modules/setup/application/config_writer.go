@@ -41,6 +41,8 @@ type ConfigValues struct {
 	PrometheusEnabled string `json:"prometheus_enabled"`
 	PrometheusAuth    string `json:"prometheus_auth"`
 	PrometheusToken   string `json:"prometheus_token"`
+	// DockerHostMetricsCompat adds HOST_* and NODE_HOST_ALIAS for bind-mounted host root at /host.
+	DockerHostMetricsCompat bool `json:"docker_host_metrics_compat"`
 }
 
 // ReadCurrentConfig reads current configuration from .env file or environment variables
@@ -93,6 +95,7 @@ func ApplySetupDefaults(cv *ConfigValues) {
 func (cw *ConfigWriter) FormatEnvFile(config *ConfigValues) (string, error) {
 	cv := *config
 	ApplySetupDefaults(&cv)
+	applyDockerHostMetricsCompat(&cv)
 	if cv.JWTSecret == "" {
 		return "", fmt.Errorf("JWT_SECRET is required")
 	}
@@ -100,6 +103,19 @@ func (cw *ConfigWriter) FormatEnvFile(config *ConfigValues) (string, error) {
 		return "", fmt.Errorf("REFRESH_SECRET is required")
 	}
 	return buildEnvFileContent(&cv), nil
+}
+
+// applyDockerHostMetricsCompat adjusts DSN for typical Docker volume layout when enabled.
+func applyDockerHostMetricsCompat(cv *ConfigValues) {
+	if !cv.DockerHostMetricsCompat {
+		return
+	}
+	if cv.DBType != "sqlite" {
+		return
+	}
+	if cv.DBDSN == "" || cv.DBDSN == "stats.db" {
+		cv.DBDSN = "/app/data/stats.db"
+	}
 }
 
 func buildEnvFileContent(config *ConfigValues) string {
@@ -126,6 +142,15 @@ func buildEnvFileContent(config *ConfigValues) string {
 	lines = append(lines, fmt.Sprintf("PROMETHEUS_AUTH=%s", escapeValue(config.PrometheusAuth)))
 	if config.PrometheusToken != "" {
 		lines = append(lines, fmt.Sprintf("PROMETHEUS_TOKEN=%s", escapeValue(config.PrometheusToken)))
+	}
+
+	if config.DockerHostMetricsCompat {
+		lines = append(lines, "")
+		lines = append(lines, "# Docker: mount host root read-only at /host and Docker socket for metrics (see deployment docs)")
+		lines = append(lines, fmt.Sprintf("HOST_PROC=%s", escapeValue("/host/proc")))
+		lines = append(lines, fmt.Sprintf("HOST_SYS=%s", escapeValue("/host/sys")))
+		lines = append(lines, fmt.Sprintf("HOST_ETC=%s", escapeValue("/host/etc")))
+		lines = append(lines, fmt.Sprintf("NODE_HOST_ALIAS=%s", escapeValue("host.docker.internal")))
 	}
 
 	return strings.Join(lines, "\n") + "\n"
