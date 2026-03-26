@@ -377,6 +377,8 @@ html.dark .cyber-bg-photo-dark {
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
   border: 1px solid color-mix(in oklch, var(--foreground) 10%, transparent);
+  /* Light: must stay translucent so backdrop-filter is visible (bg-card utility on Card breaks this). */
+  background: color-mix(in oklch, var(--card) 92%, transparent);
   box-shadow:
     0 0 0 1px color-mix(in oklch, var(--foreground) 6%, transparent),
     0 20px 50px -18px oklch(0 0 0 / 0.45);

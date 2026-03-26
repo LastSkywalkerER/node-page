@@ -3,6 +3,7 @@ package collectors
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/log"
@@ -26,12 +27,27 @@ func NewDiskMetricsCollector(logger *log.Logger) *DiskMetricsCollector {
 
 func hostDiskRoot() string {
 	if r := strings.TrimSpace(os.Getenv("HOST_ROOT")); r != "" {
-		return r
+		return filepath.Clean(r)
 	}
 	if st, err := os.Stat("/host"); err == nil && st.IsDir() {
 		return "/host"
 	}
 	return ""
+}
+
+func usageStatFromDiskUsage(u *disk.UsageStat, displayPath string) entities.UsageStat {
+	return entities.UsageStat{
+		Path:              displayPath,
+		Fstype:            u.Fstype,
+		Total:             u.Total,
+		Free:              u.Free,
+		Used:              u.Used,
+		UsedPercent:       u.UsedPercent,
+		InodesTotal:       u.InodesTotal,
+		InodesUsed:        u.InodesUsed,
+		InodesFree:        u.InodesFree,
+		InodesUsedPercent: u.InodesUsedPercent,
+	}
 }
 
  // CollectDiskMetrics gathers current disk performance statistics.
@@ -61,11 +77,13 @@ func (c *DiskMetricsCollector) CollectDiskMetrics(ctx context.Context) (entities
 	var primary *disk.UsageStat // root or largest non-virtual filesystem as primary
 	var best *disk.UsageStat
 	var bestTotal uint64
+	hostPrimary := false // primary totals come from host bind-mount (e.g. /host), not container /
 
 	// Prefer host bind-mount (e.g. Docker /:/host:ro) so totals match the real machine, not the container overlay.
 	if hr := hostDiskRoot(); hr != "" {
 		if ru, rerr := disk.UsageWithContext(ctx, hr); rerr == nil && ru != nil && ru.Total > 0 {
 			primary = ru
+			hostPrimary = true
 			c.logger.Debug("Disk primary from host root bind", "path", hr)
 		}
 	}
@@ -76,33 +94,46 @@ func (c *DiskMetricsCollector) CollectDiskMetrics(ctx context.Context) (entities
 			}
 		}
 	}
-	for _, p := range parts {
-		u, uerr := disk.UsageWithContext(ctx, p.Mountpoint)
-		if uerr != nil {
-			// In Docker/containers many host mounts are inaccessible — skip silently
-			if strings.Contains(uerr.Error(), "no such file or directory") {
+	// Per-mount rows: inside Docker, partition list is the container's — paths like /, /run, /tmp
+	// often resolve to the same overlay and duplicate the host-sized totals. Skip that when we
+	// already use the host bind-mount for primary; expose a single row for host root instead.
+	if !hostPrimary {
+		for _, p := range parts {
+			u, uerr := disk.UsageWithContext(ctx, p.Mountpoint)
+			if uerr != nil {
+				// In Docker/containers many host mounts are inaccessible — skip silently
+				if strings.Contains(uerr.Error(), "no such file or directory") {
+					continue
+				}
+				c.logger.Warn("Failed to collect usage for mount", "mount", p.Mountpoint, "error", uerr)
 				continue
 			}
-			c.logger.Warn("Failed to collect usage for mount", "mount", p.Mountpoint, "error", uerr)
-			continue
+			mounts = append(mounts, entities.UsageStat{
+				Path:              u.Path,
+				Fstype:            u.Fstype,
+				Total:             u.Total,
+				Free:              u.Free,
+				Used:              u.Used,
+				UsedPercent:       u.UsedPercent,
+				InodesTotal:       u.InodesTotal,
+				InodesUsed:        u.InodesUsed,
+				InodesFree:        u.InodesFree,
+				InodesUsedPercent: u.InodesUsedPercent,
+			})
+			// Track the largest non-virtual filesystem as a fallback candidate
+			if !isVirtualFilesystem(u.Fstype) && u.Total > bestTotal {
+				best = u
+				bestTotal = u.Total
+			}
 		}
-		mounts = append(mounts, entities.UsageStat{
-			Path:              u.Path,
-			Fstype:            u.Fstype,
-			Total:             u.Total,
-			Free:              u.Free,
-			Used:              u.Used,
-			UsedPercent:       u.UsedPercent,
-			InodesTotal:       u.InodesTotal,
-			InodesUsed:        u.InodesUsed,
-			InodesFree:        u.InodesFree,
-			InodesUsedPercent: u.InodesUsedPercent,
-		})
-		// Track the largest non-virtual filesystem as a fallback candidate
-		if !isVirtualFilesystem(u.Fstype) && u.Total > bestTotal {
-			best = u
-			bestTotal = u.Total
-		}
+	} else if primary != nil {
+		mounts = []entities.UsageStat{usageStatFromDiskUsage(primary, "/")}
+		partitions = []entities.PartitionStat{{
+			Device:     "host-root",
+			Mountpoint: "/",
+			Fstype:     primary.Fstype,
+			Opts:       "bind",
+		}}
 	}
 
 	// Determine totals from primary filesystem to avoid double-counting multiple mounts
