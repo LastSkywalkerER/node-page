@@ -57,8 +57,10 @@ Node Stats is perfect for:
 - ✅ Backend unit tests for service layer
 - ❌ Multi-node statistics synchronization and aggregation (push-based model where each node sends metrics to a central server, eliminating the need to expose individual nodes to the internet for secure centralized collection)
 - ❌ Alert system (configurable notifications when metric thresholds are exceeded)
-- ❌ Container logs monitoring (real-time viewing and filtering of Docker container logs)
+- ❌ Stack detection with aggregation into apps with icons and minimal stats
+- ❌ Auto config for reverse proxy for apps routing
 - ❌ Application port tunneling (tunnel selected application ports from closed machines through the central node to local machine for fast, direct, and secure access)
+- ❌ Container logs monitoring (real-time viewing and filtering of Docker container logs)
 - ❌ Additional time-series databases support (integration with databases better suited for time-series data like InfluxDB, TimescaleDB)
 
 ## Screenshots
