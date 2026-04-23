@@ -12,8 +12,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"system-stats/internal/app/middleware"
-	userservice "system-stats/internal/modules/users/application"
-	userentities "system-stats/internal/modules/users/infrastructure/entities"
+	users "system-stats/internal/auth/users"
 )
 
 const testAccessSecret = "test-access-secret"
@@ -22,12 +21,12 @@ type mockTokenServiceForAuth struct {
 	secret []byte
 }
 
-func (m *mockTokenServiceForAuth) GenerateTokens(_ context.Context, _ *userentities.User) (*userservice.TokenPair, error) {
+func (m *mockTokenServiceForAuth) GenerateTokens(_ context.Context, _ *users.User) (*users.TokenPair, error) {
 	return nil, nil
 }
 
-func (m *mockTokenServiceForAuth) ValidateAccessToken(tokenString string) (*userservice.Claims, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &userservice.Claims{}, func(token *jwt.Token) (any, error) {
+func (m *mockTokenServiceForAuth) ValidateAccessToken(tokenString string) (*users.Claims, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &users.Claims{}, func(token *jwt.Token) (any, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
@@ -36,26 +35,26 @@ func (m *mockTokenServiceForAuth) ValidateAccessToken(tokenString string) (*user
 	if err != nil {
 		return nil, err
 	}
-	if claims, ok := token.Claims.(*userservice.Claims); ok && token.Valid {
+	if claims, ok := token.Claims.(*users.Claims); ok && token.Valid {
 		return claims, nil
 	}
 	return nil, fmt.Errorf("invalid token")
 }
 
-func (m *mockTokenServiceForAuth) ValidateRefreshToken(_ context.Context, _ string) (*userentities.RefreshToken, error) {
+func (m *mockTokenServiceForAuth) ValidateRefreshToken(_ context.Context, _ string) (*users.RefreshToken, error) {
 	return nil, nil
 }
 func (m *mockTokenServiceForAuth) HashRefreshToken(_ string) (string, error) { return "", nil }
 func (m *mockTokenServiceForAuth) PersistRefreshToken(_ context.Context, _ uint, _, _ string, _ time.Time) error {
 	return nil
 }
-func (m *mockTokenServiceForAuth) RevokeRefreshToken(_ context.Context, _ string) error  { return nil }
-func (m *mockTokenServiceForAuth) RevokeAllUserTokens(_ context.Context, _ uint) error { return nil }
+func (m *mockTokenServiceForAuth) RevokeRefreshToken(_ context.Context, _ string) error { return nil }
+func (m *mockTokenServiceForAuth) RevokeAllUserTokens(_ context.Context, _ uint) error  { return nil }
 
-var _ userservice.TokenService = (*mockTokenServiceForAuth)(nil)
+var _ users.TokenService = (*mockTokenServiceForAuth)(nil)
 
 func signTestToken(secret string, userID uint, email, role string, expiry time.Time) string {
-	claims := &userservice.Claims{
+	claims := &users.Claims{
 		UserID: userID,
 		Email:  email,
 		Role:   role,

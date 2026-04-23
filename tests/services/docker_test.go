@@ -7,30 +7,28 @@ import (
 
 	"github.com/charmbracelet/log"
 
-	dockerservice "system-stats/internal/modules/docker/application"
-	dockerrepos "system-stats/internal/modules/docker/domain/repositories"
-	dockerentities "system-stats/internal/modules/docker/infrastructure/entities"
+	docker "system-stats/internal/metrics/docker"
 )
 
 type mockDockerRepository struct {
 	saveErr           error
-	latestMetric      dockerentities.DockerMetric
+	latestMetric      docker.DockerMetric
 	latestErr         error
-	historicalMetrics []dockerrepos.HistoricalDockerMetric
+	historicalMetrics []docker.HistoricalDockerMetric
 	historicalErr     error
 	saveCalled        bool
 }
 
-func (m *mockDockerRepository) SaveCurrentMetric(_ context.Context, _ dockerentities.DockerMetric, _ uint) error {
+func (m *mockDockerRepository) SaveCurrentMetric(_ context.Context, _ docker.DockerMetric, _ uint) error {
 	m.saveCalled = true
 	return m.saveErr
 }
 
-func (m *mockDockerRepository) GetLatestMetric(_ context.Context) (dockerentities.DockerMetric, error) {
+func (m *mockDockerRepository) GetLatestMetric(_ context.Context) (docker.DockerMetric, error) {
 	return m.latestMetric, m.latestErr
 }
 
-func (m *mockDockerRepository) GetLatestMetricByHost(_ context.Context, _ uint) (*dockerentities.DockerMetric, error) {
+func (m *mockDockerRepository) GetLatestMetricByHost(_ context.Context, _ uint) (*docker.DockerMetric, error) {
 	if m.latestErr != nil {
 		return nil, m.latestErr
 	}
@@ -38,34 +36,34 @@ func (m *mockDockerRepository) GetLatestMetricByHost(_ context.Context, _ uint) 
 	return &cp, nil
 }
 
-func (m *mockDockerRepository) GetHistoricalMetrics(_ context.Context, _ float64) ([]dockerrepos.HistoricalDockerMetric, error) {
+func (m *mockDockerRepository) GetHistoricalMetrics(_ context.Context, _ float64) ([]docker.HistoricalDockerMetric, error) {
 	return m.historicalMetrics, m.historicalErr
 }
 
-func (m *mockDockerRepository) GetHistoricalMetricsByHost(_ context.Context, _ uint, _ float64) ([]dockerrepos.HistoricalDockerMetric, error) {
+func (m *mockDockerRepository) GetHistoricalMetricsByHost(_ context.Context, _ uint, _ float64) ([]docker.HistoricalDockerMetric, error) {
 	return m.historicalMetrics, m.historicalErr
 }
 
 type mockDockerCollector struct {
-	metric dockerentities.DockerMetric
+	metric docker.DockerMetric
 	err    error
 }
 
-func (m *mockDockerCollector) CollectDockerMetrics(_ context.Context) (dockerentities.DockerMetric, error) {
+func (m *mockDockerCollector) CollectDockerMetrics(_ context.Context) (docker.DockerMetric, error) {
 	return m.metric, m.err
 }
 func (m *mockDockerCollector) IsDockerAvailable(_ context.Context) bool { return m.err == nil }
-func (m *mockDockerCollector) Close() error                            { return nil }
+func (m *mockDockerCollector) Close() error                             { return nil }
 
-var _ dockerrepos.DockerRepository = (*mockDockerRepository)(nil)
-var _ dockerrepos.DockerMetricsCollector = (*mockDockerCollector)(nil)
+var _ docker.DockerRepository = (*mockDockerRepository)(nil)
+var _ docker.DockerMetricsCollector = (*mockDockerCollector)(nil)
 
-func newDockerService(repo dockerrepos.DockerRepository, collector dockerrepos.DockerMetricsCollector) dockerservice.Service {
-	return dockerservice.NewService(log.Default(), collector, repo)
+func newDockerService(repo docker.DockerRepository, collector docker.DockerMetricsCollector) docker.Service {
+	return docker.NewService(log.Default(), collector, repo)
 }
 
 func TestDocker_GetLatest_Success(t *testing.T) {
-	want := dockerentities.DockerMetric{TotalContainers: 3, RunningContainers: 2}
+	want := docker.DockerMetric{TotalContainers: 3, RunningContainers: 2}
 	svc := newDockerService(&mockDockerRepository{latestMetric: want}, &mockDockerCollector{})
 
 	got, err := svc.GetLatest(context.Background())
@@ -88,7 +86,7 @@ func TestDocker_GetLatest_RepoError(t *testing.T) {
 }
 
 func TestDocker_GetHistorical_Success(t *testing.T) {
-	want := []dockerrepos.HistoricalDockerMetric{{TotalContainers: 5}, {TotalContainers: 6}}
+	want := []docker.HistoricalDockerMetric{{TotalContainers: 5}, {TotalContainers: 6}}
 	svc := newDockerService(&mockDockerRepository{historicalMetrics: want}, &mockDockerCollector{})
 
 	got, err := svc.GetHistorical(context.Background(), 1.0)
@@ -114,7 +112,7 @@ func TestDocker_Save_CallsRepository(t *testing.T) {
 	mock := &mockDockerRepository{}
 	svc := newDockerService(mock, &mockDockerCollector{})
 
-	if err := svc.Save(context.Background(), dockerentities.DockerMetric{}, 1); err != nil {
+	if err := svc.Save(context.Background(), docker.DockerMetric{}, 1); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !mock.saveCalled {

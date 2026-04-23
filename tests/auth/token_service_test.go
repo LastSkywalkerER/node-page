@@ -8,16 +8,14 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	userservice "system-stats/internal/modules/users/application"
-	userentities "system-stats/internal/modules/users/infrastructure/entities"
-	userrepos "system-stats/internal/modules/users/infrastructure/repositories"
+	users "system-stats/internal/auth/users"
 )
 
 type mockRefreshTokenRepository struct {
-	created   *userentities.RefreshToken
+	created   *users.RefreshToken
 	createErr error
 
-	foundToken *userentities.RefreshToken
+	foundToken *users.RefreshToken
 	findErr    error
 
 	revokeJTI    string
@@ -26,14 +24,14 @@ type mockRefreshTokenRepository struct {
 	revokeAllErr error
 }
 
-var _ userrepos.RefreshTokenRepository = (*mockRefreshTokenRepository)(nil)
+var _ users.RefreshTokenRepository = (*mockRefreshTokenRepository)(nil)
 
-func (m *mockRefreshTokenRepository) Create(_ context.Context, token *userentities.RefreshToken) error {
+func (m *mockRefreshTokenRepository) Create(_ context.Context, token *users.RefreshToken) error {
 	m.created = token
 	return m.createErr
 }
 
-func (m *mockRefreshTokenRepository) FindByJTI(_ context.Context, jti string) (*userentities.RefreshToken, error) {
+func (m *mockRefreshTokenRepository) FindByJTI(_ context.Context, jti string) (*users.RefreshToken, error) {
 	if m.findErr != nil {
 		return nil, m.findErr
 	}
@@ -57,11 +55,11 @@ func (m *mockRefreshTokenRepository) DeleteExpired(_ context.Context) error {
 	return nil
 }
 
-func newTestTokenService(repo userrepos.RefreshTokenRepository) userservice.TokenService {
-	return userservice.NewTokenService(repo, "test-access-secret", "test-refresh-secret", 15*time.Minute, 7*24*time.Hour)
+func newTestTokenService(repo users.RefreshTokenRepository) users.TokenService {
+	return users.NewTokenService(repo, "test-access-secret", "test-refresh-secret", 15*time.Minute, 7*24*time.Hour)
 }
 
-var tokenTestUser = &userentities.User{
+var tokenTestUser = &users.User{
 	ID:    1,
 	Email: "test@example.com",
 	Role:  "ADMIN",
@@ -123,7 +121,7 @@ func TestTokenService_ValidateAccessToken_Expired(t *testing.T) {
 	svc := newTestTokenService(&mockRefreshTokenRepository{})
 
 	now := time.Now().Add(-time.Hour)
-	claims := &userservice.Claims{
+	claims := &users.Claims{
 		UserID: 1,
 		Email:  "test@example.com",
 		Role:   "ADMIN",
@@ -145,7 +143,7 @@ func TestTokenService_ValidateAccessToken_Expired(t *testing.T) {
 func TestTokenService_ValidateAccessToken_WrongSecret(t *testing.T) {
 	svc := newTestTokenService(&mockRefreshTokenRepository{})
 
-	claims := &userservice.Claims{
+	claims := &users.Claims{
 		UserID: 1,
 		Email:  "test@example.com",
 		Role:   "ADMIN",

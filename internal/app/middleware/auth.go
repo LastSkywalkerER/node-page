@@ -6,13 +6,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	nodeservice "system-stats/internal/modules/nodes/application"
-	userservice "system-stats/internal/modules/users/application"
+	nodes "system-stats/internal/cluster/nodes"
+	users "system-stats/internal/auth/users"
 )
 
 // AuthJWT middleware validates JWT tokens and sets user context.
 // It reads the token from the access_token cookie first, then falls back to Authorization header.
-func AuthJWT(tokenService userservice.TokenService) gin.HandlerFunc {
+func AuthJWT(tokenService users.TokenService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var tokenString string
 
@@ -105,7 +105,7 @@ func RequireAdmin() gin.HandlerFunc {
 
 // AuthNodeToken middleware validates node access tokens for push endpoint.
 // Expects Authorization: Bearer {node_access_token}, sets hostID in context.
-func AuthNodeToken(nodeService nodeservice.Service) gin.HandlerFunc {
+func AuthNodeToken(nodeService nodes.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {

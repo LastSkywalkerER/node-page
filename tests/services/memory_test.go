@@ -7,30 +7,28 @@ import (
 
 	"github.com/charmbracelet/log"
 
-	memservice "system-stats/internal/modules/memory/application"
-	mementities "system-stats/internal/modules/memory/infrastructure/entities"
-	memrepos "system-stats/internal/modules/memory/infrastructure/repositories"
+	memory "system-stats/internal/metrics/memory"
 )
 
 type mockMemoryRepository struct {
 	saveErr           error
-	latestMetric      mementities.MemoryMetric
+	latestMetric      memory.MemoryMetric
 	latestErr         error
-	historicalMetrics []mementities.HistoricalMemoryMetric
+	historicalMetrics []memory.HistoricalMemoryMetric
 	historicalErr     error
 	saveCalled        bool
 }
 
-func (m *mockMemoryRepository) SaveCurrentMetric(_ context.Context, _ mementities.MemoryMetric, _ uint) error {
+func (m *mockMemoryRepository) SaveCurrentMetric(_ context.Context, _ memory.MemoryMetric, _ uint) error {
 	m.saveCalled = true
 	return m.saveErr
 }
 
-func (m *mockMemoryRepository) GetLatestMetric(_ context.Context) (mementities.MemoryMetric, error) {
+func (m *mockMemoryRepository) GetLatestMetric(_ context.Context) (memory.MemoryMetric, error) {
 	return m.latestMetric, m.latestErr
 }
 
-func (m *mockMemoryRepository) GetLatestMetricByHost(_ context.Context, _ uint) (*mementities.MemoryMetric, error) {
+func (m *mockMemoryRepository) GetLatestMetricByHost(_ context.Context, _ uint) (*memory.MemoryMetric, error) {
 	if m.latestErr != nil {
 		return nil, m.latestErr
 	}
@@ -38,22 +36,22 @@ func (m *mockMemoryRepository) GetLatestMetricByHost(_ context.Context, _ uint) 
 	return &cp, nil
 }
 
-func (m *mockMemoryRepository) GetHistoricalMetrics(_ context.Context, _ float64) ([]mementities.HistoricalMemoryMetric, error) {
+func (m *mockMemoryRepository) GetHistoricalMetrics(_ context.Context, _ float64) ([]memory.HistoricalMemoryMetric, error) {
 	return m.historicalMetrics, m.historicalErr
 }
 
-func (m *mockMemoryRepository) GetHistoricalMetricsByHost(_ context.Context, _ uint, _ float64) ([]mementities.HistoricalMemoryMetric, error) {
+func (m *mockMemoryRepository) GetHistoricalMetricsByHost(_ context.Context, _ uint, _ float64) ([]memory.HistoricalMemoryMetric, error) {
 	return m.historicalMetrics, m.historicalErr
 }
 
-var _ memrepos.MemoryRepository = (*mockMemoryRepository)(nil)
+var _ memory.Repository = (*mockMemoryRepository)(nil)
 
-func newMemoryService(repo memrepos.MemoryRepository) memservice.Service {
-	return memservice.NewService(log.Default(), repo)
+func newMemoryService(repo memory.Repository) memory.Service {
+	return memory.NewService(log.Default(), repo)
 }
 
 func TestMemory_GetHistorical_Success(t *testing.T) {
-	want := []mementities.HistoricalMemoryMetric{{UsagePercent: 70}, {UsagePercent: 80}}
+	want := []memory.HistoricalMemoryMetric{{UsagePercent: 70}, {UsagePercent: 80}}
 	svc := newMemoryService(&mockMemoryRepository{historicalMetrics: want})
 
 	got, err := svc.GetHistorical(context.Background(), 1.0)
@@ -76,7 +74,7 @@ func TestMemory_GetHistorical_RepoError(t *testing.T) {
 }
 
 func TestMemory_GetHistoricalByHost_Success(t *testing.T) {
-	want := []mementities.HistoricalMemoryMetric{{UsagePercent: 55}}
+	want := []memory.HistoricalMemoryMetric{{UsagePercent: 55}}
 	svc := newMemoryService(&mockMemoryRepository{historicalMetrics: want})
 
 	got, err := svc.GetHistoricalByHost(context.Background(), 1, 1.0)
@@ -92,7 +90,7 @@ func TestMemory_Save_CallsRepository(t *testing.T) {
 	mock := &mockMemoryRepository{}
 	svc := newMemoryService(mock)
 
-	if err := svc.Save(context.Background(), mementities.MemoryMetric{}, 1); err != nil {
+	if err := svc.Save(context.Background(), memory.MemoryMetric{}, 1); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !mock.saveCalled {
@@ -104,7 +102,7 @@ func TestMemory_Save_RepoError(t *testing.T) {
 	repoErr := errors.New("save error")
 	svc := newMemoryService(&mockMemoryRepository{saveErr: repoErr})
 
-	err := svc.Save(context.Background(), mementities.MemoryMetric{}, 1)
+	err := svc.Save(context.Background(), memory.MemoryMetric{}, 1)
 	if !errors.Is(err, repoErr) {
 		t.Errorf("expected repo error, got %v", err)
 	}

@@ -1,0 +1,215 @@
+package disk
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/charmbracelet/log"
+	"github.com/shirou/gopsutil/v4/disk"
+)
+
+type diskCollector struct {
+	logger *log.Logger
+}
+
+func newDiskCollector(logger *log.Logger) *diskCollector {
+	return &diskCollector{logger: logger}
+}
+
+func hostDiskRoot() string {
+	if r := strings.TrimSpace(os.Getenv("HOST_ROOT")); r != "" {
+		return filepath.Clean(r)
+	}
+	if st, err := os.Stat("/host"); err == nil && st.IsDir() {
+		return "/host"
+	}
+	return ""
+}
+
+func usageStatFromDiskUsage(u *disk.UsageStat, displayPath string) UsageStat {
+	return UsageStat{
+		Path:              displayPath,
+		Fstype:            u.Fstype,
+		Total:             u.Total,
+		Free:              u.Free,
+		Used:              u.Used,
+		UsedPercent:       u.UsedPercent,
+		InodesTotal:       u.InodesTotal,
+		InodesUsed:        u.InodesUsed,
+		InodesFree:        u.InodesFree,
+		InodesUsedPercent: u.InodesUsedPercent,
+	}
+}
+
+func (c *diskCollector) Collect(ctx context.Context) (DiskMetric, error) {
+	c.logger.Debug("Collecting disk usage statistics for all partitions")
+
+	// Partitions
+	parts, err := disk.PartitionsWithContext(ctx, true)
+	if err != nil {
+		c.logger.Warn("Failed to collect partitions", "error", err)
+		parts = []disk.PartitionStat{}
+	}
+	partitions := make([]PartitionStat, 0, len(parts))
+	for _, p := range parts {
+		partitions = append(partitions, PartitionStat{
+			Device:     p.Device,
+			Mountpoint: p.Mountpoint,
+			Fstype:     p.Fstype,
+			Opts:       strings.Join(p.Opts, ","),
+		})
+	}
+
+	// Usage per mountpoint and totals
+	var total, used, free uint64
+	var mounts []UsageStat
+	var primary *disk.UsageStat // root or largest non-virtual filesystem as primary
+	var best *disk.UsageStat
+	var bestTotal uint64
+	hostPrimary := false // primary totals come from host bind-mount (e.g. /host), not container /
+
+	// Prefer host bind-mount (e.g. Docker /:/host:ro) so totals match the real machine, not the container overlay.
+	if hr := hostDiskRoot(); hr != "" {
+		if ru, rerr := disk.UsageWithContext(ctx, hr); rerr == nil && ru != nil && ru.Total > 0 {
+			primary = ru
+			hostPrimary = true
+			c.logger.Debug("Disk primary from host root bind", "path", hr)
+		}
+	}
+	if primary == nil {
+		if ru, rerr := disk.UsageWithContext(ctx, "/"); rerr == nil && ru != nil {
+			if ru.Total > 0 { // accept even if fstype is empty
+				primary = ru
+			}
+		}
+	}
+	// Per-mount rows: inside Docker, partition list is the container's — paths like /, /run, /tmp
+	// often resolve to the same overlay and duplicate the host-sized totals. Skip that when we
+	// already use the host bind-mount for primary; expose a single row for host root instead.
+	if !hostPrimary {
+		for _, p := range parts {
+			u, uerr := disk.UsageWithContext(ctx, p.Mountpoint)
+			if uerr != nil {
+				// In Docker/containers many host mounts are inaccessible — skip silently
+				if strings.Contains(uerr.Error(), "no such file or directory") {
+					continue
+				}
+				c.logger.Warn("Failed to collect usage for mount", "mount", p.Mountpoint, "error", uerr)
+				continue
+			}
+			mounts = append(mounts, UsageStat{
+				Path:              u.Path,
+				Fstype:            u.Fstype,
+				Total:             u.Total,
+				Free:              u.Free,
+				Used:              u.Used,
+				UsedPercent:       u.UsedPercent,
+				InodesTotal:       u.InodesTotal,
+				InodesUsed:        u.InodesUsed,
+				InodesFree:        u.InodesFree,
+				InodesUsedPercent: u.InodesUsedPercent,
+			})
+			// Track the largest non-virtual filesystem as a fallback candidate
+			if !isVirtualFilesystem(u.Fstype) && u.Total > bestTotal {
+				best = u
+				bestTotal = u.Total
+			}
+		}
+	} else if primary != nil {
+		mounts = []UsageStat{usageStatFromDiskUsage(primary, "/")}
+		partitions = []PartitionStat{{
+			Device:     "host-root",
+			Mountpoint: "/",
+			Fstype:     primary.Fstype,
+			Opts:       "bind",
+		}}
+	}
+
+	// Determine totals from primary filesystem to avoid double-counting multiple mounts
+	if primary != nil {
+		total = primary.Total
+		used = primary.Used
+		free = primary.Free
+	} else {
+		// Prefer best candidate if available, else aggregate as last resort
+		if best != nil {
+			total = best.Total
+			used = best.Used
+			free = best.Free
+		} else {
+			// Fallback: aggregate (best-effort) if no suitable primary found
+			for _, m := range mounts {
+				total += m.Total
+				used += m.Used
+				free += m.Free
+			}
+		}
+	}
+
+	// IO Counters
+	ioMap, err := disk.IOCountersWithContext(ctx)
+	if err != nil {
+		c.logger.Warn("Failed to collect IO counters", "error", err)
+		ioMap = map[string]disk.IOCountersStat{}
+	}
+	ioCounters := make([]IOCounterStat, 0, len(ioMap))
+	for name, io := range ioMap {
+		ioCounters = append(ioCounters, IOCounterStat{
+			Name:             name,
+			ReadCount:        io.ReadCount,
+			MergedReadCount:  io.MergedReadCount,
+			WriteCount:       io.WriteCount,
+			MergedWriteCount: io.MergedWriteCount,
+			ReadBytes:        io.ReadBytes,
+			WriteBytes:       io.WriteBytes,
+			ReadTime:         io.ReadTime,
+			WriteTime:        io.WriteTime,
+			IopsInProgress:   io.IopsInProgress,
+			IoTime:           io.IoTime,
+			WeightedIO:       io.WeightedIO,
+			SerialNumber:     io.SerialNumber,
+			Label:            io.Label,
+		})
+	}
+
+	var usagePercent float64
+	if total > 0 {
+		usagePercent = (float64(used) / float64(total)) * 100.0
+	}
+
+	c.logger.Debug("Disk metrics collected successfully", "mounts", len(mounts), "devices", len(ioCounters))
+	return DiskMetric{
+		Total:        total,
+		Used:         used,
+		Free:         free,
+		UsagePercent: usagePercent,
+		Partitions:   partitions,
+		Mounts:       mounts,
+		IOCounters:   ioCounters,
+	}, nil
+}
+
+func isVirtualFilesystem(fs string) bool {
+	if fs == "" {
+		return true
+	}
+	switch strings.ToLower(fs) {
+	case "tmpfs", "devtmpfs", "devfs", "proc", "sysfs", "cgroup", "cgroup2",
+		"overlay", "squashfs", "autofs", "tracefs", "nsfs", "ramfs", "aufs",
+		"zram", "ecryptfs", "fusectl", "fdescfs", "binder", "configfs",
+		"securityfs", "pstore", "debugfs":
+		return true
+	}
+	// Treat any fuse.* helpers (gvfs, app images, etc.) as virtual
+	if strings.HasPrefix(strings.ToLower(fs), "fuse") {
+		return true
+	}
+	// Network filesystems should not determine capacity
+	switch strings.ToLower(fs) {
+	case "nfs", "nfs4", "smbfs", "cifs", "afpfs", "9p":
+		return true
+	}
+	return false
+}
