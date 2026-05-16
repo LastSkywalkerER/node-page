@@ -67,8 +67,11 @@ func initSQLite(dbConfig config.DatabaseConfig) (*gorm.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get sql.DB: %w", err)
 	}
-	// SQLite supports a single writer to avoid "database is locked" errors.
-	sqlDB.SetMaxOpenConns(1)
+	// WAL mode allows concurrent readers alongside one writer.
+	// A pool of a few connections is safe; single-connection pools serialize
+	// all reads behind writes and can deadlock request handlers.
+	sqlDB.SetMaxOpenConns(5)
+	sqlDB.SetMaxIdleConns(2)
 
 	return db, nil
 }

@@ -104,7 +104,9 @@ func Run() {
 	broker := container.GetBroker()
 	systemSvc := container.GetSystemService()
 	historicalMetricsService = history.WithAfterCollect(historicalMetricsService, func() {
-		metrics, err := systemSvc.CollectAllCurrent(context.Background())
+		collectCtx, collectCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer collectCancel()
+		metrics, err := systemSvc.CollectAllCurrent(collectCtx)
 		if err != nil {
 			return
 		}

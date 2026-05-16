@@ -5,6 +5,7 @@ const apiClient: AxiosInstance = axios.create({
   baseURL: '/api/v1',
   withCredentials: true, // send HttpOnly cookies on every request
   headers: { 'Content-Type': 'application/json' },
+  timeout: 15000,
 });
 
 let refreshPromise: Promise<void> | null = null;

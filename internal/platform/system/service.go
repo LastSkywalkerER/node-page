@@ -99,7 +99,12 @@ func (s *service) CollectAllCurrent(ctx context.Context) (map[string]interface{}
 	var dockerMetric interface{}
 
 	for i := 0; i < 5; i++ {
-		result := <-results
+		var result collectResult
+		select {
+		case result = <-results:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 
 		switch result.name {
 		case "cpu":
