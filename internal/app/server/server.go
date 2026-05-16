@@ -28,24 +28,22 @@ import (
 	"system-stats/internal/app/middleware"
 	"system-stats/internal/app/prometheusmetrics"
 	"system-stats/internal/app/pusher"
-	clusterconfig "system-stats/internal/modules/nodes/infrastructure/cluster_config"
 	"system-stats/internal/app/retention"
-	historyapp "system-stats/internal/modules/history_metrics/application"
-	cpumodule "system-stats/internal/modules/cpu/presentation"
-	diskmodule "system-stats/internal/modules/disk/presentation"
-	dockermodule "system-stats/internal/modules/docker/presentation"
-	healthmodule "system-stats/internal/modules/health/presentation"
-	hostmodule "system-stats/internal/modules/hosts/presentation"
-	invmodule "system-stats/internal/modules/invitations/presentation"
-	nodesmodule "system-stats/internal/modules/nodes/presentation"
-	memorymodule "system-stats/internal/modules/memory/presentation"
-	networkmodule "system-stats/internal/modules/network/presentation"
-	sensorsmodule "system-stats/internal/modules/sensors/presentation"
-	setupapp "system-stats/internal/modules/setup/application"
-	setupmodule "system-stats/internal/modules/setup/presentation"
-	streammodule "system-stats/internal/modules/stream/presentation"
-	systemmodule "system-stats/internal/modules/system/presentation"
-	usermodule "system-stats/internal/modules/users/presentation"
+	invitations "system-stats/internal/auth/invitations"
+	users "system-stats/internal/auth/users"
+	hosts "system-stats/internal/cluster/hosts"
+	nodes "system-stats/internal/cluster/nodes"
+	cpu "system-stats/internal/metrics/cpu"
+	disk "system-stats/internal/metrics/disk"
+	docker "system-stats/internal/metrics/docker"
+	memory "system-stats/internal/metrics/memory"
+	network "system-stats/internal/metrics/network"
+	sensors "system-stats/internal/metrics/sensors"
+	health "system-stats/internal/platform/health"
+	history "system-stats/internal/platform/history"
+	setup "system-stats/internal/platform/setup"
+	platformstream "system-stats/internal/platform/stream"
+	system "system-stats/internal/platform/system"
 )
 
 // Run starts the system statistics HTTP server.
@@ -98,15 +96,17 @@ func Run() {
 	regCancel()
 
 	// Load cluster config from .env (MAIN_NODE_URL, NODE_ACCESS_TOKEN) for agent push mode
-	clusterconfig.LoadFromEnvFile()
+	nodes.LoadFromEnvFile()
 
 	historicalMetricsService := container.GetHistoricalMetricsService()
 
 	// Wire SSE broker into the after-collect hook (harmless before collection starts).
 	broker := container.GetBroker()
 	systemSvc := container.GetSystemService()
-	historicalMetricsService = historyapp.WithAfterCollect(historicalMetricsService, func() {
-		metrics, err := systemSvc.CollectAllCurrent(context.Background())
+	historicalMetricsService = history.WithAfterCollect(historicalMetricsService, func() {
+		collectCtx, collectCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer collectCancel()
+		metrics, err := systemSvc.CollectAllCurrent(collectCtx)
 		if err != nil {
 			return
 		}
@@ -140,7 +140,7 @@ func Run() {
 		broker.Publish(out)
 
 		// Push to main node if cluster config is set (from env at startup or after connect)
-		if mainURL, token := clusterconfig.Get(); mainURL != "" && token != "" {
+		if mainURL, token := nodes.Get(); mainURL != "" && token != "" {
 			pushCtx := context.Background()
 			hostName, hostIPv4 := "", ""
 			if hi, herr := container.GetHostService().GetCurrentHostInfo(pushCtx); herr == nil {
@@ -189,10 +189,13 @@ func Run() {
 		logger.Info("Setup mode: waiting for initial setup to complete before collecting metrics")
 		onSetupComplete = func() {
 			logger.Info("Setup completed — starting metrics collection")
-			startMetrics()
+			go startMetrics()
 		}
 	} else {
-		startMetrics()
+		// Run startMetrics in a goroutine so the HTTP server can start
+		// accepting connections immediately instead of blocking on the first
+		// metrics collection cycle (CPU sampling alone takes ~1 s).
+		go startMetrics()
 	}
 
 	router := setupRouter(container, startTime, logger, cfg, onSetupComplete)
@@ -208,15 +211,21 @@ func Run() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
+	serverErr := make(chan error, 1)
 	go func() {
 		logger.Info("Starting server", "address", cfg.Addr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("Server error", "error", err)
+			logger.Error("Server failed to listen", "error", err)
+			serverErr <- err
 		}
 	}()
 
-	<-quit
-	logger.Info("Received interrupt signal, shutting down gracefully...")
+	select {
+	case <-quit:
+		logger.Info("Received interrupt signal, shutting down gracefully...")
+	case err := <-serverErr:
+		logger.Error("Server exited unexpectedly", "error", err)
+	}
 
 	historicalMetricsService.StopPeriodicCollection()
 
@@ -257,22 +266,22 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	distPath := filepath.Join(wd, "dist")
 	logger.Info("Serving static files", "path", distPath)
 
-	systemHandler := systemmodule.NewSystemHandler(logger, container.GetSystemService(), container.GetHostService())
-	cpuHandler := cpumodule.NewCPUHandler(logger, container.GetCPUService(), container.GetHostService())
-	memoryHandler := memorymodule.NewMemoryHandler(logger, container.GetMemoryService(), container.GetHostService())
-	diskHandler := diskmodule.NewDiskHandler(logger, container.GetDiskService(), container.GetHostService())
-	networkHandler := networkmodule.NewNetworkHandler(logger, container.GetNetworkService(), container.GetHostService())
-	dockerHandler := dockermodule.NewDockerHandler(logger, container.GetDockerService(), container.GetHostService())
-	sensorsHandler := sensorsmodule.NewSensorsHandler(logger, container.GetSensorsService(), container.GetHostService())
-	hostHandler := hostmodule.NewHostHandler(logger, container.GetHostService())
-	healthHandler := healthmodule.NewHealthHandler(logger, container.GetHealthService())
-	authHandler := usermodule.NewAuthHandler(container.GetUserService(), container.GetTokenService(), cfg.CookieSecure)
-	usersHandler := usermodule.NewUsersHandler(container.GetUserService())
-	invitationHandler := invmodule.NewInvitationHandler(container.GetInvitationService())
-	nodesHandler := nodesmodule.NewNodesHandler(container.GetNodeService(), container.GetHostService(), cfg.PublicBaseURL)
-	streamHandler := streammodule.NewStreamHandler(container.GetBroker(), container.GetHostService())
-	configWriter := setupapp.NewConfigWriter()
-	setupHandler := setupmodule.NewSetupHandler(configWriter, container.GetUserService(), onSetupComplete)
+	systemHandler := system.NewHandler(logger, container.GetSystemService(), container.GetHostService())
+	cpuHandler := cpu.NewHandler(logger, container.GetCPUService(), container.GetHostService())
+	memoryHandler := memory.NewHandler(logger, container.GetMemoryService(), container.GetHostService())
+	diskHandler := disk.NewHandler(logger, container.GetDiskService(), container.GetHostService())
+	networkHandler := network.NewHandler(logger, container.GetNetworkService(), container.GetHostService())
+	dockerHandler := docker.NewHandler(logger, container.GetDockerService(), container.GetHostService())
+	sensorsHandler := sensors.NewHandler(logger, container.GetSensorsService(), container.GetHostService())
+	hostHandler := hosts.NewHandler(logger, container.GetHostService())
+	healthHandler := health.NewHandler(logger, container.GetHealthService())
+	authHandler := users.NewAuthHandler(container.GetUserService(), container.GetTokenService(), cfg.CookieSecure)
+	usersHandler := users.NewUsersHandler(container.GetUserService())
+	invitationHandler := invitations.NewHandler(container.GetInvitationService())
+	nodesHandler := nodes.NewHandler(container.GetNodeService(), container.GetHostService(), cfg.PublicBaseURL)
+	streamHandler := platformstream.NewHandler(container.GetBroker(), container.GetHostService())
+	configWriter := setup.NewConfigWriter()
+	setupHandler := setup.NewHandler(configWriter, container.GetUserService(), onSetupComplete)
 
 	// Swagger UI (always available)
 	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))

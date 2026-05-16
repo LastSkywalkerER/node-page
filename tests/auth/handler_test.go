@@ -12,31 +12,29 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"system-stats/internal/app/middleware"
-	userservice "system-stats/internal/modules/users/application"
-	userentities "system-stats/internal/modules/users/infrastructure/entities"
-	"system-stats/internal/modules/users/presentation"
+	users "system-stats/internal/auth/users"
 )
 
 type mockUserService struct {
-	registerUser *userentities.User
+	registerUser *users.User
 	registerErr  error
-	loginUser    *userentities.User
+	loginUser    *users.User
 	loginErr     error
 }
 
-func (m *mockUserService) Register(_ context.Context, _, _ string, _ *string) (*userentities.User, error) {
+func (m *mockUserService) Register(_ context.Context, _, _ string, _ *string) (*users.User, error) {
 	return m.registerUser, m.registerErr
 }
-func (m *mockUserService) Login(_ context.Context, _, _ string) (*userentities.User, error) {
+func (m *mockUserService) Login(_ context.Context, _, _ string) (*users.User, error) {
 	return m.loginUser, m.loginErr
 }
-func (m *mockUserService) GetByID(_ context.Context, _ uint) (*userentities.User, error) {
+func (m *mockUserService) GetByID(_ context.Context, _ uint) (*users.User, error) {
 	return nil, nil
 }
-func (m *mockUserService) GetByEmail(_ context.Context, _ string) (*userentities.User, error) {
+func (m *mockUserService) GetByEmail(_ context.Context, _ string) (*users.User, error) {
 	return nil, nil
 }
-func (m *mockUserService) List(_ context.Context, _, _ int) ([]*userentities.User, error) {
+func (m *mockUserService) List(_ context.Context, _, _ int) ([]*users.User, error) {
 	return nil, nil
 }
 func (m *mockUserService) UpdateRole(_ context.Context, _ uint, _ string) error { return nil }
@@ -45,14 +43,14 @@ func (m *mockUserService) Count(_ context.Context) (int64, error)               
 func (m *mockUserService) HashPassword(_ string) (string, error)                { return "", nil }
 func (m *mockUserService) VerifyPassword(_, _ string) error                     { return nil }
 
-var _ userservice.UserService = (*mockUserService)(nil)
+var _ users.UserService = (*mockUserService)(nil)
 
 type mockTokenService struct {
-	tokenPair       *userservice.TokenPair
+	tokenPair       *users.TokenPair
 	generateErr     error
-	accessClaims    *userservice.Claims
+	accessClaims    *users.Claims
 	accessErr       error
-	refreshToken    *userentities.RefreshToken
+	refreshToken    *users.RefreshToken
 	refreshErr      error
 	revokeErr       error
 	revokeAllErr    error
@@ -63,13 +61,13 @@ type mockTokenService struct {
 	revokeAllCalled bool
 }
 
-func (m *mockTokenService) GenerateTokens(_ context.Context, _ *userentities.User) (*userservice.TokenPair, error) {
+func (m *mockTokenService) GenerateTokens(_ context.Context, _ *users.User) (*users.TokenPair, error) {
 	return m.tokenPair, m.generateErr
 }
-func (m *mockTokenService) ValidateAccessToken(_ string) (*userservice.Claims, error) {
+func (m *mockTokenService) ValidateAccessToken(_ string) (*users.Claims, error) {
 	return m.accessClaims, m.accessErr
 }
-func (m *mockTokenService) ValidateRefreshToken(_ context.Context, _ string) (*userentities.RefreshToken, error) {
+func (m *mockTokenService) ValidateRefreshToken(_ context.Context, _ string) (*users.RefreshToken, error) {
 	return m.refreshToken, m.refreshErr
 }
 func (m *mockTokenService) HashRefreshToken(_ string) (string, error) {
@@ -87,9 +85,9 @@ func (m *mockTokenService) RevokeAllUserTokens(_ context.Context, _ uint) error 
 	return m.revokeAllErr
 }
 
-var _ userservice.TokenService = (*mockTokenService)(nil)
+var _ users.TokenService = (*mockTokenService)(nil)
 
-func setupRouter(h *presentation.AuthHandler) *gin.Engine {
+func setupRouter(h *users.AuthHandler) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(middleware.ErrorHandler())
@@ -114,7 +112,7 @@ func parseJSON(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	return out
 }
 
-var handlerTokenPair = &userservice.TokenPair{
+var handlerTokenPair = &users.TokenPair{
 	AccessToken:  "access-tok",
 	RefreshToken: "refresh-tok",
 	ExpiresIn:    900,
@@ -122,7 +120,7 @@ var handlerTokenPair = &userservice.TokenPair{
 	RefreshExp:   time.Now().Add(7 * 24 * time.Hour),
 }
 
-var handlerDefaultUser = &userentities.User{
+var handlerDefaultUser = &users.User{
 	ID:    1,
 	Email: "test@example.com",
 	Role:  "ADMIN",
@@ -131,7 +129,7 @@ var handlerDefaultUser = &userentities.User{
 func TestHandler_Register_Success(t *testing.T) {
 	us := &mockUserService{registerUser: handlerDefaultUser}
 	ts := &mockTokenService{tokenPair: handlerTokenPair}
-	h := presentation.NewAuthHandler(us, ts, false)
+	h := users.NewAuthHandler(us, ts, false)
 	r := setupRouter(h)
 	r.POST("/auth/register", h.Register)
 
@@ -168,7 +166,7 @@ func TestHandler_Register_Success(t *testing.T) {
 }
 
 func TestHandler_Register_ValidationError(t *testing.T) {
-	h := presentation.NewAuthHandler(&mockUserService{}, &mockTokenService{}, false)
+	h := users.NewAuthHandler(&mockUserService{}, &mockTokenService{}, false)
 	r := setupRouter(h)
 	r.POST("/auth/register", h.Register)
 
@@ -184,8 +182,8 @@ func TestHandler_Register_ValidationError(t *testing.T) {
 }
 
 func TestHandler_Register_RegistrationDisabled(t *testing.T) {
-	us := &mockUserService{registerErr: userservice.ErrRegistrationDisabled}
-	h := presentation.NewAuthHandler(us, &mockTokenService{}, false)
+	us := &mockUserService{registerErr: users.ErrRegistrationDisabled}
+	h := users.NewAuthHandler(us, &mockTokenService{}, false)
 	r := setupRouter(h)
 	r.POST("/auth/register", h.Register)
 
@@ -201,8 +199,8 @@ func TestHandler_Register_RegistrationDisabled(t *testing.T) {
 }
 
 func TestHandler_Register_EmailExists(t *testing.T) {
-	us := &mockUserService{registerErr: userservice.ErrEmailExists}
-	h := presentation.NewAuthHandler(us, &mockTokenService{}, false)
+	us := &mockUserService{registerErr: users.ErrEmailExists}
+	h := users.NewAuthHandler(us, &mockTokenService{}, false)
 	r := setupRouter(h)
 	r.POST("/auth/register", h.Register)
 
@@ -220,7 +218,7 @@ func TestHandler_Register_EmailExists(t *testing.T) {
 func TestHandler_Login_Success(t *testing.T) {
 	us := &mockUserService{loginUser: handlerDefaultUser}
 	ts := &mockTokenService{tokenPair: handlerTokenPair}
-	h := presentation.NewAuthHandler(us, ts, false)
+	h := users.NewAuthHandler(us, ts, false)
 	r := setupRouter(h)
 	r.POST("/auth/login", h.Login)
 
@@ -248,8 +246,8 @@ func TestHandler_Login_Success(t *testing.T) {
 }
 
 func TestHandler_Login_InvalidCredentials(t *testing.T) {
-	us := &mockUserService{loginErr: userservice.ErrInvalidCredentials}
-	h := presentation.NewAuthHandler(us, &mockTokenService{}, false)
+	us := &mockUserService{loginErr: users.ErrInvalidCredentials}
+	h := users.NewAuthHandler(us, &mockTokenService{}, false)
 	r := setupRouter(h)
 	r.POST("/auth/login", h.Login)
 
@@ -265,7 +263,7 @@ func TestHandler_Login_InvalidCredentials(t *testing.T) {
 }
 
 func TestHandler_Refresh_MissingToken(t *testing.T) {
-	h := presentation.NewAuthHandler(&mockUserService{}, &mockTokenService{}, false)
+	h := users.NewAuthHandler(&mockUserService{}, &mockTokenService{}, false)
 	r := setupRouter(h)
 	r.POST("/auth/refresh", h.Refresh)
 
@@ -281,7 +279,7 @@ func TestHandler_Refresh_MissingToken(t *testing.T) {
 
 func TestHandler_Logout_ClearsCookies(t *testing.T) {
 	ts := &mockTokenService{}
-	h := presentation.NewAuthHandler(&mockUserService{}, ts, false)
+	h := users.NewAuthHandler(&mockUserService{}, ts, false)
 	r := setupRouter(h)
 	r.POST("/auth/logout", func(c *gin.Context) {
 		c.Set("userID", uint(1))

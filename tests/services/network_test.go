@@ -7,30 +7,28 @@ import (
 
 	"github.com/charmbracelet/log"
 
-	netservice "system-stats/internal/modules/network/application"
-	netentities "system-stats/internal/modules/network/infrastructure/entities"
-	netrepos "system-stats/internal/modules/network/infrastructure/repositories"
+	network "system-stats/internal/metrics/network"
 )
 
 type mockNetworkRepository struct {
 	saveErr           error
-	latestMetric      netentities.NetworkMetric
+	latestMetric      network.NetworkMetric
 	latestErr         error
-	historicalMetrics []netentities.NetworkMetric
+	historicalMetrics []network.NetworkMetric
 	historicalErr     error
 	saveCalled        bool
 }
 
-func (m *mockNetworkRepository) SaveCurrentMetric(_ context.Context, _ netentities.NetworkMetric, _ uint) error {
+func (m *mockNetworkRepository) SaveCurrentMetric(_ context.Context, _ network.NetworkMetric, _ uint) error {
 	m.saveCalled = true
 	return m.saveErr
 }
 
-func (m *mockNetworkRepository) GetLatestMetric(_ context.Context) (netentities.NetworkMetric, error) {
+func (m *mockNetworkRepository) GetLatestMetric(_ context.Context) (network.NetworkMetric, error) {
 	return m.latestMetric, m.latestErr
 }
 
-func (m *mockNetworkRepository) GetLatestMetricByHost(_ context.Context, _ uint) (*netentities.NetworkMetric, error) {
+func (m *mockNetworkRepository) GetLatestMetricByHost(_ context.Context, _ uint) (*network.NetworkMetric, error) {
 	if m.latestErr != nil {
 		return nil, m.latestErr
 	}
@@ -38,22 +36,22 @@ func (m *mockNetworkRepository) GetLatestMetricByHost(_ context.Context, _ uint)
 	return &cp, nil
 }
 
-func (m *mockNetworkRepository) GetHistoricalMetrics(_ context.Context, _ float64) ([]netentities.NetworkMetric, error) {
+func (m *mockNetworkRepository) GetHistoricalMetrics(_ context.Context, _ float64) ([]network.NetworkMetric, error) {
 	return m.historicalMetrics, m.historicalErr
 }
 
-func (m *mockNetworkRepository) GetHistoricalMetricsByHost(_ context.Context, _ uint, _ float64) ([]netentities.NetworkMetric, error) {
+func (m *mockNetworkRepository) GetHistoricalMetricsByHost(_ context.Context, _ uint, _ float64) ([]network.NetworkMetric, error) {
 	return m.historicalMetrics, m.historicalErr
 }
 
-var _ netrepos.NetworkRepository = (*mockNetworkRepository)(nil)
+var _ network.Repository = (*mockNetworkRepository)(nil)
 
-func newNetworkService(repo netrepos.NetworkRepository) netservice.Service {
-	return netservice.NewService(log.Default(), repo)
+func newNetworkService(repo network.Repository) network.Service {
+	return network.NewService(log.Default(), repo)
 }
 
 func TestNetwork_GetHistorical_Success(t *testing.T) {
-	want := []netentities.NetworkMetric{{}, {}}
+	want := []network.NetworkMetric{{}, {}}
 	svc := newNetworkService(&mockNetworkRepository{historicalMetrics: want})
 
 	got, err := svc.GetHistorical(context.Background(), 1.0)
@@ -76,7 +74,7 @@ func TestNetwork_GetHistorical_RepoError(t *testing.T) {
 }
 
 func TestNetwork_GetHistoricalByHost_Success(t *testing.T) {
-	want := []netentities.NetworkMetric{{}}
+	want := []network.NetworkMetric{{}}
 	svc := newNetworkService(&mockNetworkRepository{historicalMetrics: want})
 
 	got, err := svc.GetHistoricalByHost(context.Background(), 1, 1.0)
@@ -92,7 +90,7 @@ func TestNetwork_Save_CallsRepository(t *testing.T) {
 	mock := &mockNetworkRepository{}
 	svc := newNetworkService(mock)
 
-	if err := svc.Save(context.Background(), netentities.NetworkMetric{}, 1); err != nil {
+	if err := svc.Save(context.Background(), network.NetworkMetric{}, 1); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !mock.saveCalled {
@@ -104,7 +102,7 @@ func TestNetwork_Save_RepoError(t *testing.T) {
 	repoErr := errors.New("save error")
 	svc := newNetworkService(&mockNetworkRepository{saveErr: repoErr})
 
-	err := svc.Save(context.Background(), netentities.NetworkMetric{}, 1)
+	err := svc.Save(context.Background(), network.NetworkMetric{}, 1)
 	if !errors.Is(err, repoErr) {
 		t.Errorf("expected repo error, got %v", err)
 	}

@@ -7,30 +7,28 @@ import (
 
 	"github.com/charmbracelet/log"
 
-	diskservice "system-stats/internal/modules/disk/application"
-	diskentities "system-stats/internal/modules/disk/infrastructure/entities"
-	diskrepos "system-stats/internal/modules/disk/infrastructure/repositories"
+	disk "system-stats/internal/metrics/disk"
 )
 
 type mockDiskRepository struct {
 	saveErr           error
-	latestMetric      diskentities.DiskMetric
+	latestMetric      disk.DiskMetric
 	latestErr         error
-	historicalMetrics []diskentities.HistoricalDiskMetric
+	historicalMetrics []disk.HistoricalDiskMetric
 	historicalErr     error
 	saveCalled        bool
 }
 
-func (m *mockDiskRepository) SaveCurrentMetric(_ context.Context, _ diskentities.DiskMetric, _ uint) error {
+func (m *mockDiskRepository) SaveCurrentMetric(_ context.Context, _ disk.DiskMetric, _ uint) error {
 	m.saveCalled = true
 	return m.saveErr
 }
 
-func (m *mockDiskRepository) GetLatestMetric(_ context.Context) (diskentities.DiskMetric, error) {
+func (m *mockDiskRepository) GetLatestMetric(_ context.Context) (disk.DiskMetric, error) {
 	return m.latestMetric, m.latestErr
 }
 
-func (m *mockDiskRepository) GetLatestMetricByHost(_ context.Context, _ uint) (*diskentities.DiskMetric, error) {
+func (m *mockDiskRepository) GetLatestMetricByHost(_ context.Context, _ uint) (*disk.DiskMetric, error) {
 	if m.latestErr != nil {
 		return nil, m.latestErr
 	}
@@ -38,22 +36,22 @@ func (m *mockDiskRepository) GetLatestMetricByHost(_ context.Context, _ uint) (*
 	return &cp, nil
 }
 
-func (m *mockDiskRepository) GetHistoricalMetrics(_ context.Context, _ float64) ([]diskentities.HistoricalDiskMetric, error) {
+func (m *mockDiskRepository) GetHistoricalMetrics(_ context.Context, _ float64) ([]disk.HistoricalDiskMetric, error) {
 	return m.historicalMetrics, m.historicalErr
 }
 
-func (m *mockDiskRepository) GetHistoricalMetricsByHost(_ context.Context, _ uint, _ float64) ([]diskentities.HistoricalDiskMetric, error) {
+func (m *mockDiskRepository) GetHistoricalMetricsByHost(_ context.Context, _ uint, _ float64) ([]disk.HistoricalDiskMetric, error) {
 	return m.historicalMetrics, m.historicalErr
 }
 
-var _ diskrepos.DiskRepository = (*mockDiskRepository)(nil)
+var _ disk.Repository = (*mockDiskRepository)(nil)
 
-func newDiskService(repo diskrepos.DiskRepository) diskservice.Service {
-	return diskservice.NewService(log.Default(), repo)
+func newDiskService(repo disk.Repository) disk.Service {
+	return disk.NewService(log.Default(), repo)
 }
 
 func TestDisk_GetLatest_Success(t *testing.T) {
-	want := diskentities.DiskMetric{UsagePercent: 55.0, Total: 1000}
+	want := disk.DiskMetric{UsagePercent: 55.0, Total: 1000}
 	svc := newDiskService(&mockDiskRepository{latestMetric: want})
 
 	got, err := svc.GetLatest(context.Background())
@@ -76,7 +74,7 @@ func TestDisk_GetLatest_RepoError(t *testing.T) {
 }
 
 func TestDisk_GetHistorical_Success(t *testing.T) {
-	want := []diskentities.HistoricalDiskMetric{{UsagePercent: 40}, {UsagePercent: 50}}
+	want := []disk.HistoricalDiskMetric{{UsagePercent: 40}, {UsagePercent: 50}}
 	svc := newDiskService(&mockDiskRepository{historicalMetrics: want})
 
 	got, err := svc.GetHistorical(context.Background(), 1.0)
@@ -102,7 +100,7 @@ func TestDisk_Save_CallsRepository(t *testing.T) {
 	mock := &mockDiskRepository{}
 	svc := newDiskService(mock)
 
-	if err := svc.Save(context.Background(), diskentities.DiskMetric{}, 1); err != nil {
+	if err := svc.Save(context.Background(), disk.DiskMetric{}, 1); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !mock.saveCalled {

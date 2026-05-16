@@ -7,7 +7,7 @@ import (
 
 	"gorm.io/gorm"
 
-	hostservice "system-stats/internal/modules/hosts/application"
+	hosts "system-stats/internal/cluster/hosts"
 )
 
 // ErrHostNotFound is returned when the query references a host_id that does not exist in the database.
@@ -15,9 +15,9 @@ var ErrHostNotFound = errors.New("host not found")
 
 // EffectiveHostID maps the optional host_id query parameter to a concrete DB host row.
 // Zero means "this server instance" (current host by MAC upsert flow).
-func EffectiveHostID(ctx context.Context, hosts hostservice.Service, queryHostID uint) (uint, error) {
+func EffectiveHostID(ctx context.Context, hostSvc hosts.Service, queryHostID uint) (uint, error) {
 	if queryHostID > 0 {
-		_, err := hosts.GetHostByID(ctx, queryHostID)
+		_, err := hostSvc.GetHostByID(ctx, queryHostID)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return 0, ErrHostNotFound
@@ -26,7 +26,7 @@ func EffectiveHostID(ctx context.Context, hosts hostservice.Service, queryHostID
 		}
 		return queryHostID, nil
 	}
-	h, err := hosts.GetCurrentHost(ctx)
+	h, err := hostSvc.GetCurrentHost(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -35,8 +35,8 @@ func EffectiveHostID(ctx context.Context, hosts hostservice.Service, queryHostID
 
 // IsRemoteHost reports whether effectiveHostID refers to a machine other than this process.
 // Used for sensors (always local) and SSE (only local collector produces live events).
-func IsRemoteHost(ctx context.Context, hosts hostservice.Service, effectiveHostID uint) (bool, error) {
-	current, err := hosts.GetCurrentHost(ctx)
+func IsRemoteHost(ctx context.Context, hostSvc hosts.Service, effectiveHostID uint) (bool, error) {
+	current, err := hostSvc.GetCurrentHost(ctx)
 	if err != nil {
 		return false, err
 	}

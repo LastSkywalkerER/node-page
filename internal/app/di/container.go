@@ -1,6 +1,3 @@
- // Package di provides dependency injection container for managing application dependencies.
- // This package implements the dependency injection pattern to wire together all components
- // of the system statistics application, ensuring proper initialization and lifecycle management.
 package di
 
 import (
@@ -12,151 +9,115 @@ import (
 	"system-stats/internal/app/database"
 	"system-stats/internal/app/stream"
 
-	cpuservice "system-stats/internal/modules/cpu/application"
-	cpurepos "system-stats/internal/modules/cpu/infrastructure/repositories"
-	diskservice "system-stats/internal/modules/disk/application"
-	diskrepos "system-stats/internal/modules/disk/infrastructure/repositories"
-	dockerservice "system-stats/internal/modules/docker/application"
-	dockerdomain "system-stats/internal/modules/docker/domain/repositories"
-	dockercollectors "system-stats/internal/modules/docker/infrastructure/collectors"
-	dockerrepos "system-stats/internal/modules/docker/infrastructure/repositories"
-	healthservice "system-stats/internal/modules/health/application"
-	historyapp "system-stats/internal/modules/history_metrics/application"
-	historycore "system-stats/internal/modules/history_metrics/core"
-	hostservice "system-stats/internal/modules/hosts/application"
-	invservice "system-stats/internal/modules/invitations/application"
-	invrepos "system-stats/internal/modules/invitations/infrastructure/repositories"
-	nodeservice "system-stats/internal/modules/nodes/application"
-	noderepos "system-stats/internal/modules/nodes/infrastructure/repositories"
-	hostrepos "system-stats/internal/modules/hosts/infrastructure/repositories"
-	memoryservice "system-stats/internal/modules/memory/application"
-	memoryrepos "system-stats/internal/modules/memory/infrastructure/repositories"
-	networkservice "system-stats/internal/modules/network/application"
-	networkrepos "system-stats/internal/modules/network/infrastructure/repositories"
-	sensorsservice "system-stats/internal/modules/sensors/application"
-	systemsrv "system-stats/internal/modules/system/application"
-	userapp "system-stats/internal/modules/users/application"
-	userrepos "system-stats/internal/modules/users/infrastructure/repositories"
+	invitations "system-stats/internal/auth/invitations"
+	users "system-stats/internal/auth/users"
+	hosts "system-stats/internal/cluster/hosts"
+	nodes "system-stats/internal/cluster/nodes"
+	cpu "system-stats/internal/metrics/cpu"
+	disk "system-stats/internal/metrics/disk"
+	docker "system-stats/internal/metrics/docker"
+	memory "system-stats/internal/metrics/memory"
+	network "system-stats/internal/metrics/network"
+	sensors "system-stats/internal/metrics/sensors"
+	health "system-stats/internal/platform/health"
+	history "system-stats/internal/platform/history"
+	system "system-stats/internal/platform/system"
 
 	"github.com/charmbracelet/log"
 )
 
- // Container represents the dependency injection container that holds all application dependencies.
- // This struct manages the lifecycle of all services, repositories, handlers, and infrastructure
- // components, providing getter methods for accessing initialized instances.
+// Container holds all application dependencies.
 type Container struct {
-	// logger provides structured logging throughout the application
 	logger *log.Logger
 	db     *gorm.DB
 
-	// repositories for each metric type
-	cpuRepository     cpurepos.CPURepository
-	memoryRepository  memoryrepos.MemoryRepository
-	diskRepository    diskrepos.DiskRepository
-	networkRepository networkrepos.NetworkRepository
-	dockerRepository  dockerdomain.DockerRepository
-	hostRepository    hostrepos.HostRepository
+	cpuRepository     cpu.Repository
+	memoryRepository  memory.Repository
+	diskRepository    disk.Repository
+	networkRepository network.Repository
+	dockerRepository  docker.DockerRepository
+	hostRepository    hosts.Repository
 
-	// user repositories
-	userRepository         userrepos.UserRepository
-	refreshTokenRepository userrepos.RefreshTokenRepository
+	userRepository         users.UserRepository
+	refreshTokenRepository users.RefreshTokenRepository
 
-	// individual services for each metric type
-	cpuService     cpuservice.Service
-	memoryService  memoryservice.Service
-	diskService    diskservice.Service
-	networkService networkservice.Service
-	dockerService  dockerservice.Service
-	hostService    hostservice.Service
-	healthService  healthservice.Service
+	cpuService     cpu.Service
+	memoryService  memory.Service
+	diskService    disk.Service
+	networkService network.Service
+	dockerService  docker.Service
+	hostService    hosts.Service
+	healthService  health.Service
 
-	// user services
-	userService  userapp.UserService
-	tokenService userapp.TokenService
+	userService  users.UserService
+	tokenService users.TokenService
 
-	// invitation
-	invRepository invrepos.InvitationRepository
-	invService    invservice.Service
+	invRepository invitations.Repository
+	invService    invitations.Service
 
-	// nodes
-	nodeJoinTokenRepo noderepos.NodeJoinTokenRepository
-	nodeCredRepo      noderepos.NodeCredentialRepository
-	nodeService       nodeservice.Service
+	nodeJoinTokenRepo nodes.JoinTokenRepository
+	nodeCredRepo      nodes.CredentialRepository
+	nodeService       nodes.Service
 
-	// systemService provides aggregated system metrics
-	systemService systemsrv.Service
+	systemService            system.Service
+	historicalMetricsService history.HistoricalMetricsService
+	sensorsService           sensors.Service
 
-	// historicalMetricsService manages historical metrics collection and storage
-	historicalMetricsService historycore.HistoricalMetricsService
-
-	// sensors service
-	sensorsService sensorsservice.Service
-
-	// broker for SSE real-time metrics streaming
 	broker *stream.Broker
 }
 
- // NewContainer creates a new dependency injection container with all application dependencies.
- // This constructor initializes the database, creates all repositories, services, collectors,
- // cache instances, and command/query handlers in the correct dependency order.
+// NewContainer creates a new dependency injection container.
 func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret, refreshSecret string, startTime time.Time) (*Container, error) {
 	container := &Container{
 		logger: logger,
 		broker: stream.NewBroker(),
 	}
 
-	// Initialize GORM database connection
 	db, err := database.Initialize(dbConfig)
 	if err != nil {
 		return nil, err
 	}
 
-	// Perform database migrations
 	if err := database.Migrate(db); err != nil {
 		return nil, err
 	}
 
 	container.db = db
 
-	// Create repositories for each module
-	container.cpuRepository = cpurepos.NewCPURepository(db)
-	container.memoryRepository = memoryrepos.NewMemoryRepository(db)
-	container.diskRepository = diskrepos.NewDiskRepository(db)
-	container.networkRepository = networkrepos.NewNetworkRepository(db)
-	container.dockerRepository = dockerrepos.NewDockerRepository(db)
-	container.hostRepository = hostrepos.NewHostRepository(db)
-	container.nodeJoinTokenRepo = noderepos.NewNodeJoinTokenRepository(db)
-	container.nodeCredRepo = noderepos.NewNodeCredentialRepository(db)
+	container.cpuRepository = cpu.NewRepository(db)
+	container.memoryRepository = memory.NewRepository(db)
+	container.diskRepository = disk.NewRepository(db)
+	container.networkRepository = network.NewRepository(db)
+	container.dockerRepository = docker.NewRepository(db)
+	container.hostRepository = hosts.NewRepository(db)
+	container.nodeJoinTokenRepo = nodes.NewJoinTokenRepository(db)
+	container.nodeCredRepo = nodes.NewCredentialRepository(db)
 
-	// Create user repositories
-	container.userRepository = userrepos.NewUserRepository(db)
-	container.refreshTokenRepository = userrepos.NewRefreshTokenRepository(db)
+	container.userRepository = users.NewUserRepository(db)
+	container.refreshTokenRepository = users.NewRefreshTokenRepository(db)
 
-	// Create individual services for each metric type
-	container.cpuService = cpuservice.NewService(container.logger, container.cpuRepository)
-	container.memoryService = memoryservice.NewService(container.logger, container.memoryRepository)
-	container.diskService = diskservice.NewService(container.logger, container.diskRepository)
-	container.networkService = networkservice.NewService(container.logger, container.networkRepository)
-	container.dockerService = dockerservice.NewService(container.logger, dockercollectors.NewDockerMetricsCollector(container.logger), container.dockerRepository)
-	container.hostService = hostservice.NewService(container.logger, container.hostRepository, container.nodeCredRepo)
-	container.healthService = healthservice.NewService(container.logger, container.hostRepository, container.nodeCredRepo, startTime)
-	container.sensorsService = sensorsservice.NewService(container.logger)
+	container.cpuService = cpu.NewService(container.logger, container.cpuRepository)
+	container.memoryService = memory.NewService(container.logger, container.memoryRepository)
+	container.diskService = disk.NewService(container.logger, container.diskRepository)
+	container.networkService = network.NewService(container.logger, container.networkRepository)
+	container.dockerService = docker.NewService(container.logger, docker.NewDockerCollector(container.logger), container.dockerRepository)
+	container.hostService = hosts.NewService(container.logger, container.hostRepository, container.nodeCredRepo)
+	container.healthService = health.NewService(container.logger, container.hostRepository, container.nodeCredRepo, startTime)
+	container.sensorsService = sensors.NewService(container.logger)
 
-	// Create user services (using JWT secrets from configuration)
-	container.tokenService = userapp.NewTokenService(
+	container.tokenService = users.NewTokenService(
 		container.refreshTokenRepository,
 		jwtSecret,
 		refreshSecret,
-		15*time.Minute, // access TTL
-		720*time.Hour,  // refresh TTL (30 days)
+		15*time.Minute,
+		720*time.Hour,
 	)
-	container.invRepository = invrepos.NewInvitationRepository(db)
-	container.invService = invservice.NewService(logger, container.invRepository)
-	container.nodeService = nodeservice.NewService(logger, container.nodeJoinTokenRepo, container.nodeCredRepo, container.hostRepository)
-	container.userService = userapp.NewUserService(container.userRepository, container.tokenService, container.invService)
+	container.invRepository = invitations.NewRepository(db)
+	container.invService = invitations.NewService(logger, container.invRepository)
+	container.nodeService = nodes.NewService(logger, container.nodeJoinTokenRepo, container.nodeCredRepo, container.hostRepository)
+	container.userService = users.NewUserService(container.userRepository, container.tokenService, container.invService)
 
-	// Create system service that aggregates all metrics
-	container.systemService = systemsrv.NewService(
+	container.systemService = system.NewService(
 		container.logger,
 		container.cpuService,
 		container.memoryService,
@@ -165,15 +126,14 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 		container.dockerService,
 	)
 
-	// Create historical metrics service
-	metricsCollector := historyapp.NewMetricsCollector(
+	metricsCollector := history.NewMetricsCollector(
 		container.cpuService,
 		container.memoryService,
 		container.diskService,
 		container.networkService,
 		container.dockerService,
 	)
-	container.historicalMetricsService = historyapp.NewHistoricalMetricsService(
+	container.historicalMetricsService = history.NewHistoricalMetricsService(
 		container.logger,
 		metricsCollector,
 		container.hostService,
@@ -182,89 +142,70 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 	return container, nil
 }
 
-// Dependency getters - provide access to initialized components
-
- // GetLogger returns the logger instance.
 func (c *Container) GetLogger() *log.Logger {
 	return c.logger
 }
 
- // GetCPUService returns the CPU metrics service instance.
-func (c *Container) GetCPUService() cpuservice.Service {
+func (c *Container) GetCPUService() cpu.Service {
 	return c.cpuService
 }
 
- // GetMemoryService returns the memory metrics service instance.
-func (c *Container) GetMemoryService() memoryservice.Service {
+func (c *Container) GetMemoryService() memory.Service {
 	return c.memoryService
 }
 
- // GetDiskService returns the disk metrics service instance.
-func (c *Container) GetDiskService() diskservice.Service {
+func (c *Container) GetDiskService() disk.Service {
 	return c.diskService
 }
 
- // GetNetworkService returns the network metrics service instance.
-func (c *Container) GetNetworkService() networkservice.Service {
+func (c *Container) GetNetworkService() network.Service {
 	return c.networkService
 }
 
- // GetDockerService returns the docker metrics service instance.
-func (c *Container) GetDockerService() dockerservice.Service {
+func (c *Container) GetDockerService() docker.Service {
 	return c.dockerService
 }
 
- // GetHostService returns the host service instance.
-func (c *Container) GetHostService() hostservice.Service {
+func (c *Container) GetHostService() hosts.Service {
 	return c.hostService
 }
 
- // GetHealthService returns the health service instance.
-func (c *Container) GetHealthService() healthservice.Service {
+func (c *Container) GetHealthService() health.Service {
 	return c.healthService
 }
 
- // GetSystemService returns the system metrics service instance.
-func (c *Container) GetSystemService() systemsrv.Service {
+func (c *Container) GetSystemService() system.Service {
 	return c.systemService
 }
 
-// GetSensorsService returns the sensors service instance.
-func (c *Container) GetSensorsService() sensorsservice.Service {
+func (c *Container) GetSensorsService() sensors.Service {
 	return c.sensorsService
 }
 
- // GetUserService returns the user service instance.
-func (c *Container) GetUserService() userapp.UserService {
+func (c *Container) GetUserService() users.UserService {
 	return c.userService
 }
 
- // GetTokenService returns the token service instance.
-func (c *Container) GetTokenService() userapp.TokenService {
+func (c *Container) GetTokenService() users.TokenService {
 	return c.tokenService
 }
 
-// GetInvitationService returns the invitation service instance.
-func (c *Container) GetInvitationService() invservice.Service {
+func (c *Container) GetInvitationService() invitations.Service {
 	return c.invService
 }
 
-// GetNodeService returns the nodes service instance.
-func (c *Container) GetNodeService() nodeservice.Service {
+func (c *Container) GetNodeService() nodes.Service {
 	return c.nodeService
 }
 
- // GetHistoricalMetricsService returns the historical metrics service instance.
-func (c *Container) GetHistoricalMetricsService() historycore.HistoricalMetricsService {
+func (c *Container) GetHistoricalMetricsService() history.HistoricalMetricsService {
 	return c.historicalMetricsService
 }
 
-// GetDB returns the underlying GORM database instance.
 func (c *Container) GetDB() *gorm.DB {
 	return c.db
 }
 
-// GetBroker returns the SSE metrics broker.
 func (c *Container) GetBroker() *stream.Broker {
 	return c.broker
 }

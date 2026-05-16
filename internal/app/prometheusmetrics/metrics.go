@@ -11,10 +11,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	cpuservice "system-stats/internal/modules/cpu/application"
-	diskservice "system-stats/internal/modules/disk/application"
-	memoryservice "system-stats/internal/modules/memory/application"
-	networkservice "system-stats/internal/modules/network/application"
+	cpu "system-stats/internal/metrics/cpu"
+	disk "system-stats/internal/metrics/disk"
+	memory "system-stats/internal/metrics/memory"
+	network "system-stats/internal/metrics/network"
 )
 
 // Metrics holds a dedicated Prometheus registry and all application metric instruments.
@@ -27,10 +27,10 @@ type Metrics struct {
 // New creates a Prometheus registry populated with Go runtime metrics, process metrics,
 // system metrics (CPU/RAM/disk/network), and HTTP request metrics.
 func New(
-	cpuSvc cpuservice.Service,
-	memSvc memoryservice.Service,
-	diskSvc diskservice.Service,
-	netSvc networkservice.Service,
+	cpuSvc cpu.Service,
+	memSvc memory.Service,
+	diskSvc disk.Service,
+	netSvc network.Service,
 ) *Metrics {
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(

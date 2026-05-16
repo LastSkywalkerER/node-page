@@ -7,10 +7,10 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	cpuservice "system-stats/internal/modules/cpu/application"
-	diskservice "system-stats/internal/modules/disk/application"
-	memoryservice "system-stats/internal/modules/memory/application"
-	networkservice "system-stats/internal/modules/network/application"
+	cpu "system-stats/internal/metrics/cpu"
+	disk "system-stats/internal/metrics/disk"
+	memory "system-stats/internal/metrics/memory"
+	network "system-stats/internal/metrics/network"
 )
 
 var (
@@ -33,14 +33,14 @@ var (
 
 // SystemCollector implements prometheus.Collector and exposes live system metrics.
 type SystemCollector struct {
-	cpu     cpuservice.Service
-	memory  memoryservice.Service
-	disk    diskservice.Service
-	network networkservice.Service
+	cpu     cpu.Service
+	memory  memory.Service
+	disk    disk.Service
+	network network.Service
 }
 
-func newSystemCollector(cpu cpuservice.Service, mem memoryservice.Service, disk diskservice.Service, net networkservice.Service) *SystemCollector {
-	return &SystemCollector{cpu: cpu, memory: mem, disk: disk, network: net}
+func newSystemCollector(c cpu.Service, mem memory.Service, d disk.Service, net network.Service) *SystemCollector {
+	return &SystemCollector{cpu: c, memory: mem, disk: d, network: net}
 }
 
 // Describe sends all descriptor pointers to the channel.

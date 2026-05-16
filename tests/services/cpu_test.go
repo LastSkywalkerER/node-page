@@ -7,30 +7,28 @@ import (
 
 	"github.com/charmbracelet/log"
 
-	cpuservice "system-stats/internal/modules/cpu/application"
-	cpuentities "system-stats/internal/modules/cpu/infrastructure/entities"
-	cpurepos "system-stats/internal/modules/cpu/infrastructure/repositories"
+	cpu "system-stats/internal/metrics/cpu"
 )
 
 type mockCPURepository struct {
 	saveErr           error
-	latestMetric      cpuentities.CPUMetric
+	latestMetric      cpu.CPUMetric
 	latestErr         error
-	historicalMetrics []cpuentities.HistoricalCPUMetric
+	historicalMetrics []cpu.HistoricalCPUMetric
 	historicalErr     error
 	saveCalled        bool
 }
 
-func (m *mockCPURepository) SaveCurrentMetric(_ context.Context, _ cpuentities.CPUMetric, _ uint) error {
+func (m *mockCPURepository) SaveCurrentMetric(_ context.Context, _ cpu.CPUMetric, _ uint) error {
 	m.saveCalled = true
 	return m.saveErr
 }
 
-func (m *mockCPURepository) GetLatestMetric(_ context.Context) (cpuentities.CPUMetric, error) {
+func (m *mockCPURepository) GetLatestMetric(_ context.Context) (cpu.CPUMetric, error) {
 	return m.latestMetric, m.latestErr
 }
 
-func (m *mockCPURepository) GetLatestMetricByHost(_ context.Context, _ uint) (*cpuentities.CPUMetric, error) {
+func (m *mockCPURepository) GetLatestMetricByHost(_ context.Context, _ uint) (*cpu.CPUMetric, error) {
 	if m.latestErr != nil {
 		return nil, m.latestErr
 	}
@@ -38,22 +36,22 @@ func (m *mockCPURepository) GetLatestMetricByHost(_ context.Context, _ uint) (*c
 	return &cp, nil
 }
 
-func (m *mockCPURepository) GetHistoricalMetrics(_ context.Context, _ float64) ([]cpuentities.HistoricalCPUMetric, error) {
+func (m *mockCPURepository) GetHistoricalMetrics(_ context.Context, _ float64) ([]cpu.HistoricalCPUMetric, error) {
 	return m.historicalMetrics, m.historicalErr
 }
 
-func (m *mockCPURepository) GetHistoricalMetricsByHost(_ context.Context, _ uint, _ float64) ([]cpuentities.HistoricalCPUMetric, error) {
+func (m *mockCPURepository) GetHistoricalMetricsByHost(_ context.Context, _ uint, _ float64) ([]cpu.HistoricalCPUMetric, error) {
 	return m.historicalMetrics, m.historicalErr
 }
 
-var _ cpurepos.CPURepository = (*mockCPURepository)(nil)
+var _ cpu.Repository = (*mockCPURepository)(nil)
 
-func newCPUService(repo cpurepos.CPURepository) cpuservice.Service {
-	return cpuservice.NewService(log.Default(), repo)
+func newCPUService(repo cpu.Repository) cpu.Service {
+	return cpu.NewService(log.Default(), repo)
 }
 
 func TestCPU_GetLatest_Success(t *testing.T) {
-	want := cpuentities.CPUMetric{UsagePercent: 42.5, Cores: 4}
+	want := cpu.CPUMetric{UsagePercent: 42.5, Cores: 4}
 	svc := newCPUService(&mockCPURepository{latestMetric: want})
 
 	got, err := svc.GetLatest(context.Background())
@@ -79,7 +77,7 @@ func TestCPU_Save_Success(t *testing.T) {
 	mock := &mockCPURepository{}
 	svc := newCPUService(mock)
 
-	err := svc.Save(context.Background(), cpuentities.CPUMetric{UsagePercent: 10}, 1)
+	err := svc.Save(context.Background(), cpu.CPUMetric{UsagePercent: 10}, 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,14 +90,14 @@ func TestCPU_Save_RepoError(t *testing.T) {
 	repoErr := errors.New("save failed")
 	svc := newCPUService(&mockCPURepository{saveErr: repoErr})
 
-	err := svc.Save(context.Background(), cpuentities.CPUMetric{}, 1)
+	err := svc.Save(context.Background(), cpu.CPUMetric{}, 1)
 	if !errors.Is(err, repoErr) {
 		t.Errorf("expected repo error, got %v", err)
 	}
 }
 
 func TestCPU_GetHistorical_Success(t *testing.T) {
-	want := []cpuentities.HistoricalCPUMetric{{Usage: 55.0}, {Usage: 60.0}}
+	want := []cpu.HistoricalCPUMetric{{Usage: 55.0}, {Usage: 60.0}}
 	svc := newCPUService(&mockCPURepository{historicalMetrics: want})
 
 	got, err := svc.GetHistorical(context.Background(), 1.0)
@@ -122,7 +120,7 @@ func TestCPU_GetHistorical_RepoError(t *testing.T) {
 }
 
 func TestCPU_GetHistoricalByHost_Success(t *testing.T) {
-	want := []cpuentities.HistoricalCPUMetric{{Usage: 30.0}}
+	want := []cpu.HistoricalCPUMetric{{Usage: 30.0}}
 	svc := newCPUService(&mockCPURepository{historicalMetrics: want})
 
 	got, err := svc.GetHistoricalByHost(context.Background(), 2, 0.5)

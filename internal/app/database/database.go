@@ -4,14 +4,15 @@ package database
 
 import (
 	"fmt"
+	"log"
 	"os"
+	"strings"
 	"time"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
-	"log"
 
 	"system-stats/internal/app/config"
 )
@@ -47,27 +48,29 @@ func initSQLite(dbConfig config.DatabaseConfig) (*gorm.DB, error) {
 	if dsn == "" {
 		dsn = "stats.db"
 	}
+	// Embed PRAGMAs in the DSN so every connection in the pool (not just the
+	// first one) gets WAL mode, a generous busy-timeout, and foreign-key checks.
+	// WAL lets multiple readers run alongside one writer; _busy_timeout=30000
+	// survives brief lock contention during hot-reloads or concurrent opens.
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	dsn += sep + "_journal_mode=WAL&_busy_timeout=30000&_foreign_keys=on&_synchronous=NORMAL"
 
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: quietLogger()})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to SQLite database: %w", err)
 	}
 
-	if err := db.Exec("PRAGMA journal_mode=WAL;").Error; err != nil {
-		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
-	}
-	if err := db.Exec("PRAGMA busy_timeout = 5000;").Error; err != nil {
-		return nil, fmt.Errorf("failed to set busy timeout: %w", err)
-	}
-	if err := db.Exec("PRAGMA foreign_keys = ON;").Error; err != nil {
-		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
-	}
-
 	sqlDB, err := db.DB()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get sql.DB: %w", err)
 	}
-	// SQLite supports a single writer to avoid "database is locked" errors.
+	// Single connection: SQLite allows only one writer; with one connection
+	// all access is serialised by Go's pool with zero SQLite-level contention.
+	// busy_timeout in the DSN handles the only real concurrent-access case:
+	// a brief overlap when Air hot-reloads the process.
 	sqlDB.SetMaxOpenConns(1)
 
 	return db, nil
