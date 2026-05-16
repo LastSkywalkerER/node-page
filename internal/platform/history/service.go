@@ -62,8 +62,10 @@ func WithAfterCollect(svc HistoricalMetricsService, fn func()) HistoricalMetrics
 func (s *historicalMetricsService) CollectAndSaveMetrics(ctx context.Context) error {
 	s.logger.Debug("Starting metrics collection cycle for all modules")
 
-	// First, register or update current host
-	host, err := s.hostService.RegisterOrUpdateCurrentHost(ctx)
+	// First, register or update current host.
+	regCtx, regCancel := context.WithTimeout(ctx, 10*time.Second)
+	host, err := s.hostService.RegisterOrUpdateCurrentHost(regCtx)
+	regCancel()
 	if err != nil {
 		s.logger.Error("Failed to register/update current host", "error", err)
 		return err
@@ -72,13 +74,16 @@ func (s *historicalMetricsService) CollectAndSaveMetrics(ctx context.Context) er
 	hostId := host.ID
 	s.logger.Debug("Current host registered/updated", "host_id", hostId, "name", host.Name)
 
-	// Collect and save metrics for all modules with host_id
+	// Collect and save metrics for all modules with host_id.
+	// Each service gets its own 15-second deadline so a slow or hung collector
+	// (e.g. Docker on macOS) cannot stall the entire periodic goroutine.
 	for _, service := range s.metricsCollector.services {
-		// Collect and save metrics
-		err := service.CollectAndSave(ctx, hostId)
+		serviceCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		err := service.CollectAndSave(serviceCtx, hostId)
+		cancel()
 		if err != nil {
 			s.logger.Error("Failed to collect and save metrics", "error", err, "host_id", hostId)
-			continue // Continue with other services even if one fails
+			continue
 		}
 	}
 
