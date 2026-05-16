@@ -187,10 +187,13 @@ func Run() {
 		logger.Info("Setup mode: waiting for initial setup to complete before collecting metrics")
 		onSetupComplete = func() {
 			logger.Info("Setup completed — starting metrics collection")
-			startMetrics()
+			go startMetrics()
 		}
 	} else {
-		startMetrics()
+		// Run startMetrics in a goroutine so the HTTP server can start
+		// accepting connections immediately instead of blocking on the first
+		// metrics collection cycle (CPU sampling alone takes ~1 s).
+		go startMetrics()
 	}
 
 	router := setupRouter(container, startTime, logger, cfg, onSetupComplete)
@@ -206,15 +209,21 @@ func Run() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
+	serverErr := make(chan error, 1)
 	go func() {
 		logger.Info("Starting server", "address", cfg.Addr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("Server error", "error", err)
+			logger.Error("Server failed to listen", "error", err)
+			serverErr <- err
 		}
 	}()
 
-	<-quit
-	logger.Info("Received interrupt signal, shutting down gracefully...")
+	select {
+	case <-quit:
+		logger.Info("Received interrupt signal, shutting down gracefully...")
+	case err := <-serverErr:
+		logger.Error("Server exited unexpectedly", "error", err)
+	}
 
 	historicalMetricsService.StopPeriodicCollection()
 
