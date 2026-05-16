@@ -63,7 +63,9 @@ func (s *historicalMetricsService) CollectAndSaveMetrics(ctx context.Context) er
 	s.logger.Debug("Starting metrics collection cycle for all modules")
 
 	// First, register or update current host.
-	regCtx, regCancel := context.WithTimeout(ctx, 10*time.Second)
+	// CollectHostInfo now uses its own internal timeout for the OS scan;
+	// this context only guards the DB upsert, so 10 s is ample.
+	regCtx, regCancel := context.WithTimeout(ctx, 20*time.Second)
 	host, err := s.hostService.RegisterOrUpdateCurrentHost(regCtx)
 	regCancel()
 	if err != nil {

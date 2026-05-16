@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/log"
 )
@@ -43,7 +44,12 @@ func NewService(logger *log.Logger, repo Repository, nodePushCreds nodePushCrede
 func (s *service) RegisterOrUpdateCurrentHost(ctx context.Context) (*Host, error) {
 	s.logger.Debug("Registering or updating local collector host", "host_id", LocalCollectorHostID)
 
-	hostInfo, err := s.collector.CollectHostInfo(ctx)
+	// CollectHostInfo scans OS and network interfaces; give it its own deadline
+	// so a slow IO-counter syscall (common on macOS with many Docker networks)
+	// does not consume the caller's DB-operation budget.
+	collectCtx, collectCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	hostInfo, err := s.collector.CollectHostInfo(collectCtx)
+	collectCancel()
 	if err != nil {
 		s.logger.Error("Failed to collect host information", "error", err)
 		return nil, err
@@ -112,13 +118,7 @@ func (s *service) GetAllHosts(ctx context.Context) ([]Host, error) {
 }
 
 func (s *service) GetCurrentHost(ctx context.Context) (*Host, error) {
-	s.logger.Debug("Getting current (local collector) host")
-	hostInfo, err := s.collector.CollectHostInfo(ctx)
-	if err != nil {
-		s.logger.Error("Failed to collect current host information", "error", err)
-		return nil, err
-	}
-	return s.hostRepository.UpsertLocalHost(ctx, hostInfo)
+	return s.hostRepository.GetHostByID(ctx, LocalCollectorHostID)
 }
 
 func (s *service) GetCurrentHostInfo(ctx context.Context) (HostInfo, error) {
