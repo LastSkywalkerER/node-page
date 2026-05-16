@@ -67,10 +67,11 @@ func initSQLite(dbConfig config.DatabaseConfig) (*gorm.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get sql.DB: %w", err)
 	}
-	// WAL supports concurrent readers; a small pool avoids serialising
-	// all reads behind writes (the old MaxOpenConns(1) behaviour).
-	sqlDB.SetMaxOpenConns(5)
-	sqlDB.SetMaxIdleConns(2)
+	// Single connection: SQLite allows only one writer; with one connection
+	// all access is serialised by Go's pool with zero SQLite-level contention.
+	// busy_timeout in the DSN handles the only real concurrent-access case:
+	// a brief overlap when Air hot-reloads the process.
+	sqlDB.SetMaxOpenConns(1)
 
 	return db, nil
 }
