@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/charmbracelet/log"
 	"github.com/gin-gonic/gin"
 
 	"system-stats/internal/app/apperror"
@@ -62,12 +63,16 @@ type UserResponse struct {
 }
 
 func (h *AuthHandler) setAuthCookies(c *gin.Context, accessToken, refreshToken string, expiresIn int64) {
+	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie("access_token", accessToken, int(15*60), "/", "", h.cookieSecure, true)
+	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie("refresh_token", refreshToken, int(30*24*3600), "/api/v1/auth", "", h.cookieSecure, true)
 }
 
 func (h *AuthHandler) clearAuthCookies(c *gin.Context) {
+	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie("access_token", "", -1, "/", "", h.cookieSecure, true)
+	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie("refresh_token", "", -1, "/api/v1/auth", "", h.cookieSecure, true)
 }
 
@@ -106,14 +111,18 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrRegistrationDisabled):
+			log.Warn("Registration attempt while disabled", "email", req.Email, "ip", c.ClientIP())
 			_ = c.Error(apperror.Forbidden("registration_disabled", "Registration is disabled. Users already exist in the system."))
 		case errors.Is(err, ErrInvitationEmailMismatch):
 			_ = c.Error(apperror.BadRequest("invitation_email_mismatch", "Email must match the invited address."))
 		case errors.Is(err, ErrInvalidInvitation):
+			log.Warn("Invalid invitation token used", "email", req.Email, "ip", c.ClientIP())
 			_ = c.Error(apperror.BadRequest("invalid_invitation", "Invalid or already used invitation link."))
 		case errors.Is(err, ErrEmailExists):
+			log.Warn("Registration with existing email", "email", req.Email, "ip", c.ClientIP())
 			_ = c.Error(apperror.Conflict("email_already_exists", "User with this email already exists"))
 		default:
+			log.Error("Registration error", "email", req.Email, "ip", c.ClientIP(), "error", err)
 			_ = c.Error(apperror.Internal("internal_error", "Failed to register user"))
 		}
 		return
@@ -160,8 +169,10 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	user, err := h.userService.Login(c.Request.Context(), req.Email, req.Password)
 	if err != nil {
 		if errors.Is(err, ErrInvalidCredentials) {
+			log.Warn("Login failed", "email", req.Email, "ip", c.ClientIP(), "ua", c.GetHeader("User-Agent"))
 			_ = c.Error(apperror.Unauthorized("invalid_credentials", "Invalid email or password"))
 		} else {
+			log.Error("Login error", "email", req.Email, "ip", c.ClientIP(), "error", err)
 			_ = c.Error(apperror.Internal("internal_error", "Failed to authenticate user"))
 		}
 		return
@@ -213,11 +224,26 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 	dbToken, err := h.tokenService.ValidateRefreshToken(c.Request.Context(), refreshToken)
 	if err != nil {
 		h.clearAuthCookies(c)
+		log.Warn("Refresh token rejected", "ip", c.ClientIP(), "ua", c.GetHeader("User-Agent"), "error", err)
 		if errors.Is(err, ErrAuthSecretsNotConfigured) {
 			_ = c.Error(apperror.Wrap(err, "auth_not_configured", "Complete initial setup or set JWT_SECRET and REFRESH_SECRET, then restart the server.", http.StatusServiceUnavailable))
 		} else {
 			_ = c.Error(apperror.Unauthorized("invalid_or_revoked_refresh", "Invalid or revoked refresh token"))
 		}
+		return
+	}
+
+	// Atomically consume the refresh token. Only the winner of any concurrent
+	// refresh race proceeds; replays and parallel losers get 401.
+	consumed, err := h.tokenService.ConsumeRefreshToken(c.Request.Context(), dbToken.JTI)
+	if err != nil {
+		_ = c.Error(apperror.Internal("internal_error", "Failed to consume refresh token"))
+		return
+	}
+	if !consumed {
+		h.clearAuthCookies(c)
+		log.Warn("Refresh token replay or concurrent reuse", "user_id", dbToken.UserID, "jti", dbToken.JTI, "ip", c.ClientIP())
+		_ = c.Error(apperror.Unauthorized("token_already_used", "Refresh token already used"))
 		return
 	}
 
@@ -229,11 +255,6 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 			_ = c.Error(apperror.Internal("token_generation_error", "Failed to generate tokens"))
 		}
 		return
-	}
-
-	// Revoke old token after successful generation
-	if err := h.tokenService.RevokeRefreshToken(c.Request.Context(), dbToken.JTI); err != nil {
-		c.Error(err)
 	}
 
 	h.setAuthCookies(c, tokenPair.AccessToken, tokenPair.RefreshToken, tokenPair.ExpiresIn)

@@ -59,6 +59,11 @@ type Config struct {
 
 	// Public URL of this server as seen by agents (Docker Desktop, reverse proxy). Used for join links and admin "agent setup".
 	PublicBaseURL string // PUBLIC_BASE_URL: optional override; if empty, derived from incoming HTTP request
+
+	// TrustedProxies is the comma-separated list of CIDRs (or IPs) of reverse proxies whose
+	// X-Forwarded-* headers may be trusted. Empty (default) means trust no proxy — c.ClientIP()
+	// returns the direct peer address and X-Forwarded-Host/Proto are ignored.
+	TrustedProxies []string
 }
 
 // Load loads application configuration from environment variables.
@@ -115,6 +120,15 @@ func Load() (*Config, error) {
 	config.MainNodeURL = strings.TrimSuffix(getEnv("MAIN_NODE_URL", ""), "/")
 	config.NodeAccessToken = getEnv("NODE_ACCESS_TOKEN", "")
 	config.PublicBaseURL = strings.TrimSuffix(strings.TrimSpace(getEnv("PUBLIC_BASE_URL", "")), "/")
+
+	// TrustedProxies: comma-separated CIDRs / IPs. Empty disables proxy header trust.
+	if tp := strings.TrimSpace(getEnv("TRUSTED_PROXIES", "")); tp != "" {
+		for _, p := range strings.Split(tp, ",") {
+			if v := strings.TrimSpace(p); v != "" {
+				config.TrustedProxies = append(config.TrustedProxies, v)
+			}
+		}
+	}
 
 	return config, nil
 }

@@ -53,7 +53,9 @@ func TestCleanup_DeletesOldRows(t *testing.T) {
 	insertRow(t, db, "cpu_metrics", old)
 	insertRow(t, db, "cpu_metrics", old.Add(-time.Hour))
 
-	svc.Cleanup()
+	if _, err := svc.CleanupBatch(t.Context(), 1000); err != nil {
+		t.Fatalf("CleanupBatch error: %v", err)
+	}
 
 	if n := countRows(t, db, "cpu_metrics"); n != 0 {
 		t.Errorf("expected 0 rows after cleanup, got %d", n)
@@ -67,7 +69,9 @@ func TestCleanup_PreservesRecentRows(t *testing.T) {
 	recent := time.Now().Add(-time.Hour)
 	insertRow(t, db, "cpu_metrics", recent)
 
-	svc.Cleanup()
+	if _, err := svc.CleanupBatch(t.Context(), 1000); err != nil {
+		t.Fatalf("CleanupBatch error: %v", err)
+	}
 
 	if n := countRows(t, db, "cpu_metrics"); n != 1 {
 		t.Errorf("expected 1 row preserved, got %d", n)
@@ -86,7 +90,9 @@ func TestCleanup_MultipleTablesAtOnce(t *testing.T) {
 		insertRow(t, db, table, recent)
 	}
 
-	svc.Cleanup()
+	if _, err := svc.CleanupBatch(t.Context(), 1000); err != nil {
+		t.Fatalf("CleanupBatch error: %v", err)
+	}
 
 	for _, table := range retention.MetricTables {
 		n := countRows(t, db, table)

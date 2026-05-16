@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
+	"golang.org/x/sync/errgroup"
 
 	hosts "system-stats/internal/cluster/hosts"
 )
@@ -76,18 +77,24 @@ func (s *historicalMetricsService) CollectAndSaveMetrics(ctx context.Context) er
 	hostId := host.ID
 	s.logger.Debug("Current host registered/updated", "host_id", hostId, "name", host.Name)
 
-	// Collect and save metrics for all modules with host_id.
+	// Collect and save metrics for all modules with host_id in parallel.
 	// Each service gets its own 15-second deadline so a slow or hung collector
 	// (e.g. Docker on macOS) cannot stall the entire periodic goroutine.
+	// We never propagate the per-service error — failure of one collector should not
+	// cancel the others, so each goroutine returns nil and logs on its own.
+	g, gctx := errgroup.WithContext(ctx)
 	for _, service := range s.metricsCollector.services {
-		serviceCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		err := service.CollectAndSave(serviceCtx, hostId)
-		cancel()
-		if err != nil {
-			s.logger.Error("Failed to collect and save metrics", "error", err, "host_id", hostId)
-			continue
-		}
+		svc := service
+		g.Go(func() error {
+			serviceCtx, cancel := context.WithTimeout(gctx, 15*time.Second)
+			defer cancel()
+			if err := svc.CollectAndSave(serviceCtx, hostId); err != nil {
+				s.logger.Error("Failed to collect and save metrics", "error", err, "host_id", hostId)
+			}
+			return nil
+		})
 	}
+	_ = g.Wait()
 
 	if s.afterCollect != nil {
 		s.afterCollect()

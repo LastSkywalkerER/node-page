@@ -25,6 +25,9 @@ var (
 	ErrInvalidCredentials       = errors.New("invalid credentials")
 	ErrInvalidInvitation        = errors.New("invalid invitation")
 	ErrInvitationEmailMismatch  = errors.New("invitation email mismatch")
+	ErrCannotDemoteSelf         = errors.New("cannot demote yourself")
+	ErrCannotDemoteLastAdmin    = errors.New("cannot demote the last admin")
+	ErrCannotDeleteLastAdmin    = errors.New("cannot delete the last admin")
 )
 
 // TokenPair represents access and refresh tokens
@@ -52,8 +55,8 @@ type UserService interface {
 	GetByID(ctx context.Context, id uint) (*User, error)
 	GetByEmail(ctx context.Context, email string) (*User, error)
 	List(ctx context.Context, offset, limit int) ([]*User, error)
-	UpdateRole(ctx context.Context, userID uint, role string) error
-	Delete(ctx context.Context, userID uint) error
+	UpdateRole(ctx context.Context, currentUserID, targetUserID uint, role string) error
+	Delete(ctx context.Context, currentUserID, targetUserID uint) error
 	Count(ctx context.Context) (int64, error)
 	HashPassword(password string) (string, error)
 	VerifyPassword(hash, password string) error
@@ -171,17 +174,60 @@ func (s *userService) List(ctx context.Context, offset, limit int) ([]*User, err
 	return s.userRepo.List(ctx, offset, limit)
 }
 
-// UpdateRole updates a user's role
-func (s *userService) UpdateRole(ctx context.Context, userID uint, role string) error {
+// UpdateRole updates a user's role.
+// Guards: forbids self-demotion (admin cannot demote themselves) and demoting the last admin.
+func (s *userService) UpdateRole(ctx context.Context, currentUserID, targetUserID uint, role string) error {
 	if role != "ADMIN" && role != "USER" {
 		return errors.New("invalid role")
 	}
-	return s.userRepo.UpdateRole(ctx, userID, role)
+	if role == "USER" {
+		if currentUserID == targetUserID {
+			return ErrCannotDemoteSelf
+		}
+		target, err := s.userRepo.FindByID(ctx, targetUserID)
+		if err != nil {
+			return err
+		}
+		if target != nil && target.Role == "ADMIN" {
+			admins, err := s.userRepo.CountByRole(ctx, "ADMIN")
+			if err != nil {
+				return err
+			}
+			if admins <= 1 {
+				return ErrCannotDemoteLastAdmin
+			}
+		}
+	}
+	return s.userRepo.UpdateRole(ctx, targetUserID, role)
 }
 
-// Delete deletes a user
-func (s *userService) Delete(ctx context.Context, userID uint) error {
-	return s.userRepo.Delete(ctx, userID)
+// Delete deletes a user and revokes their refresh tokens.
+// Guards: forbids deleting the last admin. Self-deletion is blocked at the handler layer.
+func (s *userService) Delete(ctx context.Context, currentUserID, targetUserID uint) error {
+	target, err := s.userRepo.FindByID(ctx, targetUserID)
+	if err != nil {
+		return err
+	}
+	if target != nil && target.Role == "ADMIN" {
+		admins, err := s.userRepo.CountByRole(ctx, "ADMIN")
+		if err != nil {
+			return err
+		}
+		if admins <= 1 {
+			return ErrCannotDeleteLastAdmin
+		}
+	}
+	if err := s.userRepo.Delete(ctx, targetUserID); err != nil {
+		return err
+	}
+	// Best-effort revoke; user is already soft-deleted, tokens will expire by exp.
+	if s.tokenSvc != nil {
+		if rerr := s.tokenSvc.RevokeAllUserTokens(ctx, targetUserID); rerr != nil {
+			// log via gorm context; caller will not see this — intentional
+			_ = rerr
+		}
+	}
+	return nil
 }
 
 // Count returns the total number of users
@@ -208,6 +254,7 @@ type TokenService interface {
 	HashRefreshToken(token string) (string, error)
 	PersistRefreshToken(ctx context.Context, userID uint, jti, tokenHash string, expiresAt time.Time) error
 	RevokeRefreshToken(ctx context.Context, jti string) error
+	ConsumeRefreshToken(ctx context.Context, jti string) (bool, error)
 	RevokeAllUserTokens(ctx context.Context, userID uint) error
 }
 
@@ -393,6 +440,12 @@ func (s *tokenService) PersistRefreshToken(ctx context.Context, userID uint, jti
 // RevokeRefreshToken revokes a refresh token by JTI
 func (s *tokenService) RevokeRefreshToken(ctx context.Context, jti string) error {
 	return s.refreshTokenRepo.RevokeByJTI(ctx, jti)
+}
+
+// ConsumeRefreshToken atomically revokes a refresh token and reports whether this call won the race.
+// Use this in /auth/refresh to ensure exactly one concurrent request can mint new tokens.
+func (s *tokenService) ConsumeRefreshToken(ctx context.Context, jti string) (bool, error) {
+	return s.refreshTokenRepo.ConsumeByJTI(ctx, jti)
 }
 
 // RevokeAllUserTokens revokes all refresh tokens for a user

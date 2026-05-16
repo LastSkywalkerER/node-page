@@ -41,8 +41,12 @@ func Push(ctx context.Context, logger *log.Logger, mainURL, token string, metric
 		return
 	}
 
+	// Bound this push by both shutdown cancellation (caller's ctx) and a 10s deadline.
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
 	url := mainURL + "/api/v1/nodes/push"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		logger.Error("Failed to create push request", "error", err)
 		return
@@ -50,8 +54,7 @@ func Push(ctx context.Context, logger *log.Logger, mainURL, token string, metric
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		logger.Warn("Push to main node failed", "error", err, "url", mainURL)
 		return

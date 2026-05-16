@@ -1,6 +1,7 @@
 package users
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -176,6 +177,12 @@ func (h *UsersHandler) UpdateRole(c *gin.Context) {
 		return
 	}
 
+	currentUserID, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": "unauthorized", "error": "Authentication required"})
+		return
+	}
+
 	// Check if user exists
 	user, err := h.userService.GetByID(c.Request.Context(), uint(userID))
 	if err != nil {
@@ -193,12 +200,16 @@ func (h *UsersHandler) UpdateRole(c *gin.Context) {
 		return
 	}
 
-	// Update role
-	if err := h.userService.UpdateRole(c.Request.Context(), uint(userID), req.Role); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":  "internal_error",
-			"error": "Failed to update user role",
-		})
+	// Update role (service enforces self-demote and last-admin guards)
+	if err := h.userService.UpdateRole(c.Request.Context(), currentUserID.(uint), uint(userID), req.Role); err != nil {
+		switch {
+		case errors.Is(err, ErrCannotDemoteSelf):
+			c.JSON(http.StatusBadRequest, gin.H{"code": "cannot_demote_self", "error": "Cannot demote yourself"})
+		case errors.Is(err, ErrCannotDemoteLastAdmin):
+			c.JSON(http.StatusBadRequest, gin.H{"code": "cannot_demote_last_admin", "error": "Cannot demote the last admin"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": "Failed to update user role"})
+		}
 		return
 	}
 
@@ -273,17 +284,18 @@ func (h *UsersHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	// Delete user
-	if err := h.userService.Delete(c.Request.Context(), uint(userID)); err != nil {
+	// Delete user (service enforces last-admin guard and revokes refresh tokens)
+	if err := h.userService.Delete(c.Request.Context(), currentUserID.(uint), uint(userID)); err != nil {
+		if errors.Is(err, ErrCannotDeleteLastAdmin) {
+			c.JSON(http.StatusBadRequest, gin.H{"code": "cannot_delete_last_admin", "error": "Cannot delete the last admin"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":  "internal_error",
 			"error": "Failed to delete user",
 		})
 		return
 	}
-
-	// Note: Token revocation should be handled by the service layer
-	// This would require passing TokenService to UsersHandler or handling in UserService.Delete
 
 	c.JSON(http.StatusNoContent, nil)
 }

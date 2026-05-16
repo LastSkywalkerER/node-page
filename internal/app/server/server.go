@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
+	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
 	ginSwagger "github.com/swaggo/gin-swagger"
 	swaggerFiles "github.com/swaggo/files"
@@ -98,13 +99,19 @@ func Run() {
 	// Load cluster config from .env (MAIN_NODE_URL, NODE_ACCESS_TOKEN) for agent push mode
 	nodes.LoadFromEnvFile()
 
+	// appCtx is cancelled on shutdown to stop background goroutines
+	// (periodic metrics collection, retention cleanup, pusher).
+	appCtx, appCancel := context.WithCancel(context.Background())
+	defer appCancel()
+
 	historicalMetricsService := container.GetHistoricalMetricsService()
+	retentionSvc := retention.NewService(container.GetDB(), logger, cfg.RetentionDays)
 
 	// Wire SSE broker into the after-collect hook (harmless before collection starts).
 	broker := container.GetBroker()
 	systemSvc := container.GetSystemService()
 	historicalMetricsService = history.WithAfterCollect(historicalMetricsService, func() {
-		collectCtx, collectCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		collectCtx, collectCancel := context.WithTimeout(appCtx, 10*time.Second)
 		defer collectCancel()
 		metrics, err := systemSvc.CollectAllCurrent(collectCtx)
 		if err != nil {
@@ -118,7 +125,7 @@ func Run() {
 		if err := json.Unmarshal(data, &envelope); err != nil {
 			return
 		}
-		if host, herr := container.GetHostService().GetCurrentHost(context.Background()); herr == nil && host != nil {
+		if host, herr := container.GetHostService().GetCurrentHost(appCtx); herr == nil && host != nil {
 			envelope["collecting_host_id"] = host.ID
 		}
 		out, err := json.Marshal(envelope)
@@ -139,15 +146,24 @@ func Run() {
 		}
 		broker.Publish(out)
 
+		// Run an incremental retention batch off the metrics tick (every 5s).
+		// Bounded by appCtx + a short deadline so it never blocks the collection cycle.
+		go func() {
+			cleanupCtx, cancel := context.WithTimeout(appCtx, 3*time.Second)
+			defer cancel()
+			if _, err := retentionSvc.CleanupBatch(cleanupCtx, retention.DefaultBatchSize); err != nil && cleanupCtx.Err() == nil {
+				logger.Warn("Retention batch error", "error", err)
+			}
+		}()
+
 		// Push to main node if cluster config is set (from env at startup or after connect)
 		if mainURL, token := nodes.Get(); mainURL != "" && token != "" {
-			pushCtx := context.Background()
 			hostName, hostIPv4 := "", ""
-			if hi, herr := container.GetHostService().GetCurrentHostInfo(pushCtx); herr == nil {
+			if hi, herr := container.GetHostService().GetCurrentHostInfo(appCtx); herr == nil {
 				hostName = hi.Name
 				hostIPv4 = hi.IPv4
 			}
-			go pusher.Push(pushCtx, logger, mainURL, token, metrics, hostName, hostIPv4)
+			go pusher.Push(appCtx, logger, mainURL, token, metrics, hostName, hostIPv4)
 		}
 	})
 
@@ -155,20 +171,17 @@ func Run() {
 	// Called immediately on normal startup, or as a callback once setup completes.
 	startMetrics := func() {
 		logger.Info("Checking system stats availability...")
-		if _, err := container.GetCPUService().Collect(context.Background()); err != nil {
+		if _, err := container.GetCPUService().Collect(appCtx); err != nil {
 			logger.Warn("Failed to get initial CPU stats, continuing without check", "error", err)
 		} else {
 			logger.Info("System stats are available")
 		}
 
 		logger.Info("Starting periodic metrics collection...")
-		if err := historicalMetricsService.StartPeriodicCollection(context.Background(), 5*time.Second); err != nil {
+		if err := historicalMetricsService.StartPeriodicCollection(appCtx, 5*time.Second); err != nil {
 			logger.Error("Failed to start periodic collection", "error", err)
 			return
 		}
-
-		retentionSvc := retention.NewService(container.GetDB(), logger, cfg.RetentionDays)
-		retentionSvc.Start(context.Background())
 	}
 
 	// Check if setup is needed (no users yet).
@@ -228,6 +241,8 @@ func Run() {
 	}
 
 	historicalMetricsService.StopPeriodicCollection()
+	appCancel()
+	middleware.StopRateLimiterCleanup()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -241,8 +256,21 @@ func Run() {
 // setupRouter configures the Gin router with all routes, middleware, and handlers.
 func setupRouter(container *di.Container, startTime time.Time, logger *log.Logger, cfg *config.Config, onSetupComplete func()) *gin.Engine {
 	router := gin.New()
+	// TrustedProxies controls whether X-Forwarded-* headers are honored.
+	// Empty list = trust none (ignore X-Forwarded-For/Host/Proto). Safe default.
+	if len(cfg.TrustedProxies) > 0 {
+		_ = router.SetTrustedProxies(cfg.TrustedProxies)
+	} else {
+		_ = router.SetTrustedProxies(nil)
+	}
 	router.Use(gin.Recovery())
-	router.Use(middleware.ErrorHandler())
+	router.Use(middleware.SecurityHeaders(cfg.CookieSecure))
+	router.Use(middleware.ErrorHandler(cfg.Debug))
+	// gzip compresses JSON history payloads; SSE and Prometheus paths must NOT be buffered.
+	router.Use(gzip.Gzip(
+		gzip.DefaultCompression,
+		gzip.WithExcludedPaths([]string{"/api/v1/stream", "/api/v1/metrics"}),
+	))
 
 	var promHandler *prometheusmetrics.Metrics
 	if cfg.PrometheusEnabled {
@@ -278,7 +306,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	authHandler := users.NewAuthHandler(container.GetUserService(), container.GetTokenService(), cfg.CookieSecure)
 	usersHandler := users.NewUsersHandler(container.GetUserService())
 	invitationHandler := invitations.NewHandler(container.GetInvitationService())
-	nodesHandler := nodes.NewHandler(container.GetNodeService(), container.GetHostService(), cfg.PublicBaseURL)
+	nodesHandler := nodes.NewHandler(container.GetNodeService(), container.GetHostService(), cfg.PublicBaseURL, len(cfg.TrustedProxies) > 0)
 	streamHandler := platformstream.NewHandler(container.GetBroker(), container.GetHostService())
 	configWriter := setup.NewConfigWriter()
 	setupHandler := setup.NewHandler(configWriter, container.GetUserService(), onSetupComplete)
@@ -339,9 +367,11 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		}
 
 		// Node join (public — agent calls this to register with main)
+		// Rate-limited to slow down token-bruteforce attempts even though tokens are one-shot.
+		joinRL := middleware.RateLimitMiddleware(5.0/60, 5)
 		nodes := api.Group("/nodes")
 		{
-			nodes.POST("/join", nodesHandler.Join)
+			nodes.POST("/join", joinRL, nodesHandler.Join)
 		}
 
 		// Node push (auth via node_access_token)

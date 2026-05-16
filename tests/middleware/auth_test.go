@@ -49,7 +49,10 @@ func (m *mockTokenServiceForAuth) PersistRefreshToken(_ context.Context, _ uint,
 	return nil
 }
 func (m *mockTokenServiceForAuth) RevokeRefreshToken(_ context.Context, _ string) error { return nil }
-func (m *mockTokenServiceForAuth) RevokeAllUserTokens(_ context.Context, _ uint) error  { return nil }
+func (m *mockTokenServiceForAuth) ConsumeRefreshToken(_ context.Context, _ string) (bool, error) {
+	return true, nil
+}
+func (m *mockTokenServiceForAuth) RevokeAllUserTokens(_ context.Context, _ uint) error { return nil }
 
 var _ users.TokenService = (*mockTokenServiceForAuth)(nil)
 

@@ -14,6 +14,7 @@ type UserRepository interface {
 	FindByEmail(ctx context.Context, email string) (*User, error)
 	FindByID(ctx context.Context, id uint) (*User, error)
 	Count(ctx context.Context) (int64, error)
+	CountByRole(ctx context.Context, role string) (int64, error)
 	List(ctx context.Context, offset, limit int) ([]*User, error)
 	UpdateRole(ctx context.Context, userID uint, role string) error
 	Delete(ctx context.Context, userID uint) error
@@ -67,6 +68,13 @@ func (r *userRepository) Count(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+// CountByRole returns the number of users with the given role.
+func (r *userRepository) CountByRole(ctx context.Context, role string) (int64, error) {
+	var count int64
+	err := r.db.WithContext(ctx).Model(&User{}).Where("role = ?", role).Count(&count).Error
+	return count, err
+}
+
 // List returns a paginated list of users
 func (r *userRepository) List(ctx context.Context, offset, limit int) ([]*User, error) {
 	var users []*User
@@ -89,6 +97,7 @@ type RefreshTokenRepository interface {
 	Create(ctx context.Context, token *RefreshToken) error
 	FindByJTI(ctx context.Context, jti string) (*RefreshToken, error)
 	RevokeByJTI(ctx context.Context, jti string) error
+	ConsumeByJTI(ctx context.Context, jti string) (bool, error)
 	RevokeAllByUserID(ctx context.Context, userID uint) error
 	DeleteExpired(ctx context.Context) error
 }
@@ -132,6 +141,21 @@ func (r *refreshTokenRepository) RevokeByJTI(ctx context.Context, jti string) er
 		Model(&RefreshToken{}).
 		Where("jti = ?", jti).
 		Update("revoked_at", now).Error
+}
+
+// ConsumeByJTI atomically marks a refresh token as revoked.
+// Returns true if this call revoked the token (winner of any concurrent race),
+// false if it was already revoked / missing (replay or concurrent loser).
+func (r *refreshTokenRepository) ConsumeByJTI(ctx context.Context, jti string) (bool, error) {
+	now := time.Now()
+	res := r.db.WithContext(ctx).
+		Model(&RefreshToken{}).
+		Where("jti = ? AND revoked_at IS NULL", jti).
+		Update("revoked_at", now)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected == 1, nil
 }
 
 // RevokeAllByUserID revokes all refresh tokens for a user

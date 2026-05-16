@@ -23,31 +23,39 @@ type Handler struct {
 	nodeService           Service
 	hostService           hosts.Service
 	publicBaseURLOverride string // PUBLIC_BASE_URL; when set, used for join links and cluster UI URLs (agents must reach this URL)
+	trustProxyHeaders     bool   // honor X-Forwarded-Proto/Host (only when at least one TRUSTED_PROXIES entry is configured)
 }
 
 // NewHandler creates a new nodes handler.
-func NewHandler(service Service, hostsvc hosts.Service, publicBaseURL string) *Handler {
+// trustProxyHeaders should be true when TrustedProxies env is configured — otherwise X-Forwarded-* are ignored to prevent open-redirect / phishing via spoofed headers.
+func NewHandler(service Service, hostsvc hosts.Service, publicBaseURL string, trustProxyHeaders bool) *Handler {
 	return &Handler{
 		nodeService:           service,
 		hostService:           hostsvc,
 		publicBaseURLOverride: strings.TrimSpace(publicBaseURL),
+		trustProxyHeaders:     trustProxyHeaders,
 	}
 }
 
 // resolvePublicBaseURL is the base URL agents should use to reach this main (push, join).
+// Trusts X-Forwarded-* only when h.trustProxyHeaders is true (set when TRUSTED_PROXIES is configured).
 func (h *Handler) resolvePublicBaseURL(c *gin.Context) string {
 	if s := strings.TrimSpace(h.publicBaseURLOverride); s != "" {
 		return strings.TrimSuffix(s, "/")
 	}
 	proto := "http"
-	if xf := strings.TrimSpace(c.GetHeader("X-Forwarded-Proto")); xf != "" {
-		proto = strings.TrimSpace(strings.Split(xf, ",")[0])
+	host := c.Request.Host
+	if h.trustProxyHeaders {
+		if xf := strings.TrimSpace(c.GetHeader("X-Forwarded-Proto")); xf != "" {
+			proto = strings.TrimSpace(strings.Split(xf, ",")[0])
+		} else if c.Request.TLS != nil {
+			proto = "https"
+		}
+		if fh := c.GetHeader("X-Forwarded-Host"); fh != "" {
+			host = strings.TrimSpace(strings.Split(fh, ",")[0])
+		}
 	} else if c.Request.TLS != nil {
 		proto = "https"
-	}
-	host := c.Request.Host
-	if fh := c.GetHeader("X-Forwarded-Host"); fh != "" {
-		host = strings.TrimSpace(strings.Split(fh, ",")[0])
 	}
 	return strings.TrimSuffix(proto+"://"+host, "/")
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
+	"golang.org/x/sync/errgroup"
 )
 
 // dockerMetricsCollector implements the DockerMetricsCollector interface.
@@ -129,15 +130,17 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 	results := make(chan containerResult, len(containers))
 	var runningCount int32 = 0
 
-	// Function for parallel processing of one container
-	processContainer := func(containerInfo container.Summary) {
+	// Function for parallel processing of one container.
+	// Bounded by procCtx (which carries a 5s per-container deadline) so a hung Docker
+	// inspect cannot wedge the goroutine forever.
+	processContainer := func(procCtx context.Context, containerInfo container.Summary) {
 		defer func() {
 			if r := recover(); r != nil {
 				results <- containerResult{err: fmt.Errorf("panic processing container %s: %v", containerInfo.ID, r)}
 			}
 		}()
 
-		containerJSON, err := c.client.ContainerInspect(ctx, containerInfo.ID)
+		containerJSON, err := c.client.ContainerInspect(procCtx, containerInfo.ID)
 		if err != nil {
 			results <- containerResult{err: fmt.Errorf("failed to inspect container %s: %v", containerInfo.ID, err)}
 			return
@@ -179,7 +182,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 
 		if isRunning {
 			// Safely get statistics with panic protection
-			containerStats = c.getContainerResourceStats(ctx, c.client, containerInfo.ID, cpuLimit)
+			containerStats = c.getContainerResourceStats(procCtx, c.client, containerInfo.ID, cpuLimit)
 		} else {
 			// For stopped containers, use empty statistics but keep CPU limit
 			containerStats = DockerStats{
@@ -215,15 +218,28 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 		}
 	}
 
-	// Start parallel processing of all containers
+	// Start parallel processing of all containers with bounded parallelism and per-container deadline.
+	// Closing results from a single goroutine after all workers complete prevents the collection
+	// loop from hanging if a worker panics before sending.
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(8)
 	for _, containerInfo := range containers {
-		go processContainer(containerInfo)
+		ci := containerInfo
+		g.Go(func() error {
+			pctx, cancel := context.WithTimeout(gctx, 5*time.Second)
+			defer cancel()
+			processContainer(pctx, ci)
+			return nil
+		})
 	}
+	go func() {
+		_ = g.Wait()
+		close(results)
+	}()
 
 	// Collect results and group by stacks
 	stackMap := make(map[string]*DockerStack)
-	for i := 0; i < len(containers); i++ {
-		result := <-results
+	for result := range results {
 		if result.err != nil {
 			c.logger.Warn("Failed to process container", "error", result.err)
 			continue
@@ -308,6 +324,19 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 			}
 		}
 	}
+
+	// Evict CPU cache entries for containers that no longer exist (prevents unbounded growth).
+	c.cacheMutex.Lock()
+	currentIDs := make(map[string]struct{}, len(containers))
+	for _, ci := range containers {
+		currentIDs[ci.ID] = struct{}{}
+	}
+	for id := range c.containerCPUCache {
+		if _, ok := currentIDs[id]; !ok {
+			delete(c.containerCPUCache, id)
+		}
+	}
+	c.cacheMutex.Unlock()
 
 	return DockerMetric{
 		Stacks:            dockerStacks,

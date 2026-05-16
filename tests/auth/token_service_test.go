@@ -46,6 +46,11 @@ func (m *mockRefreshTokenRepository) RevokeByJTI(_ context.Context, jti string) 
 	return m.revokeErr
 }
 
+func (m *mockRefreshTokenRepository) ConsumeByJTI(_ context.Context, jti string) (bool, error) {
+	m.revokeJTI = jti
+	return true, m.revokeErr
+}
+
 func (m *mockRefreshTokenRepository) RevokeAllByUserID(_ context.Context, userID uint) error {
 	m.revokeAllUID = userID
 	return m.revokeAllErr
