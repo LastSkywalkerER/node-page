@@ -84,6 +84,7 @@ func Activate(ctx context.Context, deps ActivationDeps, cfg config.RaftConfig, s
 	fsm.SetRestorer(NewSQLiteRestorer(deps.DB))
 
 	node := NewNode(deps.Logger, cfg, fsm)
+	node.SetDB(deps.DB) // for leader-forwarding's peer_node_advertise lookup
 	if err := node.Start(ctx); err != nil {
 		return nil, fmt.Errorf("raft activate: start node: %w", err)
 	}

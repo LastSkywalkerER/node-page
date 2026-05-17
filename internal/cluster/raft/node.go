@@ -1,10 +1,13 @@
 package raft
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -13,6 +16,7 @@ import (
 	"github.com/charmbracelet/log"
 	hraft "github.com/hashicorp/raft"
 	raftboltdb "github.com/hashicorp/raft-boltdb/v2"
+	"gorm.io/gorm"
 
 	"system-stats/internal/app/config"
 )
@@ -31,9 +35,19 @@ type Node struct {
 	stable    hraft.StableStore
 	snaps     hraft.SnapshotStore
 
+	// db is set after construction so SubmitCommand on a follower can
+	// look up the leader's HTTP URL in peer_node_advertise and forward
+	// the command via /raft/forward.
+	db *gorm.DB
+
 	closeMu sync.Mutex
 	closed  bool
 }
+
+// SetDB wires the GORM handle the leader-forwarder uses to look up peer
+// URLs. Safe to call after construction; must be called before
+// SubmitCommand is used on a follower.
+func (n *Node) SetDB(db *gorm.DB) { n.db = db }
 
 // NewNode constructs (but does not start) a Raft node. Call Start to actually
 // open stores, bind the transport and bootstrap or join the cluster.
@@ -186,21 +200,22 @@ func (n *Node) SubmitCommand(ctx context.Context, cmd Command, timeout time.Dura
 	if n.raft == nil {
 		return SubmitResult{}, ErrDisabled
 	}
-	if n.raft.State() != hraft.Leader {
-		// Forwarding to the leader over HTTPS lands in a follow-up commit;
-		// for now, fail closed so callers can retry against the leader.
-		return SubmitResult{}, ErrNotLeader
-	}
 	if cmd.Timestamp.IsZero() {
 		cmd.Timestamp = time.Now().UTC()
+	}
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	if n.raft.State() != hraft.Leader {
+		// Forward over HTTP to the current leader. The leader's URL is
+		// discovered via the replicated peer_node_advertise table —
+		// every node publishes its HTTP URL there on activation, and
+		// the leader publishes for the joiner on /raft/join.
+		return n.forwardToLeader(ctx, cmd, timeout)
 	}
 	data, err := json.Marshal(cmd)
 	if err != nil {
 		return SubmitResult{}, fmt.Errorf("raft: encode command: %w", err)
-	}
-
-	if timeout <= 0 {
-		timeout = 5 * time.Second
 	}
 	fut := n.raft.Apply(data, timeout)
 	if err := fut.Error(); err != nil {
@@ -211,6 +226,54 @@ func (n *Node) SubmitCommand(ctx context.Context, cmd Command, timeout time.Dura
 		res.Err = respErr
 	}
 	return res, nil
+}
+
+// forwardToLeader looks up the current leader's HTTP URL in the
+// replicated peer_node_advertise table and POSTs the command to its
+// /api/v1/raft/forward endpoint. Returns ErrNotLeader when no leader
+// is known or no URL is published for it.
+func (n *Node) forwardToLeader(ctx context.Context, cmd Command, timeout time.Duration) (SubmitResult, error) {
+	if n.db == nil {
+		return SubmitResult{}, ErrNotLeader
+	}
+	_, leaderID := n.raft.LeaderWithID()
+	if leaderID == "" {
+		return SubmitResult{}, ErrNotLeader
+	}
+	lookupCtx, lookupCancel := context.WithTimeout(ctx, 2*time.Second)
+	url, err := LookupPeerURL(lookupCtx, n.db, n.cfg.ClusterID, string(leaderID))
+	lookupCancel()
+	if err != nil {
+		return SubmitResult{}, fmt.Errorf("raft: lookup leader URL: %w", err)
+	}
+	if url == "" {
+		return SubmitResult{}, fmt.Errorf("%w: leader %q has not published its HTTP URL yet (peer_node_advertise empty)", ErrNotLeader, leaderID)
+	}
+	body, err := json.Marshal(cmd)
+	if err != nil {
+		return SubmitResult{}, fmt.Errorf("raft: encode forwarded command: %w", err)
+	}
+	postCtx, postCancel := context.WithTimeout(ctx, timeout+2*time.Second)
+	defer postCancel()
+	req, err := http.NewRequestWithContext(postCtx, http.MethodPost, url+"/api/v1/raft/forward", bytes.NewReader(body))
+	if err != nil {
+		return SubmitResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: timeout + 2*time.Second}).Do(req)
+	if err != nil {
+		return SubmitResult{}, fmt.Errorf("raft: forward to %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return SubmitResult{}, fmt.Errorf("raft: leader returned %s: %s", resp.Status, string(respBody))
+	}
+	var out SubmitResult
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return SubmitResult{}, fmt.Errorf("raft: decode forwarded response: %w", err)
+	}
+	return out, nil
 }
 
 // Stats returns the raw hashicorp/raft Stats map. Useful for the admin

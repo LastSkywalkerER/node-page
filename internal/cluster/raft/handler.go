@@ -163,6 +163,40 @@ type ProbeVoterRequest struct {
 	Addr string `json:"addr" binding:"required"`
 }
 
+// Forward accepts a Command from a follower and applies it locally if
+// this node is the leader. Used by the SubmitCommand leader-forwarding
+// path so followers' writes (e.g. their own host info) end up in the
+// replicated log even when they originate on a non-leader.
+//
+// Public endpoint. The Command payload is opaque host/user state that
+// only matters within the trusted cluster network; for production
+// deployments where the cluster spans untrusted networks, layer HMAC
+// (similar to /raft/bridge/replicate) on top — TODO.
+//
+// POST /api/v1/raft/forward
+func (h *Handler) Forward(c *gin.Context) {
+	if h.svc == nil || !h.svc.Enabled() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "raft disabled"})
+		return
+	}
+	if !h.svc.IsLeader() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "not the leader; retry against the cluster leader"})
+		return
+	}
+	var cmd Command
+	if err := c.ShouldBindJSON(&cmd); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	timeout := 5 * time.Second
+	res, err := h.svc.SubmitCommand(c.Request.Context(), cmd, timeout)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}
+
 // ProbeVoter TCP-dials the given Raft voter address from THIS server,
 // reports whether the dial succeeds. Used by the admin "Voters" panel
 // to diagnose a wedged cluster — if a voter's advertise address isn't
@@ -334,6 +368,11 @@ type JoinRequest struct {
 	Token         string `json:"token"          binding:"required"`
 	NodeID        string `json:"node_id"        binding:"required"`
 	AdvertiseAddr string `json:"advertise_addr" binding:"required"`
+	// HTTPURL is the joiner's externally-reachable HTTP base URL
+	// (e.g. http://192.168.0.104:9090). Required for SubmitCommand
+	// forwarding so the leader can reply back to this voter when it
+	// later sits as a follower trying to submit a write.
+	HTTPURL string `json:"http_url"`
 }
 
 // Join is the public, token-authenticated endpoint a fresh node calls to
@@ -388,6 +427,17 @@ func (h *Handler) Join(c *gin.Context) {
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	// Publish the joiner's HTTP URL into peer_node_advertise so the
+	// future follower→leader SubmitCommand forwarding can resolve it.
+	// Best-effort; missing http_url just means the joiner can't forward
+	// its own writes (host info etc.) — works once they advertise on
+	// their next post-activate hook.
+	if req.HTTPURL != "" {
+		if perr := h.replicator.SubmitPeerNodeAdvertise(ctx, h.clusterID, req.NodeID, req.HTTPURL, nil); perr != nil && h.logger != nil {
+			h.logger.Warn("raft join: failed to publish joiner URL", "node_id", req.NodeID, "error", perr)
+		}
 	}
 	if err := h.replicator.SubmitJoinTokenConsume(ctx, tokenHash, req.NodeID, req.AdvertiseAddr); err != nil {
 		// Token-consume failure is best-effort; the AddVoter already

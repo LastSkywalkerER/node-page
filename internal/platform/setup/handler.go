@@ -50,6 +50,15 @@ type Handler struct {
 	raftActivator RaftActivator
 	tokenService  users.TokenService
 	secretReader  ClusterSecretReader
+	addr          string // local HTTP ADDR (":8080") used to derive default http_url
+}
+
+// WithHTTPAddr records the local HTTP listen address ("ADDR" env) so the
+// join flow can derive a sensible default http_url for itself when the
+// operator didn't fill RAFT_ADVERTISE_PUBLIC_URL.
+func (h *Handler) WithHTTPAddr(addr string) *Handler {
+	h.addr = addr
+	return h
 }
 
 // NewHandler creates a new setup handler
@@ -659,11 +668,19 @@ func (h *Handler) JoinRaftCluster(c *gin.Context) {
 		_ = werr
 	}
 
-	// Tell the peer we want in.
+	// Tell the peer we want in. http_url is the joiner's externally
+	// reachable HTTP base URL; the leader publishes it via
+	// CmdPeerNodeAdvertise so SubmitCommand forwarding works when this
+	// node later sits as a follower trying to write.
+	httpURL := req.AdvertiseURL
+	if httpURL == "" {
+		httpURL = deriveJoinerHTTPURL(req.AdvertiseAddr, h.addr)
+	}
 	body, _ := json.Marshal(map[string]string{
 		"token":          req.Token,
 		"node_id":        req.NodeID,
 		"advertise_addr": req.AdvertiseAddr,
+		"http_url":       httpURL,
 	})
 	httpCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -823,6 +840,28 @@ func (h *Handler) CheckReachable(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"data": gin.H{"reachable": true, "addr": addr},
 	})
+}
+
+// deriveJoinerHTTPURL builds a default http://host:port URL from the
+// Raft advertise address (which carries the externally-reachable host)
+// and the local HTTP ADDR (which carries the port we listen on). Used
+// when the wizard's Advertise public URL is empty.
+func deriveJoinerHTTPURL(raftAdvertise, httpAddr string) string {
+	host := ""
+	if h, _, err := net.SplitHostPort(raftAdvertise); err == nil && h != "" {
+		host = h
+	}
+	if host == "" {
+		return ""
+	}
+	port := ""
+	if _, p, err := net.SplitHostPort(httpAddr); err == nil && p != "" {
+		port = p
+	}
+	if port == "" {
+		port = "8080"
+	}
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 func splitCSV(s string) []string {

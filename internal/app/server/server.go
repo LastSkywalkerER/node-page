@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -137,16 +138,23 @@ func Run() {
 
 		go func() {
 			// Give the leader a moment to settle, then advertise this
-			// node's public URL into the catalog the bridge picker reads.
+			// node's HTTP URL into the catalog. Used by both the
+			// cross-cluster bridge picker AND the follower→leader
+			// SubmitCommand forwarder, which can't function without
+			// every node's URL being discoverable.
 			time.Sleep(2 * time.Second)
 			advCtx, advCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer advCancel()
+			adURL := cfg.Raft.AdvertiseURL
+			if adURL == "" {
+				adURL = deriveHTTPURL(cfg.Addr, cfg.Raft.AdvertiseAddr)
+			}
 			raftcluster.AdvertiseSelf(advCtx, logger,
 				container.GetRaftService(),
 				container.GetRaftReplicator(),
 				cfg.Raft.ClusterID,
 				cfg.Raft.NodeID,
-				cfg.Raft.AdvertiseURL,
+				adURL,
 			)
 		}()
 	}
@@ -399,7 +407,8 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		WithRaft(container.GetRaftService()).
 		WithRaftActivator(container).
 		WithTokenService(container.GetTokenService()).
-		WithSecretReader(&clusterSecretAdapter{db: container.GetDB()})
+		WithSecretReader(&clusterSecretAdapter{db: container.GetDB()}).
+		WithHTTPAddr(cfg.Addr)
 	raftHandler := raftcluster.NewHandler(container.GetRaftService()).
 		WithDeps(container.GetRaftReplicator(), container.GetDB(), logger, cfg.Raft.ClusterID).
 		WithBridgeConfigurator(container).
@@ -496,6 +505,13 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		// to stop token-bruteforce attempts.
 		raftJoinRL := middleware.RateLimitMiddleware(5.0/60, 5)
 		api.POST("/raft/join", raftJoinRL, raftHandler.Join)
+
+		// Follower → leader command forwarding. Public because the
+		// payload only mutates already-shared cluster state and the
+		// leader's SubmitCommand validates it; rate-limited to slow
+		// down bursty replay attempts.
+		raftForwardRL := middleware.RateLimitMiddleware(60.0/60, 30)
+		api.POST("/raft/forward", raftForwardRL, raftHandler.Forward)
 
 		// Cross-cluster bridge receiver — HMAC-authenticated by the
 		// handler itself, so no JWT middleware here. Always registered
@@ -616,6 +632,33 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// deriveHTTPURL constructs a fallback HTTP advertise URL from the
+// listening ADDR (":8080") and the Raft advertise address (the host
+// portion). Used when RAFT_ADVERTISE_PUBLIC_URL is unset — picks the
+// IP/hostname the operator already provided as Raft's advertise and
+// pairs it with the HTTP port from cfg.Addr. Returns "" if neither
+// fits.
+func deriveHTTPURL(addr, raftAdvertise string) string {
+	host := ""
+	if h, _, err := net.SplitHostPort(raftAdvertise); err == nil && h != "" {
+		host = h
+	}
+	if host == "" {
+		// Try OS hostname as last resort; "localhost" is useless for
+		// peers but better than a blank URL.
+		if hn, err := os.Hostname(); err == nil {
+			host = hn
+		} else {
+			host = "localhost"
+		}
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		port = "8080"
+	}
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 // clusterSecretAdapter adapts the raft package's LookupClusterConfig

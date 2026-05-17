@@ -78,6 +78,22 @@ func LookupClusterConfig(ctx context.Context, db *gorm.DB, key string) (string, 
 	return row.Value, nil
 }
 
+// LookupPeerURL returns the advertised HTTP URL for the given (cluster, node)
+// pair, or "" when not yet published.
+func LookupPeerURL(ctx context.Context, db *gorm.DB, clusterID, nodeID string) (string, error) {
+	var row peerNodeAdvertise
+	err := db.WithContext(ctx).
+		Where("cluster_id = ? AND node_id = ?", clusterID, nodeID).
+		First(&row).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return "", nil
+		}
+		return "", err
+	}
+	return row.URL, nil
+}
+
 // PeerAdvertise is the projection returned by ListPeerAdvertises.
 type PeerAdvertise struct {
 	ClusterID    string
