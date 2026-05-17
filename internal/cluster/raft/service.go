@@ -20,6 +20,15 @@ type Service interface {
 	// Enabled reports whether the Raft layer is active.
 	Enabled() bool
 
+	// IsLeader reports whether the local node currently holds leadership.
+	IsLeader() bool
+
+	// AddVoter adds a peer Raft voter. Leader-only.
+	AddVoter(id, addr string) error
+
+	// RemovePeer removes a peer Raft server. Leader-only.
+	RemovePeer(id string) error
+
 	// Close shuts the layer down cleanly. Safe to call on a disabled service.
 	Close() error
 }
@@ -44,6 +53,15 @@ func (DisabledService) Status() Status {
 
 // Enabled returns false.
 func (DisabledService) Enabled() bool { return false }
+
+// IsLeader returns false on the disabled service.
+func (DisabledService) IsLeader() bool { return false }
+
+// AddVoter is a no-op for the disabled service.
+func (DisabledService) AddVoter(id, addr string) error { return ErrDisabled }
+
+// RemovePeer is a no-op for the disabled service.
+func (DisabledService) RemovePeer(id string) error { return ErrDisabled }
 
 // Close is a no-op.
 func (DisabledService) Close() error { return nil }

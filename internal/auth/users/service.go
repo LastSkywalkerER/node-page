@@ -62,11 +62,19 @@ type UserService interface {
 	VerifyPassword(hash, password string) error
 }
 
+// RaftReplicator is the subset of internal/cluster/raft.Service the user
+// service needs. Defined locally to avoid import cycles.
+type RaftReplicator interface {
+	Enabled() bool
+	SubmitUserUpsert(ctx context.Context, email, passwordHash, role string) error
+}
+
 type userService struct {
 	userRepo   UserRepository
 	tokenSvc   TokenService
 	invService invitations.Service
 	validator  *validator.Validate
+	raft       RaftReplicator
 }
 
 // NewUserService creates a new user service
@@ -80,6 +88,15 @@ func NewUserService(
 		tokenSvc:   tokenSvc,
 		invService: invService,
 		validator:  validator.New(),
+	}
+}
+
+// AttachRaftReplicator wires a Raft replicator into an existing UserService
+// instance so that user creation also publishes a CmdUserUpsert. Idempotent
+// and safe to call after the service has been handed to other components.
+func AttachRaftReplicator(svc UserService, r RaftReplicator) {
+	if impl, ok := svc.(*userService); ok {
+		impl.raft = r
 	}
 }
 
@@ -132,6 +149,18 @@ func (s *userService) Register(ctx context.Context, email, password string, invi
 	if invID != 0 {
 		if err := s.invService.Consume(ctx, invID, user.ID); err != nil {
 			return nil, fmt.Errorf("failed to consume invitation: %w", err)
+		}
+	}
+
+	// Replicate user across the cluster so a session minted on any node
+	// authenticates the same user everywhere. Best-effort: a local row
+	// already exists and the FSM applier on every peer will create the
+	// matching row in deterministic log order.
+	if s.raft != nil && s.raft.Enabled() {
+		if rerr := s.raft.SubmitUserUpsert(ctx, user.Email, user.PasswordHash, user.Role); rerr != nil {
+			// Don't fail the request — the user is already in the local DB.
+			// The replication can be re-driven later via a snapshot.
+			_ = rerr
 		}
 	}
 

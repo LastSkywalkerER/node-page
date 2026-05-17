@@ -221,6 +221,36 @@ func (n *Node) Status() Status {
 // Enabled implements Service.
 func (n *Node) Enabled() bool { return n.raft != nil }
 
+// AddVoter adds a peer Raft voter. Only valid when this node is the leader;
+// otherwise the underlying library returns ErrNotLeader.
+func (n *Node) AddVoter(id, addr string) error {
+	if n.raft == nil {
+		return ErrDisabled
+	}
+	f := n.raft.AddVoter(hraft.ServerID(id), hraft.ServerAddress(addr), 0, 10*time.Second)
+	if err := f.Error(); err != nil {
+		return fmt.Errorf("raft: add voter: %w", err)
+	}
+	return nil
+}
+
+// RemovePeer removes a peer from the Raft configuration. Leader-only.
+func (n *Node) RemovePeer(id string) error {
+	if n.raft == nil {
+		return ErrDisabled
+	}
+	f := n.raft.RemoveServer(hraft.ServerID(id), 0, 10*time.Second)
+	if err := f.Error(); err != nil {
+		return fmt.Errorf("raft: remove server: %w", err)
+	}
+	return nil
+}
+
+// IsLeader reports whether the local node currently holds Raft leadership.
+func (n *Node) IsLeader() bool {
+	return n.raft != nil && n.raft.State() == hraft.Leader
+}
+
 // Close shuts the Raft node down and closes its stores. Safe to call multiple
 // times.
 func (n *Node) Close() error {

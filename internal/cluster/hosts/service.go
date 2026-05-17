@@ -9,6 +9,14 @@ import (
 	"github.com/charmbracelet/log"
 )
 
+// RaftReplicator is the subset of internal/cluster/raft.Service the hosts
+// service needs. Defined locally to avoid an import cycle and to keep
+// service tests easy to mock.
+type RaftReplicator interface {
+	Enabled() bool
+	SubmitHostUpsert(ctx context.Context, info HostInfo) error
+}
+
 // nodePushCredentialSource lists which hosts have a cluster push token on this main.
 type nodePushCredentialSource interface {
 	HostIDsWithPushCredential(ctx context.Context) (map[uint]struct{}, error)
@@ -29,6 +37,7 @@ type service struct {
 	collector      *HostCollector
 	hostRepository Repository
 	nodePushCreds  nodePushCredentialSource
+	raft           RaftReplicator
 }
 
 // NewService creates a new hosts service.
@@ -38,6 +47,22 @@ func NewService(logger *log.Logger, repo Repository, nodePushCreds nodePushCrede
 		collector:      newHostCollector(logger),
 		hostRepository: repo,
 		nodePushCreds:  nodePushCreds,
+	}
+}
+
+// WithRaftReplicator attaches a Raft replicator so that registering the
+// current host also publishes a CmdHostUpsert. Call after construction;
+// nil disables replication and falls back to the legacy direct-write path.
+func (s *service) WithRaftReplicator(r RaftReplicator) Service {
+	s.raft = r
+	return s
+}
+
+// AttachRaftReplicator is the package-level helper used by DI when the
+// service has already been wired into other components.
+func AttachRaftReplicator(svc Service, r RaftReplicator) {
+	if impl, ok := svc.(*service); ok {
+		impl.raft = r
 	}
 }
 
@@ -59,6 +84,17 @@ func (s *service) RegisterOrUpdateCurrentHost(ctx context.Context) (*Host, error
 	if err != nil {
 		s.logger.Error("Failed to upsert local host record", "error", err)
 		return nil, err
+	}
+
+	// When the Raft layer is enabled also publish this node into the
+	// replicated host registry so every other node in this cluster (and,
+	// after the bridge ships entries, the peer cluster) sees us in
+	// /api/v1/hosts. Best-effort: a failure here does not block the
+	// local id=1 collector row from being written.
+	if s.raft != nil && s.raft.Enabled() {
+		if rerr := s.raft.SubmitHostUpsert(ctx, hostInfo); rerr != nil {
+			s.logger.Warn("Raft host upsert failed", "error", rerr)
+		}
 	}
 
 	s.logger.Debug("Local host registered/updated", "host_id", host.ID, "name", host.Name, "mac", host.MacAddress)

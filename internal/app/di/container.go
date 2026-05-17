@@ -67,8 +67,9 @@ type Container struct {
 
 	broker *stream.Broker
 
-	raftService raftcluster.Service
-	raftFSM     *raftcluster.FSM
+	raftService    raftcluster.Service
+	raftFSM        *raftcluster.FSM
+	raftReplicator *raftcluster.Replicator
 }
 
 // NewContainer creates a new dependency injection container.
@@ -81,16 +82,6 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 		broker: stream.NewBroker(),
 	}
 
-	// Build the Raft layer early so other services can be wired with the
-	// FSM / Service if they need to translate writes into commands. When
-	// disabled this returns a no-op service and a nil FSM.
-	raftSvc, raftFSM, err := raftcluster.New(context.Background(), logger, raftCfg)
-	if err != nil {
-		return nil, err
-	}
-	container.raftService = raftSvc
-	container.raftFSM = raftFSM
-
 	db, err := database.Initialize(dbConfig)
 	if err != nil {
 		return nil, err
@@ -101,6 +92,17 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 	}
 
 	container.db = db
+
+	// Build the Raft layer AFTER the DB so the FSM can be wired with a
+	// SQLite-backed Snapshotter/Restorer. When disabled this returns a
+	// no-op service and a nil FSM and everything else falls back to the
+	// legacy direct-write path.
+	raftSvc, raftFSM, err := raftcluster.New(context.Background(), logger, raftCfg)
+	if err != nil {
+		return nil, err
+	}
+	container.raftService = raftSvc
+	container.raftFSM = raftFSM
 
 	container.cpuRepository = cpu.NewRepository(db)
 	container.memoryRepository = memory.NewRepository(db)
@@ -156,6 +158,26 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 		metricsCollector,
 		container.hostService,
 	)
+
+	// When Raft is enabled, wire the FSM with concrete CommandAppliers,
+	// the SQLite snapshotter/restorer and a Replicator that the hosts /
+	// users services use to publish writes into the log.
+	if raftFSM != nil {
+		raftcluster.RegisterAppliers(raftFSM, raftcluster.AppliersDeps{
+			Logger:           logger,
+			DB:               db,
+			HostRepo:         container.hostRepository,
+			UserRepo:         container.userRepository,
+			RefreshTokenRepo: container.refreshTokenRepository,
+		})
+		raftFSM.SetSnapshotter(raftcluster.NewSQLiteSnapshotter(db))
+		raftFSM.SetRestorer(raftcluster.NewSQLiteRestorer(db))
+
+		replicator := raftcluster.NewReplicator(raftSvc)
+		container.raftReplicator = replicator
+		hosts.AttachRaftReplicator(container.hostService, replicator)
+		users.AttachRaftReplicator(container.userService, replicator)
+	}
 
 	return container, nil
 }
@@ -239,6 +261,12 @@ func (c *Container) GetRaftService() raftcluster.Service {
 // and Restorer. Returns nil when Raft is disabled.
 func (c *Container) GetRaftFSM() *raftcluster.FSM {
 	return c.raftFSM
+}
+
+// GetRaftReplicator returns the helper used by services to publish writes
+// into the Raft log. Returns nil when Raft is disabled.
+func (c *Container) GetRaftReplicator() *raftcluster.Replicator {
+	return c.raftReplicator
 }
 
 // Close releases resources held by the container. Currently shuts down the

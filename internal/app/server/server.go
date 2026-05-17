@@ -107,6 +107,49 @@ func Run() {
 	}
 	regCancel()
 
+	// Raft-enabled deployments seed / read cluster-shared JWT signing keys
+	// from cluster_config so a session minted on any node validates on
+	// every other node. On the very first node these come from env; on
+	// joiners they arrive via snapshot restore.
+	if cfg.Raft.Enabled {
+		bootCtx, bootCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		jwtSec, refSec, berr := raftcluster.BootstrapClusterSecrets(bootCtx,
+			logger,
+			container.GetRaftService(),
+			container.GetRaftReplicator(),
+			container.GetDB(),
+			cfg.JWTSecret,
+			cfg.RefreshSecret,
+		)
+		bootCancel()
+		if berr != nil {
+			logger.Warn("raft: cluster secret bootstrap returned error", "error", berr)
+		}
+		if jwtSec != cfg.JWTSecret || refSec != cfg.RefreshSecret {
+			// We discovered cluster-shared secrets that differ from env;
+			// rebuild the token service so newly minted sessions sign /
+			// verify with the cluster-shared keys.
+			cfg.JWTSecret = jwtSec
+			cfg.RefreshSecret = refSec
+			logger.Info("raft: token service will use cluster-shared signing keys (restart required for full effect)")
+		}
+
+		go func() {
+			// Give the leader a moment to settle, then advertise this
+			// node's public URL into the catalog the bridge picker reads.
+			time.Sleep(2 * time.Second)
+			advCtx, advCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer advCancel()
+			raftcluster.AdvertiseSelf(advCtx, logger,
+				container.GetRaftService(),
+				container.GetRaftReplicator(),
+				cfg.Raft.ClusterID,
+				cfg.Raft.NodeID,
+				cfg.Raft.AdvertiseURL,
+			)
+		}()
+	}
+
 	// Load cluster config from .env (MAIN_NODE_URL, NODE_ACCESS_TOKEN) for agent push mode
 	nodes.LoadFromEnvFile()
 
@@ -321,7 +364,8 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	streamHandler := platformstream.NewHandler(container.GetBroker(), container.GetHostService())
 	configWriter := setup.NewConfigWriter()
 	setupHandler := setup.NewHandler(configWriter, container.GetUserService(), onSetupComplete)
-	raftHandler := raftcluster.NewHandler(container.GetRaftService())
+	raftHandler := raftcluster.NewHandler(container.GetRaftService()).
+		WithDeps(container.GetRaftReplicator(), container.GetDB(), logger, cfg.Raft.ClusterID)
 
 	// Swagger UI (always available)
 	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
@@ -397,6 +441,12 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		// bridge endpoints (added in a follow-up) live behind HMAC auth.
 		api.GET("/raft/ping", raftHandler.Ping)
 
+		// Raft join: a fresh node uses a one-shot token (issued by an
+		// admin on the leader) to enrol itself as a voter. Rate-limited
+		// to stop token-bruteforce attempts.
+		raftJoinRL := middleware.RateLimitMiddleware(5.0/60, 5)
+		api.POST("/raft/join", raftJoinRL, raftHandler.Join)
+
 		// Metrics current snapshot
 		api.GET("/metrics/current", middleware.AuthJWT(container.GetTokenService()), systemHandler.HandleCurrentMetrics)
 	}
@@ -428,6 +478,11 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 
 		// Raft cluster status (admin) — surfaces leader, peers, indices, RTTs
 		authAPI.GET("/raft/status", middleware.RequireAdmin(), raftHandler.Status)
+		// Raft peer management (admin, leader-only)
+		authAPI.POST("/raft/peers", middleware.RequireAdmin(), raftHandler.AddPeer)
+		authAPI.DELETE("/raft/peers/:id", middleware.RequireAdmin(), raftHandler.RemovePeer)
+		// Issue one-shot join token (admin, leader-only)
+		authAPI.POST("/raft/join-token", middleware.RequireAdmin(), raftHandler.IssueJoinToken)
 	}
 
 	// Static files for React app (hashed bundles from Vite)
