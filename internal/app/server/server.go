@@ -415,6 +415,8 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 			setup.POST("/preview-env", setupHandler.PreviewEnv)
 			setup.POST("/complete", setupHandler.CompleteSetup)
 			setup.POST("/join-raft-cluster", setupHandler.JoinRaftCluster)
+			setup.POST("/check-reachable", setupHandler.CheckReachable)
+			setup.GET("/raft-progress", setupHandler.RaftProgress)
 		}
 
 		// Auth routes (public, rate-limited: 10 req/min per IP)

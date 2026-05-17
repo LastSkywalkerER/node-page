@@ -111,3 +111,57 @@ export function useJoinRaftCluster() {
   });
 }
 
+/**
+ * Public, no-auth Raft progress polling for the join flow's
+ * "Waiting for snapshot..." state. Exposes the same shape as the
+ * authenticated /raft/status but trimmed to the fields the wizard
+ * needs to render progress + diagnose stalls.
+ */
+export interface RaftProgress {
+  enabled: boolean;
+  state?: string;
+  leader_id?: string;
+  applied_index: number;
+  commit_index: number;
+  last_index: number;
+  node_id?: string;
+  cluster_id?: string;
+}
+
+export function useRaftProgress(enabled: boolean) {
+  return useQuery<RaftProgress>({
+    queryKey: ['setup', 'raft-progress'],
+    queryFn: async () => {
+      const resp = await apiClient.get<{ data: RaftProgress }>('/setup/raft-progress');
+      return resp.data.data;
+    },
+    enabled,
+    refetchInterval: enabled ? 2000 : false,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/**
+ * Public, no-auth TCP-reachability probe for the join flow's
+ * "Waiting for snapshot..." state. The backend tries to TCP-connect
+ * to addr from this server and reports success / failure. Used to
+ * diagnose "the leader can't reach my advertise address" mid-join.
+ */
+export interface CheckReachableResponse {
+  reachable: boolean;
+  addr: string;
+  error?: string;
+}
+export function useCheckReachable() {
+  return useMutation<CheckReachableResponse, Error, string>({
+    mutationFn: async (addr) => {
+      const response = await apiClient.post<{ data: CheckReachableResponse }>(
+        '/setup/check-reachable',
+        { addr },
+      );
+      return response.data.data;
+    },
+  });
+}
+

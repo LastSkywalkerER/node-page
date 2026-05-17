@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import type { MachineHintsResponse } from './schemas';
+import { useCheckReachable, useRaftProgress } from './useSetup';
 
 export const JOIN_CLUSTER_STEP_META = {
   title: 'Join an existing cluster',
@@ -253,13 +254,7 @@ export function JoinClusterWidget({
       ) : null}
 
       {status === 'replicating' ? (
-        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
-          <p className="font-medium">Joined — waiting for snapshot replication…</p>
-          <p className="text-xs text-slate-400 mt-1">
-            The peer leader is shipping the current cluster snapshot (users, hosts, history) to this node.
-            You'll be redirected to the login page as soon as it lands.
-          </p>
-        </div>
+        <WaitingForSnapshot advertiseAddr={advertiseAddr.trim() || `${bindAddr}`} />
       ) : null}
 
       <div className="flex justify-between gap-2 pt-2">
@@ -281,5 +276,102 @@ export function JoinClusterWidget({
         </Button>
       </div>
     </form>
+  );
+}
+
+// WaitingForSnapshot is shown after the join HTTP exchange succeeds and
+// the local Raft node has been added as a voter by the leader. It polls
+// /raft/status every 2s to surface progress (applied / commit indices,
+// leader id). After ~30 seconds without any committed entries it offers
+// to TCP-probe the advertise address from this same server — if the
+// joining node can't reach its own advertise address, neither can the
+// cluster leader, and snapshot replication will never start.
+function WaitingForSnapshot({ advertiseAddr }: { advertiseAddr: string }) {
+  const { data: progress } = useRaftProgress(true);
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const [reachableInfo, setReachableInfo] = useState<null | {
+    reachable: boolean;
+    error?: string;
+  }>(null);
+  const checkReachable = useCheckReachable();
+
+  useEffect(() => {
+    const startedAt = Date.now();
+    const id = window.setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const appliedIdx = progress?.applied_index ?? 0;
+  const commitIdx = progress?.commit_index ?? 0;
+  const leaderId = progress?.leader_id || '';
+  const state = (progress?.state || '').toLowerCase();
+
+  const stuck = elapsedSec >= 30 && appliedIdx === 0;
+  const showDiag = stuck || reachableInfo !== null;
+
+  const onProbe = async () => {
+    if (!advertiseAddr) return;
+    setReachableInfo(null);
+    try {
+      const res = await checkReachable.mutateAsync(advertiseAddr);
+      setReachableInfo({ reachable: res.reachable, error: res.error });
+    } catch (e) {
+      setReachableInfo({ reachable: false, error: (e as Error).message });
+    }
+  };
+
+  return (
+    <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-3 text-sm space-y-2">
+      <p className="font-medium">Joined — waiting for snapshot replication…</p>
+      <p className="text-xs text-slate-400">
+        The peer leader is shipping the current cluster snapshot (users, hosts, history)
+        to this node. You'll be redirected to the login page as soon as it lands.
+      </p>
+      <p className="text-xs font-mono text-slate-300">
+        local state: {state || '—'} · applied {appliedIdx} · commit {commitIdx} · leader:{' '}
+        {leaderId || '—'} · elapsed {elapsedSec}s
+      </p>
+
+      {showDiag && (
+        <div className="space-y-2 pt-2 border-t border-amber-500/30">
+          <p className="text-xs text-amber-100/90">
+            No snapshot in {elapsedSec}s. Most common cause: the leader can't reach this
+            node on its advertise address <code>{advertiseAddr}</code>. If you're in
+            Docker, make sure the Raft port is mapped in <code>docker-compose.yml</code>
+            (e.g. <code>ports: [&quot;7002:7002&quot;]</code>) and the container was
+            recreated to pick it up.
+          </p>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={onProbe}
+              disabled={checkReachable.isPending || !advertiseAddr}
+              className="border-amber-500/50 text-amber-100 hover:bg-amber-500/20"
+            >
+              {checkReachable.isPending
+                ? 'Probing…'
+                : `Self-probe ${advertiseAddr}`}
+            </Button>
+            {reachableInfo &&
+              (reachableInfo.reachable ? (
+                <span className="text-xs text-emerald-300">
+                  ✓ Reachable from this server. The leader should be able to dial it too.
+                  If snapshot still doesn't arrive, check the leader's logs.
+                </span>
+              ) : (
+                <span className="text-xs text-rose-300 break-words">
+                  ✗ Unreachable from this server: {reachableInfo.error || 'unknown error'}.
+                  The leader can't reach this address either — fix port mapping and re-do
+                  the wizard.
+                </span>
+              ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

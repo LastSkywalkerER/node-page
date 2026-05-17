@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -712,6 +713,91 @@ func probePeerClusterID(ctx context.Context, peerURL string) (string, error) {
 		return "", fmt.Errorf("peer did not return X-Raft-Cluster-ID header")
 	}
 	return cid, nil
+}
+
+// RaftProgressResponse is the minimal Raft snapshot the join-cluster
+// wizard polls during the "Waiting for snapshot..." state — applied /
+// commit indices + leader / state so the operator sees progress without
+// being authenticated against the admin /raft/status endpoint.
+type RaftProgressResponse struct {
+	Enabled      bool   `json:"enabled"`
+	State        string `json:"state,omitempty"`
+	LeaderID     string `json:"leader_id,omitempty"`
+	AppliedIndex uint64 `json:"applied_index"`
+	CommitIndex  uint64 `json:"commit_index"`
+	LastIndex    uint64 `json:"last_index"`
+	NodeID       string `json:"node_id,omitempty"`
+	ClusterID    string `json:"cluster_id,omitempty"`
+}
+
+// RaftProgress is the public, no-auth version of /raft/status used by
+// the wizard's join-replicating panel to surface progress. It exposes
+// the same information that is otherwise discoverable via the Raft TCP
+// transport itself, so revealing it pre-login adds no attack surface.
+//
+// GET /api/v1/setup/raft-progress
+func (h *Handler) RaftProgress(c *gin.Context) {
+	if h.raftSvc == nil {
+		c.JSON(http.StatusOK, gin.H{"data": RaftProgressResponse{Enabled: false}})
+		return
+	}
+	st := h.raftSvc.Status()
+	c.JSON(http.StatusOK, gin.H{
+		"data": RaftProgressResponse{
+			Enabled:      st.Enabled,
+			State:        st.State,
+			LeaderID:     st.LeaderID,
+			AppliedIndex: st.AppliedIndex,
+			CommitIndex:  st.CommitIndex,
+			LastIndex:    st.LastIndex,
+			NodeID:       st.NodeID,
+			ClusterID:    st.ClusterID,
+		},
+	})
+}
+
+// CheckReachableRequest is the body of POST /setup/check-reachable.
+type CheckReachableRequest struct {
+	Addr string `json:"addr" binding:"required"`
+}
+
+// CheckReachable opens a quick TCP probe to addr from THIS server and
+// reports whether it succeeds. Used by the join wizard's "Waiting for
+// snapshot..." state to tell the operator whether the advertise
+// address they registered with the leader is actually reachable.
+//
+// If the joining node can't reach its own advertise address, neither
+// can the leader — typical "Raft port not mapped in docker-compose"
+// failure mode.
+//
+// POST /api/v1/setup/check-reachable
+func (h *Handler) CheckReachable(c *gin.Context) {
+	var req CheckReachableRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "Invalid request data", "detail": err.Error()})
+		return
+	}
+	addr := strings.TrimSpace(req.Addr)
+	if addr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "addr is required"})
+		return
+	}
+	dialer := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := dialer.DialContext(c.Request.Context(), "tcp", addr)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"data": gin.H{
+				"reachable": false,
+				"addr":      addr,
+				"error":     err.Error(),
+			},
+		})
+		return
+	}
+	_ = conn.Close()
+	c.JSON(http.StatusOK, gin.H{
+		"data": gin.H{"reachable": true, "addr": addr},
+	})
 }
 
 func splitCSV(s string) []string {
