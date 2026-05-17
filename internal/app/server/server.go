@@ -372,7 +372,13 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	nodesHandler := nodes.NewHandler(container.GetNodeService(), container.GetHostService(), cfg.PublicBaseURL, len(cfg.TrustedProxies) > 0)
 	streamHandler := platformstream.NewHandler(container.GetBroker(), container.GetHostService())
 	configWriter := setup.NewConfigWriter()
-	setupHandler := setup.NewHandler(configWriter, container.GetUserService(), onSetupComplete)
+	setupHandler := setup.NewHandler(configWriter, container.GetUserService(), onSetupComplete).
+		WithRaft(
+			container.GetRaftService(),
+			cfg.Raft.ClusterID,
+			cfg.Raft.NodeID,
+			firstNonEmpty(cfg.Raft.AdvertiseAddr, cfg.Raft.BindAddr),
+		)
 	raftHandler := raftcluster.NewHandler(container.GetRaftService()).
 		WithDeps(container.GetRaftReplicator(), container.GetDB(), logger, cfg.Raft.ClusterID)
 	if picker := container.GetBridgePicker(); picker != nil {
@@ -405,6 +411,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 			setup.GET("/config", setupHandler.GetConfig)
 			setup.POST("/preview-env", setupHandler.PreviewEnv)
 			setup.POST("/complete", setupHandler.CompleteSetup)
+			setup.POST("/join-raft-cluster", setupHandler.JoinRaftCluster)
 		}
 
 		// Auth routes (public, rate-limited: 10 req/min per IP)
@@ -559,6 +566,15 @@ func resolveDistStaticFile(distPath, urlPath string) (absFile string, ok bool) {
 		return "", false
 	}
 	return absFile, true
+}
+
+// firstNonEmpty returns a if it's non-empty, else b. Used to fall back from
+// RAFT_ADVERTISE_ADDR to RAFT_BIND_ADDR.
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 func pathLooksLikeMissingStaticAsset(urlPath string) bool {

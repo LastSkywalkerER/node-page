@@ -1,13 +1,20 @@
 package setup
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"system-stats/internal/app/dockerenv"
 	users "system-stats/internal/auth/users"
+	raftcluster "system-stats/internal/cluster/raft"
 )
 
 // Handler handles setup-related HTTP requests
@@ -15,6 +22,14 @@ type Handler struct {
 	configWriter    *ConfigWriter
 	userService     users.UserService
 	onSetupComplete func() // called once after setup finishes; may be nil
+
+	// raftSvc is optional: set when RAFT_ENABLED=true. It is consulted by
+	// the JoinRaftCluster endpoint to forward a join token to the peer
+	// cluster's leader.
+	raftSvc      raftcluster.Service
+	raftCluster  string
+	raftNode     string
+	raftBindAddr string
 }
 
 // NewHandler creates a new setup handler
@@ -24,6 +39,16 @@ func NewHandler(configWriter *ConfigWriter, userService users.UserService, onSet
 		userService:     userService,
 		onSetupComplete: onSetupComplete,
 	}
+}
+
+// WithRaft wires the Raft layer so the wizard can call its "Join existing
+// cluster" branch. Safe to call with svc=nil — the endpoint then 503s.
+func (h *Handler) WithRaft(svc raftcluster.Service, clusterID, nodeID, advertiseAddr string) *Handler {
+	h.raftSvc = svc
+	h.raftCluster = clusterID
+	h.raftNode = nodeID
+	h.raftBindAddr = advertiseAddr
+	return h
 }
 
 // SetupStatusResponse represents the setup status response
@@ -349,6 +374,102 @@ func (h *Handler) CompleteSetup(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"data": CompleteSetupResponse{
 			Message: "Setup completed successfully. Please restart the server for changes to take effect.",
+		},
+	})
+}
+
+// JoinRaftClusterRequest is the body of POST /setup/join-raft-cluster.
+type JoinRaftClusterRequest struct {
+	PeerURL string `json:"peer_url" binding:"required"`
+	Token   string `json:"token"    binding:"required"`
+}
+
+// JoinRaftCluster is the wizard's "Join existing cluster" branch. It takes
+// a peer URL and a one-shot join token, forwards them to the peer's
+// /api/v1/raft/join endpoint with this node's id + advertise address,
+// then the peer leader adds us as a voter and replicates the snapshot.
+// As soon as the snapshot lands the users table fills and /setup/status
+// flips to setup_needed=false — the frontend polls until it sees that
+// flip and then redirects to /auth.
+//
+// POST /api/v1/setup/join-raft-cluster
+func (h *Handler) JoinRaftCluster(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	if h.raftSvc == nil || !h.raftSvc.Enabled() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"code":  "raft_disabled",
+			"error": "this node was not started with RAFT_ENABLED=true; relaunch with the cluster env vars and try again",
+		})
+		return
+	}
+	if h.raftNode == "" || h.raftBindAddr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":  "raft_misconfigured",
+			"error": "RAFT_NODE_ID and RAFT_ADVERTISE_ADDR (or RAFT_BIND_ADDR) are required",
+		})
+		return
+	}
+
+	// Same gate as CompleteSetup — refuse if users already exist locally,
+	// to avoid clobbering an already-provisioned node.
+	count, err := h.userService.Count(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": "Failed to check setup status"})
+		return
+	}
+	if count > 0 {
+		c.JSON(http.StatusForbidden, gin.H{"code": "setup_already_completed", "error": "Setup has already been completed; join is not allowed"})
+		return
+	}
+
+	var req JoinRaftClusterRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "Invalid request data", "detail": err.Error()})
+		return
+	}
+
+	peerURL := strings.TrimSuffix(strings.TrimSpace(req.PeerURL), "/")
+	if peerURL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "peer_url is required"})
+		return
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"token":          req.Token,
+		"node_id":        h.raftNode,
+		"advertise_addr": h.raftBindAddr,
+	})
+
+	httpCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(httpCtx, http.MethodPost, peerURL+"/api/v1/raft/join", bytes.NewReader(body))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": err.Error()})
+		return
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(httpReq)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"code": "peer_unreachable", "error": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"code":   "peer_rejected",
+			"error":  fmt.Sprintf("peer returned %s", resp.Status),
+			"detail": string(respBody),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data": gin.H{
+			"message":         "Join accepted; the peer cluster's leader will replicate state to this node. Watch /setup/status — it will flip to setup_needed=false once the snapshot lands.",
+			"peer_response":   json.RawMessage(respBody),
 		},
 	})
 }
