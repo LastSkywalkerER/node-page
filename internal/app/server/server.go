@@ -406,6 +406,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		WithBootError(container.RaftBootError).
 		WithResetConfig(container.ResetRaftConfig).
 		WithWipeState(container.WipeRaftState).
+		WithFactoryReset(container.FactoryResetRaft).
 		WithPickerInfo(func() any {
 			if p := container.GetBridgePicker(); p != nil {
 				return p.Snapshot()
@@ -546,6 +547,10 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.POST("/raft/reset", middleware.RequireAdmin(), raftHandler.ResetConfig)
 		// Wipe Raft on-disk state + re-bootstrap as fresh single voter
 		authAPI.POST("/raft/wipe-state", middleware.RequireAdmin(), raftHandler.WipeState)
+		// Fully decouple from Raft: wipe state + remove .env entries
+		authAPI.POST("/raft/factory-reset", middleware.RequireAdmin(), raftHandler.FactoryReset)
+		// TCP-probe a voter's advertise addr from this server
+		authAPI.POST("/raft/probe-voter", middleware.RequireAdmin(), raftHandler.ProbeVoter)
 	}
 
 	// Static files for React app (hashed bundles from Vite)

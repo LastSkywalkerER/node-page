@@ -12,7 +12,10 @@ import {
   useSaveRaftBridge,
   useResetRaftConfig,
   useWipeRaftState,
+  useFactoryResetRaft,
+  useProbeVoter,
   BridgeSample,
+  ProbeVoterResult,
 } from './useRaft'
 
 function fmtRTT(ns: number): string {
@@ -58,6 +61,9 @@ export function RaftClusterWidget() {
   // Bridge config form (hot-update + persist in .env).
   const saveBridge = useSaveRaftBridge()
   const wipeState = useWipeRaftState()
+  const factoryReset = useFactoryResetRaft()
+  const probeVoter = useProbeVoter()
+  const [probeResults, setProbeResults] = useState<Record<string, ProbeVoterResult>>({})
   const [bridgeSecret, setBridgeSecret] = useState('')
   const [bridgeSeeds, setBridgeSeeds] = useState('')
   const [bridgeAdvertise, setBridgeAdvertise] = useState('')
@@ -152,6 +158,30 @@ export function RaftClusterWidget() {
     }
   }
 
+  const onProbe = async (addr: string) => {
+    try {
+      const res = await probeVoter.mutateAsync(addr)
+      setProbeResults((prev) => ({ ...prev, [addr]: res }))
+    } catch (e) {
+      setProbeResults((prev) => ({ ...prev, [addr]: { reachable: false, addr, error: (e as Error).message } }))
+    }
+  }
+
+  const onFactoryReset = async () => {
+    const ok = window.confirm(
+      'This will wipe Raft state AND remove RAFT_* lines from .env on this node. ' +
+        'After restart, this node will be Raft-disabled. SQLite data (users, hosts, metrics) is kept. ' +
+        'Use this on EVERY node when the cluster is wedged and you want to start over via the wizard. Continue?',
+    )
+    if (!ok) return
+    try {
+      await factoryReset.mutateAsync()
+      toast.success('Raft factory-reset done. Restart the process to apply.')
+    } catch (e) {
+      toast.error('Factory reset failed: ' + (e as Error).message)
+    }
+  }
+
   const onWipeState = async () => {
     const ok = window.confirm(
       'This will throw away the Raft consensus log + cluster membership on this node and re-bootstrap as a fresh single-voter cluster. ' +
@@ -230,6 +260,20 @@ export function RaftClusterWidget() {
           >
             {wipeState.isPending ? 'Wiping…' : 'Wipe state & re-bootstrap'}
           </Button>
+          <p className="text-xs text-amber-100/80 pt-2">
+            <strong>Wipe state</strong> only resets THIS node — the other voters still
+            have us in their config. For a true cluster-wide reset, click
+            <strong> Factory reset</strong> on EVERY node, then re-run the setup wizard.
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onFactoryReset}
+            disabled={factoryReset.isPending}
+            className="border-rose-500/50 text-rose-100 hover:bg-rose-500/20"
+          >
+            {factoryReset.isPending ? 'Resetting…' : 'Factory reset Raft on this node'}
+          </Button>
         </div>
       )}
 
@@ -237,27 +281,53 @@ export function RaftClusterWidget() {
         <h4 className="text-sm font-display tracking-wide">Voters</h4>
         {st.peers && st.peers.length > 0 ? (
           <ul className="divide-y divide-border/50 rounded border border-border/50">
-            {st.peers.map((p) => (
-              <li key={p.id} className="flex items-center justify-between gap-3 px-3 py-2">
-                <div className="font-mono text-xs">
-                  <span className="font-medium">{p.id}</span>
-                  <span className="text-muted-foreground"> @ {p.addr}</span>
-                  <Badge variant="outline" className="ml-2 text-[10px]">
-                    {p.suffrage}
-                  </Badge>
-                </div>
-                {p.id !== st.node_id && st.state === 'Leader' ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => onRemove(p.id)}
-                    className="text-destructive hover:text-destructive"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                ) : null}
-              </li>
-            ))}
+            {st.peers.map((p) => {
+              const probe = probeResults[p.addr]
+              return (
+                <li key={p.id} className="flex flex-col gap-1 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="font-mono text-xs min-w-0 flex-1">
+                    <span className="font-medium">{p.id}</span>
+                    <span className="text-muted-foreground"> @ {p.addr}</span>
+                    <Badge variant="outline" className="ml-2 text-[10px]">
+                      {p.suffrage}
+                    </Badge>
+                    {probe ? (
+                      probe.reachable ? (
+                        <span className="ml-2 text-[11px] text-emerald-300">✓ reachable</span>
+                      ) : (
+                        <span className="ml-2 text-[11px] text-rose-300 break-all">
+                          ✗ {probe.error || 'unreachable'}
+                        </span>
+                      )
+                    ) : null}
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => onProbe(p.addr)}
+                      disabled={probeVoter.isPending}
+                      title={`TCP-probe ${p.addr} from this server`}
+                      className="text-[11px]"
+                    >
+                      {probeVoter.isPending && probeVoter.variables === p.addr
+                        ? 'Probing…'
+                        : 'Probe'}
+                    </Button>
+                    {p.id !== st.node_id && st.state === 'Leader' ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => onRemove(p.id)}
+                        className="text-destructive hover:text-destructive"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    ) : null}
+                  </div>
+                </li>
+              )
+            })}
           </ul>
         ) : (
           <p className="text-xs text-muted-foreground">No peers known yet.</p>

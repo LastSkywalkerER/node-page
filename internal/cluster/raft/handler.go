@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"net"
 	"net/http"
 	"time"
 
@@ -31,9 +32,10 @@ type Handler struct {
 	clusterID  string
 	pickerInfo func() any
 	bridgeCfg  BridgeConfigurator
-	bootError  func() string
-	resetCfg   func() error
-	wipeState  func() error
+	bootError    func() string
+	resetCfg     func() error
+	wipeState    func() error
+	factoryReset func() error
 }
 
 // NewHandler wires the Service. The Replicator and DB are required for the
@@ -98,6 +100,15 @@ func (h *Handler) WithWipeState(fn func() error) *Handler {
 	return h
 }
 
+// WithFactoryReset wires a function that fully decouples this node
+// from any Raft cluster — wipes data/raft, removes RAFT_* from .env,
+// and shuts the running node down. SQLite data is preserved. The
+// process comes up Raft-disabled on the next restart.
+func (h *Handler) WithFactoryReset(fn func() error) *Handler {
+	h.factoryReset = fn
+	return h
+}
+
 // Status returns the local Raft view.
 // GET /api/v1/raft/status
 func (h *Handler) Status(c *gin.Context) {
@@ -112,6 +123,63 @@ func (h *Handler) Status(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, resp)
+}
+
+// FactoryReset fully decouples this node from any Raft cluster. Wipes
+// data/raft on disk + every RAFT_* entry from .env so the next restart
+// boots with Raft disabled. The running node is shut down. SQLite tables
+// (users, hosts, metrics) are kept.
+//
+// Use case: the cluster is wedged on multiple nodes and the operator
+// wants to start from scratch — call this on every node, then re-run
+// the setup wizard.
+//
+// Admin-only.
+//
+// POST /api/v1/raft/factory-reset
+func (h *Handler) FactoryReset(c *gin.Context) {
+	if h.factoryReset == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "factory-reset not wired"})
+		return
+	}
+	if err := h.factoryReset(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"reset": true,
+		"next":  "Raft is now disabled on this node. Restart the process to confirm, then re-run the setup wizard.",
+	})
+}
+
+// ProbeVoterRequest is the body of POST /api/v1/raft/probe-voter.
+type ProbeVoterRequest struct {
+	Addr string `json:"addr" binding:"required"`
+}
+
+// ProbeVoter TCP-dials the given Raft voter address from THIS server,
+// reports whether the dial succeeds. Used by the admin "Voters" panel
+// to diagnose a wedged cluster — if a voter's advertise address isn't
+// reachable from the leader, the cluster can't make progress.
+//
+// Admin-only.
+//
+// POST /api/v1/raft/probe-voter
+func (h *Handler) ProbeVoter(c *gin.Context) {
+	var req ProbeVoterRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	addr := req.Addr
+	dialer := &net.Dialer{Timeout: 3 * time.Second}
+	conn, err := dialer.DialContext(c.Request.Context(), "tcp", addr)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"reachable": false, "addr": addr, "error": err.Error()})
+		return
+	}
+	_ = conn.Close()
+	c.JSON(http.StatusOK, gin.H{"reachable": true, "addr": addr})
 }
 
 // WipeState shuts the Raft node down, deletes its BoltDB log + snapshot

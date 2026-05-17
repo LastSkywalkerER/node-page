@@ -552,7 +552,41 @@ func wipeDirContents(dir string) error {
 	return nil
 }
 
-// SaveBridge satisfies raftcluster.BridgeConfigurator. It updates the
+// FactoryResetRaft fully decouples this node from any Raft cluster: shuts
+// down the live node, wipes the on-disk log + snapshot, and removes every
+// RAFT_* entry from .env so the next process boot comes up Raft-disabled.
+// SQLite data (users, hosts, metrics) is preserved.
+//
+// Use this when a multi-node cluster is wedged (e.g. one voter is
+// unreachable forever — typically a Docker port-mapping mistake — and
+// the remaining voters can't reach quorum). Apply on EVERY node, then
+// re-run the setup wizard from scratch.
+func (c *Container) FactoryResetRaft() error {
+	c.activateMu.Lock()
+	defer c.activateMu.Unlock()
+	if err := c.shutdownAndWipeLocked(); err != nil {
+		return err
+	}
+	cw := setupcfg.NewConfigWriter()
+	cv, _ := cw.ReadCurrentConfig()
+	if cv == nil {
+		return nil
+	}
+	cv.RaftEnabled = ""
+	cv.RaftClusterID = ""
+	cv.RaftNodeID = ""
+	cv.RaftBindAddr = ""
+	cv.RaftAdvertiseAddr = ""
+	cv.RaftDataDir = ""
+	cv.RaftBootstrap = ""
+	cv.RaftAdvertisePublicURL = ""
+	cv.RaftBridgeEnabled = ""
+	cv.RaftBridgeSharedSecret = ""
+	cv.RaftBridgeRemoteSeeds = ""
+	c.raftBootError = ""
+	c.raftCfgSnapshot = config.RaftConfig{}
+	return cw.WriteConfigFile(cv)
+}
 // running bridge primitives, then persists the new values into .env so
 // the change survives a restart. The advertiseURL argument is optional;
 // pass "" to leave the previously configured URL untouched.

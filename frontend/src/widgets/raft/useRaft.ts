@@ -167,3 +167,41 @@ export function useWipeRaftState() {
     },
   })
 }
+
+/**
+ * Full reset — wipes data/raft AND removes RAFT_* from .env so the next
+ * restart comes up Raft-disabled. SQLite tables (users, hosts, metrics)
+ * are preserved. Apply on EVERY node when the cluster is wedged and you
+ * want to start from scratch via the setup wizard.
+ */
+export function useFactoryResetRaft() {
+  const queryClient = useQueryClient()
+  return useMutation<{ reset: boolean; next: string }, Error, void>({
+    mutationFn: async () => {
+      const resp = await apiClient.post<{ reset: boolean; next: string }>('/raft/factory-reset', {})
+      return resp.data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['raft', 'status'] })
+    },
+  })
+}
+
+/**
+ * TCP-probes a voter's advertise address from THIS server. Used by the
+ * Voters panel to diagnose unreachable peers when the cluster can't
+ * elect a leader.
+ */
+export interface ProbeVoterResult {
+  reachable: boolean
+  addr: string
+  error?: string
+}
+export function useProbeVoter() {
+  return useMutation<ProbeVoterResult, Error, string>({
+    mutationFn: async (addr) => {
+      const resp = await apiClient.post<ProbeVoterResult>('/raft/probe-voter', { addr })
+      return resp.data
+    },
+  })
+}
