@@ -17,19 +17,30 @@ import (
 	raftcluster "system-stats/internal/cluster/raft"
 )
 
+// RaftActivator is the small interface the setup wizard uses to hot-init
+// the Raft layer from a runtime config. The DI container satisfies it.
+type RaftActivator interface {
+	ActivateRaft(ctx context.Context, cfg raftcluster.RuntimeConfig) error
+}
+
+// ClusterSecretReader looks up the cluster-shared JWT signing keys from
+// the replicated cluster_config table. The setup handler polls this
+// after a successful Raft join so it can swap the local token service
+// keys without restarting the process.
+type ClusterSecretReader interface {
+	LookupClusterSecret(ctx context.Context, key string) (string, error)
+}
+
 // Handler handles setup-related HTTP requests
 type Handler struct {
 	configWriter    *ConfigWriter
 	userService     users.UserService
 	onSetupComplete func() // called once after setup finishes; may be nil
 
-	// raftSvc is optional: set when RAFT_ENABLED=true. It is consulted by
-	// the JoinRaftCluster endpoint to forward a join token to the peer
-	// cluster's leader.
-	raftSvc      raftcluster.Service
-	raftCluster  string
-	raftNode     string
-	raftBindAddr string
+	raftSvc       raftcluster.Service
+	raftActivator RaftActivator
+	tokenService  users.TokenService
+	secretReader  ClusterSecretReader
 }
 
 // NewHandler creates a new setup handler
@@ -41,14 +52,56 @@ func NewHandler(configWriter *ConfigWriter, userService users.UserService, onSet
 	}
 }
 
-// WithRaft wires the Raft layer so the wizard can call its "Join existing
-// cluster" branch. Safe to call with svc=nil — the endpoint then 503s.
-func (h *Handler) WithRaft(svc raftcluster.Service, clusterID, nodeID, advertiseAddr string) *Handler {
+// WithRaft wires the Raft service so the wizard can call its "Join existing
+// cluster" branch and inspect cluster state. Safe to call with svc=nil.
+func (h *Handler) WithRaft(svc raftcluster.Service) *Handler {
 	h.raftSvc = svc
-	h.raftCluster = clusterID
-	h.raftNode = nodeID
-	h.raftBindAddr = advertiseAddr
 	return h
+}
+
+// WithRaftActivator wires the runtime activator (the DI container) so the
+// wizard can hot-init the Raft layer when an operator picks "Start new
+// cluster" or "Join existing cluster".
+func (h *Handler) WithRaftActivator(act RaftActivator) *Handler {
+	h.raftActivator = act
+	return h
+}
+
+// WithTokenService wires the token service so the wizard can swap JWT /
+// refresh signing keys after writing them to .env (no restart needed).
+func (h *Handler) WithTokenService(ts users.TokenService) *Handler {
+	h.tokenService = ts
+	return h
+}
+
+// WithSecretReader wires a reader that returns cluster-shared secrets
+// from the replicated cluster_config table. The join flow uses it to
+// poll for jwt_secret / refresh_secret after snapshot replay.
+func (h *Handler) WithSecretReader(r ClusterSecretReader) *Handler {
+	h.secretReader = r
+	return h
+}
+
+// pollClusterSecretsAndSwap polls the local cluster_config table for the
+// jwt_secret + refresh_secret keys that arrive via Raft snapshot replay
+// from the peer cluster. As soon as both are present it swaps them into
+// the live token service so users can log in without a restart.
+func (h *Handler) pollClusterSecretsAndSwap() {
+	if h.tokenService == nil || h.secretReader == nil {
+		return
+	}
+	deadline := time.Now().Add(2 * time.Minute)
+	for time.Now().Before(deadline) {
+		time.Sleep(2 * time.Second)
+		pollCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		jwt, _ := h.secretReader.LookupClusterSecret(pollCtx, "jwt_secret")
+		refresh, _ := h.secretReader.LookupClusterSecret(pollCtx, "refresh_secret")
+		cancel()
+		if jwt != "" && refresh != "" {
+			h.tokenService.SetSecrets(jwt, refresh)
+			return
+		}
+	}
 }
 
 // SetupStatusResponse represents the setup status response
@@ -312,6 +365,7 @@ func (h *Handler) CompleteSetup(c *gin.Context) {
 	}
 
 	ApplySetupDefaults(req.Config)
+	ApplyRaftDefaults(req.Config)
 
 	// Write configuration to .env file
 	if err := h.configWriter.WriteConfigFile(req.Config); err != nil {
@@ -321,6 +375,42 @@ func (h *Handler) CompleteSetup(c *gin.Context) {
 			"detail": err.Error(),
 		})
 		return
+	}
+
+	// Hot-swap JWT signing keys so the token service starts using the
+	// wizard-supplied secrets immediately (no restart needed for
+	// login to work right after wizard completion).
+	if h.tokenService != nil {
+		h.tokenService.SetSecrets(req.Config.JWTSecret, req.Config.RefreshSecret)
+	}
+
+	// Optionally hot-activate Raft if the operator picked "Start new
+	// cluster" in the wizard. Single-voter bootstrap is the only mode
+	// we support here — other voters join later via /raft/join.
+	if strings.ToLower(strings.TrimSpace(req.Config.RaftEnabled)) == "true" && h.raftActivator != nil {
+		rt := raftcluster.RuntimeConfig{
+			ClusterID:          strings.TrimSpace(req.Config.RaftClusterID),
+			NodeID:             strings.TrimSpace(req.Config.RaftNodeID),
+			BindAddr:           strings.TrimSpace(req.Config.RaftBindAddr),
+			AdvertiseAddr:      strings.TrimSpace(req.Config.RaftAdvertiseAddr),
+			DataDir:            strings.TrimSpace(req.Config.RaftDataDir),
+			Bootstrap:          strings.ToLower(strings.TrimSpace(req.Config.RaftBootstrap)) == "true",
+			AdvertiseURL:       strings.TrimSpace(req.Config.RaftAdvertisePublicURL),
+			BridgeEnabled:      strings.ToLower(strings.TrimSpace(req.Config.RaftBridgeEnabled)) == "true",
+			BridgeSharedSecret: strings.TrimSpace(req.Config.RaftBridgeSharedSecret),
+			BridgeRemoteSeeds:  splitCSV(req.Config.RaftBridgeRemoteSeeds),
+		}
+		actCtx, actCancel := context.WithTimeout(ctx, 15*time.Second)
+		err := h.raftActivator.ActivateRaft(actCtx, rt)
+		actCancel()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"code":   "raft_activation_failed",
+				"error":  "Raft layer could not be activated",
+				"detail": err.Error(),
+			})
+			return
+		}
 	}
 
 	// Create first admin user
@@ -371,10 +461,15 @@ func (h *Handler) CompleteSetup(c *gin.Context) {
 		go h.onSetupComplete()
 	}
 
+	msg := "Setup completed."
+	if h.raftActivator != nil && strings.ToLower(strings.TrimSpace(req.Config.RaftEnabled)) == "true" {
+		msg += " Raft cluster sync is now active — open the admin panel to issue join tokens for additional nodes."
+	} else {
+		msg += " Tokens are signed with the new secrets immediately; no restart is required for login."
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"data": CompleteSetupResponse{
-			Message: "Setup completed successfully. Please restart the server for changes to take effect.",
-		},
+		"data": CompleteSetupResponse{Message: msg},
 	})
 }
 
@@ -382,37 +477,50 @@ func (h *Handler) CompleteSetup(c *gin.Context) {
 type JoinRaftClusterRequest struct {
 	PeerURL string `json:"peer_url" binding:"required"`
 	Token   string `json:"token"    binding:"required"`
+
+	// Raft node parameters chosen by the wizard. All fall back to
+	// sensible defaults when empty (see ApplyRaftDefaults).
+	NodeID        string `json:"node_id"`
+	BindAddr      string `json:"bind_addr"`
+	AdvertiseAddr string `json:"advertise_addr"`
+	AdvertiseURL  string `json:"advertise_url"`
+	DataDir       string `json:"data_dir"`
+
+	// Optional bridge config — when set, the joining node immediately
+	// starts shipping its cluster's log to the peer cluster.
+	BridgeSharedSecret string   `json:"bridge_shared_secret"`
+	BridgeRemoteSeeds  []string `json:"bridge_remote_seeds"`
 }
 
-// JoinRaftCluster is the wizard's "Join existing cluster" branch. It takes
-// a peer URL and a one-shot join token, forwards them to the peer's
-// /api/v1/raft/join endpoint with this node's id + advertise address,
-// then the peer leader adds us as a voter and replicates the snapshot.
-// As soon as the snapshot lands the users table fills and /setup/status
-// flips to setup_needed=false — the frontend polls until it sees that
-// flip and then redirects to /auth.
+// JoinRaftCluster is the wizard's "Join existing cluster" branch. It:
+//
+//   1. Refuses if any users already exist locally (would clobber state).
+//   2. Probes the peer's /api/v1/raft/ping to learn its cluster id.
+//   3. Hot-activates the local Raft node (bootstrap=false) so it can
+//      receive snapshot + log from the peer leader.
+//   4. POSTs to the peer's /api/v1/raft/join with this node's id +
+//      advertise address + the one-shot token. The peer adds us as a
+//      voter and the snapshot starts replicating immediately.
+//   5. Writes the Raft config into .env so the node survives a restart.
+//
+// As soon as snapshot replication finishes, the local users table fills,
+// /setup/status flips to setup_needed=false, the JWT secrets land in
+// cluster_config and a poller in this handler swaps them into the token
+// service — at which point the frontend redirects to /auth.
 //
 // POST /api/v1/setup/join-raft-cluster
 func (h *Handler) JoinRaftCluster(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	if h.raftSvc == nil || !h.raftSvc.Enabled() {
+	if h.raftActivator == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"code":  "raft_disabled",
-			"error": "this node was not started with RAFT_ENABLED=true; relaunch with the cluster env vars and try again",
-		})
-		return
-	}
-	if h.raftNode == "" || h.raftBindAddr == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":  "raft_misconfigured",
-			"error": "RAFT_NODE_ID and RAFT_ADVERTISE_ADDR (or RAFT_BIND_ADDR) are required",
+			"code":  "raft_unavailable",
+			"error": "the Raft activator is not wired; rebuild the binary",
 		})
 		return
 	}
 
-	// Same gate as CompleteSetup — refuse if users already exist locally,
-	// to avoid clobbering an already-provisioned node.
+	// Refuse if this node was already provisioned.
 	count, err := h.userService.Count(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": "Failed to check setup status"})
@@ -435,12 +543,102 @@ func (h *Handler) JoinRaftCluster(c *gin.Context) {
 		return
 	}
 
+	// Auto-fill node-level fields when the wizard didn't provide them.
+	hostHint := DetectMachineHints(ctx)
+	if req.NodeID == "" {
+		req.NodeID = defaultNodeID(hostHint.SuggestedHostname)
+	}
+	if req.BindAddr == "" {
+		req.BindAddr = ":7000"
+	}
+	if req.AdvertiseAddr == "" {
+		if hostHint.SuggestedIPv4 != "" {
+			req.AdvertiseAddr = hostHint.SuggestedIPv4 + ":7000"
+		} else {
+			req.AdvertiseAddr = req.BindAddr
+		}
+	}
+	if req.DataDir == "" {
+		req.DataDir = "./data/raft"
+	}
+
+	// Probe the peer first to discover the cluster id we're joining
+	// (so we don't ask the operator to retype it).
+	clusterID, err := probePeerClusterID(ctx, peerURL)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"code":   "peer_unreachable",
+			"error":  "could not reach peer /raft/ping to discover cluster id",
+			"detail": err.Error(),
+		})
+		return
+	}
+
+	// Activate the local Raft node so it can accept replication from
+	// the peer leader. Bootstrap=false — we are joining, not creating.
+	rt := raftcluster.RuntimeConfig{
+		ClusterID:          clusterID,
+		NodeID:             req.NodeID,
+		BindAddr:           req.BindAddr,
+		AdvertiseAddr:      req.AdvertiseAddr,
+		DataDir:            req.DataDir,
+		Bootstrap:          false,
+		AdvertiseURL:       req.AdvertiseURL,
+		BridgeSharedSecret: req.BridgeSharedSecret,
+		BridgeRemoteSeeds:  req.BridgeRemoteSeeds,
+		BridgeEnabled:      req.BridgeSharedSecret != "",
+	}
+	actCtx, actCancel := context.WithTimeout(ctx, 15*time.Second)
+	if err := h.raftActivator.ActivateRaft(actCtx, rt); err != nil {
+		actCancel()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":   "raft_activation_failed",
+			"error":  "Raft layer could not be activated",
+			"detail": err.Error(),
+		})
+		return
+	}
+	actCancel()
+
+	// Persist the Raft config in .env so restarts come back as a voter.
+	cv, _ := h.configWriter.ReadCurrentConfig()
+	if cv == nil {
+		cv = &ConfigValues{}
+	}
+	cv.RaftEnabled = "true"
+	cv.RaftClusterID = clusterID
+	cv.RaftNodeID = req.NodeID
+	cv.RaftBindAddr = req.BindAddr
+	cv.RaftAdvertiseAddr = req.AdvertiseAddr
+	cv.RaftDataDir = req.DataDir
+	cv.RaftBootstrap = "false"
+	cv.RaftAdvertisePublicURL = req.AdvertiseURL
+	if req.BridgeSharedSecret != "" {
+		cv.RaftBridgeEnabled = "true"
+		cv.RaftBridgeSharedSecret = req.BridgeSharedSecret
+	}
+	if len(req.BridgeRemoteSeeds) > 0 {
+		cv.RaftBridgeRemoteSeeds = strings.Join(req.BridgeRemoteSeeds, ",")
+	}
+	// JWT_SECRET / REFRESH_SECRET arrive from the cluster via snapshot;
+	// stub them out so FormatEnvFile doesn't refuse the write.
+	if cv.JWTSecret == "" {
+		cv.JWTSecret = "joining-cluster-placeholder"
+	}
+	if cv.RefreshSecret == "" {
+		cv.RefreshSecret = "joining-cluster-placeholder"
+	}
+	if werr := h.configWriter.WriteConfigFile(cv); werr != nil {
+		// Not fatal — Raft is already running; just log.
+		_ = werr
+	}
+
+	// Tell the peer we want in.
 	body, _ := json.Marshal(map[string]string{
 		"token":          req.Token,
-		"node_id":        h.raftNode,
-		"advertise_addr": h.raftBindAddr,
+		"node_id":        req.NodeID,
+		"advertise_addr": req.AdvertiseAddr,
 	})
-
 	httpCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	httpReq, err := http.NewRequestWithContext(httpCtx, http.MethodPost, peerURL+"/api/v1/raft/join", bytes.NewReader(body))
@@ -449,7 +647,6 @@ func (h *Handler) JoinRaftCluster(c *gin.Context) {
 		return
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-
 	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(httpReq)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"code": "peer_unreachable", "error": err.Error()})
@@ -466,10 +663,64 @@ func (h *Handler) JoinRaftCluster(c *gin.Context) {
 		return
 	}
 
+	// Once snapshot replay lands the cluster-shared JWT signing keys, swap
+	// them into the token service so logins succeed immediately. Best-effort
+	// background poll for up to ~2 min; if it times out, a restart still
+	// works (the env file was updated above).
+	if h.tokenService != nil && h.secretReader != nil {
+		go h.pollClusterSecretsAndSwap()
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"data": gin.H{
-			"message":         "Join accepted; the peer cluster's leader will replicate state to this node. Watch /setup/status — it will flip to setup_needed=false once the snapshot lands.",
-			"peer_response":   json.RawMessage(respBody),
+			"message":       "Join accepted. Snapshot replication is starting; the wizard will redirect to /auth once the first admin user lands.",
+			"cluster_id":    clusterID,
+			"peer_response": json.RawMessage(respBody),
 		},
 	})
+}
+
+// defaultNodeID derives a stable, human-readable node id from the host's
+// hostname when the wizard doesn't provide one explicitly.
+func defaultNodeID(hostname string) string {
+	h := strings.ToLower(strings.TrimSpace(hostname))
+	if h == "" {
+		return "node-1"
+	}
+	return strings.ReplaceAll(h, " ", "-")
+}
+
+// probePeerClusterID GETs /api/v1/raft/ping on peerURL and reads the
+// X-Raft-Cluster-ID response header.
+func probePeerClusterID(ctx context.Context, peerURL string) (string, error) {
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(pingCtx, http.MethodGet, peerURL+"/api/v1/raft/ping", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return "", fmt.Errorf("peer ping returned %s", resp.Status)
+	}
+	cid := strings.TrimSpace(resp.Header.Get("X-Raft-Cluster-ID"))
+	if cid == "" {
+		return "", fmt.Errorf("peer did not return X-Raft-Cluster-ID header")
+	}
+	return cid, nil
+}
+
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }

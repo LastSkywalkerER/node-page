@@ -30,6 +30,7 @@ type Handler struct {
 	logger     *log.Logger
 	clusterID  string
 	pickerInfo func() any
+	bridgeCfg  BridgeConfigurator
 }
 
 // NewHandler wires the Service. The Replicator and DB are required for the
@@ -51,6 +52,22 @@ func (h *Handler) WithDeps(replicator *Replicator, db *gorm.DB, logger *log.Logg
 // The handler embeds the snapshot under "bridge_samples" in /raft/status.
 func (h *Handler) WithPickerInfo(fn func() any) *Handler {
 	h.pickerInfo = fn
+	return h
+}
+
+// BridgeConfigurator is the small interface the admin "Bridge config"
+// panel uses to hot-update the cross-cluster bridge at runtime.
+type BridgeConfigurator interface {
+	// SaveBridge updates the shared HMAC secret + remote seed list and
+	// rebuilds the sender/picker/receiver. AdvertiseURL is optional;
+	// when empty the previously configured advertise URL is kept.
+	SaveBridge(secret string, remoteSeeds []string, advertiseURL string) error
+}
+
+// WithBridgeConfigurator wires the runtime bridge configurator so the
+// admin endpoint can apply changes live.
+func (h *Handler) WithBridgeConfigurator(b BridgeConfigurator) *Handler {
+	h.bridgeCfg = b
 	return h
 }
 
@@ -247,4 +264,39 @@ func (h *Handler) Join(c *gin.Context) {
 		"peers":        st.Peers,
 		"applied_idx":  st.AppliedIndex,
 	})
+}
+
+// SaveBridgeConfigRequest is the body of POST /api/v1/raft/bridge.
+type SaveBridgeConfigRequest struct {
+	SharedSecret string   `json:"shared_secret"`
+	RemoteSeeds  []string `json:"remote_seeds"`
+	AdvertiseURL string   `json:"advertise_url"`
+}
+
+// SaveBridgeConfig hot-updates the cross-cluster bridge configuration
+// (shared HMAC secret + remote seed URLs + this node's advertise URL).
+// Admin-only. The sender / picker / receiver are rebuilt with the new
+// values without restarting the process; .env is updated separately by
+// the frontend so the config persists across restarts.
+//
+// POST /api/v1/raft/bridge
+func (h *Handler) SaveBridgeConfig(c *gin.Context) {
+	if h.svc == nil || !h.svc.Enabled() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "raft disabled"})
+		return
+	}
+	if h.bridgeCfg == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "bridge configurator not wired"})
+		return
+	}
+	var req SaveBridgeConfigRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.bridgeCfg.SaveBridge(req.SharedSecret, req.RemoteSeeds, req.AdvertiseURL); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"saved": true})
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/gin-gonic/gin"
 	ginSwagger "github.com/swaggo/gin-swagger"
 	swaggerFiles "github.com/swaggo/files"
+	"gorm.io/gorm"
 
 	_ "system-stats/docs"
 	"system-stats/internal/app/config"
@@ -158,14 +159,11 @@ func Run() {
 	appCtx, appCancel := context.WithCancel(context.Background())
 	defer appCancel()
 
-	// Cross-cluster bridge — start the URL latency picker and the sender
-	// goroutines if the bridge was wired by DI. Both stop with appCtx.
-	if picker := container.GetBridgePicker(); picker != nil {
-		go picker.Run(appCtx)
-	}
-	if sender := container.GetBridgeSender(); sender != nil {
-		go sender.Run(appCtx)
-	}
+	// Hand appCtx to the DI container so wizard-driven hot-activations
+	// can spawn bridge goroutines against it. Also starts the bridge
+	// picker / sender immediately if Raft was activated at boot time
+	// (i.e. RAFT_ENABLED=true in env).
+	container.SetAppContext(appCtx)
 
 	historicalMetricsService := container.GetHistoricalMetricsService()
 	retentionSvc := retention.NewService(container.GetDB(), logger, cfg.RetentionDays)
@@ -373,17 +371,19 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	streamHandler := platformstream.NewHandler(container.GetBroker(), container.GetHostService())
 	configWriter := setup.NewConfigWriter()
 	setupHandler := setup.NewHandler(configWriter, container.GetUserService(), onSetupComplete).
-		WithRaft(
-			container.GetRaftService(),
-			cfg.Raft.ClusterID,
-			cfg.Raft.NodeID,
-			firstNonEmpty(cfg.Raft.AdvertiseAddr, cfg.Raft.BindAddr),
-		)
+		WithRaft(container.GetRaftService()).
+		WithRaftActivator(container).
+		WithTokenService(container.GetTokenService()).
+		WithSecretReader(&clusterSecretAdapter{db: container.GetDB()})
 	raftHandler := raftcluster.NewHandler(container.GetRaftService()).
-		WithDeps(container.GetRaftReplicator(), container.GetDB(), logger, cfg.Raft.ClusterID)
-	if picker := container.GetBridgePicker(); picker != nil {
-		raftHandler = raftHandler.WithPickerInfo(func() any { return picker.Snapshot() })
-	}
+		WithDeps(container.GetRaftReplicator(), container.GetDB(), logger, cfg.Raft.ClusterID).
+		WithBridgeConfigurator(container).
+		WithPickerInfo(func() any {
+			if p := container.GetBridgePicker(); p != nil {
+				return p.Snapshot()
+			}
+			return nil
+		})
 
 	// Swagger UI (always available)
 	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
@@ -510,6 +510,8 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.DELETE("/raft/peers/:id", middleware.RequireAdmin(), raftHandler.RemovePeer)
 		// Issue one-shot join token (admin, leader-only)
 		authAPI.POST("/raft/join-token", middleware.RequireAdmin(), raftHandler.IssueJoinToken)
+		// Hot-update cross-cluster bridge configuration
+		authAPI.POST("/raft/bridge", middleware.RequireAdmin(), raftHandler.SaveBridgeConfig)
 	}
 
 	// Static files for React app (hashed bundles from Vite)
@@ -575,6 +577,22 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// clusterSecretAdapter adapts the raft package's LookupClusterConfig
+// function to the small ClusterSecretReader interface the setup handler
+// expects.
+type clusterSecretAdapter struct {
+	db *gorm.DB
+}
+
+// LookupClusterSecret reads a single key from the replicated
+// cluster_config table.
+func (a *clusterSecretAdapter) LookupClusterSecret(ctx context.Context, key string) (string, error) {
+	if a.db == nil {
+		return "", nil
+	}
+	return raftcluster.LookupClusterConfig(ctx, a.db, key)
 }
 
 func pathLooksLikeMissingStaticAsset(urlPath string) bool {

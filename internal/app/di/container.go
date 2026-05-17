@@ -2,6 +2,9 @@ package di
 
 import (
 	"context"
+	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -24,6 +27,7 @@ import (
 	sensors "system-stats/internal/metrics/sensors"
 	health "system-stats/internal/platform/health"
 	history "system-stats/internal/platform/history"
+	setupcfg "system-stats/internal/platform/setup"
 	system "system-stats/internal/platform/system"
 
 	"github.com/charmbracelet/log"
@@ -68,12 +72,26 @@ type Container struct {
 
 	broker *stream.Broker
 
-	raftService    raftcluster.Service
+	// raftSwap is the stable Service handle: every consumer (handlers,
+	// replicator, services) keeps a pointer to it. Its inner Service is
+	// flipped from DisabledService to a real Node by ActivateRaft.
+	raftSwap       *raftcluster.SwappableService
 	raftFSM        *raftcluster.FSM
 	raftReplicator *raftcluster.Replicator
 	bridgePicker   *raftbridge.Picker
 	bridgeSender   *raftbridge.Sender
 	bridgeReceiver *raftbridge.Receiver
+
+	// activateMu serialises ActivateRaft / ConfigureBridge / Close.
+	activateMu sync.Mutex
+	// appCtx is the long-running context used by the bridge sender /
+	// picker goroutines. Set once by SetAppContext before any activation
+	// is triggered (server.go does that right after appCtx is created).
+	appCtx context.Context
+	// raftCfgSnapshot is the most recently activated RaftConfig — used by
+	// ConfigureBridge to rebuild the sender / picker / receiver without
+	// re-asking the caller for cluster id / node id.
+	raftCfgSnapshot config.RaftConfig
 }
 
 // NewContainer creates a new dependency injection container.
@@ -100,16 +118,11 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 
 	container.db = db
 
-	// Build the Raft layer AFTER the DB so the FSM can be wired with a
-	// SQLite-backed Snapshotter/Restorer. When disabled this returns a
-	// no-op service and a nil FSM and everything else falls back to the
-	// legacy direct-write path.
-	raftSvc, raftFSM, err := raftcluster.New(context.Background(), logger, raftCfg)
-	if err != nil {
-		return nil, err
-	}
-	container.raftService = raftSvc
-	container.raftFSM = raftFSM
+	// Always create the SwappableService so every consumer can hold a
+	// stable Service reference. Initially it wraps DisabledService; when
+	// the env already requested RAFT_ENABLED=true (or the setup wizard
+	// later calls ActivateRaft) we swap in a real Node.
+	container.raftSwap = raftcluster.NewSwappableService(raftcluster.NewDisabledService())
 
 	container.cpuRepository = cpu.NewRepository(db)
 	container.memoryRepository = memory.NewRepository(db)
@@ -166,37 +179,189 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 		container.hostService,
 	)
 
-	// When Raft is enabled, wire the FSM with concrete CommandAppliers,
-	// the SQLite snapshotter/restorer and a Replicator that the hosts /
-	// users services use to publish writes into the log.
-	if raftFSM != nil {
-		raftcluster.RegisterAppliers(raftFSM, raftcluster.AppliersDeps{
-			Logger:           logger,
-			DB:               db,
-			HostRepo:         container.hostRepository,
-			UserRepo:         container.userRepository,
-			RefreshTokenRepo: container.refreshTokenRepository,
-		})
-		raftFSM.SetSnapshotter(raftcluster.NewSQLiteSnapshotter(db))
-		raftFSM.SetRestorer(raftcluster.NewSQLiteRestorer(db))
+	// Replicator is always wired to the SwappableService so writes
+	// publishedduring the legacy code path (Raft off) are no-ops; once
+	// ActivateRaft swaps a real Node in, the same Replicator starts
+	// publishing CmdHostUpsert / CmdUserUpsert without further plumbing.
+	container.raftReplicator = raftcluster.NewReplicator(container.raftSwap)
+	hosts.AttachRaftReplicator(container.hostService, container.raftReplicator)
+	users.AttachRaftReplicator(container.userService, container.raftReplicator)
 
-		replicator := raftcluster.NewReplicator(raftSvc)
-		container.raftReplicator = replicator
-		hosts.AttachRaftReplicator(container.hostService, replicator)
-		users.AttachRaftReplicator(container.userService, replicator)
-
-		// Cross-cluster bridge — async replication to the peer cluster.
-		// Always build the picker + receiver (cheap, useful for status
-		// even without a fully-configured bridge); only start the sender
-		// goroutine when bridge config has a shared secret.
-		if raftCfg.Bridge.Enabled || raftCfg.Bridge.SharedSecret != "" {
-			container.bridgePicker = raftbridge.NewPicker(logger, db, raftCfg.ClusterID)
-			container.bridgeReceiver = raftbridge.NewReceiver(logger, raftSvc, db, raftCfg.Bridge.SharedSecret, raftCfg.ClusterID)
-			container.bridgeSender = raftbridge.NewSender(logger, raftSvc, raftFSM.ApplyEvents(), container.bridgePicker, raftCfg.Bridge.SharedSecret, raftCfg.ClusterID, raftCfg.NodeID)
+	// If RAFT_ENABLED is true at boot, activate eagerly using env-derived
+	// config. This preserves the existing "configure-via-env" workflow
+	// for ops who don't go through the wizard.
+	if raftCfg.Enabled {
+		if _, _, err := container.activateLocked(context.Background(), raftCfg); err != nil {
+			return nil, err
 		}
 	}
 
 	return container, nil
+}
+
+// activateLocked performs the real activation. activateMu must be held.
+// Returns the freshly built FSM + chosen RaftConfig for callers that want
+// to log / store it.
+func (c *Container) activateLocked(ctx context.Context, cfg config.RaftConfig) (*raftcluster.FSM, config.RaftConfig, error) {
+	if c.raftSwap == nil {
+		return nil, cfg, fmt.Errorf("raft: swappable wrapper not initialised")
+	}
+	if c.raftSwap.Enabled() {
+		return c.raftFSM, c.raftCfgSnapshot, nil
+	}
+	act, err := raftcluster.Activate(ctx, raftcluster.ActivationDeps{
+		Logger: c.logger,
+		DB:     c.db,
+		Appliers: raftcluster.AppliersDeps{
+			Logger:           c.logger,
+			DB:               c.db,
+			HostRepo:         c.hostRepository,
+			UserRepo:         c.userRepository,
+			RefreshTokenRepo: c.refreshTokenRepository,
+		},
+	}, cfg, c.raftSwap)
+	if err != nil {
+		return nil, cfg, err
+	}
+	c.raftFSM = act.FSM
+	c.raftCfgSnapshot = cfg
+
+	// Build bridge primitives only when a shared secret is present —
+	// without it the receiver would reject every request anyway.
+	if cfg.Bridge.Enabled || cfg.Bridge.SharedSecret != "" {
+		c.bridgePicker = raftbridge.NewPicker(c.logger, c.db, cfg.ClusterID)
+		c.bridgeReceiver = raftbridge.NewReceiver(c.logger, c.raftSwap, c.db, cfg.Bridge.SharedSecret, cfg.ClusterID)
+		c.bridgeSender = raftbridge.NewSender(c.logger, c.raftSwap, act.FSM.ApplyEvents(), c.bridgePicker, cfg.Bridge.SharedSecret, cfg.ClusterID, cfg.NodeID)
+	}
+	// Start bridge goroutines if appCtx is already set (server startup
+	// has run and we're being called from the wizard); otherwise the
+	// startup code path will start them right after SetAppContext.
+	if c.appCtx != nil {
+		c.startBridgeGoroutinesLocked()
+	}
+	return act.FSM, cfg, nil
+}
+
+// startBridgeGoroutinesLocked spawns picker.Run / sender.Run if they were
+// constructed and not yet running. Safe to call multiple times — the
+// goroutines self-terminate when appCtx is cancelled.
+func (c *Container) startBridgeGoroutinesLocked() {
+	if c.appCtx == nil {
+		return
+	}
+	if c.bridgePicker != nil {
+		go c.bridgePicker.Run(c.appCtx)
+	}
+	if c.bridgeSender != nil {
+		go c.bridgeSender.Run(c.appCtx)
+	}
+}
+
+// SetAppContext records the long-running app context so post-startup
+// activations (wizard hot-init) can spawn bridge goroutines against it.
+// Called once from server.go right after appCtx is constructed.
+func (c *Container) SetAppContext(ctx context.Context) {
+	c.activateMu.Lock()
+	defer c.activateMu.Unlock()
+	c.appCtx = ctx
+	c.startBridgeGoroutinesLocked()
+}
+
+// ActivateRaft hot-initialises the Raft layer from a runtime config
+// (typically built from the setup wizard). It is idempotent — calling it
+// a second time after a successful activation is a no-op. Once Raft is
+// active the only mutable knobs are the bridge fields, applied via
+// ConfigureBridge.
+func (c *Container) ActivateRaft(ctx context.Context, rt raftcluster.RuntimeConfig) error {
+	cfg := config.RaftConfig{
+		Enabled:       true,
+		ClusterID:     rt.ClusterID,
+		NodeID:        rt.NodeID,
+		BindAddr:      rt.BindAddr,
+		AdvertiseAddr: rt.AdvertiseAddr,
+		DataDir:       rt.DataDir,
+		Bootstrap:     rt.Bootstrap,
+		AdvertiseURL:  rt.AdvertiseURL,
+		Bridge: config.RaftBridgeConfig{
+			Enabled:      rt.BridgeEnabled,
+			SharedSecret: rt.BridgeSharedSecret,
+			RemoteSeeds:  rt.BridgeRemoteSeeds,
+		},
+	}
+	if cfg.DataDir == "" {
+		cfg.DataDir = "./data/raft"
+	}
+	if cfg.BindAddr == "" {
+		cfg.BindAddr = ":7000"
+	}
+	c.activateMu.Lock()
+	defer c.activateMu.Unlock()
+	_, _, err := c.activateLocked(ctx, cfg)
+	return err
+}
+
+// ConfigureBridge updates the cross-cluster bridge configuration at
+// runtime — shared secret, remote seeds, advertise URL. Tearing down and
+// rebuilding the sender/picker is cheap; the receiver simply picks up the
+// new secret next request.
+//
+// Requires the Raft layer to already be active.
+func (c *Container) ConfigureBridge(bridge config.RaftBridgeConfig, advertiseURL string) error {
+	c.activateMu.Lock()
+	defer c.activateMu.Unlock()
+	if c.raftSwap == nil || !c.raftSwap.Enabled() {
+		return fmt.Errorf("raft: activate the layer first")
+	}
+	c.raftCfgSnapshot.Bridge = bridge
+	if advertiseURL != "" {
+		c.raftCfgSnapshot.AdvertiseURL = advertiseURL
+	}
+
+	c.bridgePicker = raftbridge.NewPicker(c.logger, c.db, c.raftCfgSnapshot.ClusterID)
+	c.bridgeReceiver = raftbridge.NewReceiver(c.logger, c.raftSwap, c.db, bridge.SharedSecret, c.raftCfgSnapshot.ClusterID)
+	if c.raftFSM != nil {
+		c.bridgeSender = raftbridge.NewSender(c.logger, c.raftSwap, c.raftFSM.ApplyEvents(), c.bridgePicker, bridge.SharedSecret, c.raftCfgSnapshot.ClusterID, c.raftCfgSnapshot.NodeID)
+	}
+	c.startBridgeGoroutinesLocked()
+	return nil
+}
+
+// CurrentRaftConfig returns the last RaftConfig applied via ActivateRaft.
+// Returns the zero value when Raft has never been activated.
+func (c *Container) CurrentRaftConfig() config.RaftConfig {
+	c.activateMu.Lock()
+	defer c.activateMu.Unlock()
+	return c.raftCfgSnapshot
+}
+
+// SaveBridge satisfies raftcluster.BridgeConfigurator. It updates the
+// running bridge primitives, then persists the new values into .env so
+// the change survives a restart. The advertiseURL argument is optional;
+// pass "" to leave the previously configured URL untouched.
+func (c *Container) SaveBridge(secret string, remoteSeeds []string, advertiseURL string) error {
+	bridge := config.RaftBridgeConfig{
+		Enabled:      true,
+		SharedSecret: secret,
+		RemoteSeeds:  remoteSeeds,
+	}
+	if err := c.ConfigureBridge(bridge, advertiseURL); err != nil {
+		return err
+	}
+	// Persist into .env so the change is durable. Best-effort: a write
+	// failure here doesn't roll back the live update — the next ops
+	// touchpoint can re-do it.
+	cw := setupcfg.NewConfigWriter()
+	cv, _ := cw.ReadCurrentConfig()
+	if cv == nil {
+		return nil
+	}
+	cv.RaftBridgeEnabled = "true"
+	cv.RaftBridgeSharedSecret = secret
+	cv.RaftBridgeRemoteSeeds = strings.Join(remoteSeeds, ",")
+	if advertiseURL != "" {
+		cv.RaftAdvertisePublicURL = advertiseURL
+	}
+	return cw.WriteConfigFile(cv)
 }
 
 func (c *Container) GetLogger() *log.Logger {
@@ -267,16 +432,18 @@ func (c *Container) GetBroker() *stream.Broker {
 	return c.broker
 }
 
-// GetRaftService returns the Raft consensus service. When RAFT_ENABLED=false
-// this returns a no-op DisabledService whose SubmitCommand returns
-// raftcluster.ErrDisabled, signalling callers to fall back to direct writes.
+// GetRaftService returns the Raft consensus service. It's always a
+// SwappableService — the inner implementation flips from DisabledService
+// to a real Node on ActivateRaft.
 func (c *Container) GetRaftService() raftcluster.Service {
-	return c.raftService
+	return c.raftSwap
 }
 
 // GetRaftFSM returns the FSM used to register CommandAppliers, Snapshotter
-// and Restorer. Returns nil when Raft is disabled.
+// and Restorer. Returns nil until ActivateRaft has been called.
 func (c *Container) GetRaftFSM() *raftcluster.FSM {
+	c.activateMu.Lock()
+	defer c.activateMu.Unlock()
 	return c.raftFSM
 }
 
@@ -287,20 +454,36 @@ func (c *Container) GetRaftReplicator() *raftcluster.Replicator {
 }
 
 // GetBridgePicker returns the cross-cluster URL latency picker, or nil when
-// the bridge is not configured.
-func (c *Container) GetBridgePicker() *raftbridge.Picker { return c.bridgePicker }
+// the bridge is not configured. Safe to read concurrently with
+// ConfigureBridge — the reference returned is whichever picker was
+// installed at the time of the call.
+func (c *Container) GetBridgePicker() *raftbridge.Picker {
+	c.activateMu.Lock()
+	defer c.activateMu.Unlock()
+	return c.bridgePicker
+}
 
 // GetBridgeSender returns the cross-cluster sender, or nil.
-func (c *Container) GetBridgeSender() *raftbridge.Sender { return c.bridgeSender }
+func (c *Container) GetBridgeSender() *raftbridge.Sender {
+	c.activateMu.Lock()
+	defer c.activateMu.Unlock()
+	return c.bridgeSender
+}
 
 // GetBridgeReceiver returns the cross-cluster receiver handler, or nil.
-func (c *Container) GetBridgeReceiver() *raftbridge.Receiver { return c.bridgeReceiver }
+func (c *Container) GetBridgeReceiver() *raftbridge.Receiver {
+	c.activateMu.Lock()
+	defer c.activateMu.Unlock()
+	return c.bridgeReceiver
+}
 
 // Close releases resources held by the container. Currently shuts down the
 // Raft node cleanly so its BoltDB log/stable stores are flushed.
 func (c *Container) Close() error {
-	if c.raftService != nil {
-		return c.raftService.Close()
+	c.activateMu.Lock()
+	defer c.activateMu.Unlock()
+	if c.raftSwap != nil {
+		return c.raftSwap.Close()
 	}
 	return nil
 }

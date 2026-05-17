@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-playground/validator/v10"
@@ -285,10 +286,16 @@ type TokenService interface {
 	RevokeRefreshToken(ctx context.Context, jti string) error
 	ConsumeRefreshToken(ctx context.Context, jti string) (bool, error)
 	RevokeAllUserTokens(ctx context.Context, userID uint) error
+	// SetSecrets atomically replaces the JWT signing keys, e.g. after a
+	// joining node receives the cluster-shared secrets via the Raft FSM.
+	// Tokens minted before the swap will fail validation; callers should
+	// only swap when no live sessions are expected (joining flow).
+	SetSecrets(accessSecret, refreshSecret string)
 }
 
 type tokenService struct {
 	refreshTokenRepo RefreshTokenRepository
+	secretsMu        sync.RWMutex
 	accessSecret     []byte
 	refreshSecret    []byte
 	accessTTL        time.Duration
@@ -310,9 +317,24 @@ func NewTokenService(
 	}
 }
 
+// SetSecrets atomically replaces both signing keys.
+func (s *tokenService) SetSecrets(accessSecret, refreshSecret string) {
+	s.secretsMu.Lock()
+	defer s.secretsMu.Unlock()
+	s.accessSecret = []byte(accessSecret)
+	s.refreshSecret = []byte(refreshSecret)
+}
+
+func (s *tokenService) loadSecrets() ([]byte, []byte) {
+	s.secretsMu.RLock()
+	defer s.secretsMu.RUnlock()
+	return s.accessSecret, s.refreshSecret
+}
+
 // GenerateTokens generates a new pair of access and refresh tokens
 func (s *tokenService) GenerateTokens(ctx context.Context, user *User) (*TokenPair, error) {
-	if len(s.accessSecret) == 0 || len(s.refreshSecret) == 0 {
+	accessSecret, refreshSecret := s.loadSecrets()
+	if len(accessSecret) == 0 || len(refreshSecret) == 0 {
 		return nil, fmt.Errorf("%w", ErrAuthSecretsNotConfigured)
 	}
 	now := time.Now()
@@ -357,13 +379,13 @@ func (s *tokenService) GenerateTokens(ctx context.Context, user *User) (*TokenPa
 
 	// Sign tokens
 	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
-	accessTokenString, err := accessToken.SignedString(s.accessSecret)
+	accessTokenString, err := accessToken.SignedString(accessSecret)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign access token: %w", err)
 	}
 
 	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
-	refreshTokenString, err := refreshToken.SignedString(s.refreshSecret)
+	refreshTokenString, err := refreshToken.SignedString(refreshSecret)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign refresh token: %w", err)
 	}
@@ -391,14 +413,15 @@ func (s *tokenService) GenerateTokens(ctx context.Context, user *User) (*TokenPa
 
 // ValidateAccessToken validates an access token and returns claims
 func (s *tokenService) ValidateAccessToken(tokenString string) (*Claims, error) {
-	if len(s.accessSecret) == 0 {
+	accessSecret, _ := s.loadSecrets()
+	if len(accessSecret) == 0 {
 		return nil, fmt.Errorf("%w", ErrAuthSecretsNotConfigured)
 	}
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return s.accessSecret, nil
+		return accessSecret, nil
 	})
 
 	if err != nil {
@@ -414,12 +437,13 @@ func (s *tokenService) ValidateAccessToken(tokenString string) (*Claims, error) 
 
 // ValidateRefreshToken validates a refresh token against the database
 func (s *tokenService) ValidateRefreshToken(ctx context.Context, tokenString string) (*RefreshToken, error) {
-	if len(s.refreshSecret) == 0 {
+	_, refreshSecret := s.loadSecrets()
+	if len(refreshSecret) == 0 {
 		return nil, fmt.Errorf("%w", ErrAuthSecretsNotConfigured)
 	}
 	// Parse token to get JTI
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
-		return s.refreshSecret, nil
+		return refreshSecret, nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse refresh token: %w", err)
