@@ -1,6 +1,7 @@
 package di
 
 import (
+	"context"
 	"time"
 
 	"gorm.io/gorm"
@@ -13,6 +14,7 @@ import (
 	users "system-stats/internal/auth/users"
 	hosts "system-stats/internal/cluster/hosts"
 	nodes "system-stats/internal/cluster/nodes"
+	raftcluster "system-stats/internal/cluster/raft"
 	cpu "system-stats/internal/metrics/cpu"
 	disk "system-stats/internal/metrics/disk"
 	docker "system-stats/internal/metrics/docker"
@@ -64,14 +66,30 @@ type Container struct {
 	sensorsService           sensors.Service
 
 	broker *stream.Broker
+
+	raftService raftcluster.Service
+	raftFSM     *raftcluster.FSM
 }
 
 // NewContainer creates a new dependency injection container.
-func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret, refreshSecret string, startTime time.Time) (*Container, error) {
+//
+// raftCfg is optional; when raftCfg.Enabled is false the legacy direct-write
+// path is kept and raftService is a no-op DisabledService.
+func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret, refreshSecret string, startTime time.Time, raftCfg config.RaftConfig) (*Container, error) {
 	container := &Container{
 		logger: logger,
 		broker: stream.NewBroker(),
 	}
+
+	// Build the Raft layer early so other services can be wired with the
+	// FSM / Service if they need to translate writes into commands. When
+	// disabled this returns a no-op service and a nil FSM.
+	raftSvc, raftFSM, err := raftcluster.New(context.Background(), logger, raftCfg)
+	if err != nil {
+		return nil, err
+	}
+	container.raftService = raftSvc
+	container.raftFSM = raftFSM
 
 	db, err := database.Initialize(dbConfig)
 	if err != nil {
@@ -208,4 +226,26 @@ func (c *Container) GetDB() *gorm.DB {
 
 func (c *Container) GetBroker() *stream.Broker {
 	return c.broker
+}
+
+// GetRaftService returns the Raft consensus service. When RAFT_ENABLED=false
+// this returns a no-op DisabledService whose SubmitCommand returns
+// raftcluster.ErrDisabled, signalling callers to fall back to direct writes.
+func (c *Container) GetRaftService() raftcluster.Service {
+	return c.raftService
+}
+
+// GetRaftFSM returns the FSM used to register CommandAppliers, Snapshotter
+// and Restorer. Returns nil when Raft is disabled.
+func (c *Container) GetRaftFSM() *raftcluster.FSM {
+	return c.raftFSM
+}
+
+// Close releases resources held by the container. Currently shuts down the
+// Raft node cleanly so its BoltDB log/stable stores are flushed.
+func (c *Container) Close() error {
+	if c.raftService != nil {
+		return c.raftService.Close()
+	}
+	return nil
 }

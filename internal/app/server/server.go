@@ -34,6 +34,7 @@ import (
 	users "system-stats/internal/auth/users"
 	hosts "system-stats/internal/cluster/hosts"
 	nodes "system-stats/internal/cluster/nodes"
+	raftcluster "system-stats/internal/cluster/raft"
 	cpu "system-stats/internal/metrics/cpu"
 	disk "system-stats/internal/metrics/disk"
 	docker "system-stats/internal/metrics/docker"
@@ -84,11 +85,21 @@ func Run() {
 	startTime := time.Now()
 
 	logger.Info("Initializing dependency injection container...", "db_type", cfg.Database.Type, "db_dsn", config.MaskDSN(cfg.Database.DSN))
-	container, err := di.NewContainer(logger, cfg.Database, cfg.JWTSecret, cfg.RefreshSecret, startTime)
+	container, err := di.NewContainer(logger, cfg.Database, cfg.JWTSecret, cfg.RefreshSecret, startTime, cfg.Raft)
 	if err != nil {
 		logger.Fatal("Failed to initialize DI container", "error", err)
 	}
-	logger.Info("DI container initialized", "database_type", cfg.Database.Type)
+	defer func() {
+		if cerr := container.Close(); cerr != nil {
+			logger.Warn("DI container close returned error", "error", cerr)
+		}
+	}()
+	logger.Info("DI container initialized",
+		"database_type", cfg.Database.Type,
+		"raft_enabled", cfg.Raft.Enabled,
+		"raft_cluster", cfg.Raft.ClusterID,
+		"raft_node_id", cfg.Raft.NodeID,
+	)
 
 	regCtx, regCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	if _, err := container.GetHostService().RegisterOrUpdateCurrentHost(regCtx); err != nil {
@@ -310,6 +321,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	streamHandler := platformstream.NewHandler(container.GetBroker(), container.GetHostService())
 	configWriter := setup.NewConfigWriter()
 	setupHandler := setup.NewHandler(configWriter, container.GetUserService(), onSetupComplete)
+	raftHandler := raftcluster.NewHandler(container.GetRaftService())
 
 	// Swagger UI (always available)
 	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
@@ -380,6 +392,11 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 			nodesPush.POST("/push", nodesHandler.Push)
 		}
 
+		// Raft ping is public on purpose: peer clusters need it to measure
+		// round-trip latency without sharing user credentials. The mutating
+		// bridge endpoints (added in a follow-up) live behind HMAC auth.
+		api.GET("/raft/ping", raftHandler.Ping)
+
 		// Metrics current snapshot
 		api.GET("/metrics/current", middleware.AuthJWT(container.GetTokenService()), systemHandler.HandleCurrentMetrics)
 	}
@@ -408,6 +425,9 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.DELETE("/nodes/hosts/:id", middleware.RequireAdmin(), nodesHandler.DeleteRemoteHost)
 		// Node connect (agent connects to main using join link)
 		authAPI.POST("/nodes/connect", nodesHandler.Connect)
+
+		// Raft cluster status (admin) — surfaces leader, peers, indices, RTTs
+		authAPI.GET("/raft/status", middleware.RequireAdmin(), raftHandler.Status)
 	}
 
 	// Static files for React app (hashed bundles from Vite)
