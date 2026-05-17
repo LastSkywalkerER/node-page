@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	users "system-stats/internal/auth/users"
 	hosts "system-stats/internal/cluster/hosts"
 )
 
@@ -133,4 +134,42 @@ func (r *Replicator) SubmitJoinTokenConsume(ctx context.Context, tokenHash, byNo
 		ByNodeAddr: byAddr,
 	}, 5*time.Second)
 	return err
+}
+
+// BackfillLocalUsers walks the local users table and submits a
+// CmdUserUpsert for every user. The applier's FindByEmail + role-update
+// logic dedupes safely so re-running the backfill is a no-op on
+// replicas that already have the user. Used right after a fresh
+// activation to ensure any users created during the bootstrap election
+// window (when the node was briefly Candidate and SubmitCommand
+// returned ErrNotLeader) end up in the Raft log.
+func (r *Replicator) BackfillLocalUsers(ctx context.Context, userRepo users.UserRepository) (int, error) {
+	if !r.Enabled() {
+		return 0, nil
+	}
+	const pageSize = 100
+	count := 0
+	for offset := 0; ; offset += pageSize {
+		page, err := userRepo.List(ctx, offset, pageSize)
+		if err != nil {
+			return count, err
+		}
+		if len(page) == 0 {
+			break
+		}
+		for _, u := range page {
+			if err := r.SubmitUserUpsert(ctx, u.Email, u.PasswordHash, u.Role); err != nil {
+				// Stop early on ErrNotLeader / ErrDisabled — there's
+				// no point hammering. Other errors (e.g. validation
+				// inside the applier) are deterministic and we log
+				// them by returning.
+				return count, err
+			}
+			count++
+		}
+		if len(page) < pageSize {
+			break
+		}
+	}
+	return count, nil
 }

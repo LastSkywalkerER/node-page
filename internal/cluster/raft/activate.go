@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
@@ -85,6 +86,31 @@ func Activate(ctx context.Context, deps ActivationDeps, cfg config.RaftConfig, s
 	node := NewNode(deps.Logger, cfg, fsm)
 	if err := node.Start(ctx); err != nil {
 		return nil, fmt.Errorf("raft activate: start node: %w", err)
+	}
+
+	// When we just bootstrapped (single-voter case), wait up to ~5s for
+	// the node to elect itself leader. Without this, callers issuing
+	// commands immediately after Activate (e.g. wizard's user.Register
+	// → SubmitUserUpsert) race with the election and lose their write
+	// to ErrNotLeader — the user ends up in local SQLite only, never
+	// in the replicated Raft log, and joining nodes never see them.
+	if cfg.Bootstrap {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if node.IsLeader() {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("raft activate: cancelled while waiting for leader: %w", ctx.Err())
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+		if !node.IsLeader() && deps.Logger != nil {
+			deps.Logger.Warn("raft: bootstrapped node did not become leader within 5s; commands may temporarily fail with ErrNotLeader",
+				"node_id", cfg.NodeID,
+			)
+		}
 	}
 
 	swap.Swap(node)

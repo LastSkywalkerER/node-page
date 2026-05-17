@@ -248,6 +248,28 @@ func (c *Container) activateLocked(ctx context.Context, cfg config.RaftConfig) (
 	c.raftFSM = act.FSM
 	c.raftCfgSnapshot = cfg
 
+	// Backfill any users present in the local SQLite but not yet in the
+	// replicated Raft log. Critical when this node was the wizard's
+	// "Start new cluster" leader: the user was just created via
+	// user.Register, and we want every joiner to see them via snapshot.
+	// Best-effort: a failure (e.g. follower, no leader yet) only means
+	// the backfill will run again on the next ActivateRaft.
+	if c.raftReplicator != nil && act.Node.IsLeader() {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if n, err := c.raftReplicator.BackfillLocalUsers(ctx, c.userRepository); err != nil {
+				c.logger.Warn("raft: user backfill failed",
+					"submitted", n, "error", err,
+				)
+			} else if n > 0 {
+				c.logger.Info("raft: backfilled local users into replicated log",
+					"submitted", n,
+				)
+			}
+		}()
+	}
+
 	// Build bridge primitives only when a shared secret is present —
 	// without it the receiver would reject every request anyway.
 	if cfg.Bridge.Enabled || cfg.Bridge.SharedSecret != "" {
@@ -397,6 +419,43 @@ func (c *Container) ResetRaftConfig() error {
 	return nil
 }
 
+// shutdownAndWipeLocked shuts the running raft node down and deletes the
+// on-disk BoltDB log + snapshot files, leaving the SwappableService
+// wrapping DisabledService. activateMu must be held.
+func (c *Container) shutdownAndWipeLocked() error {
+	prevCfg := c.raftCfgSnapshot
+	if !c.raftSwap.Enabled() && prevCfg.NodeID == "" {
+		return nil
+	}
+	if err := c.raftSwap.Close(); err != nil && c.logger != nil {
+		c.logger.Warn("raft wipe: shutdown returned error (continuing)", "error", err)
+	}
+	c.raftSwap.Swap(raftcluster.NewDisabledService())
+	c.raftFSM = nil
+	c.bridgeSender = nil
+	c.bridgePicker = nil
+	c.bridgeReceiver = nil
+
+	dir := prevCfg.DataDir
+	if dir == "" {
+		dir = "./data/raft"
+	}
+	if err := wipeDirContents(dir); err != nil {
+		return fmt.Errorf("raft wipe: clear data dir: %w", err)
+	}
+	c.raftBootError = ""
+	return nil
+}
+
+// RaftEnabled satisfies setup.RaftActivator. Reports whether the running
+// raft layer is currently active.
+func (c *Container) RaftEnabled() bool {
+	if c.raftSwap == nil {
+		return false
+	}
+	return c.raftSwap.Enabled()
+}
+
 // WipeRaftState shuts down the currently-running Raft node (if any),
 // deletes the on-disk BoltDB log + snapshot files and re-activates the
 // layer using the same RuntimeConfig but with Bootstrap=true. The
@@ -416,26 +475,11 @@ func (c *Container) WipeRaftState() error {
 		return fmt.Errorf("raft: nothing to wipe (layer never activated)")
 	}
 
-	// 1) Shut down the running node — releases BoltDB locks + TCP listener.
-	if err := c.raftSwap.Close(); err != nil && c.logger != nil {
-		c.logger.Warn("raft wipe: shutdown returned error (continuing)", "error", err)
-	}
-	c.raftSwap.Swap(raftcluster.NewDisabledService())
-	c.raftFSM = nil
-	c.bridgeSender = nil
-	c.bridgePicker = nil
-	c.bridgeReceiver = nil
-
-	// 2) Wipe the data dir contents.
-	dir := prevCfg.DataDir
-	if dir == "" {
-		dir = "./data/raft"
-	}
-	if err := wipeDirContents(dir); err != nil {
-		return fmt.Errorf("raft wipe: clear data dir: %w", err)
+	if err := c.shutdownAndWipeLocked(); err != nil {
+		return err
 	}
 
-	// 3) Re-activate as fresh bootstrap single-voter.
+	// Re-activate as fresh bootstrap single-voter.
 	prevCfg.Bootstrap = true
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -444,8 +488,18 @@ func (c *Container) WipeRaftState() error {
 		c.raftBootError = err.Error()
 		return err
 	}
-	c.raftBootError = ""
 	return nil
+}
+
+// ShutdownAndWipeRaft tears down the running Raft node and clears its
+// on-disk state without re-activating. Used by the setup wizard's join
+// flow when the node is half-configured from a previous failed attempt:
+// the caller follows up with ActivateRaft using fresh parameters from
+// the wizard form. SQLite tables (users, hosts, metrics) are untouched.
+func (c *Container) ShutdownAndWipeRaft() error {
+	c.activateMu.Lock()
+	defer c.activateMu.Unlock()
+	return c.shutdownAndWipeLocked()
 }
 
 // wipeDirContents removes every entry inside dir but keeps dir itself.

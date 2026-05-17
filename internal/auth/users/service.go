@@ -154,14 +154,38 @@ func (s *userService) Register(ctx context.Context, email, password string, invi
 	}
 
 	// Replicate user across the cluster so a session minted on any node
-	// authenticates the same user everywhere. Best-effort: a local row
-	// already exists and the FSM applier on every peer will create the
-	// matching row in deterministic log order.
+	// authenticates the same user everywhere. A fresh single-voter
+	// cluster may still be in the Candidate state at this point
+	// (election takes a few hundred ms after BootstrapCluster). Retry
+	// on ErrNotLeader for a few seconds — without this, the user
+	// ends up in the leader's local SQLite only, never gets to the
+	// Raft log, and any joining node thinks setup_needed=true forever.
 	if s.raft != nil && s.raft.Enabled() {
-		if rerr := s.raft.SubmitUserUpsert(ctx, user.Email, user.PasswordHash, user.Role); rerr != nil {
-			// Don't fail the request — the user is already in the local DB.
-			// The replication can be re-driven later via a snapshot.
-			_ = rerr
+		deadline := time.Now().Add(5 * time.Second)
+		var lastErr error
+		for time.Now().Before(deadline) {
+			err := s.raft.SubmitUserUpsert(ctx, user.Email, user.PasswordHash, user.Role)
+			if err == nil {
+				lastErr = nil
+				break
+			}
+			lastErr = err
+			// ErrNotLeader / ErrDisabled is exposed via error.Error()
+			// here because the users package can't depend on the raft
+			// package. The string match is intentionally narrow.
+			msg := err.Error()
+			if strings.Contains(msg, "not the leader") || strings.Contains(msg, "raft: disabled") {
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			// Non-transient error — stop retrying.
+			break
+		}
+		if lastErr != nil {
+			// User exists locally; cluster will need a backfill once
+			// leadership stabilises. Don't fail the wizard but make
+			// the failure loud in logs.
+			fmt.Printf("users.Register: raft replication of %q failed after retry: %v\n", user.Email, lastErr)
 		}
 	}
 

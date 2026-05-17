@@ -22,6 +22,14 @@ import (
 // the Raft layer from a runtime config. The DI container satisfies it.
 type RaftActivator interface {
 	ActivateRaft(ctx context.Context, cfg raftcluster.RuntimeConfig) error
+	// ShutdownAndWipeRaft tears down the running Raft node and clears
+	// on-disk state without re-activating. Used by the join flow when
+	// the local node is already half-configured from a previous failed
+	// attempt; without wiping, ActivateRaft early-returns and the new
+	// parameters from the wizard form would be silently ignored.
+	ShutdownAndWipeRaft() error
+	// RaftEnabled reports whether the running raft layer is active.
+	RaftEnabled() bool
 }
 
 // ClusterSecretReader looks up the cluster-shared JWT signing keys from
@@ -589,12 +597,29 @@ func (h *Handler) JoinRaftCluster(c *gin.Context) {
 		BridgeRemoteSeeds:  req.BridgeRemoteSeeds,
 		BridgeEnabled:      req.BridgeSharedSecret != "",
 	}
+	// If this node has a half-configured Raft layer from a previous
+	// failed join attempt (e.g. .env had RAFT_ENABLED=true with a stale
+	// bind addr), wipe it first so the wizard's new params actually
+	// take effect. Without this, activateLocked early-returns because
+	// swap.Enabled() is already true and the user wonders why nothing
+	// changed.
+	if h.raftActivator.RaftEnabled() {
+		if err := h.raftActivator.ShutdownAndWipeRaft(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"code":   "raft_wipe_failed",
+				"error":  "could not reset the existing Raft state before joining",
+				"detail": err.Error(),
+			})
+			return
+		}
+	}
+
 	actCtx, actCancel := context.WithTimeout(ctx, 15*time.Second)
 	if err := h.raftActivator.ActivateRaft(actCtx, rt); err != nil {
 		actCancel()
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":   "raft_activation_failed",
-			"error":  "Raft layer could not be activated",
+			"error":  raftActivationUserMsg(err, rt.BindAddr),
 			"detail": err.Error(),
 		})
 		return
