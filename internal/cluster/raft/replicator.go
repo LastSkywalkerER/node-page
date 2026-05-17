@@ -136,6 +136,45 @@ func (r *Replicator) SubmitJoinTokenConsume(ctx context.Context, tokenHash, byNo
 	return err
 }
 
+// BackfillLocalHosts walks the local hosts table and submits a
+// CmdHostUpsert for every row. Used right after activation so that
+// each node's host info (the row inserted at boot via UpsertLocalHost,
+// before Raft was active) gets into the replicated log and shows up
+// on every other node's dashboard. The applier dedupes by MAC.
+func (r *Replicator) BackfillLocalHosts(ctx context.Context, hostRepo hosts.Repository) (int, error) {
+	if !r.Enabled() {
+		return 0, nil
+	}
+	all, err := hostRepo.GetAllHosts(ctx)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, h := range all {
+		info := hosts.HostInfo{
+			Name:                 h.Name,
+			MacAddress:           h.MacAddress,
+			IPv4:                 h.IPv4,
+			OS:                   h.OS,
+			Platform:             h.Platform,
+			PlatformFamily:       h.PlatformFamily,
+			PlatformVersion:      h.PlatformVersion,
+			KernelVersion:        h.KernelVersion,
+			VirtualizationSystem: h.VirtualizationSystem,
+			VirtualizationRole:   h.VirtualizationRole,
+			HostID:               h.SystemHostID,
+		}
+		if info.MacAddress == "" {
+			continue
+		}
+		if err := r.SubmitHostUpsert(ctx, info); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, nil
+}
+
 // BackfillLocalUsers walks the local users table and submits a
 // CmdUserUpsert for every user. The applier's FindByEmail + role-update
 // logic dedupes safely so re-running the backfill is a no-op on

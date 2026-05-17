@@ -98,6 +98,19 @@ type Container struct {
 	// activation so the admin UI can surface it ("Raft is disabled
 	// because port :7000 is in use; reconfigure below").
 	raftBootError string
+	// postActivate is fired in a goroutine after every successful
+	// Raft activation. Used by server.Run to (re-)start metrics
+	// collection when the wizard's join branch flips Raft on
+	// without going through /setup/complete.
+	postActivate func()
+}
+
+// SetPostActivateHook registers a callback fired after every successful
+// ActivateRaft call. Safe to call multiple times; the latest hook wins.
+func (c *Container) SetPostActivateHook(fn func()) {
+	c.activateMu.Lock()
+	defer c.activateMu.Unlock()
+	c.postActivate = fn
 }
 
 // NewContainer creates a new dependency injection container.
@@ -267,7 +280,27 @@ func (c *Container) activateLocked(ctx context.Context, cfg config.RaftConfig) (
 					"submitted", n,
 				)
 			}
+			// Same idea for hosts — the local-collector row inserted
+			// at boot (id=1) and any other rows previously known
+			// locally get republished so peers' dashboards show them.
+			if n, err := c.raftReplicator.BackfillLocalHosts(ctx, c.hostRepository); err != nil {
+				c.logger.Warn("raft: host backfill failed",
+					"submitted", n, "error", err,
+				)
+			} else if n > 0 {
+				c.logger.Info("raft: backfilled local hosts into replicated log",
+					"submitted", n,
+				)
+			}
 		}()
+	}
+
+	// Fire the post-activation hook (e.g. start metrics collection so
+	// RegisterOrUpdateCurrentHost runs periodically and the local
+	// collector keeps replicating its presence into the Raft log).
+	// Set via SetPostActivateHook; nil on first activation is fine.
+	if hook := c.postActivate; hook != nil {
+		go hook()
 	}
 
 	// Build bridge primitives only when a shared secret is present —

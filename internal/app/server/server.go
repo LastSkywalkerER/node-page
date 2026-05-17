@@ -272,6 +272,31 @@ func Run() {
 		go startMetrics()
 	}
 
+	// Whenever Raft activates (boot-time env, wizard "Start new cluster"
+	// or wizard "Join existing cluster"), ensure metrics collection is
+	// running. The historicalMetricsService.Start is idempotent — calling
+	// it on an already-running loop is a no-op. Without this, a wizard
+	// JoinRaftCluster flow would leave the node without metrics: it
+	// activates Raft + replicates state but never fires the
+	// /setup/complete onSetupComplete callback, so the local collector
+	// (which is also what publishes this node's host info into Raft via
+	// SubmitHostUpsert) never runs and the leader's dashboard never
+	// shows the new node.
+	container.SetPostActivateHook(func() {
+		logger.Info("Raft activated — ensuring metrics collection is running")
+		go startMetrics()
+	})
+
+	// If Raft was already activated at boot time (RAFT_ENABLED=true in
+	// .env from a previous wizard run), the post-activate hook above
+	// fires too late — it's a no-op for the boot-time activation that
+	// already happened inside NewContainer. Bridge metrics-start here
+	// explicitly so a fresh restart of a configured node doesn't sit
+	// without metrics until the next wizard interaction.
+	if container.GetRaftService() != nil && container.GetRaftService().Enabled() {
+		go startMetrics()
+	}
+
 	router := setupRouter(container, startTime, logger, cfg, onSetupComplete)
 
 	server := &http.Server{
