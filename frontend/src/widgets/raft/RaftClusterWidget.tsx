@@ -245,6 +245,25 @@ export function RaftClusterWidget() {
             other voters can't dial). The cluster needs majority of voters
             to be reachable to make progress.
           </p>
+          {data.raft_stats ? (
+            <div className="rounded border border-amber-500/30 bg-black/20 p-2 font-mono text-[11px] text-amber-100/80 space-y-0.5">
+              <p>
+                term {data.raft_stats.term ?? '—'} ·
+                last_log {data.raft_stats.last_log_index ?? '?'}/{data.raft_stats.last_log_term ?? '?'} ·
+                commit {data.raft_stats.commit_index ?? '?'} ·
+                applied {data.raft_stats.applied_index ?? '?'}
+              </p>
+              <p>
+                num_peers {data.raft_stats.num_peers ?? '?'} ·
+                last_contact {data.raft_stats.last_contact ?? '—'}
+              </p>
+              {data.raft_stats.latest_configuration ? (
+                <p className="break-all">
+                  config: <span className="text-amber-50">{data.raft_stats.latest_configuration}</span>
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           <p className="text-xs text-amber-100/90">
             <strong>Wipe state</strong> throws away the consensus log + cluster
             membership and re-bootstraps THIS node as a fresh single-voter

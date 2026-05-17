@@ -213,6 +213,16 @@ func (n *Node) SubmitCommand(ctx context.Context, cmd Command, timeout time.Dura
 	return res, nil
 }
 
+// Stats returns the raw hashicorp/raft Stats map. Useful for the admin
+// UI to surface low-level fields (last_contact, num_peers, term, etc.)
+// when diagnosing a wedged cluster.
+func (n *Node) Stats() map[string]string {
+	if n.raft == nil {
+		return nil
+	}
+	return n.raft.Stats()
+}
+
 // Status implements Service.
 func (n *Node) Status() Status {
 	st := Status{

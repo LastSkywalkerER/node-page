@@ -40,6 +40,10 @@ export interface RaftStatusResponse {
   bridge_samples?: BridgeSample[]
   /** Set when the most recent boot-time activation failed (e.g. port in use). */
   boot_error?: string
+  /** Raw hashicorp/raft Stats() map — string-to-string. Used by the
+   *  admin UI to surface low-level fields like last_contact, num_peers,
+   *  latest_configuration when the cluster can't elect a leader. */
+  raft_stats?: Record<string, string>
 }
 
 /**

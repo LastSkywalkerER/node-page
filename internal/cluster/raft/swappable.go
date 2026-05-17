@@ -66,5 +66,8 @@ func (s *SwappableService) AddVoter(id, addr string) error { return s.Inner().Ad
 // RemovePeer delegates to the current inner Service.
 func (s *SwappableService) RemovePeer(id string) error { return s.Inner().RemovePeer(id) }
 
+// Stats delegates to the current inner Service.
+func (s *SwappableService) Stats() map[string]string { return s.Inner().Stats() }
+
 // Close shuts the currently-installed inner Service down.
 func (s *SwappableService) Close() error { return s.Inner().Close() }

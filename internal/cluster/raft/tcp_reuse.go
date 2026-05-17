@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -51,7 +52,7 @@ func newReuseAddrTCPTransport(bindAddr string, advertise net.Addr, maxPool int, 
 		return nil, nil, errors.New("raft: advertise address is required")
 	}
 	lc := net.ListenConfig{Control: reuseAddrControl}
-	l, err := lc.Listen(nil, "tcp", bindAddr) // nil ctx → no timeout
+	l, err := lc.Listen(context.Background(), "tcp", bindAddr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("listen tcp %s: %w", bindAddr, err)
 	}

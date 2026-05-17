@@ -122,6 +122,12 @@ func (h *Handler) Status(c *gin.Context) {
 			resp["boot_error"] = be
 		}
 	}
+	if stats := h.svc.Stats(); stats != nil {
+		// Pass through the full hashicorp/raft Stats() map so the admin
+		// UI can render last_contact / num_peers / latest_configuration
+		// for diagnostics when the cluster fails to elect.
+		resp["raft_stats"] = stats
+	}
 	c.JSON(http.StatusOK, resp)
 }
 

@@ -29,6 +29,11 @@ type Service interface {
 	// RemovePeer removes a peer Raft server. Leader-only.
 	RemovePeer(id string) error
 
+	// Stats returns the raw hashicorp/raft Stats map for diagnostics
+	// (term, last_contact, num_peers, leader, applied/commit indices,
+	// snapshot info, etc). Nil when the service is disabled.
+	Stats() map[string]string
+
 	// Close shuts the layer down cleanly. Safe to call on a disabled service.
 	Close() error
 }
@@ -62,6 +67,9 @@ func (DisabledService) AddVoter(id, addr string) error { return ErrDisabled }
 
 // RemovePeer is a no-op for the disabled service.
 func (DisabledService) RemovePeer(id string) error { return ErrDisabled }
+
+// Stats returns nil on the disabled service.
+func (DisabledService) Stats() map[string]string { return nil }
 
 // Close is a no-op.
 func (DisabledService) Close() error { return nil }
