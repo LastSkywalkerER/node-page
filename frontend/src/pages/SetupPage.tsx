@@ -230,6 +230,7 @@ export function SetupPage() {
                 isJoining={joinCluster.isPending}
                 status={joinStatus}
                 machineHints={statusData?.machine_hints}
+                runningInDocker={statusData?.running_in_docker}
                 error={
                   joinCluster.error
                     ? (joinCluster.error as Error).message

@@ -380,6 +380,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		WithBridgeConfigurator(container).
 		WithBootError(container.RaftBootError).
 		WithResetConfig(container.ResetRaftConfig).
+		WithWipeState(container.WipeRaftState).
 		WithPickerInfo(func() any {
 			if p := container.GetBridgePicker(); p != nil {
 				return p.Snapshot()
@@ -516,6 +517,8 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.POST("/raft/bridge", middleware.RequireAdmin(), raftHandler.SaveBridgeConfig)
 		// Wipe RAFT_* from .env so the next restart boots Raft-disabled
 		authAPI.POST("/raft/reset", middleware.RequireAdmin(), raftHandler.ResetConfig)
+		// Wipe Raft on-disk state + re-bootstrap as fresh single voter
+		authAPI.POST("/raft/wipe-state", middleware.RequireAdmin(), raftHandler.WipeState)
 	}
 
 	// Static files for React app (hashed bundles from Vite)

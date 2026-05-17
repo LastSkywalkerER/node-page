@@ -33,6 +33,7 @@ type Handler struct {
 	bridgeCfg  BridgeConfigurator
 	bootError  func() string
 	resetCfg   func() error
+	wipeState  func() error
 }
 
 // NewHandler wires the Service. The Replicator and DB are required for the
@@ -88,6 +89,15 @@ func (h *Handler) WithResetConfig(fn func() error) *Handler {
 	return h
 }
 
+// WithWipeState wires a function that wipes the Raft log + snapshots
+// on disk and re-activates the layer as a fresh single-voter cluster.
+// Used to recover from a wedged cluster (e.g. unreachable voter
+// preventing quorum) without losing replicated SQLite data.
+func (h *Handler) WithWipeState(fn func() error) *Handler {
+	h.wipeState = fn
+	return h
+}
+
 // Status returns the local Raft view.
 // GET /api/v1/raft/status
 func (h *Handler) Status(c *gin.Context) {
@@ -102,6 +112,28 @@ func (h *Handler) Status(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, resp)
+}
+
+// WipeState shuts the Raft node down, deletes its BoltDB log + snapshot
+// files and re-activates as a fresh single-voter bootstrap. Used to
+// recover from a wedged cluster (e.g. a voter was added with an
+// unreachable advertise address and the cluster can't reach quorum).
+// SQLite data — users, hosts, metrics — is preserved.
+//
+// Admin-only. Dangerous: this throws away the cluster's consensus
+// history, so all peers must re-join from scratch.
+//
+// POST /api/v1/raft/wipe-state
+func (h *Handler) WipeState(c *gin.Context) {
+	if h.wipeState == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "wipe-state not wired"})
+		return
+	}
+	if err := h.wipeState(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"wiped": true, "next": "this node is now a fresh single-voter cluster; existing peers must re-join"})
 }
 
 // ResetConfig wipes RAFT_* settings from .env so the next restart comes

@@ -11,6 +11,7 @@ import {
   useRemoveRaftPeer,
   useSaveRaftBridge,
   useResetRaftConfig,
+  useWipeRaftState,
   BridgeSample,
 } from './useRaft'
 
@@ -56,6 +57,7 @@ export function RaftClusterWidget() {
 
   // Bridge config form (hot-update + persist in .env).
   const saveBridge = useSaveRaftBridge()
+  const wipeState = useWipeRaftState()
   const [bridgeSecret, setBridgeSecret] = useState('')
   const [bridgeSeeds, setBridgeSeeds] = useState('')
   const [bridgeAdvertise, setBridgeAdvertise] = useState('')
@@ -150,6 +152,27 @@ export function RaftClusterWidget() {
     }
   }
 
+  const onWipeState = async () => {
+    const ok = window.confirm(
+      'This will throw away the Raft consensus log + cluster membership on this node and re-bootstrap as a fresh single-voter cluster. ' +
+        'Replicated data (users, hosts, metrics) is KEPT. Other voters will be orphaned and need to re-join. Continue?',
+    )
+    if (!ok) return
+    try {
+      await wipeState.mutateAsync()
+      toast.success('Raft state wiped — node is now a fresh single-voter cluster')
+    } catch (e) {
+      toast.error('Wipe failed: ' + (e as Error).message)
+    }
+  }
+
+  // Hashicorp returns the role with a leading capital letter ("Leader",
+  // "Follower", "Candidate", "Shutdown"). Lower-case for comparison.
+  const stuck =
+    st.state &&
+    st.state.toLowerCase() !== 'leader' &&
+    st.state.toLowerCase() !== 'follower'
+
   return (
     <div className="space-y-5">
       <header className="flex items-center justify-between gap-3 flex-wrap">
@@ -180,6 +203,35 @@ export function RaftClusterWidget() {
           Refresh
         </Button>
       </header>
+
+      {stuck && (
+        <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 space-y-2 text-sm">
+          <p className="font-medium text-amber-200">
+            Cluster cannot elect a leader
+          </p>
+          <p className="text-xs text-amber-100/90">
+            This usually means one of the voters in the list below has an
+            unreachable advertise address (e.g. a Docker bridge IP that the
+            other voters can't dial). The cluster needs majority of voters
+            to be reachable to make progress.
+          </p>
+          <p className="text-xs text-amber-100/90">
+            <strong>Wipe state</strong> throws away the consensus log + cluster
+            membership and re-bootstraps THIS node as a fresh single-voter
+            cluster. Replicated SQLite data (users, hosts, metrics) is kept.
+            Use it when no other recovery option is available.
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onWipeState}
+            disabled={wipeState.isPending}
+            className="border-amber-500/50 text-amber-100 hover:bg-amber-500/20"
+          >
+            {wipeState.isPending ? 'Wiping…' : 'Wipe state & re-bootstrap'}
+          </Button>
+        </div>
+      )}
 
       <section className="space-y-2">
         <h4 className="text-sm font-display tracking-wide">Voters</h4>

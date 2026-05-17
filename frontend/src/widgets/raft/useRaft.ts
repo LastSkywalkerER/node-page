@@ -147,3 +147,23 @@ export function useResetRaftConfig() {
     },
   })
 }
+
+/**
+ * Shuts the local Raft node down, deletes its BoltDB log + snapshot
+ * files and re-activates as a fresh single-voter cluster. Used to
+ * recover from a wedged cluster (e.g. a peer was added with an
+ * unreachable advertise address and quorum is unreachable). Replicated
+ * SQLite data (users, hosts, metrics) is kept intact.
+ */
+export function useWipeRaftState() {
+  const queryClient = useQueryClient()
+  return useMutation<{ wiped: boolean; next: string }, Error, void>({
+    mutationFn: async () => {
+      const resp = await apiClient.post<{ wiped: boolean; next: string }>('/raft/wipe-state', {})
+      return resp.data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['raft', 'status'] })
+    },
+  })
+}

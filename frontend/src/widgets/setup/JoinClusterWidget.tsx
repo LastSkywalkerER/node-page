@@ -24,6 +24,10 @@ export interface JoinClusterFormValues {
 interface JoinClusterWidgetProps {
   defaultPeerUrl?: string;
   machineHints?: MachineHintsResponse | null;
+  /** Server reports it's running inside a Docker container; auto-detected
+   *  IPs in that case are typically the container's internal bridge address
+   *  (172.x.x.x) and not reachable by peers outside Docker. */
+  runningInDocker?: boolean;
   isJoining: boolean;
   error: string | null;
   status: 'idle' | 'joining' | 'replicating';
@@ -31,16 +35,36 @@ interface JoinClusterWidgetProps {
   onSubmit: (values: JoinClusterFormValues) => void;
 }
 
+// dockerBridgeIP guesses whether an IPv4 looks like a Docker bridge
+// (default network 172.17.0.0/16 — 172.31.x.x range). Used to decide
+// whether the auto-detected IP is safe to use for the Raft advertise
+// address. Conservative: only flags ranges Docker actually allocates
+// for its default bridges.
+function looksLikeDockerBridge(ip: string): boolean {
+  const parts = ip.trim().split('.');
+  if (parts.length !== 4) return false;
+  const a = Number(parts[0]);
+  const b = Number(parts[1]);
+  if (a !== 172) return false;
+  return b >= 16 && b <= 31;
+}
+
 export function JoinClusterWidget({
   defaultPeerUrl = '',
   machineHints,
+  runningInDocker,
   isJoining,
   error,
   status,
   onBack,
   onSubmit,
 }: JoinClusterWidgetProps) {
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const ipLooksDocker = Boolean(
+    machineHints?.suggested_ipv4 && looksLikeDockerBridge(machineHints.suggested_ipv4),
+  );
+  const dockerWarn = Boolean(runningInDocker) || ipLooksDocker;
+
+  const [showAdvanced, setShowAdvanced] = useState(dockerWarn);
   const [peerUrl, setPeerUrl] = useState(defaultPeerUrl);
   const [token, setToken] = useState('');
   const [nodeId, setNodeId] = useState('');
@@ -55,15 +79,29 @@ export function JoinClusterWidget({
     if (!nodeId && machineHints.suggested_hostname) {
       setNodeId(machineHints.suggested_hostname.toLowerCase().replace(/\s+/g, '-'));
     }
-    if (!advertiseAddr && machineHints.suggested_ipv4) {
+    // Only auto-fill advertise_addr when the detected IP is plausibly
+    // reachable from peers. Inside Docker (or when the IP is on the
+    // container-internal bridge) we deliberately leave it blank so the
+    // operator must enter a reachable host IP + a mapped port.
+    if (!advertiseAddr && machineHints.suggested_ipv4 && !dockerWarn) {
       setAdvertiseAddr(`${machineHints.suggested_ipv4}:7000`);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [machineHints]);
+  }, [machineHints, dockerWarn]);
+
+  // When the joining node is inside Docker we require the operator to
+  // explicitly enter an externally-reachable advertise_addr — otherwise
+  // the leader (typically on the host network or another container)
+  // can't dial the new voter and the cluster ends up wedged in
+  // Candidate state forever. The leader has no way to recover without
+  // wiping the Raft state.
+  const advertiseAddrLooksDocker = looksLikeDockerBridge(advertiseAddr.split(':')[0] || '');
+  const dockerBlocked = dockerWarn && (!advertiseAddr.trim() || advertiseAddrLooksDocker);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!peerUrl.trim() || !token.trim()) return;
+    if (dockerBlocked) return;
     onSubmit({
       peer_url: peerUrl.trim().replace(/\/+$/, ''),
       token: token.trim(),
@@ -78,6 +116,25 @@ export function JoinClusterWidget({
 
   return (
     <form onSubmit={submit} className="space-y-5">
+      {dockerWarn && (
+        <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm space-y-1">
+          <p className="font-medium text-amber-200">
+            This node is running inside Docker
+          </p>
+          <p className="text-xs text-amber-100/90">
+            The auto-detected IP{' '}
+            {machineHints?.suggested_ipv4 ? (
+              <code>{machineHints.suggested_ipv4}</code>
+            ) : null}{' '}
+            is the container's internal address and is <strong>not</strong> reachable
+            from the cluster leader. Open the <em>advanced node settings</em> below and
+            enter a host:port the leader can dial — typically the host's external IP
+            with a port you've mapped in your <code>docker-compose.yml</code> (e.g.{' '}
+            <code>192.168.0.104:7002</code>, with <code>7002:7000</code> in ports).
+          </p>
+        </div>
+      )}
+
       <div className="space-y-1.5">
         <Label htmlFor="peer-url">Peer URL</Label>
         <Input
@@ -209,7 +266,17 @@ export function JoinClusterWidget({
         <Button type="button" variant="outline" onClick={onBack} disabled={isJoining || status === 'replicating'}>
           Back
         </Button>
-        <Button type="submit" disabled={isJoining || status === 'replicating' || !peerUrl || !token}>
+        <Button
+          type="submit"
+          disabled={
+            isJoining || status === 'replicating' || !peerUrl || !token || dockerBlocked
+          }
+          title={
+            dockerBlocked
+              ? 'Enter a non-Docker advertise host:port in advanced settings — the leader cannot reach the container-internal address.'
+              : undefined
+          }
+        >
           {status === 'replicating' ? 'Waiting…' : isJoining ? 'Joining…' : 'Join cluster'}
         </Button>
       </div>

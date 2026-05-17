@@ -3,6 +3,8 @@ package di
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -392,6 +394,74 @@ func (c *Container) ResetRaftConfig() error {
 	c.activateMu.Lock()
 	c.raftBootError = ""
 	c.activateMu.Unlock()
+	return nil
+}
+
+// WipeRaftState shuts down the currently-running Raft node (if any),
+// deletes the on-disk BoltDB log + snapshot files and re-activates the
+// layer using the same RuntimeConfig but with Bootstrap=true. The
+// replicated tables in SQLite (users, hosts, metrics, …) are left
+// untouched — only the consensus log / cluster membership are reset.
+//
+// Used to recover from a wedged 2-voter cluster where a voter was
+// added with an unreachable advertise address. After WipeRaftState
+// completes the node comes back as a healthy single-voter cluster and
+// can issue join tokens for additional voters.
+func (c *Container) WipeRaftState() error {
+	c.activateMu.Lock()
+	defer c.activateMu.Unlock()
+
+	prevCfg := c.raftCfgSnapshot
+	if !c.raftSwap.Enabled() && prevCfg.NodeID == "" {
+		return fmt.Errorf("raft: nothing to wipe (layer never activated)")
+	}
+
+	// 1) Shut down the running node — releases BoltDB locks + TCP listener.
+	if err := c.raftSwap.Close(); err != nil && c.logger != nil {
+		c.logger.Warn("raft wipe: shutdown returned error (continuing)", "error", err)
+	}
+	c.raftSwap.Swap(raftcluster.NewDisabledService())
+	c.raftFSM = nil
+	c.bridgeSender = nil
+	c.bridgePicker = nil
+	c.bridgeReceiver = nil
+
+	// 2) Wipe the data dir contents.
+	dir := prevCfg.DataDir
+	if dir == "" {
+		dir = "./data/raft"
+	}
+	if err := wipeDirContents(dir); err != nil {
+		return fmt.Errorf("raft wipe: clear data dir: %w", err)
+	}
+
+	// 3) Re-activate as fresh bootstrap single-voter.
+	prevCfg.Bootstrap = true
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_, _, err := c.activateLocked(ctx, prevCfg)
+	if err != nil {
+		c.raftBootError = err.Error()
+		return err
+	}
+	c.raftBootError = ""
+	return nil
+}
+
+// wipeDirContents removes every entry inside dir but keeps dir itself.
+func wipeDirContents(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
