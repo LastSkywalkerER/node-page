@@ -103,3 +103,27 @@ export function useRemoveRaftPeer() {
     },
   })
 }
+
+export interface SaveBridgeConfigInput {
+  shared_secret: string
+  remote_seeds: string[]
+  advertise_url?: string
+}
+
+/**
+ * Hot-updates the cross-cluster bridge configuration on the running
+ * server. Rebuilds the sender/picker/receiver in place and persists the
+ * values into .env so the change survives a restart.
+ */
+export function useSaveRaftBridge() {
+  const queryClient = useQueryClient()
+  return useMutation<{ saved: boolean }, Error, SaveBridgeConfigInput>({
+    mutationFn: async (input) => {
+      const resp = await apiClient.post<{ saved: boolean }>('/raft/bridge', input)
+      return resp.data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['raft', 'status'] })
+    },
+  })
+}

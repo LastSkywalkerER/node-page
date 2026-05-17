@@ -85,6 +85,13 @@ export function useSetupEnvPreview(config: CompleteSetupFormData['config'] | nul
 export interface JoinRaftClusterInput {
   peer_url: string;
   token: string;
+  node_id?: string;
+  bind_addr?: string;
+  advertise_addr?: string;
+  advertise_url?: string;
+  data_dir?: string;
+  bridge_shared_secret?: string;
+  bridge_remote_seeds?: string[];
 }
 
 export interface JoinRaftClusterResponse {

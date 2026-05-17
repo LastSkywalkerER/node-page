@@ -71,6 +71,17 @@ export function SetupPage() {
           : DEFAULT_SETUP_CONFIG.docker_host_metrics_compat,
         node_stats_hostname: c.node_stats_hostname ?? DEFAULT_SETUP_CONFIG.node_stats_hostname,
         node_stats_ipv4: c.node_stats_ipv4 ?? DEFAULT_SETUP_CONFIG.node_stats_ipv4,
+        raft_enabled: DEFAULT_SETUP_CONFIG.raft_enabled,
+        raft_cluster_id: DEFAULT_SETUP_CONFIG.raft_cluster_id,
+        raft_node_id: DEFAULT_SETUP_CONFIG.raft_node_id,
+        raft_bind_addr: DEFAULT_SETUP_CONFIG.raft_bind_addr,
+        raft_advertise_addr: DEFAULT_SETUP_CONFIG.raft_advertise_addr,
+        raft_data_dir: DEFAULT_SETUP_CONFIG.raft_data_dir,
+        raft_bootstrap: DEFAULT_SETUP_CONFIG.raft_bootstrap,
+        raft_advertise_public_url: DEFAULT_SETUP_CONFIG.raft_advertise_public_url,
+        raft_bridge_enabled: DEFAULT_SETUP_CONFIG.raft_bridge_enabled,
+        raft_bridge_shared_secret: DEFAULT_SETUP_CONFIG.raft_bridge_shared_secret,
+        raft_bridge_remote_seeds: DEFAULT_SETUP_CONFIG.raft_bridge_remote_seeds,
       }
     }
     return {}
@@ -116,10 +127,32 @@ export function SetupPage() {
     }
   }
 
-  const handleJoinCluster = async (peerUrl: string, token: string) => {
+  const handleJoinCluster = async (values: {
+    peer_url: string
+    token: string
+    node_id: string
+    bind_addr: string
+    advertise_addr: string
+    advertise_url: string
+    bridge_shared_secret: string
+    bridge_remote_seeds: string
+  }) => {
     setJoinStatus('joining')
     try {
-      await joinCluster.mutateAsync({ peer_url: peerUrl, token })
+      const seeds = values.bridge_remote_seeds
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+      await joinCluster.mutateAsync({
+        peer_url: values.peer_url,
+        token: values.token,
+        node_id: values.node_id || undefined,
+        bind_addr: values.bind_addr || undefined,
+        advertise_addr: values.advertise_addr || undefined,
+        advertise_url: values.advertise_url || undefined,
+        bridge_shared_secret: values.bridge_shared_secret || undefined,
+        bridge_remote_seeds: seeds.length ? seeds : undefined,
+      })
       setJoinStatus('replicating')
     } catch (err) {
       console.error('Join cluster error:', err)
@@ -160,6 +193,7 @@ export function SetupPage() {
               <JoinClusterWidget
                 isJoining={joinCluster.isPending}
                 status={joinStatus}
+                machineHints={statusData?.machine_hints}
                 error={
                   joinCluster.error
                     ? (joinCluster.error as Error).message

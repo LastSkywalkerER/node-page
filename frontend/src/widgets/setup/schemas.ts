@@ -24,6 +24,18 @@ export const setupConfigSchema = z.object({
   docker_host_metrics_compat: z.boolean(),
   node_stats_hostname: z.string(),
   node_stats_ipv4: optionalIPv4,
+  // Raft cluster sync (all fields optional; only used when raft_enabled === 'true').
+  raft_enabled: z.enum(['true', 'false']),
+  raft_cluster_id: z.string(),
+  raft_node_id: z.string(),
+  raft_bind_addr: z.string(),
+  raft_advertise_addr: z.string(),
+  raft_data_dir: z.string(),
+  raft_bootstrap: z.enum(['true', 'false']),
+  raft_advertise_public_url: z.string(),
+  raft_bridge_enabled: z.enum(['true', 'false']),
+  raft_bridge_shared_secret: z.string(),
+  raft_bridge_remote_seeds: z.string(),
 });
 
 const passwordSchema = z
@@ -99,5 +111,16 @@ export function toSetupConfigApiPayload(config: SetupConfigFormData) {
     docker_host_metrics_compat: config.docker_host_metrics_compat,
     node_stats_hostname: config.node_stats_hostname.trim(),
     node_stats_ipv4: config.node_stats_ipv4.trim(),
+    raft_enabled: config.raft_enabled || 'false',
+    raft_cluster_id: config.raft_cluster_id.trim(),
+    raft_node_id: config.raft_node_id.trim(),
+    raft_bind_addr: config.raft_bind_addr.trim(),
+    raft_advertise_addr: config.raft_advertise_addr.trim(),
+    raft_data_dir: config.raft_data_dir.trim(),
+    raft_bootstrap: config.raft_bootstrap || 'false',
+    raft_advertise_public_url: config.raft_advertise_public_url.trim(),
+    raft_bridge_enabled: config.raft_bridge_enabled || 'false',
+    raft_bridge_shared_secret: config.raft_bridge_shared_secret.trim(),
+    raft_bridge_remote_seeds: config.raft_bridge_remote_seeds.trim(),
   };
 }

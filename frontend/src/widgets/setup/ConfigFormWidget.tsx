@@ -110,6 +110,22 @@ export function ConfigFormWidget({ initialValues, runningInDocker, machineHints,
   const prometheusEnabled = useWatch({ control: form.control, name: 'prometheus_enabled' });
   const prometheusAuth = useWatch({ control: form.control, name: 'prometheus_auth' });
   const prometheusToken = useWatch({ control: form.control, name: 'prometheus_token' });
+  const raftEnabled = useWatch({ control: form.control, name: 'raft_enabled' });
+  const raftBridgeEnabled = useWatch({ control: form.control, name: 'raft_bridge_enabled' });
+
+  const raftDefaultsApplied = useRef(false);
+  useEffect(() => {
+    if (raftDefaultsApplied.current || !machineHints) return;
+    const nodeId = form.getValues('raft_node_id');
+    const advertiseAddr = form.getValues('raft_advertise_addr');
+    if (!nodeId.trim() && machineHints.suggested_hostname) {
+      form.setValue('raft_node_id', machineHints.suggested_hostname.toLowerCase().replace(/\s+/g, '-'));
+    }
+    if (!advertiseAddr.trim() && machineHints.suggested_ipv4) {
+      form.setValue('raft_advertise_addr', `${machineHints.suggested_ipv4}:7000`);
+    }
+    raftDefaultsApplied.current = true;
+  }, [machineHints, form]);
 
   const prevDbType = useRef(dbType);
   useEffect(() => {
@@ -392,6 +408,146 @@ export function ConfigFormWidget({ initialValues, runningInDocker, machineHints,
           </FormField>
         </Accordion>
       </Accordion>
+
+      {/* === Raft cluster sync === */}
+      <SectionDivider label="Raft cluster sync (optional)" />
+
+      <Controller
+        control={form.control}
+        name="raft_enabled"
+        render={({ field }) => (
+          <ToggleRow
+            id="raft_enabled"
+            label="Enable Raft cluster sync"
+            description="Other nodes can join this one to share users, hosts and metric history via consensus."
+            checked={field.value === 'true'}
+            onCheckedChange={(v) => {
+              field.onChange(v ? 'true' : 'false');
+              if (v) {
+                // First-node bootstrap defaults.
+                if (form.getValues('raft_bootstrap') !== 'true') {
+                  form.setValue('raft_bootstrap', 'true');
+                }
+              }
+            }}
+          />
+        )}
+      />
+
+      {raftEnabled === 'true' && (
+        <div className="rounded-md border border-border/50 bg-muted/10 p-3 space-y-4">
+          <div className="space-y-1">
+            <FormInputField
+              label="Cluster name"
+              name="raft_cluster_id"
+              required
+              register={form.register('raft_cluster_id')}
+              error={form.formState.errors.raft_cluster_id}
+            />
+            <p className="text-xs text-slate-400">
+              Choose any short identifier. 'local' for LAN nodes, 'public' for VPS, or anything else.
+            </p>
+          </div>
+          <div className="space-y-1">
+            <FormInputField
+              label="Node ID"
+              name="raft_node_id"
+              required
+              register={form.register('raft_node_id')}
+              error={form.formState.errors.raft_node_id}
+            />
+            <p className="text-xs text-slate-400">
+              Stable, unique within this cluster. Auto-filled from the host's hostname.
+            </p>
+          </div>
+          <div className="space-y-1">
+            <FormInputField
+              label="Raft bind address"
+              name="raft_bind_addr"
+              register={form.register('raft_bind_addr')}
+              error={form.formState.errors.raft_bind_addr}
+            />
+            <p className="text-xs text-slate-400">
+              TCP listen address used by other Raft voters. Default ':7000' binds all interfaces.
+            </p>
+          </div>
+          <div className="space-y-1">
+            <FormInputField
+              label="Advertise address"
+              name="raft_advertise_addr"
+              register={form.register('raft_advertise_addr')}
+              error={form.formState.errors.raft_advertise_addr}
+            />
+            <p className="text-xs text-slate-400">
+              Address other Raft voters should dial (host:port). Auto-filled from machine hints.
+            </p>
+          </div>
+          <div className="space-y-1">
+            <FormInputField
+              label="Advertise public URL"
+              name="raft_advertise_public_url"
+              register={form.register('raft_advertise_public_url')}
+              error={form.formState.errors.raft_advertise_public_url}
+            />
+            <p className="text-xs text-slate-400">
+              HTTP URL this node publishes for cross-cluster bridge probes. Leave empty if not bridging.
+            </p>
+          </div>
+
+          <Controller
+            control={form.control}
+            name="raft_bridge_enabled"
+            render={({ field }) => (
+              <ToggleRow
+                id="raft_bridge_enabled"
+                label="Enable cross-cluster bridge"
+                description="Replicates state to a peer Raft cluster (typically local ↔ public VPS)."
+                checked={field.value === 'true'}
+                onCheckedChange={(v) => field.onChange(v ? 'true' : 'false')}
+              />
+            )}
+          />
+
+          {raftBridgeEnabled === 'true' && (
+            <>
+              <FormField
+                label="Bridge shared secret"
+                error={form.formState.errors.raft_bridge_shared_secret}
+                id="raft_bridge_shared_secret"
+              >
+                <div className="flex gap-2">
+                  <PasswordInput
+                    id="raft_bridge_shared_secret"
+                    {...form.register('raft_bridge_shared_secret')}
+                    className="flex-1"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() =>
+                      form.setValue('raft_bridge_shared_secret', generateSecret(48), { shouldValidate: true })
+                    }
+                  >
+                    Generate
+                  </Button>
+                </div>
+              </FormField>
+              <div className="space-y-1">
+                <FormInputField
+                  label="Remote seed URLs"
+                  name="raft_bridge_remote_seeds"
+                  register={form.register('raft_bridge_remote_seeds')}
+                  error={form.formState.errors.raft_bridge_remote_seeds}
+                />
+                <p className="text-xs text-slate-400">
+                  Comma-separated URLs of peer cluster nodes (e.g.
+                  https://vps1.example.com,https://vps2.example.com).
+                </p>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* === Actions === */}
       <div className="flex gap-2 pt-2">

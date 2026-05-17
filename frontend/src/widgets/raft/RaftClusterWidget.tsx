@@ -9,6 +9,7 @@ import {
   useIssueRaftJoinToken,
   useAddRaftPeer,
   useRemoveRaftPeer,
+  useSaveRaftBridge,
   BridgeSample,
 } from './useRaft'
 
@@ -50,6 +51,12 @@ export function RaftClusterWidget() {
   const [copied, setCopied] = useState(false)
   const [peerId, setPeerId] = useState('')
   const [peerAddr, setPeerAddr] = useState('')
+
+  // Bridge config form (hot-update + persist in .env).
+  const saveBridge = useSaveRaftBridge()
+  const [bridgeSecret, setBridgeSecret] = useState('')
+  const [bridgeSeeds, setBridgeSeeds] = useState('')
+  const [bridgeAdvertise, setBridgeAdvertise] = useState('')
 
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>
@@ -101,6 +108,28 @@ export function RaftClusterWidget() {
       setPeerAddr('')
     } catch (e) {
       toast.error('Add voter failed: ' + (e as Error).message)
+    }
+  }
+
+  const onSaveBridge = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const seeds = bridgeSeeds
+      .split(',')
+      .map((s) => s.trim().replace(/\/+$/, ''))
+      .filter(Boolean)
+    if (!bridgeSecret.trim()) {
+      toast.error('Shared secret is required')
+      return
+    }
+    try {
+      await saveBridge.mutateAsync({
+        shared_secret: bridgeSecret.trim(),
+        remote_seeds: seeds,
+        advertise_url: bridgeAdvertise.trim().replace(/\/+$/, '') || undefined,
+      })
+      toast.success('Bridge config applied and saved to .env')
+    } catch (err) {
+      toast.error('Save failed: ' + (err as Error).message)
     }
   }
 
@@ -235,6 +264,50 @@ export function RaftClusterWidget() {
             Only the cluster leader can issue tokens. This node is {st.state}.
           </p>
         ) : null}
+      </section>
+
+      <section className="space-y-2">
+        <h4 className="text-sm font-display tracking-wide">Cross-cluster bridge</h4>
+        <p className="text-xs text-muted-foreground">
+          Configure the async link to the peer Raft cluster. Changes apply live
+          (the running sender / picker / receiver are rebuilt) and persist to
+          <code> .env</code> for the next restart.
+        </p>
+        <form onSubmit={onSaveBridge} className="space-y-2">
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground">Shared HMAC secret</label>
+            <Input
+              type="password"
+              value={bridgeSecret}
+              onChange={(e) => setBridgeSecret(e.target.value)}
+              placeholder="paste the secret shared between this cluster and the peer"
+              className="h-9 font-mono text-xs"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground">Remote seed URLs (comma-separated)</label>
+            <Input
+              value={bridgeSeeds}
+              onChange={(e) => setBridgeSeeds(e.target.value)}
+              placeholder="https://vps1.example.com,https://vps2.example.com"
+              className="h-9 font-mono text-xs"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground">This node's advertise URL (optional)</label>
+            <Input
+              value={bridgeAdvertise}
+              onChange={(e) => setBridgeAdvertise(e.target.value)}
+              placeholder={st.advertise_url || 'https://local-1.example.com'}
+              className="h-9 font-mono text-xs"
+            />
+          </div>
+          <div className="pt-1">
+            <Button type="submit" size="sm" disabled={saveBridge.isPending}>
+              {saveBridge.isPending ? 'Applying…' : 'Apply & save to .env'}
+            </Button>
+          </div>
+        </form>
       </section>
 
       {data.bridge_samples && data.bridge_samples.length > 0 ? (
