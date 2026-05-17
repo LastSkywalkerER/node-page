@@ -45,6 +45,11 @@ func NewNode(logger *log.Logger, cfg config.RaftConfig, fsm *FSM) *Node {
 // the TCP transport, then either bootstraps a brand-new cluster (when
 // cfg.Bootstrap is true and there are no existing log entries) or joins the
 // existing one using cfg.Peers.
+//
+// Any failure path is responsible for releasing already-acquired resources
+// (BoltDB file locks, TCP listener) so retrying Start() from the wizard
+// after a transient error (port in use, permission denied) does not hang
+// on a leaked flock.
 func (n *Node) Start(ctx context.Context) error {
 	if n.cfg.NodeID == "" {
 		return fmt.Errorf("raft: RAFT_NODE_ID is required when RAFT_ENABLED=true")
@@ -61,18 +66,47 @@ func (n *Node) Start(ctx context.Context) error {
 	stableStorePath := filepath.Join(n.cfg.DataDir, "raft-stable.bolt")
 	snapshotsPath := filepath.Join(n.cfg.DataDir, "snapshots")
 
-	logStore, err := raftboltdb.New(raftboltdb.Options{Path: logStorePath})
+	// Track resources so we can release them all on any failure path.
+	var (
+		logStore    hraft.LogStore
+		stableStore hraft.StableStore
+		transport   hraft.Transport
+		raftNode    *hraft.Raft
+		ok          bool
+	)
+	defer func() {
+		if ok {
+			return
+		}
+		// Best-effort cleanup in reverse order; ignore errors because we
+		// are already on a failure path.
+		if raftNode != nil {
+			_ = raftNode.Shutdown().Error()
+		}
+		if closer, c := transport.(interface{ Close() error }); c && closer != nil {
+			_ = closer.Close()
+		}
+		if closer, c := stableStore.(interface{ Close() error }); c && closer != nil {
+			_ = closer.Close()
+		}
+		if closer, c := logStore.(interface{ Close() error }); c && closer != nil {
+			_ = closer.Close()
+		}
+	}()
+
+	lst, err := raftboltdb.New(raftboltdb.Options{Path: logStorePath})
 	if err != nil {
 		return fmt.Errorf("raft: open log store: %w", err)
 	}
-	n.logStore = logStore
+	logStore = lst
+	n.logStore = lst
 
-	stableStore, err := raftboltdb.New(raftboltdb.Options{Path: stableStorePath})
+	sst, err := raftboltdb.New(raftboltdb.Options{Path: stableStorePath})
 	if err != nil {
-		_ = logStore.Close()
 		return fmt.Errorf("raft: open stable store: %w", err)
 	}
-	n.stable = stableStore
+	stableStore = sst
+	n.stable = sst
 
 	snaps, err := hraft.NewFileSnapshotStore(snapshotsPath, 3, os.Stderr)
 	if err != nil {
@@ -88,23 +122,23 @@ func (n *Node) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("raft: resolve advertise addr %q: %w", advertise, err)
 	}
-	transport, err := hraft.NewTCPTransport(n.cfg.BindAddr, tcpAddr, 3, 10*time.Second, os.Stderr)
+	tr, err := hraft.NewTCPTransport(n.cfg.BindAddr, tcpAddr, 3, 10*time.Second, os.Stderr)
 	if err != nil {
-		return fmt.Errorf("raft: open TCP transport on %q: %w", n.cfg.BindAddr, err)
+		return fmt.Errorf("raft: open TCP transport (bind=%q advertise=%q): %w", n.cfg.BindAddr, advertise, err)
 	}
-	n.transport = transport
+	transport = tr
+	n.transport = tr
 
 	rcfg := hraft.DefaultConfig()
 	rcfg.LocalID = hraft.ServerID(n.cfg.NodeID)
 	rcfg.SnapshotInterval = 60 * time.Second
 	rcfg.SnapshotThreshold = 10000
-	// Suppress hashicorp's default stderr writer noise; route via charmbracelet
-	// is a future improvement.
 
 	r, err := hraft.NewRaft(rcfg, n.fsm, logStore, stableStore, snaps, transport)
 	if err != nil {
 		return fmt.Errorf("raft: construct node: %w", err)
 	}
+	raftNode = r
 	n.raft = r
 
 	if n.cfg.Bootstrap {
@@ -138,6 +172,7 @@ func (n *Node) Start(ctx context.Context) error {
 			"node_id", n.cfg.NodeID, "advertise", advertise)
 	}
 
+	ok = true
 	return nil
 }
 

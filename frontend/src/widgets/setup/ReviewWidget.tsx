@@ -10,6 +10,29 @@ export const REVIEW_STEP_META = {
   description: 'Confirm your settings and copy the generated .env if you deploy with volumes',
 } as const;
 
+// formatSetupError extracts the most useful message out of an axios error:
+// it prefers backend "error" + "detail" fields (the wizard's CompleteSetup
+// endpoint returns them) over the generic "Request failed with status N".
+function formatSetupError(err: unknown): string {
+  if (!err) return 'Failed to complete setup. Please try again.';
+  if (typeof err === 'object' && err !== null) {
+    const anyErr = err as {
+      response?: { data?: { error?: string; detail?: string; code?: string }; status?: number };
+      message?: string;
+    };
+    const data = anyErr.response?.data;
+    if (data) {
+      const parts: string[] = [];
+      if (data.error) parts.push(data.error);
+      if (data.detail && data.detail !== data.error) parts.push(data.detail);
+      if (data.code) parts.push(`(${data.code})`);
+      if (parts.length > 0) return parts.join(' — ');
+    }
+    if (anyErr.message) return anyErr.message;
+  }
+  return 'Failed to complete setup. Please try again.';
+}
+
 interface ReviewWidgetProps {
   adminData: AdminUserFormData;
   envContent: string | undefined;
@@ -100,9 +123,7 @@ export function ReviewWidget({
       {error && (
         <Alert className="bg-red-900/50 border-red-700">
           <AlertDescription className="text-red-200">
-            {error instanceof Error
-              ? error.message
-              : 'Failed to complete setup. Please try again.'}
+            {formatSetupError(error)}
           </AlertDescription>
         </Alert>
       )}

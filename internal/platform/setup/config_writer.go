@@ -289,15 +289,18 @@ func (cw *ConfigWriter) GetConfigPath() string {
 }
 
 // escapeValue escapes special characters in environment variable values
+// using single quotes when the value contains any character godotenv would
+// otherwise interpret. Single quotes disable variable expansion ($var),
+// command substitution ($(...) / `...`) and backslash escapes, so the
+// stored value round-trips exactly — critical for secrets that may
+// legitimately contain '$' or '@' (e.g. generated JWT secrets).
 func escapeValue(value string) string {
-	// If value contains spaces, quotes, or special characters, wrap in quotes
-	if strings.ContainsAny(value, " \t\n\"'$`\\") {
-		// Escape quotes and backslashes
-		escaped := strings.ReplaceAll(value, "\\", "\\\\")
-		escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
-		return fmt.Sprintf("\"%s\"", escaped)
+	if !strings.ContainsAny(value, " \t\n\"'$`\\#=") {
+		return value
 	}
-	return value
+	// Escape only the single quote — everything else inside '...' is literal.
+	escaped := strings.ReplaceAll(value, "'", `'\''`)
+	return "'" + escaped + "'"
 }
 
 // getEnv gets an environment variable value or returns a default if not set
