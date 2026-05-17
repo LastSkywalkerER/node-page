@@ -158,6 +158,15 @@ func Run() {
 	appCtx, appCancel := context.WithCancel(context.Background())
 	defer appCancel()
 
+	// Cross-cluster bridge — start the URL latency picker and the sender
+	// goroutines if the bridge was wired by DI. Both stop with appCtx.
+	if picker := container.GetBridgePicker(); picker != nil {
+		go picker.Run(appCtx)
+	}
+	if sender := container.GetBridgeSender(); sender != nil {
+		go sender.Run(appCtx)
+	}
+
 	historicalMetricsService := container.GetHistoricalMetricsService()
 	retentionSvc := retention.NewService(container.GetDB(), logger, cfg.RetentionDays)
 
@@ -366,6 +375,9 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	setupHandler := setup.NewHandler(configWriter, container.GetUserService(), onSetupComplete)
 	raftHandler := raftcluster.NewHandler(container.GetRaftService()).
 		WithDeps(container.GetRaftReplicator(), container.GetDB(), logger, cfg.Raft.ClusterID)
+	if picker := container.GetBridgePicker(); picker != nil {
+		raftHandler = raftHandler.WithPickerInfo(func() any { return picker.Snapshot() })
+	}
 
 	// Swagger UI (always available)
 	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
@@ -446,6 +458,14 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		// to stop token-bruteforce attempts.
 		raftJoinRL := middleware.RateLimitMiddleware(5.0/60, 5)
 		api.POST("/raft/join", raftJoinRL, raftHandler.Join)
+
+		// Cross-cluster bridge receiver — HMAC-authenticated by the
+		// handler itself, so no JWT middleware here. Always registered
+		// when the receiver was built; if not, the route is omitted and
+		// peer cluster POSTs get a clean 404.
+		if br := container.GetBridgeReceiver(); br != nil {
+			api.POST("/raft/bridge/replicate", br.Handle)
+		}
 
 		// Metrics current snapshot
 		api.GET("/metrics/current", middleware.AuthJWT(container.GetTokenService()), systemHandler.HandleCurrentMetrics)

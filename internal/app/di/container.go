@@ -15,6 +15,7 @@ import (
 	hosts "system-stats/internal/cluster/hosts"
 	nodes "system-stats/internal/cluster/nodes"
 	raftcluster "system-stats/internal/cluster/raft"
+	raftbridge "system-stats/internal/cluster/raft/bridge"
 	cpu "system-stats/internal/metrics/cpu"
 	disk "system-stats/internal/metrics/disk"
 	docker "system-stats/internal/metrics/docker"
@@ -70,12 +71,18 @@ type Container struct {
 	raftService    raftcluster.Service
 	raftFSM        *raftcluster.FSM
 	raftReplicator *raftcluster.Replicator
+	bridgePicker   *raftbridge.Picker
+	bridgeSender   *raftbridge.Sender
+	bridgeReceiver *raftbridge.Receiver
 }
 
 // NewContainer creates a new dependency injection container.
 //
 // raftCfg is optional; when raftCfg.Enabled is false the legacy direct-write
-// path is kept and raftService is a no-op DisabledService.
+// path is kept and raftService is a no-op DisabledService. The bridge
+// pieces (picker, sender, receiver) are only constructed when both
+// raftCfg.Enabled and raftCfg.Bridge.Enabled are true and a shared secret
+// is present.
 func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret, refreshSecret string, startTime time.Time, raftCfg config.RaftConfig) (*Container, error) {
 	container := &Container{
 		logger: logger,
@@ -177,6 +184,16 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 		container.raftReplicator = replicator
 		hosts.AttachRaftReplicator(container.hostService, replicator)
 		users.AttachRaftReplicator(container.userService, replicator)
+
+		// Cross-cluster bridge — async replication to the peer cluster.
+		// Always build the picker + receiver (cheap, useful for status
+		// even without a fully-configured bridge); only start the sender
+		// goroutine when bridge config has a shared secret.
+		if raftCfg.Bridge.Enabled || raftCfg.Bridge.SharedSecret != "" {
+			container.bridgePicker = raftbridge.NewPicker(logger, db, raftCfg.ClusterID)
+			container.bridgeReceiver = raftbridge.NewReceiver(logger, raftSvc, db, raftCfg.Bridge.SharedSecret, raftCfg.ClusterID)
+			container.bridgeSender = raftbridge.NewSender(logger, raftSvc, raftFSM.ApplyEvents(), container.bridgePicker, raftCfg.Bridge.SharedSecret, raftCfg.ClusterID, raftCfg.NodeID)
+		}
 	}
 
 	return container, nil
@@ -268,6 +285,16 @@ func (c *Container) GetRaftFSM() *raftcluster.FSM {
 func (c *Container) GetRaftReplicator() *raftcluster.Replicator {
 	return c.raftReplicator
 }
+
+// GetBridgePicker returns the cross-cluster URL latency picker, or nil when
+// the bridge is not configured.
+func (c *Container) GetBridgePicker() *raftbridge.Picker { return c.bridgePicker }
+
+// GetBridgeSender returns the cross-cluster sender, or nil.
+func (c *Container) GetBridgeSender() *raftbridge.Sender { return c.bridgeSender }
+
+// GetBridgeReceiver returns the cross-cluster receiver handler, or nil.
+func (c *Container) GetBridgeReceiver() *raftbridge.Receiver { return c.bridgeReceiver }
 
 // Close releases resources held by the container. Currently shuts down the
 // Raft node cleanly so its BoltDB log/stable stores are flushed.

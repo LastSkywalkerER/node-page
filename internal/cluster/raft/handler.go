@@ -14,6 +14,12 @@ import (
 	"gorm.io/gorm"
 )
 
+// BridgePickerSnapshot is the small interface the handler needs from the
+// bridge package; defined here to avoid an import cycle.
+type BridgePickerSnapshot interface {
+	Snapshot() []any
+}
+
 // Handler exposes admin-facing Raft endpoints. It is mounted by the server
 // under /api/v1/raft and is safe to register even when the Service is the
 // DisabledService — Status() / Ping() still return useful payloads.
@@ -23,6 +29,7 @@ type Handler struct {
 	db         *gorm.DB
 	logger     *log.Logger
 	clusterID  string
+	pickerInfo func() any
 }
 
 // NewHandler wires the Service. The Replicator and DB are required for the
@@ -40,10 +47,27 @@ func (h *Handler) WithDeps(replicator *Replicator, db *gorm.DB, logger *log.Logg
 	return h
 }
 
+// WithPickerInfo wires a snapshot accessor from the cross-cluster URL picker.
+// The handler embeds the snapshot under "bridge_samples" in /raft/status.
+func (h *Handler) WithPickerInfo(fn func() any) *Handler {
+	h.pickerInfo = fn
+	return h
+}
+
 // Status returns the local Raft view.
 // GET /api/v1/raft/status
 func (h *Handler) Status(c *gin.Context) {
-	c.JSON(http.StatusOK, h.svc.Status())
+	st := h.svc.Status()
+	if h.pickerInfo != nil {
+		// Embed under a separate envelope so the typed Status struct
+		// stays clean. The frontend reads bridge_samples directly.
+		c.JSON(http.StatusOK, gin.H{
+			"status":         st,
+			"bridge_samples": h.pickerInfo(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": st})
 }
 
 // Ping is a lightweight liveness probe used by the cross-cluster URL picker
