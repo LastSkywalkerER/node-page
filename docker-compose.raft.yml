@@ -1,0 +1,212 @@
+# docker-compose.raft.yml — two-cluster Raft smoke test overlay
+#
+# Brings up two independent 3-voter Raft clusters ("local" and "public")
+# on the same host, each with its own bind-mounted data dir, plus the
+# cross-cluster bridge configured between them. Each instance still
+# collects metrics from the host kernel (HOST_PROC / HOST_SYS) just
+# like the single-instance compose file.
+#
+# Run with:
+#
+#   JWT_SECRET=... REFRESH_SECRET=... BRIDGE_SECRET=... \
+#     docker compose -f docker-compose.yml -f docker-compose.raft.yml up -d
+#
+# Then point your browser at any of:
+#   http://localhost:9001/  (local-1, leader after election)
+#   http://localhost:9002/  (local-2)
+#   http://localhost:9003/  (local-3)
+#   http://localhost:9101/  (public-1, leader after election)
+#   http://localhost:9102/  (public-2)
+#   http://localhost:9103/  (public-3)
+#
+# All six should converge to the same hosts list + user accounts after
+# the bridge ships its first batch (sub-second on a healthy host).
+
+services:
+  node-stats:
+    # Disable the single-instance "node-stats" service from the base file
+    # — we replace it with explicit per-node services below.
+    deploy:
+      replicas: 0
+
+  # ------------------------ Local cluster ------------------------------
+
+  local-1:
+    extends:
+      file: docker-compose.yml
+      service: node-stats
+    container_name: ns-local-1
+    hostname: local-1
+    volumes:
+      - ./data/raft/local-1:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/host:ro
+    ports:
+      - "9001:9090"
+      - "7001:7000"
+    environment:
+      - ADDR=:9090
+      - DB_DSN=/app/data/stats.db
+      - JWT_SECRET=${JWT_SECRET}
+      - REFRESH_SECRET=${REFRESH_SECRET}
+      - RAFT_ENABLED=true
+      - RAFT_CLUSTER_ID=local
+      - RAFT_NODE_ID=local-1
+      - RAFT_BIND_ADDR=0.0.0.0:7000
+      - RAFT_ADVERTISE_ADDR=local-1:7000
+      - RAFT_DATA_DIR=/app/data/raft
+      - RAFT_BOOTSTRAP=true
+      - RAFT_PEERS=local-2@local-2:7000,local-3@local-3:7000
+      - RAFT_ADVERTISE_PUBLIC_URL=http://local-1:9090
+      - RAFT_BRIDGE_ENABLED=true
+      - RAFT_BRIDGE_SHARED_SECRET=${BRIDGE_SECRET}
+      - RAFT_BRIDGE_REMOTE_SEEDS=http://public-1:9090,http://public-2:9090,http://public-3:9090
+
+  local-2:
+    extends:
+      file: docker-compose.yml
+      service: node-stats
+    container_name: ns-local-2
+    hostname: local-2
+    volumes:
+      - ./data/raft/local-2:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/host:ro
+    ports:
+      - "9002:9090"
+      - "7002:7000"
+    environment:
+      - ADDR=:9090
+      - DB_DSN=/app/data/stats.db
+      - JWT_SECRET=${JWT_SECRET}
+      - REFRESH_SECRET=${REFRESH_SECRET}
+      - RAFT_ENABLED=true
+      - RAFT_CLUSTER_ID=local
+      - RAFT_NODE_ID=local-2
+      - RAFT_BIND_ADDR=0.0.0.0:7000
+      - RAFT_ADVERTISE_ADDR=local-2:7000
+      - RAFT_DATA_DIR=/app/data/raft
+      - RAFT_BOOTSTRAP=false
+      - RAFT_ADVERTISE_PUBLIC_URL=http://local-2:9090
+      - RAFT_BRIDGE_ENABLED=true
+      - RAFT_BRIDGE_SHARED_SECRET=${BRIDGE_SECRET}
+
+  local-3:
+    extends:
+      file: docker-compose.yml
+      service: node-stats
+    container_name: ns-local-3
+    hostname: local-3
+    volumes:
+      - ./data/raft/local-3:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/host:ro
+    ports:
+      - "9003:9090"
+      - "7003:7000"
+    environment:
+      - ADDR=:9090
+      - DB_DSN=/app/data/stats.db
+      - JWT_SECRET=${JWT_SECRET}
+      - REFRESH_SECRET=${REFRESH_SECRET}
+      - RAFT_ENABLED=true
+      - RAFT_CLUSTER_ID=local
+      - RAFT_NODE_ID=local-3
+      - RAFT_BIND_ADDR=0.0.0.0:7000
+      - RAFT_ADVERTISE_ADDR=local-3:7000
+      - RAFT_DATA_DIR=/app/data/raft
+      - RAFT_BOOTSTRAP=false
+      - RAFT_ADVERTISE_PUBLIC_URL=http://local-3:9090
+      - RAFT_BRIDGE_ENABLED=true
+      - RAFT_BRIDGE_SHARED_SECRET=${BRIDGE_SECRET}
+
+  # ------------------------ Public cluster -----------------------------
+
+  public-1:
+    extends:
+      file: docker-compose.yml
+      service: node-stats
+    container_name: ns-public-1
+    hostname: public-1
+    volumes:
+      - ./data/raft/public-1:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/host:ro
+    ports:
+      - "9101:9090"
+      - "7101:7000"
+    environment:
+      - ADDR=:9090
+      - DB_DSN=/app/data/stats.db
+      - JWT_SECRET=${JWT_SECRET}
+      - REFRESH_SECRET=${REFRESH_SECRET}
+      - RAFT_ENABLED=true
+      - RAFT_CLUSTER_ID=public
+      - RAFT_NODE_ID=public-1
+      - RAFT_BIND_ADDR=0.0.0.0:7000
+      - RAFT_ADVERTISE_ADDR=public-1:7000
+      - RAFT_DATA_DIR=/app/data/raft
+      - RAFT_BOOTSTRAP=true
+      - RAFT_PEERS=public-2@public-2:7000,public-3@public-3:7000
+      - RAFT_ADVERTISE_PUBLIC_URL=http://public-1:9090
+      - RAFT_BRIDGE_ENABLED=true
+      - RAFT_BRIDGE_SHARED_SECRET=${BRIDGE_SECRET}
+      - RAFT_BRIDGE_REMOTE_SEEDS=http://local-1:9090,http://local-2:9090,http://local-3:9090
+
+  public-2:
+    extends:
+      file: docker-compose.yml
+      service: node-stats
+    container_name: ns-public-2
+    hostname: public-2
+    volumes:
+      - ./data/raft/public-2:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/host:ro
+    ports:
+      - "9102:9090"
+      - "7102:7000"
+    environment:
+      - ADDR=:9090
+      - DB_DSN=/app/data/stats.db
+      - JWT_SECRET=${JWT_SECRET}
+      - REFRESH_SECRET=${REFRESH_SECRET}
+      - RAFT_ENABLED=true
+      - RAFT_CLUSTER_ID=public
+      - RAFT_NODE_ID=public-2
+      - RAFT_BIND_ADDR=0.0.0.0:7000
+      - RAFT_ADVERTISE_ADDR=public-2:7000
+      - RAFT_DATA_DIR=/app/data/raft
+      - RAFT_BOOTSTRAP=false
+      - RAFT_ADVERTISE_PUBLIC_URL=http://public-2:9090
+      - RAFT_BRIDGE_ENABLED=true
+      - RAFT_BRIDGE_SHARED_SECRET=${BRIDGE_SECRET}
+
+  public-3:
+    extends:
+      file: docker-compose.yml
+      service: node-stats
+    container_name: ns-public-3
+    hostname: public-3
+    volumes:
+      - ./data/raft/public-3:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/host:ro
+    ports:
+      - "9103:9090"
+      - "7103:7000"
+    environment:
+      - ADDR=:9090
+      - DB_DSN=/app/data/stats.db
+      - JWT_SECRET=${JWT_SECRET}
+      - REFRESH_SECRET=${REFRESH_SECRET}
+      - RAFT_ENABLED=true
+      - RAFT_CLUSTER_ID=public
+      - RAFT_NODE_ID=public-3
+      - RAFT_BIND_ADDR=0.0.0.0:7000
+      - RAFT_ADVERTISE_ADDR=public-3:7000
+      - RAFT_DATA_DIR=/app/data/raft
+      - RAFT_BOOTSTRAP=false
+      - RAFT_ADVERTISE_PUBLIC_URL=http://public-3:9090
+      - RAFT_BRIDGE_ENABLED=true
+      - RAFT_BRIDGE_SHARED_SECRET=${BRIDGE_SECRET}
