@@ -77,3 +77,30 @@ export function useSetupEnvPreview(config: CompleteSetupFormData['config'] | nul
   });
 }
 
+/**
+ * Posts the wizard's "join an existing cluster" choice. Returns once the
+ * peer has accepted us as a voter; replication itself runs in the
+ * background and is observed by polling /setup/status.
+ */
+export interface JoinRaftClusterInput {
+  peer_url: string;
+  token: string;
+}
+
+export interface JoinRaftClusterResponse {
+  message: string;
+  peer_response: unknown;
+}
+
+export function useJoinRaftCluster() {
+  return useMutation<JoinRaftClusterResponse, Error, JoinRaftClusterInput>({
+    mutationFn: async (input) => {
+      const response = await apiClient.post<{ data: JoinRaftClusterResponse }>(
+        '/setup/join-raft-cluster',
+        input,
+      );
+      return response.data.data;
+    },
+  });
+}
+

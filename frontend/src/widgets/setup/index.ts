@@ -3,6 +3,7 @@ export { ConfigFormWidget, CONFIG_STEP_META } from './ConfigFormWidget';
 export { AdminFormWidget, ADMIN_STEP_META } from './AdminFormWidget';
 export { ReviewWidget, REVIEW_STEP_META } from './ReviewWidget';
 export { SuccessWidget, SUCCESS_STEP_META } from './SuccessWidget';
+export { JoinClusterWidget, JOIN_CLUSTER_STEP_META } from './JoinClusterWidget';
 export * from './useSetup';
 export * from './schemas';
 

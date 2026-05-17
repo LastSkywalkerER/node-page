@@ -1,7 +1,13 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { useSetupStatus, useSetupConfig, useCompleteSetup, useSetupEnvPreview } from '../widgets/setup/useSetup'
+import {
+  useSetupStatus,
+  useSetupConfig,
+  useCompleteSetup,
+  useSetupEnvPreview,
+  useJoinRaftCluster,
+} from '../widgets/setup/useSetup'
 import { SetupConfigFormData, AdminUserFormData } from '../widgets/setup/schemas'
 import {
   WelcomeWidget, WELCOME_STEP_META,
@@ -9,9 +15,11 @@ import {
   AdminFormWidget, ADMIN_STEP_META,
   ReviewWidget, REVIEW_STEP_META,
   SuccessWidget, SUCCESS_STEP_META,
+  JoinClusterWidget, JOIN_CLUSTER_STEP_META,
 } from '../widgets/setup'
 import { DEFAULT_SETUP_CONFIG } from '../shared/config/setup'
-type Step = 'welcome' | 'config' | 'admin' | 'review' | 'success'
+
+type Step = 'welcome' | 'config' | 'admin' | 'review' | 'success' | 'join'
 
 const STEP_META = {
   welcome: WELCOME_STEP_META,
@@ -19,6 +27,7 @@ const STEP_META = {
   admin: ADMIN_STEP_META,
   review: REVIEW_STEP_META,
   success: SUCCESS_STEP_META,
+  join: JOIN_CLUSTER_STEP_META,
 } as const
 
 export function SetupPage() {
@@ -26,6 +35,10 @@ export function SetupPage() {
   const [step, setStep] = useState<Step>('welcome')
   const [configData, setConfigData] = useState<SetupConfigFormData | null>(null)
   const [adminData, setAdminData] = useState<AdminUserFormData | null>(null)
+  // joinStatus = 'idle' before submission, 'joining' while the POST is in
+  // flight, 'replicating' after a successful join — we then poll setup
+  // status until the cluster snapshot lands (setup_needed flips false).
+  const [joinStatus, setJoinStatus] = useState<'idle' | 'joining' | 'replicating'>('idle')
 
   const { data: statusData, isLoading: statusLoading } = useSetupStatus()
   const { data: configResponse, isLoading: configLoading } = useSetupConfig({
@@ -33,6 +46,7 @@ export function SetupPage() {
   })
   const completeSetup = useCompleteSetup()
   const envPreview = useSetupEnvPreview(configData, step === 'review' && configData !== null)
+  const joinCluster = useJoinRaftCluster()
 
   const getInitialConfigValues = (): Partial<SetupConfigFormData> => {
     if (configResponse?.config) {
@@ -66,6 +80,28 @@ export function SetupPage() {
     if (statusData && !statusData.setup_needed) navigate('/auth')
   }, [statusData, navigate])
 
+  // While replicating, refetch setup-status every 2s until it flips and the
+  // effect above redirects. This is what makes the join flow feel "zero
+  // configuration": the user pastes a token, and a few seconds later the
+  // page redirects to login.
+  useEffect(() => {
+    if (joinStatus !== 'replicating') return
+    const id = window.setInterval(() => {
+      // refetch is triggered by invalidating the query key.
+      // The `useSetupStatus` hook will pick up the new status.
+      // (Tanstack Query exposes `queryClient.invalidateQueries`, but
+      // invalidating via window.dispatchEvent is overkill here — we
+      // simply rely on the polling interval below.)
+      void fetch('/api/v1/setup/status', { credentials: 'include' })
+        .then((r) => r.ok && r.json())
+        .then((j) => {
+          if (j?.data?.setup_needed === false) navigate('/auth')
+        })
+        .catch(() => {})
+    }, 2000)
+    return () => window.clearInterval(id)
+  }, [joinStatus, navigate])
+
   const handleCompleteSetup = async () => {
     if (!configData || !adminData) return
     try {
@@ -77,6 +113,17 @@ export function SetupPage() {
       setStep('success')
     } catch (error) {
       console.error('Setup completion error:', error)
+    }
+  }
+
+  const handleJoinCluster = async (peerUrl: string, token: string) => {
+    setJoinStatus('joining')
+    try {
+      await joinCluster.mutateAsync({ peer_url: peerUrl, token })
+      setJoinStatus('replicating')
+    } catch (err) {
+      console.error('Join cluster error:', err)
+      setJoinStatus('idle')
     }
   }
 
@@ -103,7 +150,25 @@ export function SetupPage() {
             <CardDescription>{STEP_META[step].description}</CardDescription>
           </CardHeader>
           <CardContent>
-            {step === 'welcome' && <WelcomeWidget onNext={() => setStep('config')} />}
+            {step === 'welcome' && (
+              <WelcomeWidget
+                onStartNewCluster={() => setStep('config')}
+                onJoinExistingCluster={() => setStep('join')}
+              />
+            )}
+            {step === 'join' && (
+              <JoinClusterWidget
+                isJoining={joinCluster.isPending}
+                status={joinStatus}
+                error={
+                  joinCluster.error
+                    ? (joinCluster.error as Error).message
+                    : null
+                }
+                onBack={() => setStep('welcome')}
+                onSubmit={handleJoinCluster}
+              />
+            )}
             {step === 'config' && (
               <ConfigFormWidget
                 initialValues={getInitialConfigValues()}

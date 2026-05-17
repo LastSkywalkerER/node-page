@@ -14,6 +14,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from '@/components/ui/accordion'
+import { RaftClusterWidget, useRaftStatus } from '@/widgets/raft'
 
 const nodeAccordionTrigger =
   'py-3 text-sm hover:no-underline font-display tracking-wide [&_[data-slot=accordion-trigger-icon]]:text-primary/80'
@@ -257,6 +258,11 @@ export function NodesTab() {
     },
   })
 
+  // Raft is opt-in (RAFT_ENABLED=true); render the accordion item only
+  // when the backend reports the layer as active.
+  const { data: raftStatus } = useRaftStatus(true)
+  const raftEnabled = Boolean(raftStatus?.status?.enabled)
+
   const createInviteMutation = useMutation({
     mutationFn: async () => {
       const res = await apiClient.post<{ data: { link: string } }>('/nodes/invite')
@@ -461,6 +467,22 @@ export function NodesTab() {
                     )}
                   </div>
                 </ScrollArea>
+              </AccordionContent>
+            </AccordionItem>
+          )}
+
+          {raftEnabled && (
+            <AccordionItem value="raft" className="border-border/50 dark:border-white/10">
+              <AccordionTrigger className={nodeAccordionTrigger}>
+                Raft cluster sync
+                {raftStatus?.status?.state ? (
+                  <span className="ml-2 font-mono text-xs font-normal text-muted-foreground">
+                    ({raftStatus.status.state})
+                  </span>
+                ) : null}
+              </AccordionTrigger>
+              <AccordionContent className="pb-4">
+                <RaftClusterWidget />
               </AccordionContent>
             </AccordionItem>
           )}
