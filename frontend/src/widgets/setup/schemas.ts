@@ -88,6 +88,17 @@ export interface ConfigResponse {
     docker_host_metrics_compat: boolean;
     node_stats_hostname: string;
     node_stats_ipv4: string;
+    raft_enabled?: string;
+    raft_cluster_id?: string;
+    raft_node_id?: string;
+    raft_bind_addr?: string;
+    raft_advertise_addr?: string;
+    raft_data_dir?: string;
+    raft_bootstrap?: string;
+    raft_advertise_public_url?: string;
+    raft_bridge_enabled?: string;
+    raft_bridge_shared_secret?: string;
+    raft_bridge_remote_seeds?: string;
   };
 }
 

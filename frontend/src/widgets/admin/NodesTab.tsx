@@ -262,6 +262,9 @@ export function NodesTab() {
   // when the backend reports the layer as active.
   const { data: raftStatus } = useRaftStatus(true)
   const raftEnabled = Boolean(raftStatus?.status?.enabled)
+  // Also show the Raft section when a boot-time activation failed so the
+  // admin can read the error and click "Reset Raft config" to recover.
+  const raftPanelVisible = raftEnabled || Boolean(raftStatus?.boot_error)
 
   const createInviteMutation = useMutation({
     mutationFn: async () => {
@@ -471,11 +474,15 @@ export function NodesTab() {
             </AccordionItem>
           )}
 
-          {raftEnabled && (
+          {raftPanelVisible && (
             <AccordionItem value="raft" className="border-border/50 dark:border-white/10">
               <AccordionTrigger className={nodeAccordionTrigger}>
                 Raft cluster sync
-                {raftStatus?.status?.state ? (
+                {raftStatus?.boot_error ? (
+                  <span className="ml-2 font-mono text-xs font-normal text-rose-300">
+                    (boot failure)
+                  </span>
+                ) : raftStatus?.status?.state ? (
                   <span className="ml-2 font-mono text-xs font-normal text-muted-foreground">
                     ({raftStatus.status.state})
                   </span>

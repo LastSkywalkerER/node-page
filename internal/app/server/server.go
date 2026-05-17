@@ -378,6 +378,8 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	raftHandler := raftcluster.NewHandler(container.GetRaftService()).
 		WithDeps(container.GetRaftReplicator(), container.GetDB(), logger, cfg.Raft.ClusterID).
 		WithBridgeConfigurator(container).
+		WithBootError(container.RaftBootError).
+		WithResetConfig(container.ResetRaftConfig).
 		WithPickerInfo(func() any {
 			if p := container.GetBridgePicker(); p != nil {
 				return p.Snapshot()
@@ -512,6 +514,8 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.POST("/raft/join-token", middleware.RequireAdmin(), raftHandler.IssueJoinToken)
 		// Hot-update cross-cluster bridge configuration
 		authAPI.POST("/raft/bridge", middleware.RequireAdmin(), raftHandler.SaveBridgeConfig)
+		// Wipe RAFT_* from .env so the next restart boots Raft-disabled
+		authAPI.POST("/raft/reset", middleware.RequireAdmin(), raftHandler.ResetConfig)
 	}
 
 	// Static files for React app (hashed bundles from Vite)

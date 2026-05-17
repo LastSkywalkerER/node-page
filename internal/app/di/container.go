@@ -92,6 +92,10 @@ type Container struct {
 	// ConfigureBridge to rebuild the sender / picker / receiver without
 	// re-asking the caller for cluster id / node id.
 	raftCfgSnapshot config.RaftConfig
+	// raftBootError captures the message from a failed boot-time
+	// activation so the admin UI can surface it ("Raft is disabled
+	// because port :7000 is in use; reconfigure below").
+	raftBootError string
 }
 
 // NewContainer creates a new dependency injection container.
@@ -190,9 +194,25 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 	// If RAFT_ENABLED is true at boot, activate eagerly using env-derived
 	// config. This preserves the existing "configure-via-env" workflow
 	// for ops who don't go through the wizard.
+	//
+	// Failure here is INTENTIONALLY NOT FATAL: a stale .env (e.g. port
+	// already taken on the host, a leftover RAFT_BOOTSTRAP=true after a
+	// previous failed wizard run) used to crash-loop the process and
+	// soft-brick the deployment. We now log a clear warning, leave
+	// raftSwap as DisabledService and let the operator recover via the
+	// wizard / admin panel. The Raft tab in /admin/nodes shows the
+	// failure reason; running setup wizard again hot-activates with
+	// updated parameters.
 	if raftCfg.Enabled {
 		if _, _, err := container.activateLocked(context.Background(), raftCfg); err != nil {
-			return nil, err
+			container.raftBootError = err.Error()
+			logger.Warn("raft: boot-time activation failed; continuing with Raft disabled",
+				"error", err,
+				"node_id", raftCfg.NodeID,
+				"bind_addr", raftCfg.BindAddr,
+				"advertise", raftCfg.AdvertiseAddr,
+				"hint", "check the address is free (e.g. lsof -i :7000) or edit .env / use the admin panel to reconfigure",
+			)
 		}
 	}
 
@@ -332,6 +352,47 @@ func (c *Container) CurrentRaftConfig() config.RaftConfig {
 	c.activateMu.Lock()
 	defer c.activateMu.Unlock()
 	return c.raftCfgSnapshot
+}
+
+// RaftBootError returns the most recent boot-time activation failure (e.g.
+// "bind: address already in use"). Empty when Raft was either never
+// enabled or successfully activated. The admin Raft tab surfaces this so
+// the operator knows why /api/v1/raft/status reports Raft as disabled.
+func (c *Container) RaftBootError() string {
+	c.activateMu.Lock()
+	defer c.activateMu.Unlock()
+	return c.raftBootError
+}
+
+// ResetRaftConfig wipes RAFT_* env entries from the persisted .env so the
+// next process restart boots in Raft-disabled mode. Useful when the
+// operator wants to abandon a half-configured cluster without editing
+// .env by hand. Does not touch the running process — the SwappableService
+// remains whatever it currently wraps.
+func (c *Container) ResetRaftConfig() error {
+	cw := setupcfg.NewConfigWriter()
+	cv, err := cw.ReadCurrentConfig()
+	if err != nil || cv == nil {
+		return err
+	}
+	cv.RaftEnabled = ""
+	cv.RaftClusterID = ""
+	cv.RaftNodeID = ""
+	cv.RaftBindAddr = ""
+	cv.RaftAdvertiseAddr = ""
+	cv.RaftDataDir = ""
+	cv.RaftBootstrap = ""
+	cv.RaftAdvertisePublicURL = ""
+	cv.RaftBridgeEnabled = ""
+	cv.RaftBridgeSharedSecret = ""
+	cv.RaftBridgeRemoteSeeds = ""
+	if werr := cw.WriteConfigFile(cv); werr != nil {
+		return werr
+	}
+	c.activateMu.Lock()
+	c.raftBootError = ""
+	c.activateMu.Unlock()
+	return nil
 }
 
 // SaveBridge satisfies raftcluster.BridgeConfigurator. It updates the

@@ -71,17 +71,32 @@ export function SetupPage() {
           : DEFAULT_SETUP_CONFIG.docker_host_metrics_compat,
         node_stats_hostname: c.node_stats_hostname ?? DEFAULT_SETUP_CONFIG.node_stats_hostname,
         node_stats_ipv4: c.node_stats_ipv4 ?? DEFAULT_SETUP_CONFIG.node_stats_ipv4,
-        raft_enabled: DEFAULT_SETUP_CONFIG.raft_enabled,
-        raft_cluster_id: DEFAULT_SETUP_CONFIG.raft_cluster_id,
-        raft_node_id: DEFAULT_SETUP_CONFIG.raft_node_id,
-        raft_bind_addr: DEFAULT_SETUP_CONFIG.raft_bind_addr,
-        raft_advertise_addr: DEFAULT_SETUP_CONFIG.raft_advertise_addr,
-        raft_data_dir: DEFAULT_SETUP_CONFIG.raft_data_dir,
-        raft_bootstrap: DEFAULT_SETUP_CONFIG.raft_bootstrap,
-        raft_advertise_public_url: DEFAULT_SETUP_CONFIG.raft_advertise_public_url,
-        raft_bridge_enabled: DEFAULT_SETUP_CONFIG.raft_bridge_enabled,
-        raft_bridge_shared_secret: DEFAULT_SETUP_CONFIG.raft_bridge_shared_secret,
-        raft_bridge_remote_seeds: DEFAULT_SETUP_CONFIG.raft_bridge_remote_seeds,
+        // Prefer values from the existing .env over hard-coded defaults so a
+        // retry after a failed activation shows the same fields the
+        // operator saw last time (e.g. the port that didn't bind).
+        raft_enabled:
+          c.raft_enabled === 'true' || c.raft_enabled === 'false'
+            ? c.raft_enabled
+            : DEFAULT_SETUP_CONFIG.raft_enabled,
+        raft_cluster_id: c.raft_cluster_id ?? DEFAULT_SETUP_CONFIG.raft_cluster_id,
+        raft_node_id: c.raft_node_id ?? DEFAULT_SETUP_CONFIG.raft_node_id,
+        raft_bind_addr: c.raft_bind_addr ?? DEFAULT_SETUP_CONFIG.raft_bind_addr,
+        raft_advertise_addr: c.raft_advertise_addr ?? DEFAULT_SETUP_CONFIG.raft_advertise_addr,
+        raft_data_dir: c.raft_data_dir ?? DEFAULT_SETUP_CONFIG.raft_data_dir,
+        raft_bootstrap:
+          c.raft_bootstrap === 'true' || c.raft_bootstrap === 'false'
+            ? c.raft_bootstrap
+            : DEFAULT_SETUP_CONFIG.raft_bootstrap,
+        raft_advertise_public_url:
+          c.raft_advertise_public_url ?? DEFAULT_SETUP_CONFIG.raft_advertise_public_url,
+        raft_bridge_enabled:
+          c.raft_bridge_enabled === 'true' || c.raft_bridge_enabled === 'false'
+            ? c.raft_bridge_enabled
+            : DEFAULT_SETUP_CONFIG.raft_bridge_enabled,
+        raft_bridge_shared_secret:
+          c.raft_bridge_shared_secret ?? DEFAULT_SETUP_CONFIG.raft_bridge_shared_secret,
+        raft_bridge_remote_seeds:
+          c.raft_bridge_remote_seeds ?? DEFAULT_SETUP_CONFIG.raft_bridge_remote_seeds,
       }
     }
     return {}

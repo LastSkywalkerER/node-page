@@ -31,6 +31,8 @@ type Handler struct {
 	clusterID  string
 	pickerInfo func() any
 	bridgeCfg  BridgeConfigurator
+	bootError  func() string
+	resetCfg   func() error
 }
 
 // NewHandler wires the Service. The Replicator and DB are required for the
@@ -71,20 +73,53 @@ func (h *Handler) WithBridgeConfigurator(b BridgeConfigurator) *Handler {
 	return h
 }
 
+// WithBootError wires a getter for the most recent boot-time activation
+// failure so /raft/status can surface it to the admin UI.
+func (h *Handler) WithBootError(fn func() string) *Handler {
+	h.bootError = fn
+	return h
+}
+
+// WithResetConfig wires a function that wipes RAFT_* from .env so the
+// next restart boots Raft-disabled. Used by the admin "Reset" action
+// when a bad config is keeping the layer from coming up.
+func (h *Handler) WithResetConfig(fn func() error) *Handler {
+	h.resetCfg = fn
+	return h
+}
+
 // Status returns the local Raft view.
 // GET /api/v1/raft/status
 func (h *Handler) Status(c *gin.Context) {
 	st := h.svc.Status()
+	resp := gin.H{"status": st}
 	if h.pickerInfo != nil {
-		// Embed under a separate envelope so the typed Status struct
-		// stays clean. The frontend reads bridge_samples directly.
-		c.JSON(http.StatusOK, gin.H{
-			"status":         st,
-			"bridge_samples": h.pickerInfo(),
-		})
+		resp["bridge_samples"] = h.pickerInfo()
+	}
+	if h.bootError != nil {
+		if be := h.bootError(); be != "" {
+			resp["boot_error"] = be
+		}
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// ResetConfig wipes RAFT_* settings from .env so the next restart comes
+// up Raft-disabled. Useful when a stale config keeps the layer from
+// activating at boot (e.g. wrong bind port hardcoded into .env).
+// Admin-only.
+//
+// POST /api/v1/raft/reset
+func (h *Handler) ResetConfig(c *gin.Context) {
+	if h.resetCfg == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "reset not wired"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"status": st})
+	if err := h.resetCfg(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"reset": true, "next": "restart the process to apply"})
 }
 
 // Ping is a lightweight liveness probe used by the cross-cluster URL picker

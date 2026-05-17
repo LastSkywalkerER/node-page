@@ -10,6 +10,7 @@ import {
   useAddRaftPeer,
   useRemoveRaftPeer,
   useSaveRaftBridge,
+  useResetRaftConfig,
   BridgeSample,
 } from './useRaft'
 
@@ -70,11 +71,16 @@ export function RaftClusterWidget() {
   }
   if (!data?.status?.enabled) {
     return (
-      <div className="space-y-2 text-sm text-muted-foreground">
-        <p>
-          Raft is disabled on this instance. Set <code>RAFT_ENABLED=true</code> plus the
-          related <code>RAFT_*</code> env vars and restart to enable cluster sync.
-        </p>
+      <div className="space-y-3 text-sm text-muted-foreground">
+        {data?.boot_error ? (
+          <BootErrorBanner message={data.boot_error} />
+        ) : (
+          <p>
+            Raft is disabled on this instance. Configure it from the setup wizard
+            ("Start a new cluster") or set <code>RAFT_ENABLED=true</code> plus the
+            related <code>RAFT_*</code> env vars and restart.
+          </p>
+        )}
       </div>
     )
   }
@@ -338,6 +344,36 @@ export function RaftClusterWidget() {
           </ul>
         </section>
       ) : null}
+    </div>
+  )
+}
+
+function BootErrorBanner({ message }: { message: string }) {
+  const reset = useResetRaftConfig()
+  const onReset = async () => {
+    if (!window.confirm("This will remove RAFT_* lines from .env. Raft stays running until the next restart. Continue?")) return
+    try {
+      await reset.mutateAsync()
+      toast.success("Raft config reset. Restart the process to apply.")
+    } catch (e) {
+      toast.error("Reset failed: " + (e as Error).message)
+    }
+  }
+  return (
+    <div className="rounded-md border border-rose-500/50 bg-rose-500/10 p-3 space-y-2">
+      <p className="text-sm font-medium text-rose-200">
+        Raft failed to activate at boot
+      </p>
+      <pre className="text-xs text-rose-200/90 whitespace-pre-wrap break-words">{message}</pre>
+      <p className="text-xs text-rose-200/80">
+        Common causes: the RAFT_BIND_ADDR port is already taken on the host
+        (try <code>lsof -i :7000</code>), the data dir is unwritable, or the
+        advertise address does not resolve. Fix the underlying issue and
+        restart, or click below to wipe RAFT_* from .env.
+      </p>
+      <Button variant="outline" size="sm" onClick={onReset} disabled={reset.isPending}>
+        {reset.isPending ? "Resetting…" : "Reset Raft config (wipe RAFT_* from .env)"}
+      </Button>
     </div>
   )
 }

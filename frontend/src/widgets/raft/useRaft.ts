@@ -38,6 +38,8 @@ export interface BridgeSample {
 export interface RaftStatusResponse {
   status: RaftStatus
   bridge_samples?: BridgeSample[]
+  /** Set when the most recent boot-time activation failed (e.g. port in use). */
+  boot_error?: string
 }
 
 /**
@@ -120,6 +122,24 @@ export function useSaveRaftBridge() {
   return useMutation<{ saved: boolean }, Error, SaveBridgeConfigInput>({
     mutationFn: async (input) => {
       const resp = await apiClient.post<{ saved: boolean }>('/raft/bridge', input)
+      return resp.data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['raft', 'status'] })
+    },
+  })
+}
+
+/**
+ * Wipes RAFT_* settings from .env so the next restart boots with Raft
+ * disabled. Used to recover from a stuck boot-time activation (e.g.
+ * port already in use forever) without editing .env by hand.
+ */
+export function useResetRaftConfig() {
+  const queryClient = useQueryClient()
+  return useMutation<{ reset: boolean; next: string }, Error, void>({
+    mutationFn: async () => {
+      const resp = await apiClient.post<{ reset: boolean; next: string }>('/raft/reset', {})
       return resp.data
     },
     onSuccess: () => {
