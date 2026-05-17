@@ -18,7 +18,11 @@ export function WelcomeWidget({ onStartNewCluster, onJoinExistingCluster }: Welc
       </p>
 
       <div className="grid gap-3">
-        <Button onClick={onStartNewCluster} className="w-full justify-start text-left h-auto py-3">
+        <Button
+          onClick={onStartNewCluster}
+          variant="outline"
+          className="w-full justify-start text-left h-auto py-3"
+        >
           <div className="flex flex-col items-start">
             <span className="font-semibold">Start a new cluster</span>
             <span className="text-xs text-slate-400 normal-case">

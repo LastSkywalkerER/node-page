@@ -83,13 +83,15 @@ export function JoinClusterWidget({
         <Input
           id="peer-url"
           autoFocus
-          placeholder="https://main.example.com"
+          placeholder="http://192.168.0.104:8080"
           value={peerUrl}
           onChange={(e) => setPeerUrl(e.target.value)}
           disabled={isJoining || status === 'replicating'}
         />
         <p className="text-xs text-slate-400">
-          Any node URL of the cluster. The peer will forward us to its current leader if needed.
+          The <strong>HTTP API</strong> URL of any node in the cluster — the same URL you
+          open in a browser (typically port 8080). <strong>Not</strong> the Raft transport
+          port (7000). The peer will forward us to its leader if needed.
         </p>
       </div>
 

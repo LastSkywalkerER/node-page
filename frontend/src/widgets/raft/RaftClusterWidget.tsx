@@ -52,6 +52,7 @@ export function RaftClusterWidget() {
   const [copied, setCopied] = useState(false)
   const [peerId, setPeerId] = useState('')
   const [peerAddr, setPeerAddr] = useState('')
+  const [showManualAddVoter, setShowManualAddVoter] = useState(false)
 
   // Bridge config form (hot-update + persist in .env).
   const saveBridge = useSaveRaftBridge()
@@ -211,29 +212,48 @@ export function RaftClusterWidget() {
         )}
 
         {st.state === 'Leader' && (
-          <form onSubmit={onAdd} className="flex flex-col gap-2 sm:flex-row sm:items-end">
-            <div className="flex-1 space-y-1">
-              <label className="text-xs text-muted-foreground">Voter id</label>
-              <Input
-                value={peerId}
-                onChange={(e) => setPeerId(e.target.value)}
-                placeholder="vps-2"
-                className="h-9"
-              />
-            </div>
-            <div className="flex-1 space-y-1">
-              <label className="text-xs text-muted-foreground">Advertise addr</label>
-              <Input
-                value={peerAddr}
-                onChange={(e) => setPeerAddr(e.target.value)}
-                placeholder="10.0.0.2:7000"
-                className="h-9"
-              />
-            </div>
-            <Button type="submit" size="sm" disabled={addPeer.isPending}>
-              Add voter
-            </Button>
-          </form>
+          <div className="space-y-2">
+            <button
+              type="button"
+              onClick={() => setShowManualAddVoter((v) => !v)}
+              className="text-xs text-muted-foreground underline hover:text-foreground"
+            >
+              {showManualAddVoter ? 'Hide advanced: manually add voter' : 'Advanced: manually add a voter (not needed for normal flow)'}
+            </button>
+            {showManualAddVoter && (
+              <div className="space-y-2 rounded-md border border-border/50 bg-muted/10 p-3">
+                <p className="text-xs text-muted-foreground">
+                  Normally you'd issue a join token below and let the new node enrol itself
+                  via the setup wizard. This form bypasses that — only use it if you know
+                  the new node's id and Raft advertise address (host:port of its RAFT port,
+                  not its HTTP port) and the node is already running.
+                </p>
+                <form onSubmit={onAdd} className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                  <div className="flex-1 space-y-1">
+                    <label className="text-xs text-muted-foreground">Voter id</label>
+                    <Input
+                      value={peerId}
+                      onChange={(e) => setPeerId(e.target.value)}
+                      placeholder="vps-2"
+                      className="h-9"
+                    />
+                  </div>
+                  <div className="flex-1 space-y-1">
+                    <label className="text-xs text-muted-foreground">Raft advertise addr (host:port)</label>
+                    <Input
+                      value={peerAddr}
+                      onChange={(e) => setPeerAddr(e.target.value)}
+                      placeholder="10.0.0.2:7000"
+                      className="h-9"
+                    />
+                  </div>
+                  <Button type="submit" size="sm" disabled={addPeer.isPending}>
+                    Add voter
+                  </Button>
+                </form>
+              </div>
+            )}
+          </div>
         )}
       </section>
 

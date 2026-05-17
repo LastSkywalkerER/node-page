@@ -568,7 +568,7 @@ func (h *Handler) JoinRaftCluster(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{
 			"code":   "peer_unreachable",
-			"error":  "could not reach peer /raft/ping to discover cluster id",
+			"error":  peerProbeUserMsg(err, peerURL),
 			"detail": err.Error(),
 		})
 		return
@@ -723,6 +723,34 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// peerProbeUserMsg recognises the common mistake of pasting the Raft TCP
+// transport URL (port 7000) instead of the HTTP API URL (port 8080) and
+// returns a short, actionable explanation. Everything else falls back to
+// a generic "could not reach peer" line; the raw Go error is still
+// available in the response's "detail" field for debugging.
+func peerProbeUserMsg(err error, peerURL string) string {
+	if err == nil {
+		return "could not reach peer /raft/ping"
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "EOF") || strings.Contains(msg, "malformed HTTP response") {
+		return "the peer URL points at the Raft TCP transport port (binary protocol), not the HTTP API. " +
+			"Use the same URL you open in a browser — typically port 8080 (e.g. http://192.168.0.104:8080)."
+	}
+	if strings.Contains(msg, "connection refused") {
+		return "the peer is not accepting HTTP connections on " + peerURL + ". " +
+			"Check the URL (use the HTTP API port, typically 8080) and that the cluster leader is running."
+	}
+	if strings.Contains(msg, "no such host") || strings.Contains(msg, "no route to host") {
+		return "could not resolve / route to " + peerURL + ". Check the hostname / IP and that this node can reach it."
+	}
+	if strings.Contains(msg, "did not return X-Raft-Cluster-ID") {
+		return "the peer URL responds to HTTP but is not a node-stats Raft node " +
+			"(missing X-Raft-Cluster-ID header). Double-check the URL."
+	}
+	return "could not reach peer /raft/ping at " + peerURL
 }
 
 // raftActivationUserMsg turns the raw activation error into a one-line,
