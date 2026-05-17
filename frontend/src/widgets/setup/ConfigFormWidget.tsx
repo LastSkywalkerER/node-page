@@ -117,12 +117,12 @@ export function ConfigFormWidget({ initialValues, runningInDocker, machineHints,
   useEffect(() => {
     if (raftDefaultsApplied.current || !machineHints) return;
     const nodeId = form.getValues('raft_node_id');
-    const advertiseAddr = form.getValues('raft_advertise_addr');
+    const advertiseHost = form.getValues('raft_advertise_host');
     if (!nodeId.trim() && machineHints.suggested_hostname) {
       form.setValue('raft_node_id', machineHints.suggested_hostname.toLowerCase().replace(/\s+/g, '-'));
     }
-    if (!advertiseAddr.trim() && machineHints.suggested_ipv4) {
-      form.setValue('raft_advertise_addr', `${machineHints.suggested_ipv4}:7000`);
+    if (!advertiseHost.trim() && machineHints.suggested_ipv4) {
+      form.setValue('raft_advertise_host', machineHints.suggested_ipv4);
     }
     raftDefaultsApplied.current = true;
   }, [machineHints, form]);
@@ -462,24 +462,26 @@ export function ConfigFormWidget({ initialValues, runningInDocker, machineHints,
           </div>
           <div className="space-y-1">
             <FormInputField
-              label="Raft bind address"
-              name="raft_bind_addr"
-              register={form.register('raft_bind_addr')}
-              error={form.formState.errors.raft_bind_addr}
+              label="Raft port"
+              name="raft_port"
+              register={form.register('raft_port')}
+              error={form.formState.errors.raft_port}
             />
             <p className="text-xs text-slate-400">
-              TCP listen address used by other Raft voters. Default ':7000' binds all interfaces.
+              TCP port used for both binding the listener (<code>:port</code>) and
+              advertising to peers (<code>host:port</code>). Default 7000.
             </p>
           </div>
           <div className="space-y-1">
             <FormInputField
-              label="Advertise address"
-              name="raft_advertise_addr"
-              register={form.register('raft_advertise_addr')}
-              error={form.formState.errors.raft_advertise_addr}
+              label="Advertise host (optional)"
+              name="raft_advertise_host"
+              register={form.register('raft_advertise_host')}
+              error={form.formState.errors.raft_advertise_host}
             />
             <p className="text-xs text-slate-400">
-              Address other Raft voters should dial (host:port). Auto-filled from machine hints.
+              Hostname or IP that other Raft voters should dial. Auto-filled from
+              machine hints. Leave empty for single-voter / loopback.
             </p>
           </div>
           <div className="space-y-1">

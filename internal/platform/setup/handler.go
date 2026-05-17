@@ -406,7 +406,7 @@ func (h *Handler) CompleteSetup(c *gin.Context) {
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"code":   "raft_activation_failed",
-				"error":  "Raft layer could not be activated",
+				"error":  raftActivationUserMsg(err, rt.BindAddr),
 				"detail": err.Error(),
 			})
 			return
@@ -723,4 +723,30 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// raftActivationUserMsg turns the raw activation error into a one-line,
+// user-actionable message for the wizard's "error" field. The full
+// stack-trace-style detail stays in the "detail" field for debugging.
+func raftActivationUserMsg(err error, bindAddr string) string {
+	if err == nil {
+		return "Raft layer could not be activated"
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "address already in use"):
+		return fmt.Sprintf(
+			"Raft port %s is already in use. Pick a different port (e.g. 17000) or stop the process holding it (lsof -i %s on the host).",
+			bindAddr, bindAddr,
+		)
+	case strings.Contains(msg, "permission denied"):
+		return fmt.Sprintf(
+			"Raft cannot bind %s: permission denied. Ports below 1024 typically require root; pick a port above 1024.",
+			bindAddr,
+		)
+	case strings.Contains(msg, "cannot assign requested address"):
+		return "Raft cannot bind the configured address: this host doesn't expose that interface. Check the 'Advertise host' field."
+	default:
+		return "Raft layer could not be activated"
+	}
 }

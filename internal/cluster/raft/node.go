@@ -122,7 +122,10 @@ func (n *Node) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("raft: resolve advertise addr %q: %w", advertise, err)
 	}
-	tr, err := hraft.NewTCPTransport(n.cfg.BindAddr, tcpAddr, 3, 10*time.Second, os.Stderr)
+	// Use a custom TCP listener with SO_REUSEADDR (+ SO_REUSEPORT on
+	// Linux/Darwin) so an unclean previous-process exit (e.g. SIGKILL
+	// from air during hot reload) doesn't leave the port wedged.
+	tr, _, err := newReuseAddrTCPTransport(n.cfg.BindAddr, tcpAddr, 3, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("raft: open TCP transport (bind=%q advertise=%q): %w", n.cfg.BindAddr, advertise, err)
 	}

@@ -19,6 +19,23 @@ import {
 } from '../widgets/setup'
 import { DEFAULT_SETUP_CONFIG } from '../shared/config/setup'
 
+// extractPort returns the port portion of an "addr" like ":7000" or
+// "192.168.0.104:7000". Empty string when input doesn't have a port.
+function extractPort(addr?: string): string {
+  if (!addr) return ''
+  const m = addr.match(/:(\d+)$/)
+  return m ? m[1] : ''
+}
+
+// extractHost returns the host portion of an "addr" like "192.168.0.104:7000".
+// Empty string when addr is empty, ":port"-style, or unparseable.
+function extractHost(addr?: string): string {
+  if (!addr) return ''
+  const idx = addr.lastIndexOf(':')
+  if (idx <= 0) return ''
+  return addr.slice(0, idx)
+}
+
 type Step = 'welcome' | 'config' | 'admin' | 'review' | 'success' | 'join'
 
 const STEP_META = {
@@ -80,8 +97,12 @@ export function SetupPage() {
             : DEFAULT_SETUP_CONFIG.raft_enabled,
         raft_cluster_id: c.raft_cluster_id ?? DEFAULT_SETUP_CONFIG.raft_cluster_id,
         raft_node_id: c.raft_node_id ?? DEFAULT_SETUP_CONFIG.raft_node_id,
-        raft_bind_addr: c.raft_bind_addr ?? DEFAULT_SETUP_CONFIG.raft_bind_addr,
-        raft_advertise_addr: c.raft_advertise_addr ?? DEFAULT_SETUP_CONFIG.raft_advertise_addr,
+        // Derive single port + host from the persisted RAFT_BIND_ADDR /
+        // RAFT_ADVERTISE_ADDR pair so a wizard retry shows the same
+        // values without forcing the operator to think about which one
+        // is which.
+        raft_port: extractPort(c.raft_bind_addr || c.raft_advertise_addr) || DEFAULT_SETUP_CONFIG.raft_port,
+        raft_advertise_host: extractHost(c.raft_advertise_addr) || DEFAULT_SETUP_CONFIG.raft_advertise_host,
         raft_data_dir: c.raft_data_dir ?? DEFAULT_SETUP_CONFIG.raft_data_dir,
         raft_bootstrap:
           c.raft_bootstrap === 'true' || c.raft_bootstrap === 'false'
