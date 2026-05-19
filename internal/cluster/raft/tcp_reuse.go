@@ -11,11 +11,19 @@ import (
 	hraft "github.com/hashicorp/raft"
 )
 
-// reuseAddrControl sets SO_REUSEADDR (and SO_REUSEPORT on Linux/Darwin) on
-// a listening socket before bind. Combined with hashicorp/raft's
-// NetworkTransport this lets a freshly-started process re-bind the Raft
-// listen port even if a previous instance was SIGKILL'd less than the
-// kernel's TIME_WAIT window ago (typical air hot-reload scenario).
+// reuseAddrControl sets SO_REUSEADDR on a listening socket before bind.
+// Combined with hashicorp/raft's NetworkTransport this lets a freshly-
+// started process re-bind the Raft listen port even if a previous
+// instance was killed less than the kernel's TIME_WAIT window ago
+// (typical air hot-reload scenario).
+//
+// We deliberately do NOT set SO_REUSEPORT — that lets two LIVE
+// processes share the same listening port, and the kernel load-balances
+// incoming connections between them. If air leaves a zombie process
+// holding the port, both old and new would happily bind and traffic
+// would be split unpredictably (probe from one process could land on
+// the other and hang). SO_REUSEADDR alone is enough for the unclean-
+// shutdown case we actually care about.
 func reuseAddrControl(network, address string, c syscall.RawConn) error {
 	var setErr error
 	err := c.Control(func(fd uintptr) {
@@ -23,12 +31,6 @@ func reuseAddrControl(network, address string, c syscall.RawConn) error {
 			setErr = e
 			return
 		}
-		// SO_REUSEPORT is the magic on Linux/Darwin that allows two
-		// processes to share the same port; we use it here only as an
-		// "ignore the kernel's TIME_WAIT bookkeeping for our previous
-		// instance" hint. Ignoring failure is intentional — older
-		// kernels may not have it.
-		_ = setsockoptReusePort(int(fd))
 	})
 	if err != nil {
 		return err
