@@ -210,6 +210,49 @@ func Run() {
 		}
 		broker.Publish(out)
 
+		// Replicate this host's metrics to the cluster so every node can serve
+		// them and they survive this node going offline. Best-effort: disabled
+		// Raft or a missing quorum is a no-op and never blocks collection.
+		if repl := container.GetRaftReplicator(); repl != nil && repl.Enabled() {
+			if host, herr := container.GetHostService().GetCurrentHost(appCtx); herr == nil && host != nil && host.MacAddress != "" {
+				batch := raftcluster.MetricBatchPayload{
+					HostMAC:   host.MacAddress,
+					HostName:  host.Name,
+					Timestamp: time.Now().UTC(),
+				}
+				if v := metrics["cpu"]; v != nil {
+					if b, e := json.Marshal(v); e == nil {
+						batch.CPU = b
+					}
+				}
+				if v := metrics["memory"]; v != nil {
+					if b, e := json.Marshal(v); e == nil {
+						batch.Memory = b
+					}
+				}
+				if v := metrics["disk"]; v != nil {
+					if b, e := json.Marshal(v); e == nil {
+						batch.Disk = b
+					}
+				}
+				if v := metrics["network"]; v != nil {
+					if b, e := json.Marshal(v); e == nil {
+						batch.Network = b
+					}
+				}
+				if v := metrics["docker"]; v != nil {
+					if b, e := json.Marshal(v); e == nil {
+						batch.Docker = b
+					}
+				}
+				go func() {
+					subCtx, cancel := context.WithTimeout(appCtx, 6*time.Second)
+					defer cancel()
+					_ = repl.SubmitMetricBatch(subCtx, batch)
+				}()
+			}
+		}
+
 		// Run an incremental retention batch off the metrics tick (every 5s).
 		// Bounded by appCtx + a short deadline so it never blocks the collection cycle.
 		go func() {

@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"encoding/json"
 	"time"
 )
 
@@ -103,78 +104,23 @@ type PeerNodeRemovePayload struct {
 	NodeID    string `json:"node_id"`
 }
 
-// MetricBatchPayload bundles every metric module's snapshot for a single
-// host at a single timestamp. The applier dispatches each sub-snapshot to
-// its corresponding repository's SaveCurrentMetric method.
+// MetricBatchPayload carries one host's current metrics for cluster-wide
+// replication. The host is identified by a stable key (MAC, name as fallback)
+// because the local autoincrement host id differs per node — the applier
+// resolves it to the local hosts row. Each module's metric is the full entity
+// JSON (the same shape the API returns); the applier unmarshals it and hands
+// it to that module's repository, which keeps its existing entity→historical
+// mapping. Timestamp is the origin's collection time so every replica stores
+// the row under the same instant.
 type MetricBatchPayload struct {
-	HostID    uint               `json:"host_id"`
-	Timestamp time.Time          `json:"ts"`
-	CPU       *CPUSnapshot       `json:"cpu,omitempty"`
-	Memory    *MemorySnapshot    `json:"memory,omitempty"`
-	Disk      *DiskSnapshot      `json:"disk,omitempty"`
-	Network   *NetworkSnapshot   `json:"network,omitempty"`
-	Docker    *DockerSnapshot    `json:"docker,omitempty"`
-}
-
-// CPUSnapshot is the persisted slice of cpu.CPUMetric.
-type CPUSnapshot struct {
-	UsagePercent float64 `json:"usage_percent"`
-	Cores        int     `json:"cores"`
-	LoadAvg1     float64 `json:"load_avg_1"`
-	LoadAvg5     float64 `json:"load_avg_5"`
-	LoadAvg15    float64 `json:"load_avg_15"`
-	Temperature  float64 `json:"temperature"`
-}
-
-// MemorySnapshot is the persisted slice of memory.MemoryMetric.
-type MemorySnapshot struct {
-	UsagePercent float64 `json:"usage_percent"`
-	UsedBytes    uint64  `json:"used_bytes"`
-	TotalBytes   uint64  `json:"total_bytes"`
-}
-
-// DiskSnapshot is the persisted slice of disk.DiskMetric.
-type DiskSnapshot struct {
-	UsagePercent float64 `json:"usage_percent"`
-	UsedBytes    uint64  `json:"used_bytes"`
-	TotalBytes   uint64  `json:"total_bytes"`
-}
-
-// NetworkSnapshot — interfaces are serialised as raw JSON because the
-// underlying struct lives in the network package; the applier hands the
-// raw bytes back to the network repo which knows how to decode them.
-type NetworkSnapshot struct {
-	InterfacesJSON []byte `json:"interfaces_json"`
-}
-
-// DockerSnapshot mirrors docker.DockerMetric.
-type DockerSnapshot struct {
-	TotalContainers   int                `json:"total_containers"`
-	RunningContainers int                `json:"running_containers"`
-	DockerAvailable   bool               `json:"docker_available"`
-	Containers        []DockerContainer  `json:"containers,omitempty"`
-}
-
-// DockerContainer mirrors docker.DockerContainerEntity persisted fields.
-type DockerContainer struct {
-	ID                string  `json:"id"`
-	Name              string  `json:"name"`
-	Image             string  `json:"image"`
-	State             string  `json:"state"`
-	Status            string  `json:"status"`
-	Ports             string  `json:"ports,omitempty"`
-	CPUPercent        float64 `json:"cpu_percent"`
-	CPULimit          float64 `json:"cpu_limit"`
-	CPUPercentOfLimit float64 `json:"cpu_percent_of_limit"`
-	MemoryUsage       uint64  `json:"memory_usage"`
-	MemoryLimit       uint64  `json:"memory_limit"`
-	MemoryPercent     float64 `json:"memory_percent"`
-	NetworkRx         uint64  `json:"network_rx"`
-	NetworkTx         uint64  `json:"network_tx"`
-	BlockRead         uint64  `json:"block_read"`
-	BlockWrite        uint64  `json:"block_write"`
-	Created           string  `json:"created"`
-	FinishedAt        string  `json:"finished_at"`
+	HostMAC   string          `json:"host_mac"`
+	HostName  string          `json:"host_name,omitempty"`
+	Timestamp time.Time       `json:"ts"`
+	CPU       json.RawMessage `json:"cpu,omitempty"`
+	Memory    json.RawMessage `json:"memory,omitempty"`
+	Disk      json.RawMessage `json:"disk,omitempty"`
+	Network   json.RawMessage `json:"network,omitempty"`
+	Docker    json.RawMessage `json:"docker,omitempty"`
 }
 
 // RetentionDeleteBeforePayload tells every replica to delete metric rows

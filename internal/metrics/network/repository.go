@@ -12,6 +12,8 @@ import (
 
 type Repository interface {
 	SaveCurrentMetric(ctx context.Context, metric NetworkMetric, hostId uint) error
+	// SaveCurrentMetricAt persists with an explicit timestamp (Raft applier).
+	SaveCurrentMetricAt(ctx context.Context, metric NetworkMetric, hostId uint, ts time.Time) error
 	GetLatestMetric(ctx context.Context) (NetworkMetric, error)
 	GetLatestMetricByHost(ctx context.Context, hostId uint) (*NetworkMetric, error)
 	GetHistoricalMetrics(ctx context.Context, hours float64) ([]NetworkMetric, error)
@@ -27,9 +29,13 @@ func NewRepository(db *gorm.DB) Repository {
 }
 
 func (r *networkRepository) SaveCurrentMetric(ctx context.Context, metric NetworkMetric, hostId uint) error {
+	return r.SaveCurrentMetricAt(ctx, metric, hostId, time.Now().UTC())
+}
+
+func (r *networkRepository) SaveCurrentMetricAt(ctx context.Context, metric NetworkMetric, hostId uint, ts time.Time) error {
 	historicalMetric := HistoricalNetworkMetric{
 		HostID:     &hostId,
-		Timestamp:  time.Now().UTC(),
+		Timestamp:  ts.UTC(),
 		Interfaces: metric.Interfaces,
 	}
 	return r.db.WithContext(ctx).Create(&historicalMetric).Error

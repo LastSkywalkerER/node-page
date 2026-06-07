@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -12,16 +13,26 @@ import (
 
 	users "system-stats/internal/auth/users"
 	hosts "system-stats/internal/cluster/hosts"
+	cpu "system-stats/internal/metrics/cpu"
+	disk "system-stats/internal/metrics/disk"
+	docker "system-stats/internal/metrics/docker"
+	memory "system-stats/internal/metrics/memory"
+	network "system-stats/internal/metrics/network"
 )
 
 // AppliersDeps bundles every repository the FSM needs to dispatch into.
 // DI builds this once when Raft is enabled and calls RegisterAppliers.
 type AppliersDeps struct {
-	Logger          *log.Logger
-	DB              *gorm.DB
-	HostRepo        hosts.Repository
-	UserRepo        users.UserRepository
+	Logger           *log.Logger
+	DB               *gorm.DB
+	HostRepo         hosts.Repository
+	UserRepo         users.UserRepository
 	RefreshTokenRepo users.RefreshTokenRepository
+	CPURepo          cpu.Repository
+	MemoryRepo       memory.Repository
+	DiskRepo         disk.Repository
+	NetworkRepo      network.Repository
+	DockerRepo       docker.DockerRepository
 }
 
 // RegisterAppliers wires every CommandType this commit knows about to a
@@ -40,6 +51,8 @@ func RegisterAppliers(fsm *FSM, deps AppliersDeps) {
 	fsm.Register(CmdHostUpsert, a.applyHostUpsert)
 	fsm.Register(CmdHostDelete, a.applyHostDelete)
 	fsm.Register(CmdHostLastSeen, a.applyHostLastSeen)
+
+	fsm.Register(CmdMetricBatch, a.applyMetricBatch)
 
 	fsm.Register(CmdUserUpsert, a.applyUserUpsert)
 	fsm.Register(CmdUserDelete, a.applyUserDelete)
@@ -114,6 +127,77 @@ func (a *appliers) applyHostLastSeen(cmd Command, _ *hraft.Log) error {
 	if p.Name != "" || p.IPv4 != "" {
 		if err := a.deps.HostRepo.UpdateHostLabelsFromAgentPush(ctx, p.HostID, p.Name, p.IPv4); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// applyMetricBatch persists a replicated host's metrics. The host is resolved
+// by MAC to the LOCAL row id (which differs per node). On the origin node that
+// row is the local collector (id=1), whose metrics the collector already wrote
+// directly — so we skip it to avoid duplicates; every other node stores the
+// batch under its own id for that host. Per-module saves are best-effort: a
+// decode or write hiccup on one metric is logged, never fatal to consensus.
+func (a *appliers) applyMetricBatch(cmd Command, _ *hraft.Log) error {
+	var p MetricBatchPayload
+	if err := DecodeTyped(cmd, &p); err != nil {
+		return err
+	}
+	ctx, cancel := a.applierCtx()
+	defer cancel()
+
+	host, err := a.deps.HostRepo.GetHostByMacAddress(ctx, p.HostMAC)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Host not replicated here yet — its CmdHostUpsert lands earlier in
+			// log order, so this is only a transient first-cycle race.
+			return nil
+		}
+		return err
+	}
+	if host.ID == hosts.LocalCollectorHostID {
+		// Our own machine — the local collector already saved these directly.
+		return nil
+	}
+	ts := p.Timestamp
+
+	save := func(module string, raw json.RawMessage, fn func() error) {
+		if len(raw) == 0 {
+			return
+		}
+		if err := fn(); err != nil && a.deps.Logger != nil {
+			a.deps.Logger.Warn("raft: apply metric batch", "module", module, "host_id", host.ID, "error", err)
+		}
+	}
+
+	if len(p.CPU) > 0 {
+		var m cpu.CPUMetric
+		if json.Unmarshal(p.CPU, &m) == nil {
+			save("cpu", p.CPU, func() error { return a.deps.CPURepo.SaveCurrentMetricAt(ctx, m, host.ID, ts) })
+		}
+	}
+	if len(p.Memory) > 0 {
+		var m memory.MemoryMetric
+		if json.Unmarshal(p.Memory, &m) == nil {
+			save("memory", p.Memory, func() error { return a.deps.MemoryRepo.SaveCurrentMetricAt(ctx, m, host.ID, ts) })
+		}
+	}
+	if len(p.Disk) > 0 {
+		var m disk.DiskMetric
+		if json.Unmarshal(p.Disk, &m) == nil {
+			save("disk", p.Disk, func() error { return a.deps.DiskRepo.SaveCurrentMetricAt(ctx, m, host.ID, ts) })
+		}
+	}
+	if len(p.Network) > 0 {
+		var m network.NetworkMetric
+		if json.Unmarshal(p.Network, &m) == nil {
+			save("network", p.Network, func() error { return a.deps.NetworkRepo.SaveCurrentMetricAt(ctx, m, host.ID, ts) })
+		}
+	}
+	if len(p.Docker) > 0 {
+		var m docker.DockerMetric
+		if json.Unmarshal(p.Docker, &m) == nil {
+			save("docker", p.Docker, func() error { return a.deps.DockerRepo.SaveCurrentMetricAt(ctx, m, host.ID, ts) })
 		}
 	}
 	return nil

@@ -89,7 +89,7 @@ GET    /hosts/current
 POST   /hosts/register
 GET    /stream              # SSE
 ```
-All metric endpoints accept `?hours=<float>` (default `0.0833` ≈ 5 min) and `?host_id=<uint>`. **`host_id=0` means this server instance** (resolved via current host MAC). Latest and history are always scoped to that host row; unknown `host_id` returns empty payloads (`latest: null`, empty history). Remote cluster hosts have no rows on main until ingestion exists — UI shows placeholders. SSE includes `collecting_host_id`; clients ignore events for other hosts. `/metrics/current` and `/sensors` return empty for remote hosts (no live collection on main).
+All metric endpoints accept `?hours=<float>` (default `0.0833` ≈ 5 min) and `?host_id=<uint>`. **`host_id=0` means this server instance** (resolved via current host MAC). Latest and history are always scoped to that host row; unknown `host_id` returns empty payloads (`latest: null`, empty history). **Metrics are replicated cluster-wide via Raft (`CmdMetricBatch`)**, so any node serves any host's CPU/mem/disk/net/docker history (and a host's data survives it going offline). The serving node's own host (id=1) updates live over SSE (`collecting_host_id`); remote peers (id≥2) refresh via 5 s polling — `createMetricHook` picks SSE vs poll by host id. **Sensors are not replicated** (`/sensors` returns empty for remote hosts). See [docs/CLUSTER.md](docs/CLUSTER.md) for the full data-flow.
 
 ### Environment variables
 | Variable | Default | Description |

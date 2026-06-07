@@ -4,9 +4,17 @@ How node-stats forms a cluster, what each node talks over which channel, what da
 at which moment, where it is stored, and how the client sees it.
 
 **One-line model:** Raft replicates the **control-plane** (host registry, users, sessions,
-auth keys, config, peer catalog, join tokens) so every node converges on identical state.
-**Metrics time-series are collected and stored locally per node** — they are not streamed
-over the Raft log (only included in snapshots as a join baseline).
+auth keys, config, peer catalog, join tokens) **and the metric time-series** (each node
+streams its CPU/mem/disk/net/docker every cycle as a `CmdMetricBatch`). Every node therefore
+converges on the same state and can serve any host's stats — and a host's data survives that
+host going offline.
+
+> **Failover & quorum.** Reads are always served from each node's local replicated SQLite, so a
+> surviving node keeps serving the whole cluster's data. Control-plane **writes** need a Raft
+> quorum: with **3+ nodes** losing one keeps quorum (a new leader is auto-elected → full HA);
+> with exactly **2 nodes** losing one drops quorum, so the survivor still serves reads but
+> can't accept new control-plane writes (or replicate fresh metrics) until the peer returns.
+> Each node always keeps collecting and saving its **own** metrics locally regardless of quorum.
 
 ---
 
@@ -92,18 +100,22 @@ flowchart TD
   RR -. "if follower: forwardToLeader (HTTP /raft/forward)" .-> RF
 
   T --> M["collect cpu/mem/disk/net/docker (host_id=1)"]
-  M --> ML["SQLite.*_metrics (own rows)"]:::local
+  M --> ML["SQLite.*_metrics (own rows, direct write)"]:::local
 
   T --> A["afterCollect()"]
   A --> SSE["CollectAllCurrent() → SSE broker.Publish<br/>(collecting_host_id) → browsers on THIS node"]:::local
+  A --> RB["raft.SubmitMetricBatch()<br/>CmdMetricBatch (keyed by host MAC) → Raft log"]:::repl
+  RB --> RBF["FSM.applyMetricBatch on PEERS<br/>resolve MAC→local id → SQLite.*_metrics<br/>(origin skips: id==1 already wrote)"]:::repl
   A --> RET["retention.CleanupBatch() → prune old metric rows"]:::local
 
   classDef repl fill:#1e3a5f,stroke:#4a90d9,color:#cfe6ff;
   classDef local fill:#3a2f1e,stroke:#d9a64a,color:#ffe9c2;
 ```
 
-🔵 replicated cluster-wide (via log)  🟠 local to the node. Net effect: the **host registry
-and `last_seen` converge**; **metrics stay per-node**.
+🔵 replicated cluster-wide (via log)  🟠 local to the node. Net effect: the **host registry,
+`last_seen` and metric history all converge** — the origin writes its own rows directly and
+every peer stores the same batch under its own id for that host (origin skips its own batch to
+avoid a double write). Submitting is best-effort: a missing quorum never blocks collection.
 
 ---
 
@@ -120,9 +132,10 @@ flowchart LR
   FW -. "SubmitResultWire {index, applied, err}" .-> S
 ```
 
-Commands that travel this path: `CmdHostUpsert/Delete`, `CmdUserUpsert/Delete`,
+Commands that travel this path: `CmdHostUpsert/Delete`, `CmdMetricBatch`, `CmdUserUpsert/Delete`,
 `CmdRefreshTokenIssue/Revoke`, `CmdAuthSecretSet`, `CmdConfigSet`,
-`CmdPeerNodeAdvertise/Remove`, `CmdJoinTokenIssue/Consume`.
+`CmdPeerNodeAdvertise/Remove`, `CmdJoinTokenIssue/Consume`. (Metric batches are submitted by
+every node for its own host; other control-plane writes originate wherever the change happens.)
 
 > The follower→leader forward serialises the result as `SubmitResultWire` (error as a string)
 > because `error` is an interface and can't round-trip through JSON.
@@ -137,17 +150,16 @@ Commands that travel this path: `CmdHostUpsert/Delete`, `CmdUserUpsert/Delete`,
   • raft log     (commands)   ◄── consensus   REPLICATED (FSM applier + in snapshot):
   • stable store (term/vote)                    hosts · users · refresh_tokens · cluster_config
   • snapshots    (point-in-time) ──► on join    peer_node_advertise · cluster_join_tokens
-
-                                              LOCAL (written by collectors; included in
-                                              snapshots as a baseline, NOT live-replicated):
                                                 cpu_metrics · memory_metrics · disk_metrics
                                                 network_metrics · docker_metrics · docker_containers
 ```
 
-The FSM applies commands into the **same** SQLite the node serves reads from, so replicated
-tables stay identical. Metric tables in that DB are written directly by the collectors and
-diverge per node. (`internal/cluster/raft/snapshot_sqlite.go` lists the snapshot-managed
-tables; there is no `CmdMetricBatch` applier, so metrics never flow through the live log.)
+The FSM applies commands into the **same** SQLite the node serves reads from, so every replicated
+table — including the metric history — stays in sync across nodes. The origin writes its own
+metric rows directly (so collection never depends on Raft being healthy); peers receive the same
+rows via `CmdMetricBatch`, keyed by host MAC and stored under each peer's local id for that host.
+(`internal/cluster/raft/snapshot_sqlite.go` lists the snapshot-managed tables; a fresh joiner gets
+the full history as a baseline, then live batches keep it current.)
 
 ---
 
@@ -161,18 +173,26 @@ sequenceDiagram
   Note over Br: open /machines/:id/stats
   Br->>N: GET /cpu|memory|disk|network|docker?host_id=&hours=  (once)
   N-->>Br: latest + history (from THIS node's local SQLite)
-  Br->>N: GET /stream?host_id=  (SSE subscribe)
-  loop every collection tick
-    N-->>Br: snapshot {..., collecting_host_id}
-    Note over Br: useLiveMetricsQuerySync merges into the same<br/>React Query keys → widgets update, no polling
+  alt host_id == local collector (id=1)
+    Br->>N: GET /stream?host_id=  (SSE subscribe)
+    loop every collection tick
+      N-->>Br: snapshot {..., collecting_host_id}
+      Note over Br: useLiveMetricsQuerySync merges into React Query → live, no polling
+    end
+  else remote peer (id>=2)
+    loop every 5s
+      Br->>N: GET /cpu|...?host_id=  (poll)
+      N-->>Br: latest + history (replicated rows from local SQLite)
+    end
   end
   Note over Br: open /machines — GET /hosts (replicated registry) → all cluster nodes;<br/>GET /health?host_id= → online/offline by last_seen (45s threshold)
 ```
 
-**Practical consequence:** the machine list shows **all** cluster nodes (registry is
-replicated), but a node serves live metrics/graphs for **itself** — a remote peer has no live
-stream on another node (its metrics are collected and live on it). So each node is best viewed
-on its own UI.
+**Practical consequence:** the machine list shows **all** cluster nodes, and **any** node serves
+**every** host's stats from its local replicated rows. The serving node's own machine (id=1)
+updates live over SSE; remote peers (id≥2) refresh by polling every 5s (SSE only carries the
+serving node's own metrics). `createMetricHook` picks SSE vs poll automatically by host id.
+*(Sensors are Linux-only and not replicated, so remote sensor panels stay empty.)*
 
 ---
 
@@ -181,7 +201,7 @@ on its own UI.
 | Data | When | Channel | Stored | Client sees |
 |---|---|---|---|---|
 | Host registry (`last_seen`, name, MAC) | every 5 s | Raft log `CmdHostUpsert` | `hosts` (all nodes) | `/machines` list, online/offline |
-| Metrics CPU/mem/disk/net/docker | every 5 s | local write + SSE | `*_metrics` (own node only) | charts (REST) + live (SSE) on its node |
+| Metrics CPU/mem/disk/net/docker | every 5 s | local write + Raft log `CmdMetricBatch` | `*_metrics` (all nodes) | charts on any node; SSE live for local, 5s poll for remote |
 | Users / roles | on change | Raft log `CmdUserUpsert` | `users` (all) | login works on any node |
 | Auth keys (JWT/refresh) | bootstrap / join | Raft log `CmdAuthSecretSet` | `cluster_config` (all) | one token valid on every node |
 | Sessions (refresh) | login/logout | Raft log `CmdRefreshToken*` | `refresh_tokens` (all) | seamless refresh on any node |
@@ -203,6 +223,9 @@ on its own UI.
 | Join (leader side) / status / token | `internal/cluster/raft/handler.go` |
 | Join (joiner side) + progress | `internal/platform/setup/handler.go` |
 | Collection loop (~5 s) | `internal/platform/history/service.go` |
+| Metric-batch producer (per cycle) | `internal/app/server/server.go` (afterCollect) |
+| Metric persist with explicit ts | `internal/metrics/*/repository.go` (`SaveCurrentMetricAt`) |
+| Local-vs-remote fetch (SSE / poll) | `frontend/src/shared/hooks/useMetricQuery.ts`, `shared/lib/cluster.ts` |
 | SSE broker | `internal/app/stream/broker.go` |
 | Setup wizard (create / join / success) | `frontend/src/widgets/setup/` |
 | Cluster admin panel | `frontend/src/widgets/raft/RaftClusterWidget.tsx` |

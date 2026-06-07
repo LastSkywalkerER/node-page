@@ -245,6 +245,11 @@ func (c *Container) activateLocked(ctx context.Context, cfg config.RaftConfig) (
 			HostRepo:         c.hostRepository,
 			UserRepo:         c.userRepository,
 			RefreshTokenRepo: c.refreshTokenRepository,
+			CPURepo:          c.cpuRepository,
+			MemoryRepo:       c.memoryRepository,
+			DiskRepo:         c.diskRepository,
+			NetworkRepo:      c.networkRepository,
+			DockerRepo:       c.dockerRepository,
 		},
 	}, cfg, c.raftSwap)
 	if err != nil {

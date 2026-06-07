@@ -272,6 +272,8 @@ func (HistoricalDockerMetric) TableName() string         { return "docker_metric
 // DockerRepository defines the interface for Docker metric data operations.
 type DockerRepository interface {
 	SaveCurrentMetric(ctx context.Context, metric DockerMetric, hostId uint) error
+	// SaveCurrentMetricAt persists with an explicit timestamp (Raft applier).
+	SaveCurrentMetricAt(ctx context.Context, metric DockerMetric, hostId uint, ts time.Time) error
 	GetLatestMetric(ctx context.Context) (DockerMetric, error)
 	GetLatestMetricByHost(ctx context.Context, hostId uint) (*DockerMetric, error)
 	GetHistoricalMetrics(ctx context.Context, hours float64) ([]HistoricalDockerMetric, error)
