@@ -166,28 +166,18 @@ export function SetupPage() {
   const handleJoinCluster = async (values: {
     peer_url: string
     token: string
-    node_id: string
-    bind_addr: string
-    advertise_addr: string
     advertise_url: string
-    bridge_shared_secret: string
-    bridge_remote_seeds: string
   }) => {
     setJoinStatus('joining')
     try {
-      const seeds = values.bridge_remote_seeds
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean)
+      // Everything except the cluster node URL, connect key and (optional)
+      // public URL override is auto-derived on the backend: node_id from
+      // hostname, bind addr :7000, advertise from the detected IP, cluster
+      // id probed from the peer.
       await joinCluster.mutateAsync({
         peer_url: values.peer_url,
         token: values.token,
-        node_id: values.node_id || undefined,
-        bind_addr: values.bind_addr || undefined,
-        advertise_addr: values.advertise_addr || undefined,
         advertise_url: values.advertise_url || undefined,
-        bridge_shared_secret: values.bridge_shared_secret || undefined,
-        bridge_remote_seeds: seeds.length ? seeds : undefined,
       })
       setJoinStatus('replicating')
     } catch (err) {
@@ -229,8 +219,6 @@ export function SetupPage() {
               <JoinClusterWidget
                 isJoining={joinCluster.isPending}
                 status={joinStatus}
-                machineHints={statusData?.machine_hints}
-                runningInDocker={statusData?.running_in_docker}
                 error={
                   joinCluster.error
                     ? (joinCluster.error as Error).message
@@ -267,7 +255,13 @@ export function SetupPage() {
                 error={completeSetup.error}
               />
             )}
-            {step === 'success' && <SuccessWidget />}
+            {step === 'success' && (
+              <SuccessWidget
+                raftEnabled={configData?.raft_enabled === 'true'}
+                adminEmail={adminData?.email}
+                adminPassword={adminData?.password}
+              />
+            )}
           </CardContent>
         </Card>
       </div>

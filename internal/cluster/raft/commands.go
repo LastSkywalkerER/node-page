@@ -11,6 +11,7 @@ package raft
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -81,6 +82,38 @@ type SubmitResult struct {
 	Err     error
 }
 
+// SubmitResultWire is the JSON-safe form of SubmitResult, used when a
+// follower forwards a command to the leader over HTTP. SubmitResult.Err is
+// an `error` interface, which cannot round-trip through JSON (it marshals to
+// {} and then fails to unmarshal back into the interface), so the error is
+// carried here as a plain string.
+type SubmitResultWire struct {
+	Index   uint64 `json:"index"`
+	Applied bool   `json:"applied"`
+	Err     string `json:"err,omitempty"`
+}
+
+// ToWire converts a SubmitResult into its JSON-safe wire form.
+func (r SubmitResult) ToWire() SubmitResultWire {
+	w := SubmitResultWire{Index: r.Index, Applied: r.Applied}
+	if r.Err != nil {
+		w.Err = r.Err.Error()
+	}
+	return w
+}
+
+// SubmitResult reconstructs a SubmitResult from its wire form. The error
+// loses its concrete type (becomes a plain errors.New); callers across the
+// forward boundary only log the deterministic FSM error, so preserving the
+// message is sufficient.
+func (w SubmitResultWire) SubmitResult() SubmitResult {
+	r := SubmitResult{Index: w.Index, Applied: w.Applied}
+	if w.Err != "" {
+		r.Err = errors.New(w.Err)
+	}
+	return r
+}
+
 // Status describes the local view of the Raft layer at a point in time.
 type Status struct {
 	Enabled         bool      `json:"enabled"`
@@ -94,6 +127,7 @@ type Status struct {
 	AppliedIndex    uint64    `json:"applied_index,omitempty"`
 	CommitIndex     uint64    `json:"commit_index,omitempty"`
 	Peers           []Peer    `json:"peers,omitempty"`
+	AdvertiseAddr   string    `json:"advertise_addr,omitempty"`
 	AdvertiseURL    string    `json:"advertise_url,omitempty"`
 	BridgeEnabled   bool      `json:"bridge_enabled"`
 	BridgeStartedAt time.Time `json:"bridge_started_at,omitempty"`

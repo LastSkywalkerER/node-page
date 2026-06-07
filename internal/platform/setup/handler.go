@@ -580,6 +580,28 @@ func (h *Handler) JoinRaftCluster(c *gin.Context) {
 		req.DataDir = "./data/raft"
 	}
 
+	// Validate the Raft addresses BEFORE activation so a malformed value
+	// (e.g. a stray URL pasted into an advanced field) returns a clean 400
+	// instead of bubbling up from net.ResolveTCPAddr as a 500
+	// raft_activation_failed. bind may be ":port"; advertise must resolve to
+	// a concrete host:port the peer can dial.
+	if _, _, err := net.SplitHostPort(req.BindAddr); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":   "validation_error",
+			"error":  fmt.Sprintf("invalid Raft bind address %q — expected host:port like \":7000\"", req.BindAddr),
+			"detail": err.Error(),
+		})
+		return
+	}
+	if _, err := net.ResolveTCPAddr("tcp", req.AdvertiseAddr); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":   "validation_error",
+			"error":  fmt.Sprintf("invalid Raft advertise address %q — expected host:port like \"10.0.0.2:7000\"", req.AdvertiseAddr),
+			"detail": err.Error(),
+		})
+		return
+	}
+
 	// Probe the peer first to discover the cluster id we're joining
 	// (so we don't ask the operator to retype it).
 	clusterID, err := probePeerClusterID(ctx, peerURL)
@@ -767,9 +789,10 @@ type RaftProgressResponse struct {
 	LeaderID     string `json:"leader_id,omitempty"`
 	AppliedIndex uint64 `json:"applied_index"`
 	CommitIndex  uint64 `json:"commit_index"`
-	LastIndex    uint64 `json:"last_index"`
-	NodeID       string `json:"node_id,omitempty"`
-	ClusterID    string `json:"cluster_id,omitempty"`
+	LastIndex     uint64 `json:"last_index"`
+	NodeID        string `json:"node_id,omitempty"`
+	ClusterID     string `json:"cluster_id,omitempty"`
+	AdvertiseAddr string `json:"advertise_addr,omitempty"`
 }
 
 // RaftProgress is the public, no-auth version of /raft/status used by
@@ -789,11 +812,12 @@ func (h *Handler) RaftProgress(c *gin.Context) {
 			Enabled:      st.Enabled,
 			State:        st.State,
 			LeaderID:     st.LeaderID,
-			AppliedIndex: st.AppliedIndex,
-			CommitIndex:  st.CommitIndex,
-			LastIndex:    st.LastIndex,
-			NodeID:       st.NodeID,
-			ClusterID:    st.ClusterID,
+			AppliedIndex:  st.AppliedIndex,
+			CommitIndex:   st.CommitIndex,
+			LastIndex:     st.LastIndex,
+			NodeID:        st.NodeID,
+			ClusterID:     st.ClusterID,
+			AdvertiseAddr: st.AdvertiseAddr,
 		},
 	})
 }

@@ -269,11 +269,11 @@ func (n *Node) forwardToLeader(ctx context.Context, cmd Command, timeout time.Du
 	if resp.StatusCode/100 != 2 {
 		return SubmitResult{}, fmt.Errorf("raft: leader returned %s: %s", resp.Status, string(respBody))
 	}
-	var out SubmitResult
-	if err := json.Unmarshal(respBody, &out); err != nil {
+	var wire SubmitResultWire
+	if err := json.Unmarshal(respBody, &wire); err != nil {
 		return SubmitResult{}, fmt.Errorf("raft: decode forwarded response: %w", err)
 	}
-	return out, nil
+	return wire.SubmitResult(), nil
 }
 
 // Stats returns the raw hashicorp/raft Stats map. Useful for the admin
@@ -289,10 +289,11 @@ func (n *Node) Stats() map[string]string {
 // Status implements Service.
 func (n *Node) Status() Status {
 	st := Status{
-		Enabled:      true,
-		ClusterID:    n.cfg.ClusterID,
-		NodeID:       n.cfg.NodeID,
-		AdvertiseURL: n.cfg.AdvertiseURL,
+		Enabled:       true,
+		ClusterID:     n.cfg.ClusterID,
+		NodeID:        n.cfg.NodeID,
+		AdvertiseAddr: n.cfg.AdvertiseAddr,
+		AdvertiseURL:  n.cfg.AdvertiseURL,
 		BridgeEnabled: n.cfg.Bridge.Enabled,
 	}
 	if n.raft == nil {

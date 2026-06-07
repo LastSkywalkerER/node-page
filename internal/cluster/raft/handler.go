@@ -194,7 +194,10 @@ func (h *Handler) Forward(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, res)
+	// SubmitResult.Err is an `error` interface and cannot round-trip through
+	// JSON — send the JSON-safe wire form so the forwarding follower can
+	// decode it.
+	c.JSON(http.StatusOK, res.ToWire())
 }
 
 // ProbeVoter TCP-dials the given Raft voter address from THIS server,

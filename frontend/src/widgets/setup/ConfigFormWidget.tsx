@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useForm, useWatch, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Button } from '@/components/ui/button';
@@ -111,7 +111,7 @@ export function ConfigFormWidget({ initialValues, runningInDocker, machineHints,
   const prometheusAuth = useWatch({ control: form.control, name: 'prometheus_auth' });
   const prometheusToken = useWatch({ control: form.control, name: 'prometheus_token' });
   const raftEnabled = useWatch({ control: form.control, name: 'raft_enabled' });
-  const raftBridgeEnabled = useWatch({ control: form.control, name: 'raft_bridge_enabled' });
+  const [showRaftAdvanced, setShowRaftAdvanced] = useState(false);
 
   const raftDefaultsApplied = useRef(false);
   useEffect(() => {
@@ -409,8 +409,8 @@ export function ConfigFormWidget({ initialValues, runningInDocker, machineHints,
         </Accordion>
       </Accordion>
 
-      {/* === Raft cluster sync === */}
-      <SectionDivider label="Raft cluster sync (optional)" />
+      {/* === Cluster sync === */}
+      <SectionDivider label="Cluster sync" />
 
       <Controller
         control={form.control}
@@ -418,16 +418,14 @@ export function ConfigFormWidget({ initialValues, runningInDocker, machineHints,
         render={({ field }) => (
           <ToggleRow
             id="raft_enabled"
-            label="Enable Raft cluster sync"
-            description="Other nodes can join this one to share users, hosts and metric history via consensus."
+            label="Enable cluster sync"
+            description="This node becomes the cluster leader; other nodes join with a connect key to share users, hosts and metric history."
             checked={field.value === 'true'}
             onCheckedChange={(v) => {
               field.onChange(v ? 'true' : 'false');
-              if (v) {
-                // First-node bootstrap defaults.
-                if (form.getValues('raft_bootstrap') !== 'true') {
-                  form.setValue('raft_bootstrap', 'true');
-                }
+              if (v && form.getValues('raft_bootstrap') !== 'true') {
+                // First node of a cluster bootstraps itself.
+                form.setValue('raft_bootstrap', 'true');
               }
             }}
           />
@@ -435,118 +433,33 @@ export function ConfigFormWidget({ initialValues, runningInDocker, machineHints,
       />
 
       {raftEnabled === 'true' && (
-        <div className="rounded-md border border-border/50 bg-muted/10 p-3 space-y-4">
-          <div className="space-y-1">
-            <FormInputField
-              label="Cluster name"
-              name="raft_cluster_id"
-              required
-              register={form.register('raft_cluster_id')}
-              error={form.formState.errors.raft_cluster_id}
-            />
-            <p className="text-xs text-slate-400">
-              Choose any short identifier. 'local' for LAN nodes, 'public' for VPS, or anything else.
-            </p>
-          </div>
-          <div className="space-y-1">
-            <FormInputField
-              label="Node ID"
-              name="raft_node_id"
-              required
-              register={form.register('raft_node_id')}
-              error={form.formState.errors.raft_node_id}
-            />
-            <p className="text-xs text-slate-400">
-              Stable, unique within this cluster. Auto-filled from the host's hostname.
-            </p>
-          </div>
-          <div className="space-y-1">
-            <FormInputField
-              label="Raft port"
-              name="raft_port"
-              register={form.register('raft_port')}
-              error={form.formState.errors.raft_port}
-            />
-            <p className="text-xs text-slate-400">
-              TCP port used for both binding the listener (<code>:port</code>) and
-              advertising to peers (<code>host:port</code>). Default 7000.
-            </p>
-          </div>
-          <div className="space-y-1">
-            <FormInputField
-              label="Advertise host (optional)"
-              name="raft_advertise_host"
-              register={form.register('raft_advertise_host')}
-              error={form.formState.errors.raft_advertise_host}
-            />
-            <p className="text-xs text-slate-400">
-              Hostname or IP that other Raft voters should dial. Auto-filled from
-              machine hints. Leave empty for single-voter / loopback.
-            </p>
-          </div>
-          <div className="space-y-1">
-            <FormInputField
-              label="Advertise public URL"
-              name="raft_advertise_public_url"
-              register={form.register('raft_advertise_public_url')}
-              error={form.formState.errors.raft_advertise_public_url}
-            />
-            <p className="text-xs text-slate-400">
-              HTTP URL this node publishes for cross-cluster bridge probes. Leave empty if not bridging.
-            </p>
-          </div>
+        <div className="rounded-md border border-border/50 bg-muted/10 p-3 space-y-3">
+          <p className="text-xs text-slate-400">
+            Cluster name, node ID, port and advertise address are auto-configured. After
+            setup you'll get a one-shot <strong>connect key</strong> to add the next node.
+          </p>
 
-          <Controller
-            control={form.control}
-            name="raft_bridge_enabled"
-            render={({ field }) => (
-              <ToggleRow
-                id="raft_bridge_enabled"
-                label="Enable cross-cluster bridge"
-                description="Replicates state to a peer Raft cluster (typically local ↔ public VPS)."
-                checked={field.value === 'true'}
-                onCheckedChange={(v) => field.onChange(v ? 'true' : 'false')}
+          <button
+            type="button"
+            onClick={() => setShowRaftAdvanced((v) => !v)}
+            className="text-xs text-slate-300 underline hover:text-slate-100"
+          >
+            {showRaftAdvanced ? 'Hide advanced' : 'Advanced (optional)'}
+          </button>
+
+          {showRaftAdvanced && (
+            <div className="space-y-1 pt-1">
+              <FormInputField
+                label="Public URL override"
+                name="raft_advertise_public_url"
+                register={form.register('raft_advertise_public_url')}
+                error={form.formState.errors.raft_advertise_public_url}
               />
-            )}
-          />
-
-          {raftBridgeEnabled === 'true' && (
-            <>
-              <FormField
-                label="Bridge shared secret"
-                error={form.formState.errors.raft_bridge_shared_secret}
-                id="raft_bridge_shared_secret"
-              >
-                <div className="flex gap-2">
-                  <PasswordInput
-                    id="raft_bridge_shared_secret"
-                    {...form.register('raft_bridge_shared_secret')}
-                    className="flex-1"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() =>
-                      form.setValue('raft_bridge_shared_secret', generateSecret(48), { shouldValidate: true })
-                    }
-                  >
-                    Generate
-                  </Button>
-                </div>
-              </FormField>
-              <div className="space-y-1">
-                <FormInputField
-                  label="Remote seed URLs"
-                  name="raft_bridge_remote_seeds"
-                  register={form.register('raft_bridge_remote_seeds')}
-                  error={form.formState.errors.raft_bridge_remote_seeds}
-                />
-                <p className="text-xs text-slate-400">
-                  Comma-separated URLs of peer cluster nodes (e.g.
-                  https://vps1.example.com,https://vps2.example.com).
-                </p>
-              </div>
-            </>
+              <p className="text-xs text-slate-400">
+                Only set this if peers must reach this node at a different public URL than
+                its auto-detected address (e.g. behind a reverse proxy).
+              </p>
+            </div>
           )}
         </div>
       )}

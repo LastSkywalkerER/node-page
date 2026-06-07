@@ -5,12 +5,14 @@ services:
       dockerfile: Dockerfile
     ports:
       - "9090:9090"
+      - "7002:7002"
     # Note: network_mode: host is not fully supported on macOS Docker Desktop
     # Using port mapping instead. For Linux, you can uncomment network_mode: host
     # and comment out ports section for better host metrics access
     # network_mode: host
     volumes:
-      # Agent cluster config: persists on the host across rebuilds (loaded as /app/.env in the container)
+      # Raft join config: the setup-wizard "join existing cluster" handler writes RAFT_* here,
+      # so cluster membership persists on the host across rebuilds (loaded as /app/.env in the container)
       - ./.env.agent:/app/.env
       # Mount database directory (file mount creates dir if missing → "is a directory" error)
       - ./data/docker:/app/data
@@ -22,7 +24,7 @@ services:
     # On macOS, these may have limited functionality
     pid: host
     ipc: host
-    # host.docker.internal for NODE_HOST_ALIAS (Linux needs this; Mac/Win have it by default)
+    # host.docker.internal so the container can reach services on the host (Linux needs this; Mac/Win have it by default)
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
@@ -43,6 +45,4 @@ services:
       - HOST_ETC=/host/etc
       # Primary disk totals: use host root bind-mount (see disk collector)
       - HOST_ROOT=/host
-      # When connecting to main on host, replace localhost with host (macOS/Windows Docker)
-      - NODE_HOST_ALIAS=host.docker.internal
-      # MAIN_NODE_URL / NODE_ACCESS_TOKEN: use bind-mounted ./.env.agent → /app/.env (not Compose env, so values are not overridden by empty vars)
+      # RAFT_* cluster config: use the bind-mounted ./.env.agent → /app/.env (not Compose env, so values are not overridden by empty vars)

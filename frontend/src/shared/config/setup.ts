@@ -16,7 +16,9 @@ export const DEFAULT_SETUP_CONFIG = {
   node_stats_hostname: '',
   node_stats_ipv4: '',
   // Raft cluster sync defaults; the wizard's Raft section pre-fills these.
-  raft_enabled: 'false',
+  // Enabled by default so a fresh node is cluster-ready (bootstrap leader)
+  // and can immediately hand out a connect key for additional nodes.
+  raft_enabled: 'true',
   raft_cluster_id: 'local',
   raft_node_id: '',
   raft_port: '7000',

@@ -126,6 +126,7 @@ export interface RaftProgress {
   last_index: number;
   node_id?: string;
   cluster_id?: string;
+  advertise_addr?: string;
 }
 
 export function useRaftProgress(enabled: boolean) {
