@@ -17,11 +17,6 @@ type RaftReplicator interface {
 	SubmitHostUpsert(ctx context.Context, info HostInfo) error
 }
 
-// nodePushCredentialSource lists which hosts have a cluster push token on this main.
-type nodePushCredentialSource interface {
-	HostIDsWithPushCredential(ctx context.Context) (map[uint]struct{}, error)
-}
-
 // Service defines the hosts service interface.
 type Service interface {
 	RegisterOrUpdateCurrentHost(ctx context.Context) (*Host, error)
@@ -36,17 +31,15 @@ type service struct {
 	logger         *log.Logger
 	collector      *HostCollector
 	hostRepository Repository
-	nodePushCreds  nodePushCredentialSource
 	raft           RaftReplicator
 }
 
 // NewService creates a new hosts service.
-func NewService(logger *log.Logger, repo Repository, nodePushCreds nodePushCredentialSource) Service {
+func NewService(logger *log.Logger, repo Repository) Service {
 	return &service{
 		logger:         logger,
 		collector:      newHostCollector(logger),
 		hostRepository: repo,
-		nodePushCreds:  nodePushCreds,
 	}
 }
 
@@ -128,18 +121,6 @@ func (s *service) GetAllHosts(ctx context.Context) ([]Host, error) {
 	if err != nil {
 		s.logger.Error("Failed to get all hosts", "error", err)
 		return nil, err
-	}
-	if s.nodePushCreds != nil {
-		credHosts, err := s.nodePushCreds.HostIDsWithPushCredential(ctx)
-		if err != nil {
-			s.logger.Error("Failed to list node credential host IDs", "error", err)
-			return nil, err
-		}
-		for i := range hosts {
-			if _, ok := credHosts[hosts[i].ID]; ok {
-				hosts[i].HasNodeCredential = true
-			}
-		}
 	}
 	if dn := strings.TrimSpace(os.Getenv("NODE_STATS_HOSTNAME")); dn != "" {
 		for i := range hosts {

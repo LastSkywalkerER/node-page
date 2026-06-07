@@ -46,22 +46,6 @@ func (r *Replicator) SubmitHostUpsert(ctx context.Context, info hosts.HostInfo) 
 	return err
 }
 
-// SubmitHostLastSeen publishes a CmdHostLastSeen for a node-push heartbeat.
-func (r *Replicator) SubmitHostLastSeen(ctx context.Context, hostID uint, lastSeen time.Time, agentSession *time.Time, name, ipv4 string) error {
-	if !r.Enabled() {
-		return nil
-	}
-	payload := HostLastSeenPayload{
-		HostID:                hostID,
-		LastSeen:              lastSeen,
-		AgentSessionStartedAt: agentSession,
-		Name:                  name,
-		IPv4:                  ipv4,
-	}
-	_, err := SubmitTyped(ctx, r.svc, CmdHostLastSeen, payload, 3*time.Second)
-	return err
-}
-
 // SubmitHostDelete cascades a host delete across the cluster.
 func (r *Replicator) SubmitHostDelete(ctx context.Context, hostID uint) error {
 	if !r.Enabled() {

@@ -8,7 +8,6 @@ import (
 	invitations "system-stats/internal/auth/invitations"
 	users "system-stats/internal/auth/users"
 	hosts "system-stats/internal/cluster/hosts"
-	nodes "system-stats/internal/cluster/nodes"
 	raftcluster "system-stats/internal/cluster/raft"
 	raftbridge "system-stats/internal/cluster/raft/bridge"
 	cpu "system-stats/internal/metrics/cpu"
@@ -49,11 +48,6 @@ func Migrate(db *gorm.DB) error {
 	err = db.AutoMigrate(&invitations.UserInvitation{})
 	if err != nil {
 		return fmt.Errorf("failed to migrate user invitations: %w", err)
-	}
-
-	err = db.AutoMigrate(&nodes.NodeJoinToken{}, &nodes.NodeCredential{})
-	if err != nil {
-		return fmt.Errorf("failed to migrate node entities: %w", err)
 	}
 
 	if err := raftcluster.AutoMigrate(db); err != nil {

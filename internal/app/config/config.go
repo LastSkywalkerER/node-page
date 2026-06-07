@@ -53,13 +53,6 @@ type Config struct {
 	PrometheusAuth    bool   // PROMETHEUS_AUTH: require Bearer token for /metrics, default false
 	PrometheusToken   string // PROMETHEUS_TOKEN: bearer token value when auth is enabled
 
-	// Cluster agent mode (push metrics to main node)
-	MainNodeURL     string // MAIN_NODE_URL: main server URL for push (e.g. https://main:8080)
-	NodeAccessToken string // NODE_ACCESS_TOKEN: token for push auth (set after join)
-
-	// Public URL of this server as seen by agents (Docker Desktop, reverse proxy). Used for join links and admin "agent setup".
-	PublicBaseURL string // PUBLIC_BASE_URL: optional override; if empty, derived from incoming HTTP request
-
 	// TrustedProxies is the comma-separated list of CIDRs (or IPs) of reverse proxies whose
 	// X-Forwarded-* headers may be trusted. Empty (default) means trust no proxy — c.ClientIP()
 	// returns the direct peer address and X-Forwarded-Host/Proto are ignored.
@@ -147,11 +140,6 @@ func Load() (*Config, error) {
 	prometheusAuthEnv := strings.ToLower(getEnv("PROMETHEUS_AUTH", "false"))
 	config.PrometheusAuth = prometheusAuthEnv == "true" || prometheusAuthEnv == "1"
 	config.PrometheusToken = os.Getenv("PROMETHEUS_TOKEN")
-
-	// Cluster agent mode
-	config.MainNodeURL = strings.TrimSuffix(getEnv("MAIN_NODE_URL", ""), "/")
-	config.NodeAccessToken = getEnv("NODE_ACCESS_TOKEN", "")
-	config.PublicBaseURL = strings.TrimSuffix(strings.TrimSpace(getEnv("PUBLIC_BASE_URL", "")), "/")
 
 	// TrustedProxies: comma-separated CIDRs / IPs. Empty disables proxy header trust.
 	if tp := strings.TrimSpace(getEnv("TRUSTED_PROXIES", "")); tp != "" {

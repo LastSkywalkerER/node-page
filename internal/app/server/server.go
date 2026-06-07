@@ -30,12 +30,10 @@ import (
 	"system-stats/internal/app/help"
 	"system-stats/internal/app/middleware"
 	"system-stats/internal/app/prometheusmetrics"
-	"system-stats/internal/app/pusher"
 	"system-stats/internal/app/retention"
 	invitations "system-stats/internal/auth/invitations"
 	users "system-stats/internal/auth/users"
 	hosts "system-stats/internal/cluster/hosts"
-	nodes "system-stats/internal/cluster/nodes"
 	raftcluster "system-stats/internal/cluster/raft"
 	cpu "system-stats/internal/metrics/cpu"
 	disk "system-stats/internal/metrics/disk"
@@ -159,11 +157,8 @@ func Run() {
 		}()
 	}
 
-	// Load cluster config from .env (MAIN_NODE_URL, NODE_ACCESS_TOKEN) for agent push mode
-	nodes.LoadFromEnvFile()
-
 	// appCtx is cancelled on shutdown to stop background goroutines
-	// (periodic metrics collection, retention cleanup, pusher).
+	// (periodic metrics collection, retention cleanup).
 	appCtx, appCancel := context.WithCancel(context.Background())
 	defer appCancel()
 
@@ -224,16 +219,6 @@ func Run() {
 				logger.Warn("Retention batch error", "error", err)
 			}
 		}()
-
-		// Push to main node if cluster config is set (from env at startup or after connect)
-		if mainURL, token := nodes.Get(); mainURL != "" && token != "" {
-			hostName, hostIPv4 := "", ""
-			if hi, herr := container.GetHostService().GetCurrentHostInfo(appCtx); herr == nil {
-				hostName = hi.Name
-				hostIPv4 = hi.IPv4
-			}
-			go pusher.Push(appCtx, logger, mainURL, token, metrics, hostName, hostIPv4)
-		}
 	})
 
 	// startMetrics activates periodic collection and retention.
@@ -400,7 +385,6 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	authHandler := users.NewAuthHandler(container.GetUserService(), container.GetTokenService(), cfg.CookieSecure)
 	usersHandler := users.NewUsersHandler(container.GetUserService())
 	invitationHandler := invitations.NewHandler(container.GetInvitationService())
-	nodesHandler := nodes.NewHandler(container.GetNodeService(), container.GetHostService(), cfg.PublicBaseURL, len(cfg.TrustedProxies) > 0)
 	streamHandler := platformstream.NewHandler(container.GetBroker(), container.GetHostService())
 	configWriter := setup.NewConfigWriter()
 	setupHandler := setup.NewHandler(configWriter, container.GetUserService(), onSetupComplete).
@@ -481,20 +465,6 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 			invitations.POST("", invitationHandler.CreateInvitation)
 		}
 
-		// Node join (public — agent calls this to register with main)
-		// Rate-limited to slow down token-bruteforce attempts even though tokens are one-shot.
-		joinRL := middleware.RateLimitMiddleware(5.0/60, 5)
-		nodes := api.Group("/nodes")
-		{
-			nodes.POST("/join", joinRL, nodesHandler.Join)
-		}
-
-		// Node push (auth via node_access_token)
-		nodesPush := api.Group("/nodes", middleware.AuthNodeToken(container.GetNodeService()))
-		{
-			nodesPush.POST("/push", nodesHandler.Push)
-		}
-
 		// Raft ping is public on purpose: peer clusters need it to measure
 		// round-trip latency without sharing user credentials. The mutating
 		// bridge endpoints (added in a follow-up) live behind HMAC auth.
@@ -538,17 +508,6 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.GET("/hosts/current", hostHandler.HandleGetCurrentHost)
 		authAPI.POST("/hosts/register", hostHandler.HandleRegisterCurrentHost)
 		authAPI.GET("/stream", streamHandler.HandleStream)
-
-		// Node invite (admin only)
-		authAPI.POST("/nodes/invite", middleware.RequireAdmin(), nodesHandler.CreateInvite)
-		// Agent manual setup on main (admin): URLs + regenerate push token
-		authAPI.GET("/nodes/cluster-ui-status", middleware.RequireAdmin(), nodesHandler.GetClusterUIStatus)
-		authAPI.PUT("/nodes/agent-cluster-config", middleware.RequireAdmin(), nodesHandler.UpdateAgentClusterConfig)
-		authAPI.DELETE("/nodes/agent-cluster-config", middleware.RequireAdmin(), nodesHandler.DeleteAgentClusterConfig)
-		authAPI.POST("/nodes/hosts/:id/regenerate-token", middleware.RequireAdmin(), nodesHandler.RegenerateAgentToken)
-		authAPI.DELETE("/nodes/hosts/:id", middleware.RequireAdmin(), nodesHandler.DeleteRemoteHost)
-		// Node connect (agent connects to main using join link)
-		authAPI.POST("/nodes/connect", nodesHandler.Connect)
 
 		// Raft cluster status (admin) — surfaces leader, peers, indices, RTTs
 		authAPI.GET("/raft/status", middleware.RequireAdmin(), raftHandler.Status)

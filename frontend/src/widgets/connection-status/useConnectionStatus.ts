@@ -5,7 +5,9 @@ export interface ConnectionStatus {
   isConnected: boolean;
   latency: number | null;
   uptime: string | null;
-  /** Hide uptime row for cluster agents (push nodes); show process uptime for local collectors. */
+  /** Show the uptime row only for the local collector host (id=1): /health
+   *  returns THIS server's process uptime, which is meaningful for its own
+   *  machine but not for remote Raft peers. */
   showUptime: boolean;
 }
 
@@ -14,8 +16,6 @@ interface HealthPayload {
   uptime?: string;
   latency_ms?: number;
   host_uptime_seconds?: number;
-  session_uptime?: string;
-  is_cluster_agent?: boolean;
   last_seen?: string;
 }
 
@@ -43,9 +43,10 @@ export function useConnectionStatus(hostId?: number) {
         latency = endTime - startTime;
       }
 
-      const isAgent = Boolean(data.is_cluster_agent);
-      // Remote agents: no uptime (not verifiable). Local host: API "uptime" is this server's process uptime.
-      const showUptime = !isAgent;
+      // /health returns this server's process uptime, which is only meaningful
+      // for its own machine — the local collector row (id=1). Remote Raft peers
+      // (id>=2) have no verifiable process uptime here, so hide the row.
+      const showUptime = !currentHostId || currentHostId === 1;
       const uptimeDisplay = showUptime ? (data.uptime ?? null) : null;
 
       return {

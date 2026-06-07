@@ -18,7 +18,6 @@ import (
 	invitations "system-stats/internal/auth/invitations"
 	users "system-stats/internal/auth/users"
 	hosts "system-stats/internal/cluster/hosts"
-	nodes "system-stats/internal/cluster/nodes"
 	raftcluster "system-stats/internal/cluster/raft"
 	raftbridge "system-stats/internal/cluster/raft/bridge"
 	cpu "system-stats/internal/metrics/cpu"
@@ -63,10 +62,6 @@ type Container struct {
 
 	invRepository invitations.Repository
 	invService    invitations.Service
-
-	nodeJoinTokenRepo nodes.JoinTokenRepository
-	nodeCredRepo      nodes.CredentialRepository
-	nodeService       nodes.Service
 
 	systemService            system.Service
 	historicalMetricsService history.HistoricalMetricsService
@@ -149,8 +144,6 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 	container.networkRepository = network.NewRepository(db)
 	container.dockerRepository = docker.NewRepository(db)
 	container.hostRepository = hosts.NewRepository(db)
-	container.nodeJoinTokenRepo = nodes.NewJoinTokenRepository(db)
-	container.nodeCredRepo = nodes.NewCredentialRepository(db)
 
 	container.userRepository = users.NewUserRepository(db)
 	container.refreshTokenRepository = users.NewRefreshTokenRepository(db)
@@ -160,8 +153,8 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 	container.diskService = disk.NewService(container.logger, container.diskRepository)
 	container.networkService = network.NewService(container.logger, container.networkRepository)
 	container.dockerService = docker.NewService(container.logger, docker.NewDockerCollector(container.logger), container.dockerRepository)
-	container.hostService = hosts.NewService(container.logger, container.hostRepository, container.nodeCredRepo)
-	container.healthService = health.NewService(container.logger, container.hostRepository, container.nodeCredRepo, startTime)
+	container.hostService = hosts.NewService(container.logger, container.hostRepository)
+	container.healthService = health.NewService(container.logger, container.hostRepository, startTime)
 	container.sensorsService = sensors.NewService(container.logger)
 
 	container.tokenService = users.NewTokenService(
@@ -173,7 +166,6 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 	)
 	container.invRepository = invitations.NewRepository(db)
 	container.invService = invitations.NewService(logger, container.invRepository)
-	container.nodeService = nodes.NewService(logger, container.nodeJoinTokenRepo, container.nodeCredRepo, container.hostRepository)
 	container.userService = users.NewUserService(container.userRepository, container.tokenService, container.invService)
 
 	container.systemService = system.NewService(
@@ -666,10 +658,6 @@ func (c *Container) GetTokenService() users.TokenService {
 
 func (c *Container) GetInvitationService() invitations.Service {
 	return c.invService
-}
-
-func (c *Container) GetNodeService() nodes.Service {
-	return c.nodeService
 }
 
 func (c *Container) GetHistoricalMetricsService() history.HistoricalMetricsService {
