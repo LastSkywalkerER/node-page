@@ -521,9 +521,13 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 
 		// Follower → leader command forwarding. Public because the
 		// payload only mutates already-shared cluster state and the
-		// leader's SubmitCommand validates it; rate-limited to slow
-		// down bursty replay attempts.
-		raftForwardRL := middleware.RateLimitMiddleware(60.0/60, 30)
+		// leader's SubmitCommand validates it. The limit is per client IP
+		// (i.e. per peer node) and must comfortably absorb steady cluster
+		// traffic: every follower forwards its host upsert + metric batch
+		// each ~5s cycle, plus a burst of backfill right after joining.
+		// 50/s (burst 100) per node leaves ample headroom while still
+		// capping a single misbehaving peer.
+		raftForwardRL := middleware.RateLimitMiddleware(50, 100)
 		api.POST("/raft/forward", raftForwardRL, raftHandler.Forward)
 
 		// Cross-cluster bridge receiver — HMAC-authenticated by the

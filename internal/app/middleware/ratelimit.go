@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +18,7 @@ type rateLimitEntry struct {
 
 var (
 	limiters      sync.Map
+	scopeCounter  atomic.Int64
 	cleanupOnce   sync.Once
 	cleanupDone   chan struct{}
 	cleanupTicker *time.Ticker
@@ -59,14 +61,20 @@ func StopRateLimiterCleanup() {
 
 // RateLimitMiddleware limits requests per IP using a token bucket.
 // r is the rate (requests/second), b is the burst size.
+//
+// Each call gets its own scope so different endpoints (e.g. /raft/join at
+// 5/min and /raft/forward at 50/s) keep SEPARATE buckets per IP — otherwise
+// the first endpoint an IP hits would fix that IP's limiter for every other
+// endpoint, throttling unrelated traffic.
 func RateLimitMiddleware(r rate.Limit, b int) gin.HandlerFunc {
 	cleanupOnce.Do(startCleanup)
+	scope := strconv.FormatInt(scopeCounter.Add(1), 10) + "|"
 
 	return func(c *gin.Context) {
-		ip := c.ClientIP()
+		key := scope + c.ClientIP()
 		now := time.Now().UnixNano()
 
-		val, _ := limiters.LoadOrStore(ip, &rateLimitEntry{
+		val, _ := limiters.LoadOrStore(key, &rateLimitEntry{
 			limiter: rate.NewLimiter(r, b),
 		})
 		entry := val.(*rateLimitEntry)
