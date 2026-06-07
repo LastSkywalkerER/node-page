@@ -250,6 +250,7 @@ func (c *Container) activateLocked(ctx context.Context, cfg config.RaftConfig) (
 			DiskRepo:         c.diskRepository,
 			NetworkRepo:      c.networkRepository,
 			DockerRepo:       c.dockerRepository,
+			Publish:          c.broker.Publish,
 		},
 	}, cfg, c.raftSwap)
 	if err != nil {

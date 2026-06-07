@@ -105,7 +105,7 @@ flowchart TD
   T --> A["afterCollect()"]
   A --> SSE["CollectAllCurrent() → SSE broker.Publish<br/>(collecting_host_id) → browsers on THIS node"]:::local
   A --> RB["raft.SubmitMetricBatch()<br/>CmdMetricBatch (keyed by host MAC) → Raft log"]:::repl
-  RB --> RBF["FSM.applyMetricBatch on PEERS<br/>resolve MAC→local id → SQLite.*_metrics<br/>(origin skips: id==1 already wrote)"]:::repl
+  RB --> RBF["FSM.applyMetricBatch on PEERS<br/>resolve MAC→local id → SQLite.*_metrics<br/>+ broker.Publish (live SSE for this peer)<br/>(origin skips: id==1 already wrote)"]:::repl
   A --> RET["retention.CleanupBatch() → prune old metric rows"]:::local
 
   classDef repl fill:#1e3a5f,stroke:#4a90d9,color:#cfe6ff;
@@ -173,26 +173,21 @@ sequenceDiagram
   Note over Br: open /machines/:id/stats
   Br->>N: GET /cpu|memory|disk|network|docker?host_id=&hours=  (once)
   N-->>Br: latest + history (from THIS node's local SQLite)
-  alt host_id == local collector (id=1)
-    Br->>N: GET /stream?host_id=  (SSE subscribe)
-    loop every collection tick
-      N-->>Br: snapshot {..., collecting_host_id}
-      Note over Br: useLiveMetricsQuerySync merges into React Query → live, no polling
-    end
-  else remote peer (id>=2)
-    loop every 5s
-      Br->>N: GET /cpu|...?host_id=  (poll)
-      N-->>Br: latest + history (replicated rows from local SQLite)
-    end
+  Br->>N: GET /stream?host_id=  (SSE subscribe)
+  loop every collection tick
+    Note over N: N publishes its OWN host (afterCollect) AND every replicated<br/>peer's metrics (applyMetricBatch → broker.Publish) to all subscribers
+    N-->>Br: snapshot {..., collecting_host_id}
+    Note over Br: client keeps events whose collecting_host_id == viewed host;<br/>useLiveMetricsQuerySync merges into React Query → live, no polling
   end
   Note over Br: open /machines — GET /hosts (replicated registry) → all cluster nodes;<br/>GET /health?host_id= → online/offline by last_seen (45s threshold)
 ```
 
-**Practical consequence:** the machine list shows **all** cluster nodes, and **any** node serves
-**every** host's stats from its local replicated rows. The serving node's own machine (id=1)
-updates live over SSE; remote peers (id≥2) refresh by polling every 5s (SSE only carries the
-serving node's own metrics). `createMetricHook` picks SSE vs poll automatically by host id.
-*(Sensors are Linux-only and not replicated, so remote sensor panels stay empty.)*
+**Uniform model:** the browser talks only to its own node — one REST load per metric on mount,
+then a single SSE subscription for live updates, **for every host the same way**. The node
+publishes its own host's metrics each cycle *and* every replicated peer's metrics as their Raft
+batches apply, so any host viewed on any node streams live; the client filters by
+`collecting_host_id`. Nodes sync among themselves over Raft; the frontend never reaches across to
+another node. *(Sensors are Linux-only and not replicated, so remote sensor panels stay empty.)*
 
 ---
 
@@ -201,7 +196,7 @@ serving node's own metrics). `createMetricHook` picks SSE vs poll automatically 
 | Data | When | Channel | Stored | Client sees |
 |---|---|---|---|---|
 | Host registry (`last_seen`, name, MAC) | every 5 s | Raft log `CmdHostUpsert` | `hosts` (all nodes) | `/machines` list, online/offline |
-| Metrics CPU/mem/disk/net/docker | every 5 s | local write + Raft log `CmdMetricBatch` | `*_metrics` (all nodes) | charts on any node; SSE live for local, 5s poll for remote |
+| Metrics CPU/mem/disk/net/docker | every 5 s | local write + Raft log `CmdMetricBatch` | `*_metrics` (all nodes) | charts on any node; **live over SSE for every host** (REST once on mount) |
 | Users / roles | on change | Raft log `CmdUserUpsert` | `users` (all) | login works on any node |
 | Auth keys (JWT/refresh) | bootstrap / join | Raft log `CmdAuthSecretSet` | `cluster_config` (all) | one token valid on every node |
 | Sessions (refresh) | login/logout | Raft log `CmdRefreshToken*` | `refresh_tokens` (all) | seamless refresh on any node |
@@ -225,8 +220,8 @@ serving node's own metrics). `createMetricHook` picks SSE vs poll automatically 
 | Collection loop (~5 s) | `internal/platform/history/service.go` |
 | Metric-batch producer (per cycle) | `internal/app/server/server.go` (afterCollect) |
 | Metric persist with explicit ts | `internal/metrics/*/repository.go` (`SaveCurrentMetricAt`) |
-| Local-vs-remote fetch (SSE / poll) | `frontend/src/shared/hooks/useMetricQuery.ts`, `shared/lib/cluster.ts` |
-| SSE broker | `internal/app/stream/broker.go` |
+| SSE broker + stream handler (all hosts) | `internal/app/stream/broker.go`, `internal/platform/stream/handler.go` |
+| Frontend metric fetch (REST + SSE) | `frontend/src/shared/hooks/useMetricQuery.ts`, `useEventSource.ts`, `useLiveMetricsQuerySync.ts` |
 | Setup wizard (create / join / success) | `frontend/src/widgets/setup/` |
 | Cluster admin panel | `frontend/src/widgets/raft/RaftClusterWidget.tsx` |
 | Local 2-node test harness | `scripts/localcluster.sh`, `docker-compose.cluster.yml` |

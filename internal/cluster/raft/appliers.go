@@ -33,6 +33,10 @@ type AppliersDeps struct {
 	DiskRepo         disk.Repository
 	NetworkRepo      network.Repository
 	DockerRepo       docker.DockerRepository
+	// Publish pushes a live SSE envelope (JSON) to this node's stream broker.
+	// Wired so a replicated peer's metrics also stream live to browsers viewing
+	// that peer on this node — uniform SSE for every host. Nil disables it.
+	Publish func(data []byte)
 }
 
 // RegisterAppliers wires every CommandType this commit knows about to a
@@ -198,6 +202,30 @@ func (a *appliers) applyMetricBatch(cmd Command, _ *hraft.Log) error {
 		var m docker.DockerMetric
 		if json.Unmarshal(p.Docker, &m) == nil {
 			save("docker", p.Docker, func() error { return a.deps.DockerRepo.SaveCurrentMetricAt(ctx, m, host.ID, ts) })
+		}
+	}
+
+	// Push the same snapshot to this node's SSE broker so browsers viewing this
+	// (remote) host on this node update live — uniform SSE for every host.
+	if a.deps.Publish != nil {
+		env := map[string]any{"collecting_host_id": host.ID, "timestamp": ts}
+		if len(p.CPU) > 0 {
+			env["cpu"] = p.CPU
+		}
+		if len(p.Memory) > 0 {
+			env["memory"] = p.Memory
+		}
+		if len(p.Disk) > 0 {
+			env["disk"] = p.Disk
+		}
+		if len(p.Network) > 0 {
+			env["network"] = p.Network
+		}
+		if len(p.Docker) > 0 {
+			env["docker"] = p.Docker
+		}
+		if b, err := json.Marshal(env); err == nil {
+			a.deps.Publish(b)
 		}
 	}
 	return nil

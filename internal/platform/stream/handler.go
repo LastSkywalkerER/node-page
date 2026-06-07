@@ -40,38 +40,20 @@ func (h *Handler) HandleStream(c *gin.Context) {
 	c.Header("X-Accel-Buffering", "no") // disable nginx buffering
 
 	ctx := c.Request.Context()
-	queryHost := uint(0)
+	// A specific, unknown host_id gets keepalives only (nothing to stream).
 	if s := c.Query("host_id"); s != "" {
-		if v, err := strconv.ParseUint(s, 10, 32); err == nil {
-			queryHost = uint(v)
+		if v, err := strconv.ParseUint(s, 10, 32); err == nil && v != 0 {
+			if _, err := h.hosts.GetHostByID(ctx, uint(v)); err != nil {
+				h.keepaliveLoop(c)
+				return
+			}
 		}
 	}
 
-	effectiveHost := queryHost
-	if queryHost == 0 {
-		cur, err := h.hosts.GetCurrentHost(ctx)
-		if err == nil && cur != nil {
-			effectiveHost = cur.ID
-		}
-	} else {
-		_, err := h.hosts.GetHostByID(ctx, queryHost)
-		if err != nil {
-			// Unknown host — keepalive only
-			h.keepaliveLoop(c)
-			return
-		}
-	}
-
-	current, err := h.hosts.GetCurrentHost(ctx)
-	if err != nil || current == nil {
-		h.keepaliveLoop(c)
-		return
-	}
-	if effectiveHost != current.ID {
-		h.keepaliveLoop(c)
-		return
-	}
-
+	// Every client subscribes to this node's metric stream and filters by
+	// collecting_host_id on the client. The node publishes its own host's
+	// metrics each collection cycle AND every replicated peer's metrics as
+	// their Raft batches apply, so any host viewed on any node updates live.
 	ch := h.broker.Subscribe()
 	defer h.broker.Unsubscribe(ch)
 
