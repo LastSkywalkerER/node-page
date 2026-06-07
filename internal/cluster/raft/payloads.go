@@ -24,6 +24,7 @@ type HostUpsertPayload struct {
 	VirtualizationSystem string `json:"virtualization_system"`
 	VirtualizationRole   string `json:"virtualization_role"`
 	HostID               string `json:"host_id"`
+	BootTime             int64  `json:"boot_time,omitempty"`
 }
 
 // HostDeletePayload cascades through metrics tables. Matches

@@ -41,6 +41,7 @@ func (r *Replicator) SubmitHostUpsert(ctx context.Context, info hosts.HostInfo) 
 		VirtualizationSystem: info.VirtualizationSystem,
 		VirtualizationRole:   info.VirtualizationRole,
 		HostID:               info.HostID,
+		BootTime:             info.BootTime,
 	}
 	_, err := SubmitTyped(ctx, r.svc, CmdHostUpsert, payload, 5*time.Second)
 	return err

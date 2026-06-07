@@ -38,6 +38,10 @@ type Host struct {
 	VirtualizationRole   string `json:"virtualization_role"`
 	SystemHostID         string `json:"system_host_id"`
 
+	// BootTime is the host's boot time in Unix seconds. Replicated cluster-wide
+	// so any node can show this host's real system uptime (now - boot_time).
+	BootTime int64 `json:"boot_time"`
+
 	// LastSeen indicates when this host was last active
 	LastSeen time.Time `json:"last_seen"`
 
@@ -79,6 +83,9 @@ type HostInfo struct {
 	VirtualizationSystem string `json:"virtualization_system"`
 	VirtualizationRole   string `json:"virtualization_role"`
 	HostID               string `json:"host_id"`
+	// BootTime is the host's boot time in Unix seconds (from gopsutil). Stable
+	// per boot; used to derive the host's real system uptime on any node.
+	BootTime int64 `json:"boot_time"`
 }
 
 // HostHealth represents health check information for a host.

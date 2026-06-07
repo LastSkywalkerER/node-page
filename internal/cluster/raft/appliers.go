@@ -104,6 +104,7 @@ func (a *appliers) applyHostUpsert(cmd Command, _ *hraft.Log) error {
 		VirtualizationSystem: p.VirtualizationSystem,
 		VirtualizationRole:   p.VirtualizationRole,
 		HostID:               p.HostID,
+		BootTime:             p.BootTime,
 	})
 	return err
 }

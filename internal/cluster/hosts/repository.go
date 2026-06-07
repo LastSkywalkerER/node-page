@@ -89,6 +89,7 @@ func (r *hostRepository) UpsertLocalHost(ctx context.Context, hostInfo HostInfo)
 			VirtualizationSystem: hostInfo.VirtualizationSystem,
 			VirtualizationRole:   hostInfo.VirtualizationRole,
 			SystemHostID:         hostInfo.HostID,
+		BootTime:             hostInfo.BootTime,
 			LastSeen:             now,
 			CreatedAt:            now,
 			UpdatedAt:            now,
@@ -109,6 +110,7 @@ func (r *hostRepository) UpsertLocalHost(ctx context.Context, hostInfo HostInfo)
 	host.VirtualizationSystem = hostInfo.VirtualizationSystem
 	host.VirtualizationRole = hostInfo.VirtualizationRole
 	host.SystemHostID = hostInfo.HostID
+	host.BootTime = hostInfo.BootTime
 	host.LastSeen = now
 	host.UpdatedAt = now
 	return &host, r.db.WithContext(ctx).Save(&host).Error
@@ -134,6 +136,7 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		host.VirtualizationSystem = hostInfo.VirtualizationSystem
 		host.VirtualizationRole = hostInfo.VirtualizationRole
 		host.SystemHostID = hostInfo.HostID
+	host.BootTime = hostInfo.BootTime
 		host.LastSeen = now
 		host.UpdatedAt = now
 		return &host, r.db.WithContext(ctx).Save(&host).Error
@@ -160,6 +163,7 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		hostByName.VirtualizationSystem = hostInfo.VirtualizationSystem
 		hostByName.VirtualizationRole = hostInfo.VirtualizationRole
 		hostByName.SystemHostID = hostInfo.HostID
+	hostByName.BootTime = hostInfo.BootTime
 		hostByName.LastSeen = now
 		hostByName.UpdatedAt = now
 		return &hostByName, r.db.WithContext(ctx).Save(&hostByName).Error
@@ -202,6 +206,7 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		VirtualizationSystem: hostInfo.VirtualizationSystem,
 		VirtualizationRole:   hostInfo.VirtualizationRole,
 		SystemHostID:         hostInfo.HostID,
+		BootTime:             hostInfo.BootTime,
 		LastSeen:             now,
 		CreatedAt:            now,
 		UpdatedAt:            now,

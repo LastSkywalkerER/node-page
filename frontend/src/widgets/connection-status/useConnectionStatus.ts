@@ -1,6 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '../../shared/lib/api';
-import { LOCAL_COLLECTOR_HOST_ID } from '../../shared/lib/cluster';
 
 export interface ConnectionStatus {
   isConnected: boolean;
@@ -44,11 +43,10 @@ export function useConnectionStatus(hostId?: number) {
         latency = endTime - startTime;
       }
 
-      // /health returns this server's process uptime, which is only meaningful
-      // for its own machine — the local collector row (id=1). Remote Raft peers
-      // (id>=2) have no verifiable process uptime here, so hide the row.
-      const showUptime = !currentHostId || currentHostId === LOCAL_COLLECTOR_HOST_ID;
-      const uptimeDisplay = showUptime ? (data.uptime ?? null) : null;
+      // /health returns each host's real system uptime (now - boot_time),
+      // replicated cluster-wide, so it's meaningful for every host.
+      const showUptime = true;
+      const uptimeDisplay = data.uptime ?? null;
 
       return {
         ...data,
