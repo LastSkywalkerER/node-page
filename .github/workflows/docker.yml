@@ -39,7 +39,11 @@ jobs:
         tags: |
           type=ref,event=branch
           type=ref,event=pr
-          type=sha,prefix={{branch}}-
+          # Branch builds: <branch>-<sha>. On pull_request {{branch}} is empty,
+          # which would yield the invalid tag "-<sha>", so emit a PR-prefixed
+          # sha tag for that event instead.
+          type=sha,prefix={{branch}}-,enable=${{ github.event_name != 'pull_request' }}
+          type=sha,prefix=pr-${{ github.event.number }}-,enable=${{ github.event_name == 'pull_request' }}
           type=raw,value=latest,enable={{is_default_branch}}
 
     - name: Build and push Docker image
