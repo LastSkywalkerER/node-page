@@ -12,11 +12,21 @@ type NetworkSpeed struct {
 	SpeedKbpsRecv float64
 }
 
+// speedMinInterval is the shortest window over which a network rate is
+// meaningful. Speed = byte delta / time delta, so two batches a few
+// milliseconds apart (the per-cycle DB save and the SSE/replication snapshot)
+// would divide by ~0 and produce a garbage spike. A batch that starts within
+// this window of the previous one reuses the last computed speeds and leaves
+// the baseline untouched.
+const speedMinInterval = 3 * time.Second
+
 type NetworkSpeedCalculator struct {
 	mu               sync.RWMutex
 	lastTimestamp    time.Time
 	interfaceData    map[string]NetworkInterfaceData
 	pendingTimestamp time.Time
+	lastSpeed        map[string]NetworkSpeed
+	reuse            bool
 }
 
 type NetworkInterfaceData struct {
@@ -30,18 +40,29 @@ type NetworkInterfaceData struct {
 func NewNetworkSpeedCalculator() *NetworkSpeedCalculator {
 	return &NetworkSpeedCalculator{
 		interfaceData: make(map[string]NetworkInterfaceData),
+		lastSpeed:     make(map[string]NetworkSpeed),
 	}
 }
 
 func (c *NetworkSpeedCalculator) BeginCalculationBatch() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.pendingTimestamp = time.Now()
+	now := time.Now()
+	// A batch within speedMinInterval of the last one (e.g. the per-cycle save
+	// and the SSE/replication snapshot) would compute a meaningless sub-second
+	// rate and reset the baseline — reuse the previous speeds instead.
+	c.reuse = !c.lastTimestamp.IsZero() && now.Sub(c.lastTimestamp) < speedMinInterval
+	if !c.reuse {
+		c.pendingTimestamp = now
+	}
 }
 
 func (c *NetworkSpeedCalculator) EndCalculationBatch() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.reuse {
+		return
+	}
 	c.lastTimestamp = c.pendingTimestamp
 }
 
@@ -51,6 +72,12 @@ func (c *NetworkSpeedCalculator) CalculateSpeed(
 ) NetworkSpeed {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// Sub-interval re-collection: return the last meaningful speed for this
+	// interface instead of recomputing over a near-zero time delta.
+	if c.reuse {
+		return c.lastSpeed[name]
+	}
 
 	currentTime := c.pendingTimestamp
 	if currentTime.IsZero() {
@@ -94,10 +121,12 @@ func (c *NetworkSpeedCalculator) CalculateSpeed(
 
 	c.interfaceData[name] = currentData
 
-	return NetworkSpeed{
+	speed := NetworkSpeed{
 		SpeedMbps:     speedMbps,
 		Throughput:    throughput,
 		SpeedKbpsSent: speedKbpsSent,
 		SpeedKbpsRecv: speedKbpsRecv,
 	}
+	c.lastSpeed[name] = speed
+	return speed
 }

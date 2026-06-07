@@ -4,6 +4,8 @@ import (
 	"context"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -11,25 +13,54 @@ import (
 	"github.com/shirou/gopsutil/v4/sensors"
 )
 
+// cpuUsageMinInterval is the shortest window over which a fresh CPU% sample is
+// meaningful. gopsutil computes usage as the busy fraction SINCE the previous
+// call, so two calls a few milliseconds apart (the per-cycle DB save and the
+// SSE/replication snapshot) would make the second one garbage. Within this
+// window we return the cached value and leave gopsutil's baseline untouched.
+const cpuUsageMinInterval = 3 * time.Second
+
 type cpuCollector struct {
 	logger *log.Logger
+
+	mu          sync.Mutex
+	lastUsage   float64
+	lastUsageAt time.Time
+	haveUsage   bool
 }
 
 func newCPUCollector(logger *log.Logger) *cpuCollector {
 	return &cpuCollector{logger: logger}
 }
 
+// usagePercent returns the busy fraction, sampling at most once per
+// cpuUsageMinInterval so rapid successive collections agree.
+func (c *cpuCollector) usagePercent(ctx context.Context) (float64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.haveUsage && time.Since(c.lastUsageAt) < cpuUsageMinInterval {
+		return c.lastUsage, nil
+	}
+	percentages, err := cpu.PercentWithContext(ctx, 0, false)
+	if err != nil {
+		return 0, err
+	}
+	usage := 0.0
+	if len(percentages) > 0 {
+		usage = percentages[0]
+	}
+	c.lastUsage = usage
+	c.lastUsageAt = time.Now()
+	c.haveUsage = true
+	return usage, nil
+}
+
 func (c *cpuCollector) Collect(ctx context.Context) (CPUMetric, error) {
 	c.logger.Debug("Collecting CPU usage percentage")
-	percentages, err := cpu.PercentWithContext(ctx, 0, false)
+	usage, err := c.usagePercent(ctx)
 	if err != nil {
 		c.logger.Error("Failed to collect CPU usage percentage", "error", err)
 		return CPUMetric{}, err
-	}
-
-	var usage float64
-	if len(percentages) > 0 {
-		usage = percentages[0]
 	}
 
 	cores := runtime.NumCPU()
