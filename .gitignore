@@ -5,6 +5,7 @@ system-stats
 bin
 *.db
 data/
+.localtest/
 # npm
 package-lock.json
 # yarn
