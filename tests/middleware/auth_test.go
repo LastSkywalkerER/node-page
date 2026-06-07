@@ -53,6 +53,7 @@ func (m *mockTokenServiceForAuth) ConsumeRefreshToken(_ context.Context, _ strin
 	return true, nil
 }
 func (m *mockTokenServiceForAuth) RevokeAllUserTokens(_ context.Context, _ uint) error { return nil }
+func (m *mockTokenServiceForAuth) SetSecrets(_ string, _ string)                        {}
 
 var _ users.TokenService = (*mockTokenServiceForAuth)(nil)
 

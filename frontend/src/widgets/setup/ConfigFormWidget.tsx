@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useForm, useWatch, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Button } from '@/components/ui/button';
@@ -110,6 +110,22 @@ export function ConfigFormWidget({ initialValues, runningInDocker, machineHints,
   const prometheusEnabled = useWatch({ control: form.control, name: 'prometheus_enabled' });
   const prometheusAuth = useWatch({ control: form.control, name: 'prometheus_auth' });
   const prometheusToken = useWatch({ control: form.control, name: 'prometheus_token' });
+  const raftEnabled = useWatch({ control: form.control, name: 'raft_enabled' });
+  const [showRaftAdvanced, setShowRaftAdvanced] = useState(false);
+
+  const raftDefaultsApplied = useRef(false);
+  useEffect(() => {
+    if (raftDefaultsApplied.current || !machineHints) return;
+    const nodeId = form.getValues('raft_node_id');
+    const advertiseHost = form.getValues('raft_advertise_host');
+    if (!nodeId.trim() && machineHints.suggested_hostname) {
+      form.setValue('raft_node_id', machineHints.suggested_hostname.toLowerCase().replace(/\s+/g, '-'));
+    }
+    if (!advertiseHost.trim() && machineHints.suggested_ipv4) {
+      form.setValue('raft_advertise_host', machineHints.suggested_ipv4);
+    }
+    raftDefaultsApplied.current = true;
+  }, [machineHints, form]);
 
   const prevDbType = useRef(dbType);
   useEffect(() => {
@@ -392,6 +408,61 @@ export function ConfigFormWidget({ initialValues, runningInDocker, machineHints,
           </FormField>
         </Accordion>
       </Accordion>
+
+      {/* === Cluster sync === */}
+      <SectionDivider label="Cluster sync" />
+
+      <Controller
+        control={form.control}
+        name="raft_enabled"
+        render={({ field }) => (
+          <ToggleRow
+            id="raft_enabled"
+            label="Enable cluster sync"
+            description="This node becomes the cluster leader; other nodes join with a connect key to share users, hosts and metric history."
+            checked={field.value === 'true'}
+            onCheckedChange={(v) => {
+              field.onChange(v ? 'true' : 'false');
+              if (v && form.getValues('raft_bootstrap') !== 'true') {
+                // First node of a cluster bootstraps itself.
+                form.setValue('raft_bootstrap', 'true');
+              }
+            }}
+          />
+        )}
+      />
+
+      {raftEnabled === 'true' && (
+        <div className="rounded-md border border-border/50 bg-muted/10 p-3 space-y-3">
+          <p className="text-xs text-slate-400">
+            Cluster name, node ID, port and advertise address are auto-configured. After
+            setup you'll get a one-shot <strong>connect key</strong> to add the next node.
+          </p>
+
+          <button
+            type="button"
+            onClick={() => setShowRaftAdvanced((v) => !v)}
+            className="text-xs text-slate-300 underline hover:text-slate-100"
+          >
+            {showRaftAdvanced ? 'Hide advanced' : 'Advanced (optional)'}
+          </button>
+
+          {showRaftAdvanced && (
+            <div className="space-y-1 pt-1">
+              <FormInputField
+                label="Public URL override"
+                name="raft_advertise_public_url"
+                register={form.register('raft_advertise_public_url')}
+                error={form.formState.errors.raft_advertise_public_url}
+              />
+              <p className="text-xs text-slate-400">
+                Only set this if peers must reach this node at a different public URL than
+                its auto-detected address (e.g. behind a reverse proxy).
+              </p>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* === Actions === */}
       <div className="flex gap-2 pt-2">

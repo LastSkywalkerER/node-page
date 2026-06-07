@@ -55,7 +55,7 @@ Node Stats is perfect for:
 - ✅ Hosts registration and management
 - ✅ Admin/user roles
 - ✅ Backend unit tests for service layer
-- ❌ Multi-node statistics synchronization and aggregation (push-based model where each node sends metrics to a central server, eliminating the need to expose individual nodes to the internet for secure centralized collection)
+- ✅ Multi-node statistics synchronization and aggregation (Raft consensus replication — nodes form a cluster via the setup wizard and replicate state across peers; see "Clustering (Raft)" below)
 - ❌ Alert system (configurable notifications when metric thresholds are exceeded)
 - ❌ Stack detection with aggregation into apps with icons and minimal stats
 - ❌ Auto config for reverse proxy for apps routing
@@ -101,7 +101,7 @@ UI collage (dark glass / neon and light themes). Click an image on GitHub to ope
 <tr>
 <td align="center" valign="top" colspan="2">
 <a href="assets/admin-nodes.png"><img src="assets/admin-nodes.png" width="50%" alt="Admin nodes"/></a><br/>
-<sub><b>Admin · Nodes</b> — generate join links, push URL, registered hosts, token regen &amp; remove.</sub>
+<sub><b>Admin · Nodes</b> — Raft cluster status, peers, and registered hosts.</sub>
 </td>
 </tr>
 </table>
@@ -150,22 +150,17 @@ docker-compose up -d
 
 The application will be available at `http://localhost:8080` by default. You can change the port by setting the `ADDR` environment variable (e.g., `ADDR=:9090`).
 
-#### Cluster: Docker agent + main on your machine
+#### Clustering (Raft)
 
-If **main** runs on the host (e.g. `./scripts/dev` on `:8080`) and the **agent** runs in Docker (`docker compose` on `:9090`), the agent has its **own** SQLite DB. After **Connect** on the agent (paste join link), main returns a **unique push token** once; the agent saves `MAIN_NODE_URL` and `NODE_ACCESS_TOKEN` to its local `.env` (in the container that is often **not** persisted across image rebuilds — use compose `env_file` / env vars for durability).
+Multiple Node Stats instances form a cluster using **Raft consensus replication** — there is no central "main" that other nodes push to. State is replicated across all peers.
 
-**On main (admin → Nodes):** expand **Agent URL & token** under each host. You always see the **base URL** and **push URL**. The plaintext token is **not** stored on main (only a hash), so it cannot be “viewed” later — use **Regenerate token** to issue a new one (old token stops working) and copy the `.env` snippet.
+**How to join a cluster:**
 
-**Main env (optional):** `PUBLIC_BASE_URL` — if set, join links and the admin “agent setup” URLs use this instead of the browser `Host` header. Use when agents must call a different host than the UI (e.g. `http://host.docker.internal:8080`).
+1. On a running cluster node (the leader), generate a one-shot **connect key**.
+2. On a fresh node, open the setup wizard and choose **"Join an existing cluster"**.
+3. Paste the connect key and the cluster node URL, then submit. The node posts to `POST /api/v1/setup/join-raft-cluster`; the leader adds it as a **voter** and replicates state to it. The wizard shows progress while the leader catches the new node up.
 
-**Docker agent env:** edit **`.env.agent`** in the repo root (tracked template with empty token). Compose mounts it as **`/app/.env`** in the container, so **Connect** and restarts keep the same file on disk. Copy from **`.env.agent.example`** if you remove the file. Do not commit production tokens.
-
-| Variable | Example | Notes |
-|----------|---------|--------|
-| `MAIN_NODE_URL` | `http://host.docker.internal:8080` | Must match what main shows in admin (or `PUBLIC_BASE_URL` on main) |
-| `NODE_ACCESS_TOKEN` | from Connect or **Regenerate** in admin | `Authorization: Bearer …` on `POST /api/v1/nodes/push` |
-
-If either is missing, the agent collects locally but does not push; the server logs a **one-time warning**.
+The join handler writes the resolved `RAFT_*` values (node id, bind/advertise addresses, data dir, etc.) to the node's `.env`, so cluster membership survives restarts and image rebuilds. See `docker-compose.cluster.yml` for a ready-to-run two-node example and the full list of `RAFT_*` environment variables.
 
 ### Local Development
 
@@ -274,8 +269,8 @@ Node Stats is configured via environment variables:
 - `DB_TYPE` - Database type (default: `sqlite`)
 - `DB_DSN` - Database connection string or file path. Local dev: `stats.db`; Docker: `/app/stats.db` (mounted from `./data/docker/stats.db`)
 - `DEBUG` - Enable debug mode: `true` or `false` (default: `false`)
-- Cluster agent: `MAIN_NODE_URL`, `NODE_ACCESS_TOKEN` — after join, change via Admin → Nodes → **Save connection** or `PUT /api/v1/nodes/agent-cluster-config`.
-- **Local metrics host id**: This server always stores its own collected metrics under **`hosts.id = 1`**. Rebuilds update that row (same DB file); use Admin → Nodes to remove stale remote rows if needed.
+- Clustering (Raft): `RAFT_ENABLED`, `RAFT_CLUSTER_ID`, `RAFT_NODE_ID`, `RAFT_BIND_ADDR`, `RAFT_ADVERTISE_ADDR`, `RAFT_ADVERTISE_PUBLIC_URL`, `RAFT_DATA_DIR`, `RAFT_BOOTSTRAP` — see "Clustering (Raft)" above and `docker-compose.cluster.yml`. Usually set by the setup-wizard join flow.
+- **Local metrics host id**: This server always stores its own collected metrics under **`hosts.id = 1`**. Rebuilds update that row (same DB file).
 
 ## Architecture & Technology Stack
 

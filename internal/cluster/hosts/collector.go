@@ -224,5 +224,6 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (HostInfo, error) {
 		VirtualizationSystem: hostInfo.VirtualizationSystem,
 		VirtualizationRole:   hostInfo.VirtualizationRole,
 		HostID:               hostInfo.HostID,
+		BootTime:             int64(hostInfo.BootTime),
 	}, nil
 }

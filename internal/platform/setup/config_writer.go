@@ -47,6 +47,21 @@ type ConfigValues struct {
 	NodeStatsHostname string `json:"node_stats_hostname"`
 	// NodeStatsIPv4 optional; written as NODE_STATS_IPV4 when non-empty.
 	NodeStatsIPv4 string `json:"node_stats_ipv4"`
+
+	// Raft cluster sync (optional — only written when RaftEnabled=="true").
+	RaftEnabled            string `json:"raft_enabled"`
+	RaftClusterID          string `json:"raft_cluster_id"`
+	RaftNodeID             string `json:"raft_node_id"`
+	RaftBindAddr           string `json:"raft_bind_addr"`
+	RaftAdvertiseAddr      string `json:"raft_advertise_addr"`
+	RaftDataDir            string `json:"raft_data_dir"`
+	RaftBootstrap          string `json:"raft_bootstrap"`
+	RaftAdvertisePublicURL string `json:"raft_advertise_public_url"`
+
+	// Cross-cluster bridge (optional).
+	RaftBridgeEnabled      string `json:"raft_bridge_enabled"`
+	RaftBridgeSharedSecret string `json:"raft_bridge_shared_secret"`
+	RaftBridgeRemoteSeeds  string `json:"raft_bridge_remote_seeds"`
 }
 
 // ReadCurrentConfig reads current configuration from .env file or environment variables
@@ -55,24 +70,67 @@ func (cw *ConfigWriter) ReadCurrentConfig() (*ConfigValues, error) {
 	_ = godotenv.Load(cw.envPath)
 
 	config := &ConfigValues{
-		JWTSecret:         os.Getenv("JWT_SECRET"),
-		RefreshSecret:     os.Getenv("REFRESH_SECRET"),
-		Addr:              getEnv("ADDR", ":8080"),
-		GinMode:           getEnv("GIN_MODE", "release"),
-		Debug:             getEnv("DEBUG", "false"),
-		DBType:            getEnv("DB_TYPE", "sqlite"),
-		DBDSN:             getEnv("DB_DSN", "stats.db"),
-		PrometheusEnabled: getEnv("PROMETHEUS_ENABLED", "false"),
-		PrometheusAuth:    getEnv("PROMETHEUS_AUTH", "false"),
-		PrometheusToken:   os.Getenv("PROMETHEUS_TOKEN"),
-		NodeStatsHostname: os.Getenv("NODE_STATS_HOSTNAME"),
-		NodeStatsIPv4:     os.Getenv("NODE_STATS_IPV4"),
+		JWTSecret:              os.Getenv("JWT_SECRET"),
+		RefreshSecret:          os.Getenv("REFRESH_SECRET"),
+		Addr:                   getEnv("ADDR", ":8080"),
+		GinMode:                getEnv("GIN_MODE", "release"),
+		Debug:                  getEnv("DEBUG", "false"),
+		DBType:                 getEnv("DB_TYPE", "sqlite"),
+		DBDSN:                  getEnv("DB_DSN", "stats.db"),
+		PrometheusEnabled:      getEnv("PROMETHEUS_ENABLED", "false"),
+		PrometheusAuth:         getEnv("PROMETHEUS_AUTH", "false"),
+		PrometheusToken:        os.Getenv("PROMETHEUS_TOKEN"),
+		NodeStatsHostname:      os.Getenv("NODE_STATS_HOSTNAME"),
+		NodeStatsIPv4:          os.Getenv("NODE_STATS_IPV4"),
+		RaftEnabled:            os.Getenv("RAFT_ENABLED"),
+		RaftClusterID:          os.Getenv("RAFT_CLUSTER_ID"),
+		RaftNodeID:             os.Getenv("RAFT_NODE_ID"),
+		RaftBindAddr:           os.Getenv("RAFT_BIND_ADDR"),
+		RaftAdvertiseAddr:      os.Getenv("RAFT_ADVERTISE_ADDR"),
+		RaftDataDir:            os.Getenv("RAFT_DATA_DIR"),
+		RaftBootstrap:          os.Getenv("RAFT_BOOTSTRAP"),
+		RaftAdvertisePublicURL: os.Getenv("RAFT_ADVERTISE_PUBLIC_URL"),
+		RaftBridgeEnabled:      os.Getenv("RAFT_BRIDGE_ENABLED"),
+		RaftBridgeSharedSecret: os.Getenv("RAFT_BRIDGE_SHARED_SECRET"),
+		RaftBridgeRemoteSeeds:  os.Getenv("RAFT_BRIDGE_REMOTE_SEEDS"),
 	}
 	if strings.TrimSpace(os.Getenv("HOST_PROC")) == "/host/proc" {
 		config.DockerHostMetricsCompat = true
 	}
 
 	return config, nil
+}
+
+// ApplyRaftDefaults fills any Raft fields the wizard didn't provide
+// explicitly when RaftEnabled is "true". Used by /setup/complete and
+// /setup/preview-env so the operator sees the auto-generated values.
+func ApplyRaftDefaults(cv *ConfigValues) {
+	if strings.ToLower(strings.TrimSpace(cv.RaftEnabled)) != "true" {
+		return
+	}
+	if strings.TrimSpace(cv.RaftClusterID) == "" {
+		cv.RaftClusterID = "local"
+	}
+	if strings.TrimSpace(cv.RaftNodeID) == "" {
+		// Best-effort: use hostname; fall back to "node-1".
+		host := strings.ToLower(strings.TrimSpace(os.Getenv("NODE_STATS_HOSTNAME")))
+		if host == "" {
+			if h, err := os.Hostname(); err == nil {
+				host = strings.ToLower(strings.TrimSpace(h))
+			}
+		}
+		if host == "" {
+			host = "node-1"
+		}
+		cv.RaftNodeID = strings.ReplaceAll(host, " ", "-")
+	}
+	if strings.TrimSpace(cv.RaftBindAddr) == "" {
+		cv.RaftBindAddr = ":7000"
+	}
+	if strings.TrimSpace(cv.RaftDataDir) == "" {
+		cv.RaftDataDir = "./data/raft"
+	}
+	// AdvertiseAddr left empty falls back to BindAddr at the Raft layer.
 }
 
 // ApplySetupDefaults fills empty optional fields the same way as setup completion.
@@ -174,6 +232,42 @@ func buildEnvFileContent(config *ConfigValues) string {
 		}
 	}
 
+	if strings.ToLower(strings.TrimSpace(config.RaftEnabled)) == "true" {
+		lines = append(lines, "")
+		lines = append(lines, "# Raft cluster sync (configured from setup wizard)")
+		lines = append(lines, "RAFT_ENABLED=true")
+		if v := strings.TrimSpace(config.RaftClusterID); v != "" {
+			lines = append(lines, fmt.Sprintf("RAFT_CLUSTER_ID=%s", escapeValue(v)))
+		}
+		if v := strings.TrimSpace(config.RaftNodeID); v != "" {
+			lines = append(lines, fmt.Sprintf("RAFT_NODE_ID=%s", escapeValue(v)))
+		}
+		if v := strings.TrimSpace(config.RaftBindAddr); v != "" {
+			lines = append(lines, fmt.Sprintf("RAFT_BIND_ADDR=%s", escapeValue(v)))
+		}
+		if v := strings.TrimSpace(config.RaftAdvertiseAddr); v != "" {
+			lines = append(lines, fmt.Sprintf("RAFT_ADVERTISE_ADDR=%s", escapeValue(v)))
+		}
+		if v := strings.TrimSpace(config.RaftDataDir); v != "" {
+			lines = append(lines, fmt.Sprintf("RAFT_DATA_DIR=%s", escapeValue(v)))
+		}
+		if strings.ToLower(strings.TrimSpace(config.RaftBootstrap)) == "true" {
+			lines = append(lines, "RAFT_BOOTSTRAP=true")
+		}
+		if v := strings.TrimSpace(config.RaftAdvertisePublicURL); v != "" {
+			lines = append(lines, fmt.Sprintf("RAFT_ADVERTISE_PUBLIC_URL=%s", escapeValue(v)))
+		}
+		if strings.ToLower(strings.TrimSpace(config.RaftBridgeEnabled)) == "true" {
+			lines = append(lines, "RAFT_BRIDGE_ENABLED=true")
+		}
+		if v := strings.TrimSpace(config.RaftBridgeSharedSecret); v != "" {
+			lines = append(lines, fmt.Sprintf("RAFT_BRIDGE_SHARED_SECRET=%s", escapeValue(v)))
+		}
+		if v := strings.TrimSpace(config.RaftBridgeRemoteSeeds); v != "" {
+			lines = append(lines, fmt.Sprintf("RAFT_BRIDGE_REMOTE_SEEDS=%s", escapeValue(v)))
+		}
+	}
+
 	return strings.Join(lines, "\n") + "\n"
 }
 
@@ -195,15 +289,18 @@ func (cw *ConfigWriter) GetConfigPath() string {
 }
 
 // escapeValue escapes special characters in environment variable values
+// using single quotes when the value contains any character godotenv would
+// otherwise interpret. Single quotes disable variable expansion ($var),
+// command substitution ($(...) / `...`) and backslash escapes, so the
+// stored value round-trips exactly — critical for secrets that may
+// legitimately contain '$' or '@' (e.g. generated JWT secrets).
 func escapeValue(value string) string {
-	// If value contains spaces, quotes, or special characters, wrap in quotes
-	if strings.ContainsAny(value, " \t\n\"'$`\\") {
-		// Escape quotes and backslashes
-		escaped := strings.ReplaceAll(value, "\\", "\\\\")
-		escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
-		return fmt.Sprintf("\"%s\"", escaped)
+	if !strings.ContainsAny(value, " \t\n\"'$`\\#=") {
+		return value
 	}
-	return value
+	// Escape only the single quote — everything else inside '...' is literal.
+	escaped := strings.ReplaceAll(value, "'", `'\''`)
+	return "'" + escaped + "'"
 }
 
 // getEnv gets an environment variable value or returns a default if not set

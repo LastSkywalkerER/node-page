@@ -10,6 +10,17 @@ const optionalIPv4 = z.string().refine(
   { message: 'Invalid IPv4 address' }
 )
 
+// optionalPort accepts an empty string OR a number 1..65535.
+const optionalPort = z.string().refine(
+  (s) => {
+    const t = s.trim()
+    if (t === '') return true
+    const n = Number(t)
+    return Number.isInteger(n) && n >= 1 && n <= 65535
+  },
+  { message: 'Port must be a number between 1 and 65535' }
+)
+
 export const setupConfigSchema = z.object({
   jwt_secret: z.string().min(16, 'JWT secret must be at least 16 characters'),
   refresh_secret: z.string().min(16, 'Refresh secret must be at least 16 characters'),
@@ -24,6 +35,21 @@ export const setupConfigSchema = z.object({
   docker_host_metrics_compat: z.boolean(),
   node_stats_hostname: z.string(),
   node_stats_ipv4: optionalIPv4,
+  // Raft cluster sync (all fields optional; only used when raft_enabled === 'true').
+  // raft_port replaces the previous separate raft_bind_addr / raft_advertise_addr —
+  // the same port is used for both. raft_advertise_host is the externally-routable
+  // hostname/IP peers should dial; empty means "let the host figure it out".
+  raft_enabled: z.enum(['true', 'false']),
+  raft_cluster_id: z.string(),
+  raft_node_id: z.string(),
+  raft_port: optionalPort,
+  raft_advertise_host: z.string(),
+  raft_data_dir: z.string(),
+  raft_bootstrap: z.enum(['true', 'false']),
+  raft_advertise_public_url: z.string(),
+  raft_bridge_enabled: z.enum(['true', 'false']),
+  raft_bridge_shared_secret: z.string(),
+  raft_bridge_remote_seeds: z.string(),
 });
 
 const passwordSchema = z
@@ -76,6 +102,17 @@ export interface ConfigResponse {
     docker_host_metrics_compat: boolean;
     node_stats_hostname: string;
     node_stats_ipv4: string;
+    raft_enabled?: string;
+    raft_cluster_id?: string;
+    raft_node_id?: string;
+    raft_bind_addr?: string;
+    raft_advertise_addr?: string;
+    raft_data_dir?: string;
+    raft_bootstrap?: string;
+    raft_advertise_public_url?: string;
+    raft_bridge_enabled?: string;
+    raft_bridge_shared_secret?: string;
+    raft_bridge_remote_seeds?: string;
   };
 }
 
@@ -85,6 +122,14 @@ export interface CompleteSetupResponse {
 
 /** API body.config shape (snake_case) for setup preview and complete. */
 export function toSetupConfigApiPayload(config: SetupConfigFormData) {
+  // Derive RAFT_BIND_ADDR / RAFT_ADVERTISE_ADDR from the single "port"
+  // field plus optional "advertise host" the wizard collects, so the
+  // operator can't fat-finger the two values into a mismatch. Empty port
+  // falls back to the well-known default 7000.
+  const port = (config.raft_port || '').trim() || '7000'
+  const adHost = (config.raft_advertise_host || '').trim()
+  const bindAddr = `:${port}`
+  const advertiseAddr = adHost ? `${adHost}:${port}` : bindAddr
   return {
     jwt_secret: config.jwt_secret,
     refresh_secret: config.refresh_secret,
@@ -99,5 +144,16 @@ export function toSetupConfigApiPayload(config: SetupConfigFormData) {
     docker_host_metrics_compat: config.docker_host_metrics_compat,
     node_stats_hostname: config.node_stats_hostname.trim(),
     node_stats_ipv4: config.node_stats_ipv4.trim(),
+    raft_enabled: config.raft_enabled || 'false',
+    raft_cluster_id: config.raft_cluster_id.trim(),
+    raft_node_id: config.raft_node_id.trim(),
+    raft_bind_addr: bindAddr,
+    raft_advertise_addr: advertiseAddr,
+    raft_data_dir: config.raft_data_dir.trim(),
+    raft_bootstrap: config.raft_bootstrap || 'false',
+    raft_advertise_public_url: config.raft_advertise_public_url.trim(),
+    raft_bridge_enabled: config.raft_bridge_enabled || 'false',
+    raft_bridge_shared_secret: config.raft_bridge_shared_secret.trim(),
+    raft_bridge_remote_seeds: config.raft_bridge_remote_seeds.trim(),
   };
 }

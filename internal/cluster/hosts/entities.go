@@ -6,14 +6,11 @@ import "time"
 // Remote cluster agents use other rows (Join / UpsertHost). Do not reassign this ID.
 const LocalCollectorHostID uint = 1
 
-const (
-	// AgentPushGapSessionReset starts a new agent session if last push was longer ago than this.
-	AgentPushGapSessionReset = 30 * time.Second
-	// AgentOfflineThreshold marks a cluster agent offline if last push is older than this.
-	AgentOfflineThreshold = 45 * time.Second
-	// LocalHostOfflineThreshold for hosts without node credentials (local collector only).
-	LocalHostOfflineThreshold = 5 * time.Minute
-)
+// HostOfflineThreshold marks a host offline when its last_seen is older than
+// this. Every node's local collector refreshes last_seen each metrics cycle
+// (~5s) and Raft replicates it cluster-wide, so a single threshold covers both
+// the local collector and remote Raft peers.
+const HostOfflineThreshold = 45 * time.Second
 
 // Host represents a host machine identified by its MAC address.
 // This structure contains information about the host's name and MAC address,
@@ -41,14 +38,15 @@ type Host struct {
 	VirtualizationRole   string `json:"virtualization_role"`
 	SystemHostID         string `json:"system_host_id"`
 
+	// BootTime is the host's boot time in Unix seconds. Replicated cluster-wide
+	// so any node can show this host's real system uptime (now - boot_time).
+	BootTime int64 `json:"boot_time"`
+
 	// LastSeen indicates when this host was last active
 	LastSeen time.Time `json:"last_seen"`
 
 	// AgentSessionStartedAt is set on cluster agents: start of current "online" session after a push gap (>30s). Nil for non-agents or before first push.
 	AgentSessionStartedAt *time.Time `json:"agent_session_started_at,omitempty"`
-
-	// HasNodeCredential is set when listing hosts: this host can push to main (not a DB column).
-	HasNodeCredential bool `json:"has_node_credential" gorm:"-"`
 
 	// DisplayName is set for the local collector row when NODE_STATS_HOSTNAME is set (not a DB column).
 	// UI uses it for the machine card title; when empty, the card omits the title for host id 1.
@@ -85,6 +83,9 @@ type HostInfo struct {
 	VirtualizationSystem string `json:"virtualization_system"`
 	VirtualizationRole   string `json:"virtualization_role"`
 	HostID               string `json:"host_id"`
+	// BootTime is the host's boot time in Unix seconds (from gopsutil). Stable
+	// per boot; used to derive the host's real system uptime on any node.
+	BootTime int64 `json:"boot_time"`
 }
 
 // HostHealth represents health check information for a host.

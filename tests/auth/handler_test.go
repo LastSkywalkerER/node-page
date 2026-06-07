@@ -91,6 +91,7 @@ func (m *mockTokenService) RevokeAllUserTokens(_ context.Context, _ uint) error 
 	m.revokeAllCalled = true
 	return m.revokeAllErr
 }
+func (m *mockTokenService) SetSecrets(_ string, _ string) {}
 
 var _ users.TokenService = (*mockTokenService)(nil)
 

@@ -12,6 +12,9 @@ import (
 
 type Repository interface {
 	SaveCurrentMetric(ctx context.Context, metric CPUMetric, hostId uint) error
+	// SaveCurrentMetricAt persists with an explicit timestamp (used by the Raft
+	// applier so a replicated metric keeps its origin collection time).
+	SaveCurrentMetricAt(ctx context.Context, metric CPUMetric, hostId uint, ts time.Time) error
 	GetLatestMetric(ctx context.Context) (CPUMetric, error)
 	GetLatestMetricByHost(ctx context.Context, hostId uint) (*CPUMetric, error)
 	GetHistoricalMetrics(ctx context.Context, hours float64) ([]HistoricalCPUMetric, error)
@@ -38,9 +41,13 @@ func cpuMetricFromHistorical(metric HistoricalCPUMetric) CPUMetric {
 }
 
 func (r *cpuRepository) SaveCurrentMetric(ctx context.Context, metric CPUMetric, hostId uint) error {
+	return r.SaveCurrentMetricAt(ctx, metric, hostId, time.Now().UTC())
+}
+
+func (r *cpuRepository) SaveCurrentMetricAt(ctx context.Context, metric CPUMetric, hostId uint, ts time.Time) error {
 	historicalMetric := HistoricalCPUMetric{
 		HostID:      &hostId,
-		Timestamp:   time.Now().UTC(),
+		Timestamp:   ts.UTC(),
 		Usage:       metric.UsagePercent,
 		Cores:       metric.Cores,
 		LoadAvg1:    metric.LoadAvg1,

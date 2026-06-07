@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-playground/validator/v10"
@@ -62,11 +63,19 @@ type UserService interface {
 	VerifyPassword(hash, password string) error
 }
 
+// RaftReplicator is the subset of internal/cluster/raft.Service the user
+// service needs. Defined locally to avoid import cycles.
+type RaftReplicator interface {
+	Enabled() bool
+	SubmitUserUpsert(ctx context.Context, email, passwordHash, role string) error
+}
+
 type userService struct {
 	userRepo   UserRepository
 	tokenSvc   TokenService
 	invService invitations.Service
 	validator  *validator.Validate
+	raft       RaftReplicator
 }
 
 // NewUserService creates a new user service
@@ -80,6 +89,15 @@ func NewUserService(
 		tokenSvc:   tokenSvc,
 		invService: invService,
 		validator:  validator.New(),
+	}
+}
+
+// AttachRaftReplicator wires a Raft replicator into an existing UserService
+// instance so that user creation also publishes a CmdUserUpsert. Idempotent
+// and safe to call after the service has been handed to other components.
+func AttachRaftReplicator(svc UserService, r RaftReplicator) {
+	if impl, ok := svc.(*userService); ok {
+		impl.raft = r
 	}
 }
 
@@ -132,6 +150,42 @@ func (s *userService) Register(ctx context.Context, email, password string, invi
 	if invID != 0 {
 		if err := s.invService.Consume(ctx, invID, user.ID); err != nil {
 			return nil, fmt.Errorf("failed to consume invitation: %w", err)
+		}
+	}
+
+	// Replicate user across the cluster so a session minted on any node
+	// authenticates the same user everywhere. A fresh single-voter
+	// cluster may still be in the Candidate state at this point
+	// (election takes a few hundred ms after BootstrapCluster). Retry
+	// on ErrNotLeader for a few seconds — without this, the user
+	// ends up in the leader's local SQLite only, never gets to the
+	// Raft log, and any joining node thinks setup_needed=true forever.
+	if s.raft != nil && s.raft.Enabled() {
+		deadline := time.Now().Add(5 * time.Second)
+		var lastErr error
+		for time.Now().Before(deadline) {
+			err := s.raft.SubmitUserUpsert(ctx, user.Email, user.PasswordHash, user.Role)
+			if err == nil {
+				lastErr = nil
+				break
+			}
+			lastErr = err
+			// ErrNotLeader / ErrDisabled is exposed via error.Error()
+			// here because the users package can't depend on the raft
+			// package. The string match is intentionally narrow.
+			msg := err.Error()
+			if strings.Contains(msg, "not the leader") || strings.Contains(msg, "raft: disabled") {
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			// Non-transient error — stop retrying.
+			break
+		}
+		if lastErr != nil {
+			// User exists locally; cluster will need a backfill once
+			// leadership stabilises. Don't fail the wizard but make
+			// the failure loud in logs.
+			fmt.Printf("users.Register: raft replication of %q failed after retry: %v\n", user.Email, lastErr)
 		}
 	}
 
@@ -256,10 +310,16 @@ type TokenService interface {
 	RevokeRefreshToken(ctx context.Context, jti string) error
 	ConsumeRefreshToken(ctx context.Context, jti string) (bool, error)
 	RevokeAllUserTokens(ctx context.Context, userID uint) error
+	// SetSecrets atomically replaces the JWT signing keys, e.g. after a
+	// joining node receives the cluster-shared secrets via the Raft FSM.
+	// Tokens minted before the swap will fail validation; callers should
+	// only swap when no live sessions are expected (joining flow).
+	SetSecrets(accessSecret, refreshSecret string)
 }
 
 type tokenService struct {
 	refreshTokenRepo RefreshTokenRepository
+	secretsMu        sync.RWMutex
 	accessSecret     []byte
 	refreshSecret    []byte
 	accessTTL        time.Duration
@@ -281,9 +341,24 @@ func NewTokenService(
 	}
 }
 
+// SetSecrets atomically replaces both signing keys.
+func (s *tokenService) SetSecrets(accessSecret, refreshSecret string) {
+	s.secretsMu.Lock()
+	defer s.secretsMu.Unlock()
+	s.accessSecret = []byte(accessSecret)
+	s.refreshSecret = []byte(refreshSecret)
+}
+
+func (s *tokenService) loadSecrets() ([]byte, []byte) {
+	s.secretsMu.RLock()
+	defer s.secretsMu.RUnlock()
+	return s.accessSecret, s.refreshSecret
+}
+
 // GenerateTokens generates a new pair of access and refresh tokens
 func (s *tokenService) GenerateTokens(ctx context.Context, user *User) (*TokenPair, error) {
-	if len(s.accessSecret) == 0 || len(s.refreshSecret) == 0 {
+	accessSecret, refreshSecret := s.loadSecrets()
+	if len(accessSecret) == 0 || len(refreshSecret) == 0 {
 		return nil, fmt.Errorf("%w", ErrAuthSecretsNotConfigured)
 	}
 	now := time.Now()
@@ -328,13 +403,13 @@ func (s *tokenService) GenerateTokens(ctx context.Context, user *User) (*TokenPa
 
 	// Sign tokens
 	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
-	accessTokenString, err := accessToken.SignedString(s.accessSecret)
+	accessTokenString, err := accessToken.SignedString(accessSecret)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign access token: %w", err)
 	}
 
 	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
-	refreshTokenString, err := refreshToken.SignedString(s.refreshSecret)
+	refreshTokenString, err := refreshToken.SignedString(refreshSecret)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign refresh token: %w", err)
 	}
@@ -362,14 +437,15 @@ func (s *tokenService) GenerateTokens(ctx context.Context, user *User) (*TokenPa
 
 // ValidateAccessToken validates an access token and returns claims
 func (s *tokenService) ValidateAccessToken(tokenString string) (*Claims, error) {
-	if len(s.accessSecret) == 0 {
+	accessSecret, _ := s.loadSecrets()
+	if len(accessSecret) == 0 {
 		return nil, fmt.Errorf("%w", ErrAuthSecretsNotConfigured)
 	}
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return s.accessSecret, nil
+		return accessSecret, nil
 	})
 
 	if err != nil {
@@ -385,12 +461,13 @@ func (s *tokenService) ValidateAccessToken(tokenString string) (*Claims, error) 
 
 // ValidateRefreshToken validates a refresh token against the database
 func (s *tokenService) ValidateRefreshToken(ctx context.Context, tokenString string) (*RefreshToken, error) {
-	if len(s.refreshSecret) == 0 {
+	_, refreshSecret := s.loadSecrets()
+	if len(refreshSecret) == 0 {
 		return nil, fmt.Errorf("%w", ErrAuthSecretsNotConfigured)
 	}
 	// Parse token to get JTI
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
-		return s.refreshSecret, nil
+		return refreshSecret, nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse refresh token: %w", err)

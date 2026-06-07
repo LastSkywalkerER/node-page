@@ -89,7 +89,7 @@ GET    /hosts/current
 POST   /hosts/register
 GET    /stream              # SSE
 ```
-All metric endpoints accept `?hours=<float>` (default `0.0833` ≈ 5 min) and `?host_id=<uint>`. **`host_id=0` means this server instance** (resolved via current host MAC). Latest and history are always scoped to that host row; unknown `host_id` returns empty payloads (`latest: null`, empty history). Remote cluster hosts have no rows on main until ingestion exists — UI shows placeholders. SSE includes `collecting_host_id`; clients ignore events for other hosts. `/metrics/current` and `/sensors` return empty for remote hosts (no live collection on main).
+All metric endpoints accept `?hours=<float>` (default `0.0833` ≈ 5 min) and `?host_id=<uint>`. **`host_id=0` means this server instance** (resolved via current host MAC). Latest and history are always scoped to that host row; unknown `host_id` returns empty payloads (`latest: null`, empty history). **Metrics are replicated cluster-wide via Raft (`CmdMetricBatch`)**, so any node serves any host's CPU/mem/disk/net/docker history (and a host's data survives it going offline). The frontend is uniform: one REST load per metric on mount, then a **single SSE stream for every host** — the node publishes its own host's metrics each cycle *and* every replicated peer's metrics (`applyMetricBatch` → `broker.Publish`), and the client keeps events whose `collecting_host_id` matches the viewed host. The browser only ever talks to its own node; nodes sync over Raft. **Sensors are not replicated** (`/sensors` returns empty for remote hosts). See [docs/CLUSTER.md](docs/CLUSTER.md) for the full data-flow.
 
 ### Environment variables
 | Variable | Default | Description |
@@ -110,6 +110,20 @@ All metric endpoints accept `?hours=<float>` (default `0.0833` ≈ 5 min) and `?
 | `HOST_ROOT` | — | Host root bind-mount path (e.g. `/host`); disk primary totals use this before `/` |
 | `NODE_STATS_HOSTNAME` | — | Optional; when set, collector uses it and API adds `display_name` (overrides card/breadcrumb label). When unset, UI uses registered `name` from the host row. |
 | `NODE_STATS_IPV4` | — | Optional override for registered IPv4; omit for auto-detect. |
+
+**Raft cluster sync** (optional; see `docker-compose.cluster.yml`). When unset the node runs standalone:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RAFT_ENABLED` | `false` | Enable the Raft consensus layer |
+| `RAFT_CLUSTER_ID` | — | Logical cluster identifier shared by all peers |
+| `RAFT_NODE_ID` | — | Unique node id within the cluster |
+| `RAFT_BIND_ADDR` | — | Local Raft TCP listen address (e.g. `:7000`) |
+| `RAFT_ADVERTISE_ADDR` | — | Address peers use to reach this node's Raft port |
+| `RAFT_ADVERTISE_PUBLIC_URL` | — | HTTP base URL peers use for join/forward |
+| `RAFT_DATA_DIR` | — | Directory for Raft log/snapshot storage |
+| `RAFT_BOOTSTRAP` | `false` | Bootstrap this node as the initial leader (first node only) |
+
+The setup-wizard "Join an existing cluster" flow writes the resolved `RAFT_*` values to the node's `.env` so the configuration survives restarts/rebuilds.
 
 ---
 
@@ -220,12 +234,9 @@ Each widget in page components is wrapped in `<ErrorBoundary name="...">` to iso
 - **REST** (`GET /cpu|memory|disk|network|docker?host_id=`): one load per visit — `latest` from DB + `history` for charts (`staleTime: Infinity`, no `refetchInterval`).
 - **SSE** (`GET /stream?host_id=`): each collector tick pushes a live snapshot with `collecting_host_id`; `useLiveMetricsQuerySync` merges it into the same React Query keys so widgets update without polling.
 - **Sensors**: not in SSE; single REST load per page (`/sensors?host_id=`).
-- **Health** (machine cards): poll every 5s. **`status: online`** only if `last_seen` is fresh: **45s** for hosts with `node_credentials` (cluster agents / push), **5 min** for local collector-only hosts. UI uses `status`, not HTTP success. **`is_cluster_agent`**: true when the host has push credentials on this server; UI **hides uptime** for those cards. **Local / non-agent** cards use JSON **`uptime`** (this API process uptime). Card stripe/icon: green online, **red offline**.
-- **Cluster push token**: On join, main returns a plaintext `node_access_token` once and stores **SHA256** in `node_credentials` (plaintext cannot be read back). **`GET /hosts`** includes **`has_node_credential`** per row. Admin **`GET /nodes/cluster-ui-status`** supplies **push URL**, **Connect** visibility, and when **`is_agent`**: **`main_node_url`** + **`node_access_token`** for the local UI. **`PUT /nodes/agent-cluster-config`** (admin) updates agent connection + `.env`. **`POST /nodes/hosts/:id/regenerate-token`** returns **`node_access_token`** only. Optional **`PUBLIC_BASE_URL`** on main when agents must use a different base than the browser host (e.g. Docker).
-- **Local collector host**: Metrics from **this** process always use **`hosts.id = 1`** (`LocalCollectorHostID`). **`UpsertLocalHost`** updates that row on every register/get-current; hostname/MAC may change (e.g. Docker) without creating new rows. **`UpsertHost`** (cluster **Join** only) never matches or overwrites id `1` (MAC/name lookup excludes reserved id). **`GetAllHosts`** orders local collector first.
-- **Cluster agent host labels**: **Join** sends **`GetCurrentHostInfo`** (includes **`NODE_STATS_HOSTNAME`** / **`NODE_STATS_IPV4`** from the agent `.env`). Each metrics-cycle **push** to **`POST /nodes/push`** also sends **`host_name`** and **`host_ipv4`** from the same collector so main’s `hosts` row stays in sync after `.env` changes (skipped for `id=1`; empty fields are not applied).
-- **Docker agent env**: `docker-compose.yml` bind-mounts **`./.env.agent` → `/app/.env`** so `MAIN_NODE_URL` / `NODE_ACCESS_TOKEN` survive image rebuilds; **Connect** persists into that host file.
-- **Nodes admin**: `GET /nodes/cluster-ui-status` sets **Connect this node** visibility (hidden if this instance is an agent or if any other host has `node_credentials`). Agents see **Connected to main** (URL + token, save to `.env`). `DELETE /nodes/hosts/:id` (admin) removes a remote host, its credential, historical metrics (CPU/memory/disk/network/docker), and join-token `host_id` refs; cannot delete the local host.
+- **Health** (machine cards): poll every 5s. **`status: online`** only if `last_seen` is fresh (single threshold, no agent distinction). UI uses `status`, not HTTP success. Cards use JSON **`uptime`** (this API process uptime). Card stripe/icon: green online, **red offline**.
+- **Cluster sync (Raft)**: clusters are formed through the setup wizard. The leader issues a one-shot **connect key**; a fresh node enters **"Join an existing cluster"** in its wizard, supplies that key plus the cluster node URL, and posts to **`POST /setup/join-raft-cluster`**. The leader adds it as a **voter** via the Raft consensus layer (`/api/v1/raft/*`), and application state replicates across all peers. The joiner polls **`GET /setup/raft-progress`** while the leader catches it up. `RAFT_*` env vars (see env table / `docker-compose.cluster.yml`) configure node id, bind/advertise addresses, data dir, and bootstrap. **`GET /raft/status`** exposes the underlying `hashicorp/raft` stats for diagnostics.
+- **Local collector host**: Metrics from **this** process always use **`hosts.id = 1`** (`LocalCollectorHostID`). **`UpsertLocalHost`** updates that row on every register/get-current; hostname/MAC may change (e.g. Docker) without creating new rows. **`GetAllHosts`** orders local collector first.
 - Use `useXxx(..., { mode: 'poll' })` only if you need legacy interval refetch without a stream.
 
 ### Charts

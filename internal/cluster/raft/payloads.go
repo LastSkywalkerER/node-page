@@ -1,0 +1,156 @@
+package raft
+
+import (
+	"encoding/json"
+	"time"
+)
+
+// Concrete payload structs for each CommandType. They are JSON-encoded into
+// Command.Payload by the submitter and decoded by the applier. Field names
+// match the existing GORM entities where possible so the appliers can map
+// 1:1 without extra translation.
+
+// HostUpsertPayload mirrors hosts.HostInfo so the applier can call
+// hostRepo.UpsertHost(...) directly.
+type HostUpsertPayload struct {
+	Name                 string `json:"name"`
+	MacAddress           string `json:"mac_address"`
+	IPv4                 string `json:"ipv4"`
+	OS                   string `json:"os"`
+	Platform             string `json:"platform"`
+	PlatformFamily       string `json:"platform_family"`
+	PlatformVersion      string `json:"platform_version"`
+	KernelVersion        string `json:"kernel_version"`
+	VirtualizationSystem string `json:"virtualization_system"`
+	VirtualizationRole   string `json:"virtualization_role"`
+	HostID               string `json:"host_id"`
+	BootTime             int64  `json:"boot_time,omitempty"`
+}
+
+// HostDeletePayload cascades through metrics tables. Matches
+// hosts.Repository.DeleteHostCascade.
+type HostDeletePayload struct {
+	HostID uint `json:"host_id"`
+}
+
+// HostLastSeenPayload mirrors hosts.Repository.UpdateLastSeenAndAgentSession.
+// AgentSessionStartedAt is optional (nil when push gap < threshold).
+type HostLastSeenPayload struct {
+	HostID                uint       `json:"host_id"`
+	LastSeen              time.Time  `json:"last_seen"`
+	AgentSessionStartedAt *time.Time `json:"agent_session_started_at,omitempty"`
+	Name                  string     `json:"name,omitempty"`
+	IPv4                  string     `json:"ipv4,omitempty"`
+}
+
+// UserUpsertPayload mirrors the persisted fields of users.User. Used both for
+// initial registration (when Role=ADMIN) and later role updates.
+type UserUpsertPayload struct {
+	ID           uint   `json:"id,omitempty"` // 0 on initial Create; populated on UpdateRole
+	Email        string `json:"email"`
+	PasswordHash string `json:"password_hash,omitempty"`
+	Role         string `json:"role"`
+}
+
+// UserDeletePayload removes a user by ID.
+type UserDeletePayload struct {
+	UserID uint `json:"user_id"`
+}
+
+// RefreshTokenIssuePayload mirrors the persisted fields of users.RefreshToken.
+type RefreshTokenIssuePayload struct {
+	UserID    uint      `json:"user_id"`
+	JTI       string    `json:"jti"`
+	TokenHash string    `json:"token_hash"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// RefreshTokenRevokePayload covers both RevokeByJTI and ConsumeByJTI (the
+// applier always performs an idempotent revoke; the "consume" winner is the
+// node that submitted the command — its SubmitResult.Err is nil — others
+// receive a "already revoked" no-op).
+type RefreshTokenRevokePayload struct {
+	JTI    string `json:"jti,omitempty"`
+	UserID uint   `json:"user_id,omitempty"` // when set, revokes all tokens for the user
+}
+
+// AuthSecretSetPayload distributes the cluster-shared JWT signing keys so
+// that an access token minted on node A is accepted on node B. Stored under
+// keys "jwt_secret" and "refresh_secret" in cluster_config.
+type AuthSecretSetPayload struct {
+	JWTSecret     string `json:"jwt_secret"`
+	RefreshSecret string `json:"refresh_secret"`
+}
+
+// ConfigSetPayload sets a single key in the replicated cluster_config table.
+type ConfigSetPayload struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// PeerNodeAdvertisePayload publishes a node's advertised URL into the URL
+// catalog. The cross-cluster bridge / URL picker reads these entries to
+// decide where to send replication batches.
+type PeerNodeAdvertisePayload struct {
+	ClusterID    string   `json:"cluster_id"`
+	NodeID       string   `json:"node_id"`
+	URL          string   `json:"url"`
+	Capabilities []string `json:"capabilities,omitempty"`
+}
+
+// PeerNodeRemovePayload removes a node from the URL catalog.
+type PeerNodeRemovePayload struct {
+	ClusterID string `json:"cluster_id"`
+	NodeID    string `json:"node_id"`
+}
+
+// MetricBatchPayload carries one host's current metrics for cluster-wide
+// replication. The host is identified by a stable key (MAC, name as fallback)
+// because the local autoincrement host id differs per node — the applier
+// resolves it to the local hosts row. Each module's metric is the full entity
+// JSON (the same shape the API returns); the applier unmarshals it and hands
+// it to that module's repository, which keeps its existing entity→historical
+// mapping. Timestamp is the origin's collection time so every replica stores
+// the row under the same instant.
+type MetricBatchPayload struct {
+	HostMAC   string          `json:"host_mac"`
+	HostName  string          `json:"host_name,omitempty"`
+	Timestamp time.Time       `json:"ts"`
+	CPU       json.RawMessage `json:"cpu,omitempty"`
+	Memory    json.RawMessage `json:"memory,omitempty"`
+	Disk      json.RawMessage `json:"disk,omitempty"`
+	Network   json.RawMessage `json:"network,omitempty"`
+	Docker    json.RawMessage `json:"docker,omitempty"`
+}
+
+// RetentionDeleteBeforePayload tells every replica to delete metric rows
+// with timestamp < CutoffTS. Submitted by the leader only on each 5s tick.
+type RetentionDeleteBeforePayload struct {
+	CutoffTS time.Time `json:"cutoff_ts"`
+}
+
+// JoinTokenIssuePayload — one-shot token created by an admin for bringing
+// up a new node. TokenHash is hex(SHA256(plaintext)); plaintext is returned
+// to the admin once and never stored.
+type JoinTokenIssuePayload struct {
+	TokenHash string    `json:"token_hash"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedBy uint      `json:"created_by,omitempty"`
+}
+
+// JoinTokenConsumePayload marks a join token used. Idempotent: second use
+// is a no-op for replication purposes but rejected by the join endpoint.
+type JoinTokenConsumePayload struct {
+	TokenHash  string `json:"token_hash"`
+	ByNodeID   string `json:"by_node_id"`
+	ByNodeAddr string `json:"by_node_addr"`
+}
+
+// BridgeAckPayload records the highest OriginIndex from PeerClusterID that
+// the local cluster has applied. Persisted inside the FSM so the bridge
+// sender resumes from the right offset after restart / leader change.
+type BridgeAckPayload struct {
+	PeerClusterID   string `json:"peer_cluster_id"`
+	LastOriginIndex uint64 `json:"last_origin_index"`
+}

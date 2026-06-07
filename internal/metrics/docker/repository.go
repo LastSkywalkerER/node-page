@@ -21,8 +21,12 @@ func NewRepository(db *gorm.DB) DockerRepository {
 }
 
 func (r *dockerRepository) SaveCurrentMetric(ctx context.Context, metric DockerMetric, hostId uint) error {
+	return r.SaveCurrentMetricAt(ctx, metric, hostId, time.Now().UTC())
+}
+
+func (r *dockerRepository) SaveCurrentMetricAt(ctx context.Context, metric DockerMetric, hostId uint, ts time.Time) error {
 	// Save as historical metric
-	timestamp := time.Now().UTC()
+	timestamp := ts.UTC()
 	historicalMetric := HistoricalDockerMetric{
 		HostID:            &hostId,
 		Timestamp:         timestamp,

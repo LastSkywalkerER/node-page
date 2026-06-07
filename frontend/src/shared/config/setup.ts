@@ -15,6 +15,20 @@ export const DEFAULT_SETUP_CONFIG = {
   docker_host_metrics_compat: false,
   node_stats_hostname: '',
   node_stats_ipv4: '',
+  // Raft cluster sync defaults; the wizard's Raft section pre-fills these.
+  // Enabled by default so a fresh node is cluster-ready (bootstrap leader)
+  // and can immediately hand out a connect key for additional nodes.
+  raft_enabled: 'true',
+  raft_cluster_id: 'local',
+  raft_node_id: '',
+  raft_port: '7000',
+  raft_advertise_host: '',
+  raft_data_dir: './data/raft',
+  raft_bootstrap: 'true',
+  raft_advertise_public_url: '',
+  raft_bridge_enabled: 'false',
+  raft_bridge_shared_secret: '',
+  raft_bridge_remote_seeds: '',
 } as const;
 
 export type DefaultSetupConfig = typeof DEFAULT_SETUP_CONFIG;

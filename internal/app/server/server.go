@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,6 +22,7 @@ import (
 	"github.com/gin-gonic/gin"
 	ginSwagger "github.com/swaggo/gin-swagger"
 	swaggerFiles "github.com/swaggo/files"
+	"gorm.io/gorm"
 
 	_ "system-stats/docs"
 	"system-stats/internal/app/config"
@@ -28,12 +30,11 @@ import (
 	"system-stats/internal/app/help"
 	"system-stats/internal/app/middleware"
 	"system-stats/internal/app/prometheusmetrics"
-	"system-stats/internal/app/pusher"
 	"system-stats/internal/app/retention"
 	invitations "system-stats/internal/auth/invitations"
 	users "system-stats/internal/auth/users"
 	hosts "system-stats/internal/cluster/hosts"
-	nodes "system-stats/internal/cluster/nodes"
+	raftcluster "system-stats/internal/cluster/raft"
 	cpu "system-stats/internal/metrics/cpu"
 	disk "system-stats/internal/metrics/disk"
 	docker "system-stats/internal/metrics/docker"
@@ -84,11 +85,21 @@ func Run() {
 	startTime := time.Now()
 
 	logger.Info("Initializing dependency injection container...", "db_type", cfg.Database.Type, "db_dsn", config.MaskDSN(cfg.Database.DSN))
-	container, err := di.NewContainer(logger, cfg.Database, cfg.JWTSecret, cfg.RefreshSecret, startTime)
+	container, err := di.NewContainer(logger, cfg.Database, cfg.JWTSecret, cfg.RefreshSecret, startTime, cfg.Raft)
 	if err != nil {
 		logger.Fatal("Failed to initialize DI container", "error", err)
 	}
-	logger.Info("DI container initialized", "database_type", cfg.Database.Type)
+	defer func() {
+		if cerr := container.Close(); cerr != nil {
+			logger.Warn("DI container close returned error", "error", cerr)
+		}
+	}()
+	logger.Info("DI container initialized",
+		"database_type", cfg.Database.Type,
+		"raft_enabled", cfg.Raft.Enabled,
+		"raft_cluster", cfg.Raft.ClusterID,
+		"raft_node_id", cfg.Raft.NodeID,
+	)
 
 	regCtx, regCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	if _, err := container.GetHostService().RegisterOrUpdateCurrentHost(regCtx); err != nil {
@@ -96,13 +107,66 @@ func Run() {
 	}
 	regCancel()
 
-	// Load cluster config from .env (MAIN_NODE_URL, NODE_ACCESS_TOKEN) for agent push mode
-	nodes.LoadFromEnvFile()
+	// Raft-enabled deployments seed / read cluster-shared JWT signing keys
+	// from cluster_config so a session minted on any node validates on
+	// every other node. On the very first node these come from env; on
+	// joiners they arrive via snapshot restore.
+	if cfg.Raft.Enabled {
+		bootCtx, bootCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		jwtSec, refSec, berr := raftcluster.BootstrapClusterSecrets(bootCtx,
+			logger,
+			container.GetRaftService(),
+			container.GetRaftReplicator(),
+			container.GetDB(),
+			cfg.JWTSecret,
+			cfg.RefreshSecret,
+		)
+		bootCancel()
+		if berr != nil {
+			logger.Warn("raft: cluster secret bootstrap returned error", "error", berr)
+		}
+		if jwtSec != cfg.JWTSecret || refSec != cfg.RefreshSecret {
+			// We discovered cluster-shared secrets that differ from env;
+			// rebuild the token service so newly minted sessions sign /
+			// verify with the cluster-shared keys.
+			cfg.JWTSecret = jwtSec
+			cfg.RefreshSecret = refSec
+			logger.Info("raft: token service will use cluster-shared signing keys (restart required for full effect)")
+		}
+
+		go func() {
+			// Give the leader a moment to settle, then advertise this
+			// node's HTTP URL into the catalog. Used by both the
+			// cross-cluster bridge picker AND the follower→leader
+			// SubmitCommand forwarder, which can't function without
+			// every node's URL being discoverable.
+			time.Sleep(2 * time.Second)
+			advCtx, advCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer advCancel()
+			adURL := cfg.Raft.AdvertiseURL
+			if adURL == "" {
+				adURL = deriveHTTPURL(cfg.Addr, cfg.Raft.AdvertiseAddr)
+			}
+			raftcluster.AdvertiseSelf(advCtx, logger,
+				container.GetRaftService(),
+				container.GetRaftReplicator(),
+				cfg.Raft.ClusterID,
+				cfg.Raft.NodeID,
+				adURL,
+			)
+		}()
+	}
 
 	// appCtx is cancelled on shutdown to stop background goroutines
-	// (periodic metrics collection, retention cleanup, pusher).
+	// (periodic metrics collection, retention cleanup).
 	appCtx, appCancel := context.WithCancel(context.Background())
 	defer appCancel()
+
+	// Hand appCtx to the DI container so wizard-driven hot-activations
+	// can spawn bridge goroutines against it. Also starts the bridge
+	// picker / sender immediately if Raft was activated at boot time
+	// (i.e. RAFT_ENABLED=true in env).
+	container.SetAppContext(appCtx)
 
 	historicalMetricsService := container.GetHistoricalMetricsService()
 	retentionSvc := retention.NewService(container.GetDB(), logger, cfg.RetentionDays)
@@ -146,6 +210,49 @@ func Run() {
 		}
 		broker.Publish(out)
 
+		// Replicate this host's metrics to the cluster so every node can serve
+		// them and they survive this node going offline. Best-effort: disabled
+		// Raft or a missing quorum is a no-op and never blocks collection.
+		if repl := container.GetRaftReplicator(); repl != nil && repl.Enabled() {
+			if host, herr := container.GetHostService().GetCurrentHost(appCtx); herr == nil && host != nil && host.MacAddress != "" {
+				batch := raftcluster.MetricBatchPayload{
+					HostMAC:   host.MacAddress,
+					HostName:  host.Name,
+					Timestamp: time.Now().UTC(),
+				}
+				if v := metrics["cpu"]; v != nil {
+					if b, e := json.Marshal(v); e == nil {
+						batch.CPU = b
+					}
+				}
+				if v := metrics["memory"]; v != nil {
+					if b, e := json.Marshal(v); e == nil {
+						batch.Memory = b
+					}
+				}
+				if v := metrics["disk"]; v != nil {
+					if b, e := json.Marshal(v); e == nil {
+						batch.Disk = b
+					}
+				}
+				if v := metrics["network"]; v != nil {
+					if b, e := json.Marshal(v); e == nil {
+						batch.Network = b
+					}
+				}
+				if v := metrics["docker"]; v != nil {
+					if b, e := json.Marshal(v); e == nil {
+						batch.Docker = b
+					}
+				}
+				go func() {
+					subCtx, cancel := context.WithTimeout(appCtx, 6*time.Second)
+					defer cancel()
+					_ = repl.SubmitMetricBatch(subCtx, batch)
+				}()
+			}
+		}
+
 		// Run an incremental retention batch off the metrics tick (every 5s).
 		// Bounded by appCtx + a short deadline so it never blocks the collection cycle.
 		go func() {
@@ -155,16 +262,6 @@ func Run() {
 				logger.Warn("Retention batch error", "error", err)
 			}
 		}()
-
-		// Push to main node if cluster config is set (from env at startup or after connect)
-		if mainURL, token := nodes.Get(); mainURL != "" && token != "" {
-			hostName, hostIPv4 := "", ""
-			if hi, herr := container.GetHostService().GetCurrentHostInfo(appCtx); herr == nil {
-				hostName = hi.Name
-				hostIPv4 = hi.IPv4
-			}
-			go pusher.Push(appCtx, logger, mainURL, token, metrics, hostName, hostIPv4)
-		}
 	})
 
 	// startMetrics activates periodic collection and retention.
@@ -208,6 +305,31 @@ func Run() {
 		// Run startMetrics in a goroutine so the HTTP server can start
 		// accepting connections immediately instead of blocking on the first
 		// metrics collection cycle (CPU sampling alone takes ~1 s).
+		go startMetrics()
+	}
+
+	// Whenever Raft activates (boot-time env, wizard "Start new cluster"
+	// or wizard "Join existing cluster"), ensure metrics collection is
+	// running. The historicalMetricsService.Start is idempotent — calling
+	// it on an already-running loop is a no-op. Without this, a wizard
+	// JoinRaftCluster flow would leave the node without metrics: it
+	// activates Raft + replicates state but never fires the
+	// /setup/complete onSetupComplete callback, so the local collector
+	// (which is also what publishes this node's host info into Raft via
+	// SubmitHostUpsert) never runs and the leader's dashboard never
+	// shows the new node.
+	container.SetPostActivateHook(func() {
+		logger.Info("Raft activated — ensuring metrics collection is running")
+		go startMetrics()
+	})
+
+	// If Raft was already activated at boot time (RAFT_ENABLED=true in
+	// .env from a previous wizard run), the post-activate hook above
+	// fires too late — it's a no-op for the boot-time activation that
+	// already happened inside NewContainer. Bridge metrics-start here
+	// explicitly so a fresh restart of a configured node doesn't sit
+	// without metrics until the next wizard interaction.
+	if container.GetRaftService() != nil && container.GetRaftService().Enabled() {
 		go startMetrics()
 	}
 
@@ -306,10 +428,27 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	authHandler := users.NewAuthHandler(container.GetUserService(), container.GetTokenService(), cfg.CookieSecure)
 	usersHandler := users.NewUsersHandler(container.GetUserService())
 	invitationHandler := invitations.NewHandler(container.GetInvitationService())
-	nodesHandler := nodes.NewHandler(container.GetNodeService(), container.GetHostService(), cfg.PublicBaseURL, len(cfg.TrustedProxies) > 0)
 	streamHandler := platformstream.NewHandler(container.GetBroker(), container.GetHostService())
 	configWriter := setup.NewConfigWriter()
-	setupHandler := setup.NewHandler(configWriter, container.GetUserService(), onSetupComplete)
+	setupHandler := setup.NewHandler(configWriter, container.GetUserService(), onSetupComplete).
+		WithRaft(container.GetRaftService()).
+		WithRaftActivator(container).
+		WithTokenService(container.GetTokenService()).
+		WithSecretReader(&clusterSecretAdapter{db: container.GetDB()}).
+		WithHTTPAddr(cfg.Addr)
+	raftHandler := raftcluster.NewHandler(container.GetRaftService()).
+		WithDeps(container.GetRaftReplicator(), container.GetDB(), logger, cfg.Raft.ClusterID).
+		WithBridgeConfigurator(container).
+		WithBootError(container.RaftBootError).
+		WithResetConfig(container.ResetRaftConfig).
+		WithWipeState(container.WipeRaftState).
+		WithFactoryReset(container.FactoryResetRaft).
+		WithPickerInfo(func() any {
+			if p := container.GetBridgePicker(); p != nil {
+				return p.Snapshot()
+			}
+			return nil
+		})
 
 	// Swagger UI (always available)
 	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
@@ -337,6 +476,9 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 			setup.GET("/config", setupHandler.GetConfig)
 			setup.POST("/preview-env", setupHandler.PreviewEnv)
 			setup.POST("/complete", setupHandler.CompleteSetup)
+			setup.POST("/join-raft-cluster", setupHandler.JoinRaftCluster)
+			setup.POST("/check-reachable", setupHandler.CheckReachable)
+			setup.GET("/raft-progress", setupHandler.RaftProgress)
 		}
 
 		// Auth routes (public, rate-limited: 10 req/min per IP)
@@ -366,18 +508,34 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 			invitations.POST("", invitationHandler.CreateInvitation)
 		}
 
-		// Node join (public — agent calls this to register with main)
-		// Rate-limited to slow down token-bruteforce attempts even though tokens are one-shot.
-		joinRL := middleware.RateLimitMiddleware(5.0/60, 5)
-		nodes := api.Group("/nodes")
-		{
-			nodes.POST("/join", joinRL, nodesHandler.Join)
-		}
+		// Raft ping is public on purpose: peer clusters need it to measure
+		// round-trip latency without sharing user credentials. The mutating
+		// bridge endpoints (added in a follow-up) live behind HMAC auth.
+		api.GET("/raft/ping", raftHandler.Ping)
 
-		// Node push (auth via node_access_token)
-		nodesPush := api.Group("/nodes", middleware.AuthNodeToken(container.GetNodeService()))
-		{
-			nodesPush.POST("/push", nodesHandler.Push)
+		// Raft join: a fresh node uses a one-shot token (issued by an
+		// admin on the leader) to enrol itself as a voter. Rate-limited
+		// to stop token-bruteforce attempts.
+		raftJoinRL := middleware.RateLimitMiddleware(5.0/60, 5)
+		api.POST("/raft/join", raftJoinRL, raftHandler.Join)
+
+		// Follower → leader command forwarding. Public because the
+		// payload only mutates already-shared cluster state and the
+		// leader's SubmitCommand validates it. The limit is per client IP
+		// (i.e. per peer node) and must comfortably absorb steady cluster
+		// traffic: every follower forwards its host upsert + metric batch
+		// each ~5s cycle, plus a burst of backfill right after joining.
+		// 50/s (burst 100) per node leaves ample headroom while still
+		// capping a single misbehaving peer.
+		raftForwardRL := middleware.RateLimitMiddleware(50, 100)
+		api.POST("/raft/forward", raftForwardRL, raftHandler.Forward)
+
+		// Cross-cluster bridge receiver — HMAC-authenticated by the
+		// handler itself, so no JWT middleware here. Always registered
+		// when the receiver was built; if not, the route is omitted and
+		// peer cluster POSTs get a clean 404.
+		if br := container.GetBridgeReceiver(); br != nil {
+			api.POST("/raft/bridge/replicate", br.Handle)
 		}
 
 		// Metrics current snapshot
@@ -398,16 +556,23 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.POST("/hosts/register", hostHandler.HandleRegisterCurrentHost)
 		authAPI.GET("/stream", streamHandler.HandleStream)
 
-		// Node invite (admin only)
-		authAPI.POST("/nodes/invite", middleware.RequireAdmin(), nodesHandler.CreateInvite)
-		// Agent manual setup on main (admin): URLs + regenerate push token
-		authAPI.GET("/nodes/cluster-ui-status", middleware.RequireAdmin(), nodesHandler.GetClusterUIStatus)
-		authAPI.PUT("/nodes/agent-cluster-config", middleware.RequireAdmin(), nodesHandler.UpdateAgentClusterConfig)
-		authAPI.DELETE("/nodes/agent-cluster-config", middleware.RequireAdmin(), nodesHandler.DeleteAgentClusterConfig)
-		authAPI.POST("/nodes/hosts/:id/regenerate-token", middleware.RequireAdmin(), nodesHandler.RegenerateAgentToken)
-		authAPI.DELETE("/nodes/hosts/:id", middleware.RequireAdmin(), nodesHandler.DeleteRemoteHost)
-		// Node connect (agent connects to main using join link)
-		authAPI.POST("/nodes/connect", nodesHandler.Connect)
+		// Raft cluster status (admin) — surfaces leader, peers, indices, RTTs
+		authAPI.GET("/raft/status", middleware.RequireAdmin(), raftHandler.Status)
+		// Raft peer management (admin, leader-only)
+		authAPI.POST("/raft/peers", middleware.RequireAdmin(), raftHandler.AddPeer)
+		authAPI.DELETE("/raft/peers/:id", middleware.RequireAdmin(), raftHandler.RemovePeer)
+		// Issue one-shot join token (admin, leader-only)
+		authAPI.POST("/raft/join-token", middleware.RequireAdmin(), raftHandler.IssueJoinToken)
+		// Hot-update cross-cluster bridge configuration
+		authAPI.POST("/raft/bridge", middleware.RequireAdmin(), raftHandler.SaveBridgeConfig)
+		// Wipe RAFT_* from .env so the next restart boots Raft-disabled
+		authAPI.POST("/raft/reset", middleware.RequireAdmin(), raftHandler.ResetConfig)
+		// Wipe Raft on-disk state + re-bootstrap as fresh single voter
+		authAPI.POST("/raft/wipe-state", middleware.RequireAdmin(), raftHandler.WipeState)
+		// Fully decouple from Raft: wipe state + remove .env entries
+		authAPI.POST("/raft/factory-reset", middleware.RequireAdmin(), raftHandler.FactoryReset)
+		// TCP-probe a voter's advertise addr from this server
+		authAPI.POST("/raft/probe-voter", middleware.RequireAdmin(), raftHandler.ProbeVoter)
 	}
 
 	// Static files for React app (hashed bundles from Vite)
@@ -464,6 +629,58 @@ func resolveDistStaticFile(distPath, urlPath string) (absFile string, ok bool) {
 		return "", false
 	}
 	return absFile, true
+}
+
+// firstNonEmpty returns a if it's non-empty, else b. Used to fall back from
+// RAFT_ADVERTISE_ADDR to RAFT_BIND_ADDR.
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+// deriveHTTPURL constructs a fallback HTTP advertise URL from the
+// listening ADDR (":8080") and the Raft advertise address (the host
+// portion). Used when RAFT_ADVERTISE_PUBLIC_URL is unset — picks the
+// IP/hostname the operator already provided as Raft's advertise and
+// pairs it with the HTTP port from cfg.Addr. Returns "" if neither
+// fits.
+func deriveHTTPURL(addr, raftAdvertise string) string {
+	host := ""
+	if h, _, err := net.SplitHostPort(raftAdvertise); err == nil && h != "" {
+		host = h
+	}
+	if host == "" {
+		// Try OS hostname as last resort; "localhost" is useless for
+		// peers but better than a blank URL.
+		if hn, err := os.Hostname(); err == nil {
+			host = hn
+		} else {
+			host = "localhost"
+		}
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		port = "8080"
+	}
+	return "http://" + net.JoinHostPort(host, port)
+}
+
+// clusterSecretAdapter adapts the raft package's LookupClusterConfig
+// function to the small ClusterSecretReader interface the setup handler
+// expects.
+type clusterSecretAdapter struct {
+	db *gorm.DB
+}
+
+// LookupClusterSecret reads a single key from the replicated
+// cluster_config table.
+func (a *clusterSecretAdapter) LookupClusterSecret(ctx context.Context, key string) (string, error) {
+	if a.db == nil {
+		return "", nil
+	}
+	return raftcluster.LookupClusterConfig(ctx, a.db, key)
 }
 
 func pathLooksLikeMissingStaticAsset(urlPath string) bool {

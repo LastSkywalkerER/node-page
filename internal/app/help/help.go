@@ -64,6 +64,22 @@ Environment Variables:
     NODE_STATS_HOSTNAME     Override UI/API hostname (container ID otherwise)
     NODE_STATS_IPV4         Override host IPv4 on the machine card (Docker bridge IP otherwise)
 
+  Raft cluster sync (optional — opt in by setting RAFT_ENABLED=true):
+    RAFT_ENABLED                  Enable consensus-replicated cluster sync (default: false).
+    RAFT_CLUSTER_ID               Identifier for this Raft cluster. Typically "local" or "public".
+    RAFT_NODE_ID                  Stable unique id for this node within the cluster (e.g. "local-1").
+    RAFT_BIND_ADDR                Raft transport listen (default ":7000"). Example: 0.0.0.0:7000
+    RAFT_ADVERTISE_ADDR           Address peers should dial. Defaults to BIND_ADDR if unset.
+    RAFT_DATA_DIR                 Log + snapshot store directory (default "./data/raft").
+    RAFT_BOOTSTRAP                Set to true on exactly one node when starting a brand-new cluster.
+    RAFT_PEERS                    Optional initial peer list "id1@host1:port,id2@host2:port".
+    RAFT_ADVERTISE_PUBLIC_URL     URL the cross-cluster bridge advertises into the URL catalog.
+
+  Cross-cluster bridge (optional, builds on Raft cluster sync):
+    RAFT_BRIDGE_ENABLED           Enable async replication to a peer Raft cluster (default: false).
+    RAFT_BRIDGE_SHARED_SECRET     HMAC-SHA256 secret shared between the two clusters' instances.
+    RAFT_BRIDGE_REMOTE_SEEDS      Comma-separated peer cluster URLs used to bootstrap the URL catalog.
+
 Example .env file:
 
   # Server Configuration

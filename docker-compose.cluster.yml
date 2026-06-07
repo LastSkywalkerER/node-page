@@ -1,0 +1,62 @@
+# Two-node Raft cluster for local UI testing.
+#
+#   docker compose -f docker-compose.cluster.yml up --build      # start both
+#   docker compose -f docker-compose.cluster.yml down -v         # stop + WIPE data (clean slate)
+#
+# UIs:   node1 → http://localhost:9091    node2 → http://localhost:9092
+#
+# Both containers share a Compose network, so they reach each other by service
+# name (node1 / node2). That's why Raft advertises `node1:7000` and the join
+# peer URL is `http://node1:8080` — NOT localhost (the Docker-IP pitfall).
+services:
+  node1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "9091:8080"
+    environment:
+      - ADDR=:8080
+      - GIN_MODE=debug
+      - DEBUG=true
+      - DB_TYPE=sqlite
+      - DB_DSN=/app/data/stats.db
+      - JWT_SECRET=cluster-test-jwt-secret
+      - REFRESH_SECRET=cluster-test-refresh-secret
+      # Raft: node1 is the bootstrap leader. Advertise by service name so node2
+      # can reach it over the Compose network.
+      - RAFT_ENABLED=true
+      - RAFT_CLUSTER_ID=local
+      - RAFT_NODE_ID=node1
+      - RAFT_BIND_ADDR=:7000
+      - RAFT_ADVERTISE_ADDR=node1:7000
+      - RAFT_ADVERTISE_PUBLIC_URL=http://node1:8080
+      - RAFT_DATA_DIR=/app/data/raft
+      - RAFT_BOOTSTRAP=true
+    volumes:
+      - node1-data:/app/data
+    restart: unless-stopped
+
+  node2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "9092:8080"
+    environment:
+      - ADDR=:8080
+      - GIN_MODE=debug
+      - DEBUG=true
+      - DB_TYPE=sqlite
+      - DB_DSN=/app/data/stats.db
+      - JWT_SECRET=cluster-test-jwt-secret
+      - REFRESH_SECRET=cluster-test-refresh-secret
+      # No RAFT_* here on purpose: node2 boots fresh (setup_needed) and you
+      # activate Raft by choosing "join existing cluster" in its setup wizard.
+    volumes:
+      - node2-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  node1-data:
+  node2-data:

@@ -53,17 +53,42 @@ type Config struct {
 	PrometheusAuth    bool   // PROMETHEUS_AUTH: require Bearer token for /metrics, default false
 	PrometheusToken   string // PROMETHEUS_TOKEN: bearer token value when auth is enabled
 
-	// Cluster agent mode (push metrics to main node)
-	MainNodeURL     string // MAIN_NODE_URL: main server URL for push (e.g. https://main:8080)
-	NodeAccessToken string // NODE_ACCESS_TOKEN: token for push auth (set after join)
-
-	// Public URL of this server as seen by agents (Docker Desktop, reverse proxy). Used for join links and admin "agent setup".
-	PublicBaseURL string // PUBLIC_BASE_URL: optional override; if empty, derived from incoming HTTP request
-
 	// TrustedProxies is the comma-separated list of CIDRs (or IPs) of reverse proxies whose
 	// X-Forwarded-* headers may be trusted. Empty (default) means trust no proxy — c.ClientIP()
 	// returns the direct peer address and X-Forwarded-Host/Proto are ignored.
 	TrustedProxies []string
+
+	// Raft holds optional consensus / cross-cluster sync configuration.
+	Raft RaftConfig
+}
+
+// RaftConfig holds settings for the HashiCorp Raft layer and the cross-cluster bridge.
+// All fields are no-ops when Enabled is false.
+type RaftConfig struct {
+	Enabled       bool   // RAFT_ENABLED
+	ClusterID     string // RAFT_CLUSTER_ID — "local" or "public"
+	NodeID        string // RAFT_NODE_ID — unique within the cluster
+	BindAddr      string // RAFT_BIND_ADDR — transport listen, default ":7000"
+	AdvertiseAddr string // RAFT_ADVERTISE_ADDR — address peers should dial
+	DataDir       string // RAFT_DATA_DIR — log + snapshot store, default "./data/raft"
+	Bootstrap     bool   // RAFT_BOOTSTRAP — true only on the first node of a cluster
+	Peers         []RaftPeer
+	AdvertiseURL  string // RAFT_ADVERTISE_PUBLIC_URL — published into the URL catalog
+
+	Bridge RaftBridgeConfig
+}
+
+// RaftPeer is a peer Raft voter to seed the cluster with on startup.
+type RaftPeer struct {
+	ID   string
+	Addr string
+}
+
+// RaftBridgeConfig configures the asynchronous cross-cluster replication bridge.
+type RaftBridgeConfig struct {
+	Enabled      bool     // RAFT_BRIDGE_ENABLED
+	RemoteSeeds  []string // RAFT_BRIDGE_REMOTE_SEEDS — initial peer cluster URLs
+	SharedSecret string   // RAFT_BRIDGE_SHARED_SECRET — HMAC key
 }
 
 // Load loads application configuration from environment variables.
@@ -116,11 +141,6 @@ func Load() (*Config, error) {
 	config.PrometheusAuth = prometheusAuthEnv == "true" || prometheusAuthEnv == "1"
 	config.PrometheusToken = os.Getenv("PROMETHEUS_TOKEN")
 
-	// Cluster agent mode
-	config.MainNodeURL = strings.TrimSuffix(getEnv("MAIN_NODE_URL", ""), "/")
-	config.NodeAccessToken = getEnv("NODE_ACCESS_TOKEN", "")
-	config.PublicBaseURL = strings.TrimSuffix(strings.TrimSpace(getEnv("PUBLIC_BASE_URL", "")), "/")
-
 	// TrustedProxies: comma-separated CIDRs / IPs. Empty disables proxy header trust.
 	if tp := strings.TrimSpace(getEnv("TRUSTED_PROXIES", "")); tp != "" {
 		for _, p := range strings.Split(tp, ",") {
@@ -130,7 +150,56 @@ func Load() (*Config, error) {
 		}
 	}
 
+	config.Raft = loadRaftConfig()
+
 	return config, nil
+}
+
+// loadRaftConfig reads RAFT_* env vars. When RAFT_ENABLED is unset/false, the
+// other fields are still parsed but the layer stays disabled in the DI container.
+func loadRaftConfig() RaftConfig {
+	enabled := strings.ToLower(getEnv("RAFT_ENABLED", "false"))
+	cfg := RaftConfig{
+		Enabled:       enabled == "true" || enabled == "1",
+		ClusterID:     strings.TrimSpace(getEnv("RAFT_CLUSTER_ID", "")),
+		NodeID:        strings.TrimSpace(getEnv("RAFT_NODE_ID", "")),
+		BindAddr:      strings.TrimSpace(getEnv("RAFT_BIND_ADDR", ":7000")),
+		AdvertiseAddr: strings.TrimSpace(getEnv("RAFT_ADVERTISE_ADDR", "")),
+		DataDir:       strings.TrimSpace(getEnv("RAFT_DATA_DIR", "./data/raft")),
+		AdvertiseURL:  strings.TrimSuffix(strings.TrimSpace(getEnv("RAFT_ADVERTISE_PUBLIC_URL", "")), "/"),
+	}
+	bootstrap := strings.ToLower(getEnv("RAFT_BOOTSTRAP", "false"))
+	cfg.Bootstrap = bootstrap == "true" || bootstrap == "1"
+
+	// RAFT_PEERS format: "id1@host1:port,id2@host2:port"
+	if raw := strings.TrimSpace(getEnv("RAFT_PEERS", "")); raw != "" {
+		for _, p := range strings.Split(raw, ",") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			id, addr, ok := strings.Cut(p, "@")
+			if !ok || strings.TrimSpace(id) == "" || strings.TrimSpace(addr) == "" {
+				continue
+			}
+			cfg.Peers = append(cfg.Peers, RaftPeer{ID: strings.TrimSpace(id), Addr: strings.TrimSpace(addr)})
+		}
+	}
+
+	bridgeEnabled := strings.ToLower(getEnv("RAFT_BRIDGE_ENABLED", "false"))
+	cfg.Bridge = RaftBridgeConfig{
+		Enabled:      bridgeEnabled == "true" || bridgeEnabled == "1",
+		SharedSecret: getEnv("RAFT_BRIDGE_SHARED_SECRET", ""),
+	}
+	if raw := strings.TrimSpace(getEnv("RAFT_BRIDGE_REMOTE_SEEDS", "")); raw != "" {
+		for _, s := range strings.Split(raw, ",") {
+			if v := strings.TrimSuffix(strings.TrimSpace(s), "/"); v != "" {
+				cfg.Bridge.RemoteSeeds = append(cfg.Bridge.RemoteSeeds, v)
+			}
+		}
+	}
+
+	return cfg
 }
 
 // loadDatabaseConfig loads database configuration from environment variables.

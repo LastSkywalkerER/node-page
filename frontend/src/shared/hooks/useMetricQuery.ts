@@ -12,6 +12,10 @@ export function createMetricHook<L, H>(endpoint: string, queryKeyBase: string) {
     hostId?: number | null,
     options?: { mode?: MetricFetchMode }
   ) {
+    // One REST load on mount for every host; live updates arrive over SSE
+    // (useMetricsStream / useLiveMetricsQuerySync) for the local host AND every
+    // replicated peer, so the frontend treats all hosts uniformly. An explicit
+    // 'poll' mode still works for the rare legacy caller that wants interval refetch.
     const mode = options?.mode ?? 'snapshot';
     const poll = mode === 'poll';
     const queryKey = hostId != null ? [queryKeyBase, hostId] : [queryKeyBase];

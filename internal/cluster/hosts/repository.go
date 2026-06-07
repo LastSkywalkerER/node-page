@@ -36,7 +36,9 @@ func NewRepository(db *gorm.DB) Repository {
 	return &hostRepository{db: db}
 }
 
-// reclaimDuplicateLocalRows removes legacy host rows (same MAC or name, no push credential) so id=1 can be created.
+// reclaimDuplicateLocalRows removes legacy host rows that share this machine's
+// MAC or name but sit at a non-reserved id, so the local collector row (id=1)
+// can be created without violating the unique indexes.
 func (r *hostRepository) reclaimDuplicateLocalRows(ctx context.Context, hostInfo HostInfo) error {
 	for _, q := range []struct {
 		col string
@@ -57,13 +59,6 @@ func (r *hostRepository) reclaimDuplicateLocalRows(ctx context.Context, hostInfo
 		}
 		if err != nil {
 			return err
-		}
-		var n int64
-		if err := r.db.WithContext(ctx).Table("node_credentials").Where("host_id = ?", h.ID).Count(&n).Error; err != nil {
-			return err
-		}
-		if n > 0 {
-			continue
 		}
 		if err := r.DeleteHostCascade(ctx, h.ID); err != nil {
 			return err
@@ -94,6 +89,7 @@ func (r *hostRepository) UpsertLocalHost(ctx context.Context, hostInfo HostInfo)
 			VirtualizationSystem: hostInfo.VirtualizationSystem,
 			VirtualizationRole:   hostInfo.VirtualizationRole,
 			SystemHostID:         hostInfo.HostID,
+		BootTime:             hostInfo.BootTime,
 			LastSeen:             now,
 			CreatedAt:            now,
 			UpdatedAt:            now,
@@ -114,6 +110,7 @@ func (r *hostRepository) UpsertLocalHost(ctx context.Context, hostInfo HostInfo)
 	host.VirtualizationSystem = hostInfo.VirtualizationSystem
 	host.VirtualizationRole = hostInfo.VirtualizationRole
 	host.SystemHostID = hostInfo.HostID
+	host.BootTime = hostInfo.BootTime
 	host.LastSeen = now
 	host.UpdatedAt = now
 	return &host, r.db.WithContext(ctx).Save(&host).Error
@@ -139,6 +136,7 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		host.VirtualizationSystem = hostInfo.VirtualizationSystem
 		host.VirtualizationRole = hostInfo.VirtualizationRole
 		host.SystemHostID = hostInfo.HostID
+	host.BootTime = hostInfo.BootTime
 		host.LastSeen = now
 		host.UpdatedAt = now
 		return &host, r.db.WithContext(ctx).Save(&host).Error
@@ -165,9 +163,30 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		hostByName.VirtualizationSystem = hostInfo.VirtualizationSystem
 		hostByName.VirtualizationRole = hostInfo.VirtualizationRole
 		hostByName.SystemHostID = hostInfo.HostID
+	hostByName.BootTime = hostInfo.BootTime
 		hostByName.LastSeen = now
 		hostByName.UpdatedAt = now
 		return &hostByName, r.db.WithContext(ctx).Save(&hostByName).Error
+	}
+	if err != gorm.ErrRecordNotFound {
+		return nil, err
+	}
+
+	// 2b) Guard against duplicating this node's own local collector row.
+	// The local host lives at id=1 and is excluded from the lookups above so
+	// a remote join never overwrites it. But every node also replicates its
+	// own local host into the cluster registry (so peers see it in /hosts),
+	// and that command is applied on the origin node too. There, the MAC/Name
+	// match only id=1 — which we skipped — so without this guard we'd fall
+	// through to CREATE and hit `UNIQUE constraint failed: hosts.name`. When
+	// id=1 already represents this host, it's our own machine: return that row
+	// untouched instead of inserting a duplicate.
+	var localHost Host
+	err = r.db.WithContext(ctx).
+		Where("id = ? AND (mac_address = ? OR name = ?)", LocalCollectorHostID, hostInfo.MacAddress, hostInfo.Name).
+		First(&localHost).Error
+	if err == nil {
+		return &localHost, nil
 	}
 	if err != gorm.ErrRecordNotFound {
 		return nil, err
@@ -187,6 +206,7 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		VirtualizationSystem: hostInfo.VirtualizationSystem,
 		VirtualizationRole:   hostInfo.VirtualizationRole,
 		SystemHostID:         hostInfo.HostID,
+		BootTime:             hostInfo.BootTime,
 		LastSeen:             now,
 		CreatedAt:            now,
 		UpdatedAt:            now,
@@ -263,10 +283,6 @@ func (r *hostRepository) UpdateHostLabelsFromAgentPush(ctx context.Context, host
 
 func (r *hostRepository) DeleteHostCascade(ctx context.Context, hostID uint) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Node tables (raw SQL to avoid import cycle with cluster/nodes)
-		tx.Exec("DELETE FROM node_credentials WHERE host_id = ?", hostID)
-		tx.Exec("UPDATE node_join_tokens SET host_id = NULL WHERE host_id = ?", hostID)
-
 		// Metrics tables (raw SQL to avoid import cycle with metrics packages)
 		tx.Exec("DELETE FROM cpu_metrics WHERE host_id = ?", hostID)
 		tx.Exec("DELETE FROM memory_metrics WHERE host_id = ?", hostID)
