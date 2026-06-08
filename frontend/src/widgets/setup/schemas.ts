@@ -27,8 +27,19 @@ export const setupConfigSchema = z.object({
   addr: z.string(),
   gin_mode: z.enum(['debug', 'release'], { message: 'Gin mode must be debug or release' }),
   debug: z.enum(['true', 'false'], { message: 'Debug must be true or false' }),
-  db_type: z.string(),
-  db_dsn: z.string(),
+  db_type: z.enum(['sqlite', 'postgres'], { message: 'Database must be sqlite or postgres' }),
+  // SQLite file path (sqlite only).
+  db_sqlite_path: z.string(),
+  // Postgres: managed → node-stats runs a `db` container; external → connect to
+  // an existing server. The structured fields are assembled into a DSN client-
+  // side so the backend contract stays {db_type, db_dsn, db_managed, db_*}.
+  db_managed: z.boolean(),
+  db_host: z.string(),
+  db_port: optionalPort,
+  db_name: z.string(),
+  db_user: z.string(),
+  db_password: z.string(),
+  db_sslmode: z.enum(['disable', 'require', 'verify-ca', 'verify-full']),
   prometheus_enabled: z.enum(['true', 'false']),
   prometheus_auth: z.enum(['true', 'false']),
   prometheus_token: z.string(),
@@ -50,6 +61,20 @@ export const setupConfigSchema = z.object({
   raft_bridge_enabled: z.enum(['true', 'false']),
   raft_bridge_shared_secret: z.string(),
   raft_bridge_remote_seeds: z.string(),
+}).superRefine((cfg, ctx) => {
+  if (cfg.db_type === 'sqlite') {
+    if (!cfg.db_sqlite_path.trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['db_sqlite_path'], message: 'SQLite file path is required (e.g. stats.db)' });
+    }
+    return;
+  }
+  // postgres: external needs real connection details; managed auto-provisions them.
+  if (!cfg.db_managed) {
+    if (!cfg.db_host.trim()) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['db_host'], message: 'Host is required' });
+    if (!cfg.db_name.trim()) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['db_name'], message: 'Database name is required' });
+    if (!cfg.db_user.trim()) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['db_user'], message: 'User is required' });
+    if (!cfg.db_password) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['db_password'], message: 'Password is required' });
+  }
 });
 
 const passwordSchema = z
@@ -84,6 +109,7 @@ export interface MachineHintsResponse {
 export interface SetupStatusResponse {
   setup_needed: boolean;
   running_in_docker?: boolean;
+  managed_externally?: boolean;
   machine_hints: MachineHintsResponse;
 }
 
@@ -118,6 +144,10 @@ export interface ConfigResponse {
 
 export interface CompleteSetupResponse {
   message: string;
+  /** True when the controller must recreate the stack onto a new DB before the
+   *  admin can be created — the frontend waits for the restart then re-submits. */
+  restart_pending?: boolean;
+  db_mode?: string;
 }
 
 /** API body.config shape (snake_case) for setup preview and complete. */
@@ -137,7 +167,17 @@ export function toSetupConfigApiPayload(config: SetupConfigFormData) {
     gin_mode: config.gin_mode || 'release',
     debug: config.debug || 'false',
     db_type: config.db_type || 'sqlite',
-    db_dsn: config.db_dsn || 'stats.db',
+    db_managed: config.db_type === 'postgres' ? config.db_managed : false,
+    // For sqlite, db_dsn is the file path; for external postgres we send the
+    // structured fields and the backend assembles the keyword DSN (managed
+    // postgres ignores them — the backend forces host=db and generates a pw).
+    db_dsn: config.db_type === 'sqlite' ? (config.db_sqlite_path || 'stats.db') : '',
+    db_host: config.db_host.trim(),
+    db_port: (config.db_port || '').trim(),
+    db_name: config.db_name.trim(),
+    db_user: config.db_user.trim(),
+    db_password: config.db_password,
+    db_sslmode: config.db_sslmode || 'disable',
     prometheus_enabled: config.prometheus_enabled || 'false',
     prometheus_auth: config.prometheus_auth || 'false',
     prometheus_token: config.prometheus_token || '',

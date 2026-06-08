@@ -8,6 +8,7 @@ import { FormInputField, FormSelectField, FormField } from '@/components/ui/form
 import { Switch } from '@/shared/ui/switch';
 import { PasswordInput } from '@/shared/ui/password-input';
 import { setupConfigSchema, SetupConfigFormData, type MachineHintsResponse } from './schemas';
+import { useTestDb } from './useSetup';
 import { DEFAULT_SETUP_CONFIG } from '../../shared/config/setup';
 
 export const CONFIG_STEP_META = {
@@ -107,6 +108,9 @@ export function ConfigFormWidget({ initialValues, runningInDocker, machineHints,
   }, [machineHints, form]);
 
   const dbType = useWatch({ control: form.control, name: 'db_type' });
+  const dbManaged = useWatch({ control: form.control, name: 'db_managed' });
+  const testDb = useTestDb();
+  const [dbTestResult, setDbTestResult] = useState<{ ok: boolean; error?: string } | null>(null);
   const prometheusEnabled = useWatch({ control: form.control, name: 'prometheus_enabled' });
   const prometheusAuth = useWatch({ control: form.control, name: 'prometheus_auth' });
   const prometheusToken = useWatch({ control: form.control, name: 'prometheus_token' });
@@ -131,9 +135,15 @@ export function ConfigFormWidget({ initialValues, runningInDocker, machineHints,
   useEffect(() => {
     if (prevDbType.current !== dbType) {
       prevDbType.current = dbType;
-      form.setValue('db_dsn', dbType === 'sqlite' ? 'stats.db' : '', { shouldValidate: false });
+      setDbTestResult(null);
     }
-  }, [dbType, form]);
+  }, [dbType]);
+
+  // Managed Postgres requires the controller sidecar (Docker only); force the
+  // external path otherwise so its credentials get validated.
+  useEffect(() => {
+    if (!runningInDocker) form.setValue('db_managed', false);
+  }, [runningInDocker, form]);
 
   const generateSecret = (length = 32) => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
@@ -287,20 +297,9 @@ export function ConfigFormWidget({ initialValues, runningInDocker, machineHints,
               <ToggleRow
                 id="docker_host_metrics_compat"
                 label="Docker host metrics compatibility"
-                description="Append HOST_PROC, HOST_SYS, HOST_ETC, HOST_ROOT, NODE_HOST_ALIAS; use /app/data/stats.db for SQLite when DSN is still the default file name"
+                description="Append HOST_PROC, HOST_SYS, HOST_ETC, HOST_ROOT, NODE_HOST_ALIAS for bind-mounted host metrics"
                 checked={field.value}
-                onCheckedChange={(enabled) => {
-                  field.onChange(enabled);
-                  const dsn = form.getValues('db_dsn');
-                  const dtype = form.getValues('db_type');
-                  if (enabled) {
-                    if (dtype === 'sqlite' && (dsn === '' || dsn === 'stats.db')) {
-                      form.setValue('db_dsn', '/app/data/stats.db', { shouldValidate: true });
-                    }
-                  } else if (dsn === '/app/data/stats.db') {
-                    form.setValue('db_dsn', 'stats.db', { shouldValidate: true });
-                  }
-                }}
+                onCheckedChange={(enabled) => field.onChange(enabled)}
               />
             )}
           />
@@ -324,21 +323,96 @@ export function ConfigFormWidget({ initialValues, runningInDocker, machineHints,
       <Accordion open={dbType === 'sqlite'}>
         <FormInputField
           label="Database File Path"
-          register={form.register('db_dsn')}
-          name="db_dsn"
+          register={form.register('db_sqlite_path')}
+          name="db_sqlite_path"
           inputProps={{ placeholder: 'stats.db' }}
-          error={form.formState.errors.db_dsn}
+          error={form.formState.errors.db_sqlite_path}
         />
       </Accordion>
 
       <Accordion open={dbType === 'postgres'}>
-        <FormInputField
-          label="PostgreSQL Connection String"
-          register={form.register('db_dsn')}
-          name="db_dsn"
-          inputProps={{ placeholder: 'postgres://stats:secret@localhost:5432/node_stats?sslmode=disable' }}
-          error={form.formState.errors.db_dsn}
-        />
+        {runningInDocker && (
+          <Controller
+            control={form.control}
+            name="db_managed"
+            render={({ field }) => (
+              <ToggleRow
+                id="db_managed"
+                label="Let node-stats run PostgreSQL for me"
+                description="Adds a managed postgres container to the stack and wires it up automatically. Turn off to connect to an existing server."
+                checked={field.value}
+                onCheckedChange={(val) => { field.onChange(val); setDbTestResult(null); }}
+              />
+            )}
+          />
+        )}
+
+        {runningInDocker && dbManaged ? (
+          <>
+            <Alert className="border-sky-800/60 bg-sky-950/40 text-sky-100">
+              <AlertDescription className="text-xs leading-relaxed text-sky-100/95">
+                node-stats will provision a <code className="rounded bg-black/30 px-1 font-mono text-[0.7rem]">postgres:16-alpine</code> container
+                (service <code className="rounded bg-black/30 px-1 font-mono text-[0.7rem]">db</code>) with a generated password and apply it by
+                restarting the stack — this can take a moment after you finish setup.
+              </AlertDescription>
+            </Alert>
+            <FormInputField
+              label="Database name"
+              register={form.register('db_name')}
+              name="db_name"
+              inputProps={{ placeholder: 'node_stats' }}
+              error={form.formState.errors.db_name}
+            />
+          </>
+        ) : (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <FormInputField label="Host" register={form.register('db_host')} name="db_host" inputProps={{ placeholder: 'db.example.com' }} error={form.formState.errors.db_host} />
+              <FormInputField label="Port" register={form.register('db_port')} name="db_port" inputProps={{ placeholder: '5432' }} error={form.formState.errors.db_port} />
+            </div>
+            <FormInputField label="Database name" register={form.register('db_name')} name="db_name" inputProps={{ placeholder: 'node_stats' }} error={form.formState.errors.db_name} />
+            <div className="grid grid-cols-2 gap-3">
+              <FormInputField label="User" register={form.register('db_user')} name="db_user" inputProps={{ placeholder: 'node_stats' }} error={form.formState.errors.db_user} />
+              <FormField label="Password" error={form.formState.errors.db_password} id="db_password">
+                <PasswordInput id="db_password" {...form.register('db_password')} />
+              </FormField>
+            </div>
+            <FormSelectField
+              label="SSL mode"
+              register={form.register('db_sslmode')}
+              name="db_sslmode"
+              options={[
+                { value: 'disable', label: 'disable' },
+                { value: 'require', label: 'require' },
+                { value: 'verify-ca', label: 'verify-ca' },
+                { value: 'verify-full', label: 'verify-full' },
+              ]}
+              error={form.formState.errors.db_sslmode}
+            />
+            <div className="flex items-center gap-3">
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={testDb.isPending}
+                onClick={async () => {
+                  const v = form.getValues();
+                  const r = await testDb
+                    .mutateAsync({ db_host: v.db_host, db_port: v.db_port, db_name: v.db_name, db_user: v.db_user, db_password: v.db_password, db_sslmode: v.db_sslmode })
+                    .catch((e: unknown) => ({ ok: false, error: e instanceof Error ? e.message : 'request failed' }));
+                  setDbTestResult(r);
+                }}
+                className="bg-slate-700 text-white hover:bg-slate-600 border-slate-600"
+              >
+                {testDb.isPending ? 'Testing…' : 'Test connection'}
+              </Button>
+              {dbTestResult && (
+                <span className={`text-xs ${dbTestResult.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {dbTestResult.ok ? '✓ Connection OK' : `✗ ${dbTestResult.error}`}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
       </Accordion>
 
       {/* === Prometheus === */}
