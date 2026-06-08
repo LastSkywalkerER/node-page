@@ -93,6 +93,9 @@ type Container struct {
 	// activation so the admin UI can surface it ("Raft is disabled
 	// because port :7000 is in use; reconfigure below").
 	raftBootError string
+	// leaderAdvertiseStarted guards the single leader-advertise loop
+	// (startLeaderAdvertiseLoopLocked) so it is launched at most once.
+	leaderAdvertiseStarted bool
 	// postActivate is fired in a goroutine after every successful
 	// Raft activation. Used by server.Run to (re-)start metrics
 	// collection when the wizard's join branch flips Raft on
@@ -340,6 +343,44 @@ func (c *Container) SetAppContext(ctx context.Context) {
 	defer c.activateMu.Unlock()
 	c.appCtx = ctx
 	c.startBridgeGoroutinesLocked()
+	c.startLeaderAdvertiseLoopLocked(ctx)
+}
+
+// startLeaderAdvertiseLoopLocked launches a single background loop that
+// (re)publishes this node's advertise URL into the peer catalog whenever it is
+// the Raft leader. hashicorp/raft only signals leadership transitions and
+// nothing else re-publishes the URL, so a node that became leader via runtime
+// hot-activation (the setup wizard) or after a leadership change would never
+// advertise itself — leaving followers unable to forward writes ("no known
+// leader to forward to"). The advertise is an idempotent upsert and a no-op
+// when this node isn't the leader or has no advertise URL configured.
+func (c *Container) startLeaderAdvertiseLoopLocked(ctx context.Context) {
+	if ctx == nil || c.leaderAdvertiseStarted {
+		return
+	}
+	c.leaderAdvertiseStarted = true
+	go func() {
+		t := time.NewTicker(3 * time.Second)
+		defer t.Stop()
+		wasLeader := false
+		ticks := 0
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+			svc := c.GetRaftService()
+			isLeader := svc != nil && svc.Enabled() && svc.IsLeader()
+			// Advertise promptly on acquiring leadership, then refresh ~every 30s
+			// (covers a missed/dropped catalog write or a follower that restarted).
+			if isLeader && (!wasLeader || ticks%10 == 0) {
+				c.AdvertiseSelfNow(ctx)
+			}
+			wasLeader = isLeader
+			ticks++
+		}
+	}()
 }
 
 // ActivateRaft hot-initialises the Raft layer from a runtime config

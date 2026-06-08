@@ -27,6 +27,7 @@ services:
       - HOST_ROOT=/host
       - NODE_HOST_ALIAS=host.docker.internal
       - NODE_STATS_IPV4=${NODE_STATS_IPV4:-}
+      - NODE_STATS_HOSTNAME=${NODE_STATS_HOSTNAME:-}
     restart: unless-stopped
   node-stats-controller:
     image: ${NODE_STATS_IMAGE:-ghcr.io/lastskywalkerer/node-page:latest}

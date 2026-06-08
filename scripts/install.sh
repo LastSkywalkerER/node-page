@@ -120,6 +120,7 @@ write_env() {
 NODE_STATS_IMAGE=${IMAGE}
 NODE_STATS_PORT=${HTTP_PORT}
 NODE_STATS_RAFT_PORT=${RAFT_PORT}
+NODE_STATS_HOSTNAME=${NODE_STATS_HOSTNAME:-}
 NODE_STATS_STACK_HOST_DIR=${STACK_DIR}
 # Host's outbound-interface IPv4 (detected on the host) so the wizard / cluster
 # join URLs use a routable address instead of the container's docker IP.
