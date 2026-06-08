@@ -15,6 +15,7 @@ import { useUserStore } from '@/shared/store/user'
 import { useHosts } from '@/widgets/hosts/useHosts'
 import { getHostNavLabel } from '@/shared/lib/hostDisplay'
 import { authService } from '@/shared/lib/auth'
+import { UpdateBadge } from '@/widgets/update/UpdateBadge'
 import { cn } from '@/lib/utils'
 
 function AdminNav() {
@@ -263,6 +264,7 @@ export function AppHeader() {
         {!onMachineDetail && !onApplicationDetail && !onAdmin && <div className="hidden min-w-0 flex-1 sm:block" />}
 
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
+          {user?.role === 'ADMIN' && <UpdateBadge />}
           {user?.role === 'ADMIN' && (
             <Tooltip>
               <TooltipTrigger

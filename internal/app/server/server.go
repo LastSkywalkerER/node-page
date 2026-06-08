@@ -48,7 +48,7 @@ import (
 	setup "system-stats/internal/platform/setup"
 	platformstream "system-stats/internal/platform/stream"
 	system "system-stats/internal/platform/system"
-	"system-stats/internal/version"
+	"system-stats/internal/platform/update"
 	"system-stats/internal/webui"
 )
 
@@ -445,6 +445,33 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	invitationHandler := invitations.NewHandler(container.GetInvitationService())
 	streamHandler := platformstream.NewHandler(container.GetBroker(), container.GetHostService())
 	configWriter := setup.NewConfigWriter()
+
+	// Update service: polls GitHub Releases, exposes /version, drives the
+	// auto-update toggle + "update now" (docker → controller; native → self-replace).
+	updateDataDir := os.Getenv("NODE_STATS_DATA_DIR")
+	if updateDataDir == "" {
+		updateDataDir = "/app/data"
+	}
+	updateSvc := update.NewService(
+		os.Getenv("NODE_STATS_REPO"),
+		updateDataDir,
+		strings.EqualFold(os.Getenv("AUTO_UPDATE"), "true"),
+		func(enabled bool) error {
+			cv, err := configWriter.ReadCurrentConfig()
+			if err != nil {
+				return err
+			}
+			if enabled {
+				cv.AutoUpdate = "true"
+			} else {
+				cv.AutoUpdate = "false"
+			}
+			return configWriter.WriteConfigFile(cv)
+		},
+		func() (string, string) { return string(cfg.Database.Type), cfg.Database.DSN },
+	)
+	updateSvc.Start(context.Background())
+
 	setupHandler := setup.NewHandler(configWriter, container.GetUserService(), onSetupComplete).
 		WithRaft(container.GetRaftService()).
 		WithRaftActivator(container).
@@ -484,10 +511,10 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		// Public: health check (no auth — used by load balancers and k8s probes)
 		api.GET("/health", healthHandler.HandleHealth)
 
-		// Public: build/version info (no auth) — consumed by the update banner
-		// and the wizard's post-restart readiness gate.
+		// Public: build/version + update info (no auth) — consumed by the update
+		// banner and the wizard's post-restart readiness gate.
 		api.GET("/version", func(c *gin.Context) {
-			c.JSON(http.StatusOK, gin.H{"data": version.Get()})
+			c.JSON(http.StatusOK, gin.H{"data": updateSvc.Status()})
 		})
 
 		// Setup routes (public, only work when no users exist)
@@ -606,6 +633,31 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		// handler requires an explicit acknowledge_data_loss flag).
 		authAPI.POST("/cluster/start", middleware.RequireAdmin(), setupHandler.AdminStartCluster)
 		authAPI.POST("/cluster/join", middleware.RequireAdmin(), setupHandler.AdminJoinCluster)
+
+		// Auto-update settings (admin). Toggle persists to .env.agent; "now"
+		// applies immediately (docker → controller pull+recreate; native → self-replace).
+		authAPI.POST("/settings/auto-update", middleware.RequireAdmin(), func(c *gin.Context) {
+			var body struct {
+				Enabled bool `json:"enabled"`
+			}
+			if err := c.ShouldBindJSON(&body); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "Invalid request data"})
+				return
+			}
+			if err := updateSvc.SetAutoUpdate(c.Request.Context(), body.Enabled); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"data": updateSvc.Status()})
+		})
+		authAPI.POST("/settings/update-now", middleware.RequireAdmin(), func(c *gin.Context) {
+			msg, err := updateSvc.UpdateNow(c.Request.Context())
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"code": "update_failed", "error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"data": gin.H{"message": msg}})
+		})
 	}
 
 	// Static files for React app (hashed bundles from Vite). Served from the

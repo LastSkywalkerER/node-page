@@ -43,6 +43,7 @@ func Run() {
 		project:    envOr("NODE_STATS_PROJECT", "node-stats"),
 		appService: envOr("NODE_STATS_APP_SERVICE", "node-stats"),
 	}
+	c.lastApplied = readAppliedHash(c.dataDir)
 	log.Info("controller: starting", "stack_dir", c.stackDir, "data_dir", c.dataDir, "project", c.project)
 
 	if setup.ManagedExternally() {
@@ -116,9 +117,27 @@ func (c *controller) apply(ds setup.DesiredState) bool {
 	}
 
 	log.Info("controller: applied", "generation", ds.Generation)
+	writeAppliedHash(c.dataDir, ds.Hash())
 	c.writeStatus(setup.ControllerStatus{Generation: ds.Generation, Phase: setup.PhaseApplied,
 		Message: "recreated " + c.appService})
 	return true
+}
+
+// applied-hash persistence so a controller restart doesn't re-apply an already
+// applied desired state (which would needlessly recreate the app).
+func readAppliedHash(dir string) string {
+	b, err := os.ReadFile(filepath.Join(dir, ".applied-hash"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func writeAppliedHash(dir, hash string) {
+	tmp := filepath.Join(dir, ".applied-hash.tmp")
+	if err := os.WriteFile(tmp, []byte(hash), 0o644); err == nil {
+		_ = os.Rename(tmp, filepath.Join(dir, ".applied-hash"))
+	}
 }
 
 func (c *controller) fail(ds setup.DesiredState, where string, err error) bool {

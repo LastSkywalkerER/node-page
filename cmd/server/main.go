@@ -21,6 +21,7 @@ import (
 	"system-stats/internal/app/server"
 	"system-stats/internal/platform/controller"
 	"system-stats/internal/platform/setup"
+	"system-stats/internal/platform/update"
 )
 
 func main() {
@@ -40,6 +41,12 @@ func main() {
 				DBMode: setup.DBModeSQLite,
 				Image:  os.Getenv("NODE_STATS_IMAGE"),
 			}))
+			return
+		case "update":
+			// Native self-update from the latest GitHub release. `--check` only
+			// reports availability (exit 10 when an update exists).
+			checkOnly := len(os.Args) > 2 && (os.Args[2] == "--check" || os.Args[2] == "-check")
+			update.RunCLI(checkOnly)
 			return
 		}
 	}

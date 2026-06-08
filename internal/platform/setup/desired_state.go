@@ -34,13 +34,13 @@ type ControllerStatus struct {
 	UpdatedAt  string `json:"updated_at,omitempty"`
 }
 
-// Hash returns a stable digest of the desired configuration, EXCLUDING
-// Generation, so re-emitting an identical state (even with a bumped generation)
-// is a no-op for the controller.
+// Hash returns a digest of the descriptor INCLUDING Generation, so each new
+// write (which bumps Generation) triggers exactly one controller apply — this
+// is what lets "update now" force a pull+recreate even when the topology is
+// unchanged. The controller persists the applied hash so a controller restart
+// doesn't re-apply an already-applied state.
 func (ds DesiredState) Hash() string {
-	c := ds
-	c.Generation = 0
-	b, _ := json.Marshal(c)
+	b, _ := json.Marshal(ds)
 	sum := sha256.Sum256(b)
 	return fmt.Sprintf("%x", sum)
 }

@@ -56,6 +56,9 @@ type ConfigValues struct {
 	PrometheusEnabled string `json:"prometheus_enabled"`
 	PrometheusAuth    string `json:"prometheus_auth"`
 	PrometheusToken   string `json:"prometheus_token"`
+	// AutoUpdate ("true"/"false"): when on, the app checks GitHub Releases and
+	// applies updates (docker → controller pull+recreate; native → self-replace).
+	AutoUpdate string `json:"auto_update"`
 	// DockerHostMetricsCompat adds HOST_* and NODE_HOST_ALIAS for bind-mounted host root at /host.
 	DockerHostMetricsCompat bool `json:"docker_host_metrics_compat"`
 	// NodeStatsHostname optional; written as NODE_STATS_HOSTNAME when non-empty.
@@ -95,6 +98,7 @@ func (cw *ConfigWriter) ReadCurrentConfig() (*ConfigValues, error) {
 		PrometheusEnabled:      getEnv("PROMETHEUS_ENABLED", "false"),
 		PrometheusAuth:         getEnv("PROMETHEUS_AUTH", "false"),
 		PrometheusToken:        os.Getenv("PROMETHEUS_TOKEN"),
+		AutoUpdate:             getEnv("AUTO_UPDATE", "false"),
 		NodeStatsHostname:      os.Getenv("NODE_STATS_HOSTNAME"),
 		NodeStatsIPv4:          os.Getenv("NODE_STATS_IPV4"),
 		RaftEnabled:            os.Getenv("RAFT_ENABLED"),
@@ -267,6 +271,12 @@ func buildEnvFileContent(config *ConfigValues) string {
 	lines = append(lines, fmt.Sprintf("PROMETHEUS_AUTH=%s", escapeValue(config.PrometheusAuth)))
 	if config.PrometheusToken != "" {
 		lines = append(lines, fmt.Sprintf("PROMETHEUS_TOKEN=%s", escapeValue(config.PrometheusToken)))
+	}
+
+	if strings.EqualFold(strings.TrimSpace(config.AutoUpdate), "true") {
+		lines = append(lines, "")
+		lines = append(lines, "# Auto-update: check GitHub Releases and apply (docker → controller pull+recreate)")
+		lines = append(lines, "AUTO_UPDATE=true")
 	}
 
 	if config.DockerHostMetricsCompat {
