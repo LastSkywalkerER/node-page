@@ -119,7 +119,10 @@ func BuildComposeContent(ds DesiredState) string {
 		w("      - DB_DSN=/app/data/stats.db")
 	} else {
 		w("      - DB_TYPE=postgres")
-		w("      - DB_DSN=" + yamlSingleQuote(ds.DBDSN))
+		// In Compose's `environment:` list form the value is everything after the
+		// first '='; it must NOT be quoted (quotes become literal). Spaces in the
+		// keyword DSN are fine; only '$' needs escaping (Compose interpolation).
+		w("      - DB_DSN=" + composeEnvValue(ds.DBDSN))
 	}
 	w("      - HOST_PROC=/host/proc")
 	w("      - HOST_SYS=/host/sys")
@@ -139,7 +142,7 @@ func BuildComposeContent(ds DesiredState) string {
 		w("    environment:")
 		w("      - POSTGRES_DB=" + name)
 		w("      - POSTGRES_USER=" + user)
-		w("      - POSTGRES_PASSWORD=" + yamlSingleQuote(pass))
+		w("      - POSTGRES_PASSWORD=" + composeEnvValue(pass))
 		w("    volumes:")
 		w("      - pgdata:/var/lib/postgresql/data")
 		w("    healthcheck:")
@@ -181,8 +184,9 @@ func orDefault(v, def string) string {
 	return strings.TrimSpace(v)
 }
 
-// yamlSingleQuote single-quotes a YAML scalar so values with special characters
-// round-trip safely (generated passwords are hex, but be defensive).
-func yamlSingleQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+// composeEnvValue escapes a value for use in a Compose `environment:` list item
+// (`- KEY=VALUE`). The value must stay unquoted there (surrounding quotes become
+// literal); only '$' needs doubling so Compose doesn't treat it as interpolation.
+func composeEnvValue(s string) string {
+	return strings.ReplaceAll(s, "$", "$$")
 }

@@ -38,7 +38,7 @@ func TestBuildComposeContent_PostgresManaged(t *testing.T) {
 		"host=db user=node_stats password=s3cr3t",
 		"POSTGRES_DB=node_stats",
 		"POSTGRES_USER=node_stats",
-		"POSTGRES_PASSWORD='s3cr3t'",
+		"POSTGRES_PASSWORD=s3cr3t",
 		"depends_on:",
 		"condition: service_healthy",
 		"pg_isready -U node_stats -d node_stats",

@@ -68,5 +68,7 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD wget -qO- http://localhost:8080/api/v1/health || exit 1
 
-# Run the application (default = server; `controller` selects the sidecar role)
-CMD ["./server"]
+# ENTRYPOINT so subcommands compose cleanly: `docker run <img>` → server,
+# `docker run <img> controller` / compose `command: ["controller"]` → the
+# sidecar, `docker run <img> gen-compose` → emit the base compose.
+ENTRYPOINT ["/app/server"]
