@@ -36,7 +36,12 @@ export function ApplicationTile({ app, hostId, hostIPv4 }: ApplicationTileProps)
     hostIPv4 && ports.length > 0
       ? ports.map((p) => ({ port: p.public_port as number, href: `http://${hostIPv4}:${p.public_port}` }))
       : [];
+  // Reverse-proxy (Traefik) domains other than the primary "open" link.
+  const routedLinks = (app.ports ?? [])
+    .filter((p) => p.public_url && p.public_url !== app.public_url)
+    .slice(0, 4);
 
+  const stripScheme = (u: string) => u.replace(/^https?:\/\//, '').replace(/\/$/, '');
   const stop = (e: React.MouseEvent) => e.stopPropagation();
   const goDetail = () => navigate(`/applications/${hostId}/${encodeURIComponent(app.project)}`);
 
@@ -114,7 +119,7 @@ export function ApplicationTile({ app, hostId, hostIPv4 }: ApplicationTileProps)
         </div>
       </div>
 
-      {(ports.length > 0 || app.public_url) && (
+      {(ports.length > 0 || app.public_url || routedLinks.length > 0) && (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           {app.public_url && (
             <a
@@ -148,6 +153,19 @@ export function ApplicationTile({ app, hostId, hostIPv4 }: ApplicationTileProps)
                   :{p.public_port}
                 </span>
               ))}
+          {routedLinks.map((p) => (
+            <a
+              key={p.public_url}
+              href={p.public_url}
+              target="_blank"
+              rel="noreferrer"
+              onClick={stop}
+              title={p.public_url}
+              className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary transition-colors hover:bg-primary/20"
+            >
+              <ExternalLink className="h-2.5 w-2.5" /> {stripScheme(p.public_url as string)}
+            </a>
+          ))}
         </div>
       )}
     </div>

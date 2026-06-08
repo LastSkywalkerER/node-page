@@ -33,10 +33,23 @@ func BuildSyntheticCompose(app *DockerApplication) string {
 	b.WriteString("services:\n")
 
 	containers := append([]DockerContainer(nil), app.Containers...)
-	sort.Slice(containers, func(i, j int) bool { return serviceKey(containers[i]) < serviceKey(containers[j]) })
+	sort.Slice(containers, func(i, j int) bool {
+		if serviceKey(containers[i]) != serviceKey(containers[j]) {
+			return serviceKey(containers[i]) < serviceKey(containers[j])
+		}
+		return containers[i].Name < containers[j].Name
+	})
 
+	// Disambiguate replicas / task-attempts that share one service name so the
+	// reconstructed document never emits duplicate service keys.
+	seen := map[string]int{}
 	for _, c := range containers {
-		fmt.Fprintf(&b, "  %s:\n", serviceKey(c))
+		key := serviceKey(c)
+		seen[key]++
+		if seen[key] > 1 {
+			key = fmt.Sprintf("%s-%d", key, seen[key])
+		}
+		fmt.Fprintf(&b, "  %s:\n", key)
 		fmt.Fprintf(&b, "    image: %s\n", yamlValue(c.Image))
 		fmt.Fprintf(&b, "    container_name: %s\n", yamlValue(c.Name))
 		if c.State != "" {

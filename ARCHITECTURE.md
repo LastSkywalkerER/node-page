@@ -110,6 +110,7 @@ All metric endpoints accept `?hours=<float>` (default `0.0833` ≈ 5 min) and `?
 | `HOST_ROOT` | — | Host root bind-mount path (e.g. `/host`); disk primary totals use this before `/` |
 | `NODE_STATS_HOSTNAME` | — | Optional; when set, collector uses it and API adds `display_name` (overrides card/breadcrumb label). When unset, UI uses registered `name` from the host row. |
 | `NODE_STATS_IPV4` | — | Optional override for registered IPv4; omit for auto-detect. |
+| `TRAEFIK_DYNAMIC_DIR` | — | Colon-separated Traefik file-provider dynamic-config dir(s) to derive per-service public URLs for the Applications view. Unset → probes well-known defaults (incl. dokploy's `/etc/dokploy/traefik/dynamic`). Must be bind-mounted into the container to be readable. |
 
 **Raft cluster sync** (optional; see `docker-compose.cluster.yml`). When unset the node runs standalone:
 | Variable | Default | Description |

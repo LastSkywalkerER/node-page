@@ -61,15 +61,27 @@ type DockerApplication struct {
 }
 
 // resolveProject returns (project, service, isSingleton) derived from container
-// labels. Compose is preferred, then swarm; otherwise the container is its own
-// standalone application.
+// labels. Compose is preferred, then swarm stacks, then standalone swarm
+// services; otherwise the container is its own standalone application.
 func resolveProject(labels map[string]string, containerName string) (string, string, bool) {
 	if labels != nil {
+		// docker-compose project (compose v2 / dokploy "Compose").
 		if p := labels["com.docker.compose.project"]; p != "" {
 			return p, labels["com.docker.compose.service"], false
 		}
+		// Swarm stack (`docker stack deploy`): group by stack namespace. Stack
+		// service names are "<namespace>_<service>" — trim the prefix so the
+		// service column is just the service.
 		if p := labels["com.docker.stack.namespace"]; p != "" {
-			return p, labels["com.docker.swarm.service.name"], false
+			svc := labels["com.docker.swarm.service.name"]
+			return p, strings.TrimPrefix(svc, p+"_"), false
+		}
+		// Standalone Swarm service (dokploy's default deploy mode): no stack
+		// namespace, but a service name is present. Group all replicas /
+		// task-attempts under the service so each task ("<svc>.<slot>.<id>")
+		// doesn't become a phantom singleton.
+		if p := labels["com.docker.swarm.service.name"]; p != "" {
+			return p, p, false
 		}
 	}
 	return containerName, "", true
@@ -130,6 +142,12 @@ func BuildApplications(m *DockerMetric) []DockerApplication {
 			if app.PublicURL == "" {
 				app.PublicURL = publicURL(c.Labels)
 			}
+			// Fall back to a reverse-proxy route URL discovered from the
+			// Traefik file provider (attached to a container port at collection
+			// time) when no label-based URL was found.
+			if app.PublicURL == "" {
+				app.PublicURL = firstContainerPortURL(c)
+			}
 		}
 	}
 
@@ -140,10 +158,19 @@ func BuildApplications(m *DockerMetric) []DockerApplication {
 		// Deterministic ordering everywhere so rows don't jump between refreshes.
 		sort.Slice(app.Containers, func(i, j int) bool { return app.Containers[i].Name < app.Containers[j].Name })
 		sort.Slice(app.Ports, func(i, j int) bool {
-			if app.Ports[i].PublicPort != app.Ports[j].PublicPort {
-				return app.Ports[i].PublicPort < app.Ports[j].PublicPort
+			a, b := app.Ports[i], app.Ports[j]
+			if a.PublicPort != b.PublicPort {
+				return a.PublicPort < b.PublicPort
 			}
-			return app.Ports[i].Type < app.Ports[j].Type
+			if a.PrivatePort != b.PrivatePort {
+				return a.PrivatePort < b.PrivatePort
+			}
+			if a.Type != b.Type {
+				return a.Type < b.Type
+			}
+			// Final tiebreaker so routed-only ports (PublicPort=0, same type)
+			// don't reorder between refreshes under the unstable sort.
+			return a.PublicURL < b.PublicURL
 		})
 		sort.Slice(app.Volumes, func(i, j int) bool {
 			if app.Volumes[i].Destination != app.Volumes[j].Destination {
@@ -192,15 +219,18 @@ func sumStats(dst *DockerStats, s DockerStats) {
 	}
 }
 
-// mergePublicPorts unions published ports, de-duplicated by (PublicPort, Type).
+// mergePublicPorts unions ports that are externally reachable — either
+// published to the host (PublicPort) or routed by a reverse proxy (PublicURL,
+// even when the port isn't host-published) — de-duplicated by
+// (PublicPort, Type, PublicURL).
 func mergePublicPorts(acc []DockerPort, ports []DockerPort) []DockerPort {
 	for _, p := range ports {
-		if p.PublicPort == 0 {
+		if p.PublicPort == 0 && p.PublicURL == "" {
 			continue
 		}
 		dup := false
 		for _, e := range acc {
-			if e.PublicPort == p.PublicPort && e.Type == p.Type {
+			if e.PublicPort == p.PublicPort && e.Type == p.Type && e.PublicURL == p.PublicURL {
 				dup = true
 				break
 			}
