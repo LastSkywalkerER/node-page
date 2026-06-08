@@ -475,6 +475,28 @@ func (h *Handler) CompleteSetup(c *gin.Context) {
 			})
 			return
 		}
+		// As the bootstrap leader, seed the cluster-shared signing keys into the
+		// replicated cluster_config (so joiners receive valid secrets via
+		// snapshot — otherwise their token service stays unconfigured and login
+		// returns auth_not_configured) and advertise our HTTP URL (so followers
+		// can forward writes to us). Both are leader-only, and a synchronous call
+		// races the just-started bootstrap election — so wait for leadership in a
+		// background goroutine first. Mirrors AdminStartCluster. Best-effort.
+		if rt.Bootstrap {
+			jwt, refresh := req.Config.JWTSecret, req.Config.RefreshSecret
+			go func() {
+				for i := 0; i < 50; i++ { // wait up to ~10s for the election
+					if h.raftSvc != nil && strings.EqualFold(h.raftSvc.Status().State, "Leader") {
+						break
+					}
+					time.Sleep(200 * time.Millisecond)
+				}
+				sctx, scancel := context.WithTimeout(context.Background(), 10*time.Second)
+				_ = h.raftActivator.SeedClusterSecrets(sctx, jwt, refresh)
+				scancel()
+				h.raftActivator.AdvertiseSelfNow(context.Background())
+			}()
+		}
 	}
 
 	// If the chosen database engine differs from the one this process is running

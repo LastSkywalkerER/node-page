@@ -99,6 +99,10 @@ func BuildComposeContent(ds DesiredState) string {
 	w("    image: " + imageRef)
 	w("    ports:")
 	w(`      - "${NODE_STATS_PORT:-9090}:9090"`)
+	// Publish the Raft port so peers on other hosts can reach this node's
+	// consensus transport (the app binds :7000 inside; the host port is
+	// overridable per-instance via NODE_STATS_RAFT_PORT for multi-instance hosts).
+	w(`      - "${NODE_STATS_RAFT_PORT:-7000}:7000"`)
 	w("    volumes:")
 	w("      - ./.env.agent:/app/.env")
 	w("      - ./data/docker:/app/data")
@@ -171,6 +175,9 @@ func BuildComposeContent(ds DesiredState) string {
 	w("      - NODE_STATS_STACK_DIR=${NODE_STATS_STACK_HOST_DIR}")
 	w("      - NODE_STATS_DATA_DIR=${NODE_STATS_STACK_HOST_DIR}/data/docker")
 	w("      - NODE_STATS_APP_SERVICE=node-stats")
+	// The controller drives `docker compose -p <project>`; it must match the
+	// stack's project so multi-instance hosts don't cross-manage each other.
+	w("      - NODE_STATS_PROJECT=${COMPOSE_PROJECT_NAME:-node-stats}")
 	w("    restart: unless-stopped")
 
 	// --- top-level volumes ---------------------------------------------------
