@@ -119,6 +119,7 @@ All metric endpoints accept `?hours=<float>` (default `0.0833` ≈ 5 min) and `?
 | `NODE_STATS_REPO` | `LastSkywalkerER/node-page` | GitHub `owner/name` polled for releases. |
 | `NODE_STATS_DATA_DIR` | `/app/data` | Shared data dir holding `desired-state.json` / `controller-status.json` (app↔controller). |
 | `NODE_STATS_MANAGED_EXTERNALLY` | `false` | When true (or `TRAEFIK_DYNAMIC_DIR` set, or `/etc/dokploy` present), disables controller compose mutation — the orchestrator owns the lifecycle. |
+| `NODE_STATS_APP_PREFIX_GROUPING` | `true` | Applications view fallback: merge apps sharing a common dash/underscore name prefix into one (e.g. Dokploy's `node-stats-app-…`/`-db-…`/`-compose-…` → `node-stats`). Set `false`/`0`/`off` to disable. No-op for distinctly-named projects. |
 
 **Controller sidecar** (Docker only; same image run as `node-stats controller`). Owns the docker socket and applies the compose stack the app requests:
 | Variable | Default | Description |
