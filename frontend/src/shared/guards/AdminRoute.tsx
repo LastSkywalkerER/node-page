@@ -2,7 +2,7 @@ import { Navigate, Outlet } from 'react-router-dom'
 import { useUserStore } from '../store/user'
 
 /**
- * Guard that redirects non-admin users to /machines.
+ * Guard that redirects non-admin users to the dashboard.
  * Must be used inside ProtectedRoute (user is authenticated).
  */
 export function AdminRoute() {
@@ -13,7 +13,7 @@ export function AdminRoute() {
   }
 
   if (user.role !== 'ADMIN') {
-    return <Navigate to="/machines" replace />
+    return <Navigate to="/" replace />
   }
 
   return <Outlet />

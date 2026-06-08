@@ -33,8 +33,25 @@ services:
       - RAFT_ADVERTISE_PUBLIC_URL=http://node1:8080
       - RAFT_DATA_DIR=/app/data/raft
       - RAFT_BOOTSTRAP=true
+      # Host metrics access (gopsutil reads HOST_* from env; disk totals from /host)
+      - HOST_PROC=/host/proc
+      - HOST_SYS=/host/sys
+      - HOST_ETC=/host/etc
+      - HOST_ROOT=/host
+      - NODE_HOST_ALIAS=host.docker.internal
+      # Distinct logical hostname: both containers share the Docker VM hostname,
+      # so without this their host rows collide on name during Raft replication.
+      - NODE_STATS_HOSTNAME=node-1
     volumes:
       - node1-data:/app/data
+      # Docker metrics: read-only access to the host daemon
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Host filesystem for system metrics (CPU/mem/disk/net from the host kernel)
+      - /:/host:ro
+    pid: host
+    ipc: host
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
   node2:
@@ -53,8 +70,21 @@ services:
       - REFRESH_SECRET=cluster-test-refresh-secret
       # No RAFT_* here on purpose: node2 boots fresh (setup_needed) and you
       # activate Raft by choosing "join existing cluster" in its setup wizard.
+      # Host metrics access (same as node1)
+      - HOST_PROC=/host/proc
+      - HOST_SYS=/host/sys
+      - HOST_ETC=/host/etc
+      - HOST_ROOT=/host
+      - NODE_HOST_ALIAS=host.docker.internal
+      - NODE_STATS_HOSTNAME=node-2
     volumes:
       - node2-data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/host:ro
+    pid: host
+    ipc: host
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
 volumes:

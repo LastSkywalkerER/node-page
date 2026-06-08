@@ -29,7 +29,7 @@ function AdminNav() {
           <BreadcrumbItem>
             <BreadcrumbLink
               className="cursor-pointer"
-              render={(props) => <Link {...props} to="/machines" />}
+              render={(props) => <Link {...props} to="/" />}
             >
               Machines
             </BreadcrumbLink>
@@ -116,7 +116,7 @@ function MachineNav() {
           <BreadcrumbItem>
             <BreadcrumbLink
               className="cursor-pointer"
-              render={(props) => <Link {...props} to="/machines" />}
+              render={(props) => <Link {...props} to="/" />}
             >
               Machines
             </BreadcrumbLink>
@@ -186,10 +186,51 @@ function MachineNav() {
   )
 }
 
+function ApplicationNav() {
+  const { hostId, project } = useParams<{ hostId: string; project: string }>()
+  const { data: hostsData } = useHosts()
+  const hostRow = hostsData?.hosts?.find((h) => h.id === Number(hostId))
+  const hostName = hostRow ? getHostNavLabel(hostRow) : `#${hostId}`
+  const appName = project ? decodeURIComponent(project) : ''
+
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
+      <Breadcrumb className="min-w-0 flex-1 overflow-hidden">
+        <BreadcrumbList className="flex-nowrap text-xs sm:text-sm">
+          <BreadcrumbItem>
+            <BreadcrumbLink
+              className="cursor-pointer"
+              render={(props) => <Link {...props} to="/" />}
+            >
+              Machines
+            </BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem className="min-w-0">
+            <BreadcrumbLink
+              className="cursor-pointer truncate max-w-[140px] sm:max-w-[200px] font-display tracking-wide"
+              render={(props) => <Link {...props} to={`/machines/${hostId}/containers`} />}
+            >
+              {hostName}
+            </BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbPage className="font-medium font-display tracking-wide text-xs sm:text-sm truncate max-w-[160px] sm:max-w-[260px]">
+              {appName}
+            </BreadcrumbPage>
+          </BreadcrumbItem>
+        </BreadcrumbList>
+      </Breadcrumb>
+    </div>
+  )
+}
+
 export function AppHeader() {
   const { theme, toggle } = useTheme()
   const { user, clearAuth } = useUserStore()
   const onMachineDetail = !!useMatch('/machines/:id/*')
+  const onApplicationDetail = !!useMatch('/applications/:hostId/:project')
   const onAdmin = !!useMatch('/admin/*')
 
   const handleLogout = async () => {
@@ -208,7 +249,7 @@ export function AppHeader() {
     >
       <div className="mx-auto flex h-12 max-w-7xl min-w-0 items-center gap-2 px-3 sm:h-[52px] sm:gap-3 sm:px-4">
         <Link
-          to="/machines"
+          to="/"
           className="flex shrink-0 items-center gap-2 text-sm font-semibold font-display tracking-wide text-foreground/90 transition-colors duration-200 hover:text-primary cursor-pointer"
         >
           <LayoutGrid className="h-4 w-4 text-primary" />
@@ -216,9 +257,10 @@ export function AppHeader() {
         </Link>
 
         {onMachineDetail && <MachineNav />}
+        {onApplicationDetail && <ApplicationNav />}
         {onAdmin && <AdminNav />}
 
-        {!onMachineDetail && !onAdmin && <div className="hidden min-w-0 flex-1 sm:block" />}
+        {!onMachineDetail && !onApplicationDetail && !onAdmin && <div className="hidden min-w-0 flex-1 sm:block" />}
 
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
           {user?.role === 'ADMIN' && (

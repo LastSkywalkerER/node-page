@@ -1,0 +1,191 @@
+package docker
+
+import (
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+)
+
+// ComposeView is the read-only "composition" of an application: a synthetic
+// compose-like document reconstructed from container metadata, plus the real
+// compose file(s) when their host path is reachable from this process.
+type ComposeView struct {
+	Project       string   `json:"project"`
+	Synthetic     string   `json:"synthetic"`
+	Real          string   `json:"real,omitempty"`
+	RealAvailable bool     `json:"real_available"`
+	ConfigFiles   []string `json:"config_files,omitempty"`
+}
+
+// BuildSyntheticCompose reconstructs a compose-like YAML from the application's
+// containers (image, container name, published ports, user labels). It is NOT
+// the original file — env values, volumes and networks are not collected.
+func BuildSyntheticCompose(app *DockerApplication) string {
+	if app == nil {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("# Reconstructed from running container metadata — read-only.\n")
+	b.WriteString("# Not the original compose file: env values, volumes and networks are omitted.\n")
+	fmt.Fprintf(&b, "name: %s\n", app.Project)
+	b.WriteString("services:\n")
+
+	containers := append([]DockerContainer(nil), app.Containers...)
+	sort.Slice(containers, func(i, j int) bool { return serviceKey(containers[i]) < serviceKey(containers[j]) })
+
+	for _, c := range containers {
+		fmt.Fprintf(&b, "  %s:\n", serviceKey(c))
+		fmt.Fprintf(&b, "    image: %s\n", yamlValue(c.Image))
+		fmt.Fprintf(&b, "    container_name: %s\n", yamlValue(c.Name))
+		if c.State != "" {
+			fmt.Fprintf(&b, "    # state: %s\n", c.State)
+		}
+
+		published := publishedPorts(c.Ports)
+		if len(published) > 0 {
+			b.WriteString("    ports:\n")
+			for _, p := range published {
+				fmt.Fprintf(&b, "      - \"%s\"\n", p)
+			}
+		}
+
+		if len(c.Mounts) > 0 {
+			b.WriteString("    volumes:\n")
+			for _, m := range c.Mounts {
+				if m.Type == "tmpfs" {
+					continue
+				}
+				src := m.Source
+				if m.Name != "" {
+					src = m.Name
+				}
+				ro := ""
+				if !m.RW {
+					ro = ":ro"
+				}
+				fmt.Fprintf(&b, "      - \"%s:%s%s\"\n", src, m.Destination, ro)
+			}
+		}
+
+		userLabels := userLabelKeys(c.Labels)
+		if len(userLabels) > 0 {
+			b.WriteString("    labels:\n")
+			for _, k := range userLabels {
+				fmt.Fprintf(&b, "      %s: %s\n", k, yamlValue(c.Labels[k]))
+			}
+		}
+	}
+
+	return b.String()
+}
+
+// ReadRealCompose attempts to read the real compose file(s) referenced by the
+// application's containers. Only the paths recorded in the compose labels are
+// read (never arbitrary input), and only when reachable from this process.
+func ReadRealCompose(app *DockerApplication) (content string, files []string, available bool) {
+	if app == nil {
+		return "", nil, false
+	}
+
+	seen := map[string]struct{}{}
+	var paths []string
+	for _, c := range app.Containers {
+		for _, p := range splitConfigFiles(c.ComposeConfigFiles) {
+			if _, ok := seen[p]; ok {
+				continue
+			}
+			seen[p] = struct{}{}
+			paths = append(paths, p)
+		}
+	}
+	sort.Strings(paths)
+
+	var b strings.Builder
+	for _, p := range paths {
+		data, err := os.ReadFile(p) // #nosec G304 — path comes from the daemon's compose labels, not user input
+		if err != nil {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "# ── %s ──\n", p)
+		b.Write(data)
+		if !strings.HasSuffix(b.String(), "\n") {
+			b.WriteString("\n")
+		}
+		available = true
+	}
+
+	return b.String(), paths, available
+}
+
+func serviceKey(c DockerContainer) string {
+	if c.Service != "" {
+		return c.Service
+	}
+	return c.Name
+}
+
+func publishedPorts(ports []DockerPort) []string {
+	var out []string
+	for _, p := range ports {
+		if p.PublicPort == 0 {
+			continue
+		}
+		typ := p.Type
+		if typ == "" {
+			typ = "tcp"
+		}
+		out = append(out, fmt.Sprintf("%d:%d/%s", p.PublicPort, p.PrivatePort, typ))
+	}
+	return out
+}
+
+// userLabelKeys returns sorted label keys excluding Docker/orchestrator-internal
+// namespaces, so the synthetic compose shows meaningful user labels (traefik,
+// homepage, etc.).
+func userLabelKeys(labels map[string]string) []string {
+	if labels == nil {
+		return nil
+	}
+	var keys []string
+	for k := range labels {
+		if strings.HasPrefix(k, "com.docker.") ||
+			strings.HasPrefix(k, "org.opencontainers.") ||
+			strings.HasPrefix(k, "io.kubernetes.") ||
+			strings.HasPrefix(k, "desktop.docker.") {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func splitConfigFiles(v string) []string {
+	if v == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// yamlValue quotes a scalar when needed for safe YAML output.
+func yamlValue(s string) string {
+	if s == "" {
+		return `""`
+	}
+	if strings.ContainsAny(s, ":#{}[],&*?|<>=!%@`\"'\n") || strings.HasPrefix(s, " ") || strings.HasSuffix(s, " ") {
+		return `"` + strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), `"`, `\"`) + `"`
+	}
+	return s
+}

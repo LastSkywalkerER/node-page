@@ -19,6 +19,14 @@ export const dockerPortSchema = z.object({
   ip: z.string().optional(),
 });
 
+export const dockerMountSchema = z.object({
+  type: z.string(),
+  name: z.string().optional(),
+  source: z.string(),
+  destination: z.string(),
+  rw: z.boolean(),
+});
+
 export const dockerContainerSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -29,6 +37,24 @@ export const dockerContainerSchema = z.object({
   stats: dockerStatsSchema,
   created: z.string(),
   finished_at: z.string().optional(),
+  // Application grouping metadata (read-only label discovery)
+  project: z.string().optional(),
+  service: z.string().optional(),
+  labels: z.record(z.string(), z.string()).optional(),
+  compose_config_files: z.string().optional(),
+  compose_working_dir: z.string().optional(),
+  // Disk footprint + mounts
+  size_rw: z.number().optional(),
+  size_root_fs: z.number().optional(),
+  mounts: z.array(dockerMountSchema).optional(),
+  // Image identity + update check
+  image_id: z.string().optional(),
+  update_available: z.boolean().optional(),
+  update_checked: z.boolean().optional(),
+  local_digest: z.string().optional(),
+  remote_digest: z.string().optional(),
+  image_version: z.string().optional(),
+  remote_version: z.string().optional(),
 });
 
 export const dockerStackSchema = z.object({
@@ -48,6 +74,7 @@ export const dockerMetricSchema = z.object({
 
 export type DockerStats = z.infer<typeof dockerStatsSchema>;
 export type DockerPort = z.infer<typeof dockerPortSchema>;
+export type DockerMount = z.infer<typeof dockerMountSchema>;
 export type DockerContainer = z.infer<typeof dockerContainerSchema>;
 export type DockerStack = z.infer<typeof dockerStackSchema>;
 export type DockerMetric = z.infer<typeof dockerMetricSchema>;

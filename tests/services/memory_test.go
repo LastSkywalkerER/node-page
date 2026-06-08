@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/log"
 
@@ -20,6 +21,11 @@ type mockMemoryRepository struct {
 }
 
 func (m *mockMemoryRepository) SaveCurrentMetric(_ context.Context, _ memory.MemoryMetric, _ uint) error {
+	m.saveCalled = true
+	return m.saveErr
+}
+
+func (m *mockMemoryRepository) SaveCurrentMetricAt(_ context.Context, _ memory.MemoryMetric, _ uint, _ time.Time) error {
 	m.saveCalled = true
 	return m.saveErr
 }
