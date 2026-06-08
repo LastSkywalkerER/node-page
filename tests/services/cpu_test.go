@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/log"
 
@@ -20,6 +21,11 @@ type mockCPURepository struct {
 }
 
 func (m *mockCPURepository) SaveCurrentMetric(_ context.Context, _ cpu.CPUMetric, _ uint) error {
+	m.saveCalled = true
+	return m.saveErr
+}
+
+func (m *mockCPURepository) SaveCurrentMetricAt(_ context.Context, _ cpu.CPUMetric, _ uint, _ time.Time) error {
 	m.saveCalled = true
 	return m.saveErr
 }

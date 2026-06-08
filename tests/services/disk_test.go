@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/log"
 
@@ -20,6 +21,11 @@ type mockDiskRepository struct {
 }
 
 func (m *mockDiskRepository) SaveCurrentMetric(_ context.Context, _ disk.DiskMetric, _ uint) error {
+	m.saveCalled = true
+	return m.saveErr
+}
+
+func (m *mockDiskRepository) SaveCurrentMetricAt(_ context.Context, _ disk.DiskMetric, _ uint, _ time.Time) error {
 	m.saveCalled = true
 	return m.saveErr
 }

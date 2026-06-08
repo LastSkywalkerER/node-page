@@ -10,6 +10,7 @@ import { SetupPage } from './pages/SetupPage'
 import { MachineListPage } from './pages/MachineListPage'
 import { MachineStatsPage } from './pages/MachineStatsPage'
 import { MachineContainersPage } from './pages/MachineContainersPage'
+import { ApplicationDetailPage } from './pages/ApplicationDetailPage'
 import { AdminPage } from './pages/AdminPage'
 import { UsersTab } from './widgets/admin/UsersTab'
 import { NodesTab } from './widgets/admin/NodesTab'
@@ -52,15 +53,18 @@ function App() {
         path="/auth"
         element={
           <SetupRoute>
-            {isAuthenticated ? <Navigate to="/machines" replace /> : <AuthPage />}
+            {isAuthenticated ? <Navigate to="/" replace /> : <AuthPage />}
           </SetupRoute>
         }
       />
 
       <Route element={<ProtectedLayout />}>
-        <Route path="/machines" element={<MachineListPage />} />
+        <Route index element={<MachineListPage />} />
+        {/* Back-compat: old /machines URLs redirect to the root dashboard */}
+        <Route path="/machines" element={<Navigate to="/" replace />} />
         <Route path="/machines/:id/stats" element={<MachineStatsPage />} />
         <Route path="/machines/:id/containers" element={<MachineContainersPage />} />
+        <Route path="/applications/:hostId/:project" element={<ApplicationDetailPage />} />
         <Route element={<AdminRoute />}>
           <Route path="/admin" element={<AdminPage />}>
             <Route index element={<Navigate to="users" replace />} />
@@ -74,7 +78,7 @@ function App() {
         path="*"
         element={
           <SetupRoute>
-            <Navigate to={isAuthenticated ? '/machines' : '/auth'} replace />
+            <Navigate to={isAuthenticated ? '/' : '/auth'} replace />
           </SetupRoute>
         }
       />

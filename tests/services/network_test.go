@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/log"
 
@@ -20,6 +21,11 @@ type mockNetworkRepository struct {
 }
 
 func (m *mockNetworkRepository) SaveCurrentMetric(_ context.Context, _ network.NetworkMetric, _ uint) error {
+	m.saveCalled = true
+	return m.saveErr
+}
+
+func (m *mockNetworkRepository) SaveCurrentMetricAt(_ context.Context, _ network.NetworkMetric, _ uint, _ time.Time) error {
 	m.saveCalled = true
 	return m.saveErr
 }

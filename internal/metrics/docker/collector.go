@@ -4,13 +4,18 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +24,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -33,7 +39,45 @@ type dockerMetricsCollector struct {
 	checkInterval     time.Duration
 	containerCPUCache map[string]cpuStatsCache
 	cacheMutex        sync.RWMutex
+
+	// Container disk sizes are expensive to compute (the daemon walks layer
+	// dirs), so we refresh them only every sizeRefreshInterval and serve cached
+	// values on the fast (every-tick) collection cycles.
+	containerSizeCache map[string]containerSize
+	lastSizeAt         time.Time
+
+	// Image update checks hit the registry (network), so they run rarely
+	// (updateCheckInterval) in a background goroutine; results are cached per
+	// image reference and applied to containers on every cycle.
+	imageUpdateCache  map[string]imageUpdateInfo
+	lastUpdateCheckAt time.Time
+	updateChecking    bool
+
+	// registryClient is used to resolve remote image versions (config blobs).
+	registryClient *http.Client
 }
+
+// imageUpdateInfo caches the registry update-check result for one image ref.
+type imageUpdateInfo struct {
+	available     bool   // registry has a newer digest than the running image
+	checked       bool   // a check completed (registry reachable)
+	localDigest   string // digest of the running image (sha256:...)
+	remoteDigest  string // digest the registry tag currently points to
+	version       string // running image's human-readable version
+	remoteVersion string // version of the image the registry tag now points to
+}
+
+// updateCheckInterval bounds how often the registry is queried for newer images.
+const updateCheckInterval = time.Hour
+
+// containerSize caches a container's writable-layer and total filesystem sizes.
+type containerSize struct {
+	rw     int64
+	rootFs int64
+}
+
+// sizeRefreshInterval bounds how often the (slow) Size:true container list runs.
+const sizeRefreshInterval = 60 * time.Second
 
 // cpuStatsCache stores CPU statistics for percentage calculation.
 // This structure holds previous CPU usage data needed to compute CPU percentages.
@@ -54,10 +98,13 @@ func NewDockerCollector(logger *log.Logger) DockerMetricsCollector {
 	defer cancel()
 	cli := tryOpenDockerClient(ctx, logger)
 	return &dockerMetricsCollector{
-		logger:            logger,
-		client:            cli,
-		checkInterval:     5 * time.Second,
-		containerCPUCache: make(map[string]cpuStatsCache),
+		logger:             logger,
+		client:             cli,
+		checkInterval:      5 * time.Second,
+		containerCPUCache:  make(map[string]cpuStatsCache),
+		containerSizeCache: make(map[string]containerSize),
+		imageUpdateCache:   make(map[string]imageUpdateInfo),
+		registryClient:     &http.Client{},
 	}
 }
 
@@ -111,12 +158,24 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 		}, nil
 	}
 
-	containers, err := c.client.ContainerList(ctx, container.ListOptions{All: true})
+	// Computing container sizes makes the daemon walk layer dirs, which is slow.
+	// Only request sizes on the slow cadence (sizeRefreshInterval); other cycles
+	// reuse cached sizes so the 5s CPU/mem/net cycle stays fast and fresh.
+	c.cacheMutex.RLock()
+	withSize := c.lastSizeAt.IsZero() || time.Since(c.lastSizeAt) >= sizeRefreshInterval
+	c.cacheMutex.RUnlock()
+
+	containers, err := c.client.ContainerList(ctx, container.ListOptions{All: true, Size: withSize})
 	if err != nil {
 		return DockerMetric{
 			DockerAvailable: true,
 			Error:           fmt.Sprintf("Failed to list containers: %v", err),
 		}, nil
+	}
+	if withSize {
+		c.cacheMutex.Lock()
+		c.lastSizeAt = time.Now()
+		c.cacheMutex.Unlock()
 	}
 
 	// Structure for parallel container processing results
@@ -165,6 +224,11 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 			stackName = ExtractStackNameFromContainerName(name)
 		}
 
+		// Resolve the application grouping key + service from labels (used by the
+		// Applications view; the per-node Containers stacks above are unchanged).
+		labels := containerJSON.Config.Labels
+		project, service, _ := resolveProject(labels, name)
+
 		// Convert ports (with nil protection)
 		var ports []DockerPort
 		if containerInfo.Ports != nil {
@@ -199,16 +263,37 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 		finishedAt := c.parseContainerFinishedTime(containerJSON.State.FinishedAt)
 		c.logger.Debug("Container finished time", "container_id", containerID, "finished_at_raw", containerJSON.State.FinishedAt, "finished_at_parsed", finishedAt)
 
+		// Disk sizes: fresh from the daemon on slow cycles, cached otherwise.
+		szRw, szRootFs := c.resolveContainerSize(containerInfo.ID, withSize, containerInfo.SizeRw, containerInfo.SizeRootFs)
+
+		// Image update status from the (rarely-refreshed) registry check cache.
+		upd := c.lookupImageUpdate(containerInfo.Image)
+
 		dockerContainer := DockerContainer{
-			ID:         containerID,
-			Name:       name,
-			Image:      containerInfo.Image,
-			State:      containerInfo.State,
-			Status:     containerInfo.Status,
-			Ports:      ports,
-			Stats:      containerStats,
-			Created:    c.parseContainerCreatedTime(containerJSON.Created),
-			FinishedAt: finishedAt,
+			ID:                 containerID,
+			Name:               name,
+			Image:              containerInfo.Image,
+			State:              containerInfo.State,
+			Status:             containerInfo.Status,
+			Ports:              ports,
+			Stats:              containerStats,
+			Created:            c.parseContainerCreatedTime(containerJSON.Created),
+			FinishedAt:         finishedAt,
+			Project:            project,
+			Service:            service,
+			Labels:             labels,
+			ComposeConfigFiles: labels["com.docker.compose.project.config_files"],
+			ComposeWorkingDir:  labels["com.docker.compose.project.working_dir"],
+			SizeRw:             szRw,
+			SizeRootFs:         szRootFs,
+			Mounts:             c.convertMounts(containerJSON.Mounts),
+			ImageID:            containerJSON.Image,
+			UpdateAvailable:    upd.available,
+			UpdateChecked:      upd.checked,
+			LocalDigest:        upd.localDigest,
+			RemoteDigest:       upd.remoteDigest,
+			ImageVersion:       upd.version,
+			RemoteVersion:      upd.remoteVersion,
 		}
 
 		results <- containerResult{
@@ -336,7 +421,15 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 			delete(c.containerCPUCache, id)
 		}
 	}
+	for id := range c.containerSizeCache {
+		if _, ok := currentIDs[id]; !ok {
+			delete(c.containerSizeCache, id)
+		}
+	}
 	c.cacheMutex.Unlock()
+
+	// Kick off a background registry update check on the slow cadence.
+	c.maybeRefreshImageUpdates(containers)
 
 	return DockerMetric{
 		Stacks:            dockerStacks,
@@ -365,9 +458,11 @@ func (c *dockerMetricsCollector) getCPULimit(containerJSON container.InspectResp
 	return 0.0
 }
 
-// convertPorts converts Docker ports to our structure
+// convertPorts converts Docker ports to our structure, de-duplicating entries
+// that differ only by bind IP (Docker reports IPv4 and IPv6 bindings separately).
 func (c *dockerMetricsCollector) convertPorts(dockerPorts []container.Port) []DockerPort {
 	ports := make([]DockerPort, 0, len(dockerPorts))
+	seen := make(map[string]struct{}, len(dockerPorts))
 	for _, port := range dockerPorts {
 		dockerPort := DockerPort{
 			PrivatePort: int(port.PrivatePort),
@@ -377,9 +472,235 @@ func (c *dockerMetricsCollector) convertPorts(dockerPorts []container.Port) []Do
 			dockerPort.PublicPort = int(port.PublicPort)
 			dockerPort.IP = port.IP
 		}
+		key := fmt.Sprintf("%d/%d/%s", dockerPort.PrivatePort, dockerPort.PublicPort, dockerPort.Type)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
 		ports = append(ports, dockerPort)
 	}
 	return ports
+}
+
+// lookupImageUpdate returns the cached registry-update result for an image ref.
+func (c *dockerMetricsCollector) lookupImageUpdate(ref string) imageUpdateInfo {
+	c.cacheMutex.RLock()
+	defer c.cacheMutex.RUnlock()
+	return c.imageUpdateCache[ref]
+}
+
+// maybeRefreshImageUpdates launches a background registry update check when the
+// interval has elapsed and one is not already running. Never blocks collection.
+func (c *dockerMetricsCollector) maybeRefreshImageUpdates(containers []container.Summary) {
+	c.cacheMutex.Lock()
+	due := c.lastUpdateCheckAt.IsZero() || time.Since(c.lastUpdateCheckAt) >= updateCheckInterval
+	if !due || c.updateChecking || c.client == nil {
+		c.cacheMutex.Unlock()
+		return
+	}
+	c.updateChecking = true
+	c.lastUpdateCheckAt = time.Now()
+	c.cacheMutex.Unlock()
+
+	// Distinct image refs of ALL containers (running or stopped); skip bare IDs
+	// / untagged refs that have no registry reference.
+	seen := map[string]struct{}{}
+	refs := make([]string, 0)
+	for _, ci := range containers {
+		ref := ci.Image
+		if ref == "" || strings.HasPrefix(ref, "sha256:") || strings.Contains(ref, "<none>") {
+			continue
+		}
+		if _, ok := seen[ref]; ok {
+			continue
+		}
+		seen[ref] = struct{}{}
+		refs = append(refs, ref)
+	}
+
+	go c.refreshImageUpdates(refs)
+}
+
+// refreshImageUpdates queries the registry for each image ref and caches whether
+// a newer image is available. Bounded concurrency + per-image timeout.
+func (c *dockerMetricsCollector) refreshImageUpdates(refs []string) {
+	defer func() {
+		c.cacheMutex.Lock()
+		c.updateChecking = false
+		c.cacheMutex.Unlock()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(4)
+	for _, ref := range refs {
+		ref := ref
+		g.Go(func() error {
+			cctx, ccancel := context.WithTimeout(gctx, 25*time.Second)
+			defer ccancel()
+			info := c.checkImageUpdate(cctx, ref)
+			c.cacheMutex.Lock()
+			c.imageUpdateCache[ref] = info
+			c.cacheMutex.Unlock()
+			return nil
+		})
+	}
+	_ = g.Wait()
+	c.logger.Debug("Image update check completed", "images", len(refs))
+}
+
+// checkImageUpdate compares the registry's current digest for ref with the local
+// image's repo digest, and resolves the running image's version label. checked
+// is false when the registry is unreachable (e.g. private/local-only images).
+func (c *dockerMetricsCollector) checkImageUpdate(ctx context.Context, ref string) imageUpdateInfo {
+	if c.client == nil {
+		return imageUpdateInfo{}
+	}
+	dist, err := c.client.DistributionInspect(ctx, ref, "")
+	if err != nil {
+		return imageUpdateInfo{}
+	}
+	remote := dist.Descriptor.Digest.String()
+	if remote == "" {
+		return imageUpdateInfo{}
+	}
+	img, err := c.client.ImageInspect(ctx, ref)
+	if err != nil || len(img.RepoDigests) == 0 {
+		return imageUpdateInfo{}
+	}
+
+	// Pick the local repo digest matching ref's repository (strip the tag).
+	repo := ref
+	if at := strings.LastIndex(ref, "/"); at >= 0 {
+		if colon := strings.LastIndex(ref[at:], ":"); colon >= 0 {
+			repo = ref[:at+colon]
+		}
+	} else if colon := strings.LastIndex(ref, ":"); colon >= 0 {
+		repo = ref[:colon]
+	}
+	local := ""
+	for _, rd := range img.RepoDigests {
+		i := strings.LastIndex(rd, "@")
+		if i < 0 {
+			continue
+		}
+		if local == "" {
+			local = rd[i+1:] // fallback
+		}
+		if strings.HasPrefix(rd, repo+"@") {
+			local = rd[i+1:]
+			break
+		}
+	}
+
+	var labels map[string]string
+	var env []string
+	if img.Config != nil {
+		labels = img.Config.Labels
+		env = img.Config.Env
+	}
+	version := resolveImageVersion(labels, env, ref)
+
+	available := local != remote
+	// Resolve what version the registry tag points to now (only when it differs,
+	// to avoid extra registry traffic). Best-effort.
+	remoteVer := ""
+	if available {
+		remoteVer = remoteImageVersion(ctx, c.registryClient, ref)
+	}
+
+	return imageUpdateInfo{
+		available:     available,
+		checked:       true,
+		localDigest:   local,
+		remoteDigest:  remote,
+		version:       version,
+		remoteVersion: remoteVer,
+	}
+}
+
+// resolveImageVersion derives a human-readable version for an image: the OCI
+// version label, else a `<NAME>_VERSION` env var matching the image name (e.g.
+// REDIS_VERSION), else the single `*_VERSION` env, else the image tag.
+func resolveImageVersion(labels map[string]string, env []string, ref string) string {
+	if labels != nil {
+		if v := strings.TrimSpace(labels["org.opencontainers.image.version"]); v != "" {
+			return v
+		}
+	}
+
+	base := strings.ToUpper(lastImageSegment(ref)) // "REDIS" from "redis:7-alpine"
+	var nameMatch, only string
+	count := 0
+	for _, e := range env {
+		eq := strings.IndexByte(e, '=')
+		if eq <= 0 {
+			continue
+		}
+		k := strings.ToUpper(e[:eq])
+		val := strings.TrimSpace(e[eq+1:])
+		if val == "" || !strings.HasSuffix(k, "_VERSION") {
+			continue
+		}
+		count++
+		only = val
+		stem := strings.TrimSuffix(k, "_VERSION")
+		if base != "" && (strings.Contains(k, base) || strings.Contains(base, stem)) {
+			nameMatch = val
+		}
+	}
+	if nameMatch != "" {
+		return nameMatch
+	}
+	if count == 1 && only != "" {
+		return only
+	}
+	return imageTag(ref)
+}
+
+// imageTag returns the tag portion of an image reference, or "latest".
+func imageTag(ref string) string {
+	if i := strings.Index(ref, "@"); i >= 0 {
+		ref = ref[:i]
+	}
+	slash := strings.LastIndex(ref, "/")
+	if colon := strings.LastIndex(ref, ":"); colon > slash {
+		return ref[colon+1:]
+	}
+	return "latest"
+}
+
+// resolveContainerSize returns the container's writable/total sizes: when
+// withSize is set it stores the freshly-reported values in the cache; otherwise
+// it serves the last cached values (so fast cycles don't recompute sizes).
+func (c *dockerMetricsCollector) resolveContainerSize(id string, withSize bool, rw, rootFs int64) (int64, int64) {
+	if withSize {
+		c.cacheMutex.Lock()
+		c.containerSizeCache[id] = containerSize{rw: rw, rootFs: rootFs}
+		c.cacheMutex.Unlock()
+		return rw, rootFs
+	}
+	c.cacheMutex.RLock()
+	e := c.containerSizeCache[id]
+	c.cacheMutex.RUnlock()
+	return e.rw, e.rootFs
+}
+
+// convertMounts maps Docker mount points to our DockerMount structure.
+func (c *dockerMetricsCollector) convertMounts(mounts []container.MountPoint) []DockerMount {
+	out := make([]DockerMount, 0, len(mounts))
+	for _, m := range mounts {
+		out = append(out, DockerMount{
+			Type:        string(m.Type),
+			Name:        m.Name,
+			Source:      m.Source,
+			Destination: m.Destination,
+			RW:          m.RW,
+		})
+	}
+	return out
 }
 
 // getContainerResourceStats gets container resource usage statistics
@@ -750,6 +1071,46 @@ func (c *dockerMetricsCollector) removeDuplicates(items []string) []string {
 	}
 
 	return result
+}
+
+// GetContainerLogs returns the last `tail` lines of a container's logs (stdout +
+// stderr) with timestamps. Non-TTY streams are multiplexed and demuxed via
+// stdcopy; TTY streams are copied raw.
+func (c *dockerMetricsCollector) GetContainerLogs(ctx context.Context, containerID string, tail int) (string, error) {
+	if !c.IsDockerAvailable(ctx) || c.client == nil {
+		return "", fmt.Errorf("docker daemon not available")
+	}
+	if tail <= 0 {
+		tail = 200
+	}
+
+	tty := false
+	if info, err := c.client.ContainerInspect(ctx, containerID); err == nil && info.Config != nil {
+		tty = info.Config.Tty
+	}
+
+	rc, err := c.client.ContainerLogs(ctx, containerID, container.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Timestamps: true,
+		Tail:       strconv.Itoa(tail),
+	})
+	if err != nil {
+		return "", err
+	}
+	defer rc.Close()
+
+	var buf bytes.Buffer
+	if tty {
+		if _, err := io.Copy(&buf, rc); err != nil && !errors.Is(err, io.EOF) {
+			return buf.String(), err
+		}
+	} else {
+		if _, err := stdcopy.StdCopy(&buf, &buf, rc); err != nil && !errors.Is(err, io.EOF) {
+			return buf.String(), err
+		}
+	}
+	return buf.String(), nil
 }
 
 func (c *dockerMetricsCollector) Close() error {

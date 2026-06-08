@@ -79,6 +79,73 @@ type DockerContainer struct {
 
 	// FinishedAt shows when the container finished (ISO 8601 timestamp, for exited containers)
 	FinishedAt string `json:"finished_at,omitempty"`
+
+	// Project is the resolved application grouping key (compose project / swarm
+	// namespace / standalone container name).
+	Project string `json:"project,omitempty"`
+
+	// Service is the service name within the application.
+	Service string `json:"service,omitempty"`
+
+	// Labels holds the container's Docker labels (icon + public-link detection,
+	// compose composition view).
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// ComposeConfigFiles is the com.docker.compose.project.config_files label value.
+	ComposeConfigFiles string `json:"compose_config_files,omitempty"`
+
+	// ComposeWorkingDir is the com.docker.compose.project.working_dir label value.
+	ComposeWorkingDir string `json:"compose_working_dir,omitempty"`
+
+	// SizeRw is the size of the container's writable layer in bytes (data written
+	// since creation). Requires size collection on the container list.
+	SizeRw int64 `json:"size_rw,omitempty"`
+
+	// SizeRootFs is the total size of the container filesystem in bytes
+	// (image layers + writable layer). Image layers are shared across containers
+	// of the same image, so summing this across an app over-counts shared layers.
+	SizeRootFs int64 `json:"size_root_fs,omitempty"`
+
+	// Mounts are the container's volume / bind mounts (with host paths).
+	Mounts []DockerMount `json:"mounts,omitempty"`
+
+	// ImageID is the content-addressable image ID (sha256:...) the container runs.
+	ImageID string `json:"image_id,omitempty"`
+
+	// UpdateAvailable is true when the registry has a newer image for this tag
+	// than the one currently running (digest mismatch).
+	UpdateAvailable bool `json:"update_available,omitempty"`
+
+	// UpdateChecked indicates an update check has completed for this image
+	// (false = not yet checked or the registry was unreachable).
+	UpdateChecked bool `json:"update_checked,omitempty"`
+
+	// LocalDigest is the digest of the running image (repo@sha256:...).
+	LocalDigest string `json:"local_digest,omitempty"`
+
+	// RemoteDigest is the digest the registry tag currently points to.
+	RemoteDigest string `json:"remote_digest,omitempty"`
+
+	// ImageVersion is the running image's resolved human-readable version.
+	ImageVersion string `json:"image_version,omitempty"`
+
+	// RemoteVersion is the version of the image the registry tag now points to
+	// (resolved from the remote image config). Empty when not resolvable.
+	RemoteVersion string `json:"remote_version,omitempty"`
+}
+
+// DockerMount describes a single volume or bind mount of a container.
+type DockerMount struct {
+	// Type is the mount type: "volume", "bind", or "tmpfs".
+	Type string `json:"type"`
+	// Name is the volume name (named volumes only).
+	Name string `json:"name,omitempty"`
+	// Source is the host path (or volume data dir) backing the mount.
+	Source string `json:"source"`
+	// Destination is the mount path inside the container.
+	Destination string `json:"destination"`
+	// RW indicates whether the mount is read-write (false = read-only).
+	RW bool `json:"rw"`
 }
 
 // DockerContainerEntity represents a Docker container stored in the database.
@@ -140,6 +207,37 @@ type DockerContainerEntity struct {
 
 	// FinishedAt shows when the container finished (ISO 8601 timestamp, for exited containers)
 	FinishedAt string `gorm:"column:finished_at"`
+
+	// Project is the resolved application grouping key (indexed).
+	Project string `gorm:"column:project;index"`
+
+	// Service is the service name within the application.
+	Service string `gorm:"column:service"`
+
+	// Labels holds the container's Docker labels serialized as a JSON object.
+	Labels string `gorm:"column:labels;type:text"`
+
+	// ComposeConfigFiles is the com.docker.compose.project.config_files label value.
+	ComposeConfigFiles string `gorm:"column:compose_config_files;type:text"`
+
+	// ComposeWorkingDir is the com.docker.compose.project.working_dir label value.
+	ComposeWorkingDir string `gorm:"column:compose_working_dir"`
+
+	// SizeRw / SizeRootFs are the writable-layer and total filesystem sizes (bytes).
+	SizeRw     int64 `gorm:"column:size_rw"`
+	SizeRootFs int64 `gorm:"column:size_root_fs"`
+
+	// Mounts holds the container's volume/bind mounts serialized as a JSON array.
+	Mounts string `gorm:"column:mounts;type:text"`
+
+	// ImageID / UpdateAvailable / UpdateChecked back the image update-check feature.
+	ImageID         string `gorm:"column:image_id"`
+	UpdateAvailable bool   `gorm:"column:update_available"`
+	UpdateChecked   bool   `gorm:"column:update_checked"`
+	LocalDigest     string `gorm:"column:local_digest"`
+	RemoteDigest    string `gorm:"column:remote_digest"`
+	ImageVersion    string `gorm:"column:image_version"`
+	RemoteVersion   string `gorm:"column:remote_version"`
 }
 
 // DockerPort represents a port mapping for a Docker container.
@@ -200,6 +298,20 @@ func (e DockerContainerEntity) ToDockerContainer() (DockerContainer, error) {
 		ports = []DockerPort{} // Default to empty slice on error
 	}
 
+	var labels map[string]string
+	if e.Labels != "" {
+		if err := json.Unmarshal([]byte(e.Labels), &labels); err != nil {
+			labels = nil // Tolerate malformed/legacy rows
+		}
+	}
+
+	var mounts []DockerMount
+	if e.Mounts != "" {
+		if err := json.Unmarshal([]byte(e.Mounts), &mounts); err != nil {
+			mounts = nil
+		}
+	}
+
 	return DockerContainer{
 		ID:     e.ID,
 		Name:   e.Name,
@@ -219,8 +331,23 @@ func (e DockerContainerEntity) ToDockerContainer() (DockerContainer, error) {
 			BlockRead:         e.BlockRead,
 			BlockWrite:        e.BlockWrite,
 		},
-		Created:    e.Created,
-		FinishedAt: e.FinishedAt,
+		Created:            e.Created,
+		FinishedAt:         e.FinishedAt,
+		Project:            e.Project,
+		Service:            e.Service,
+		Labels:             labels,
+		ComposeConfigFiles: e.ComposeConfigFiles,
+		ComposeWorkingDir:  e.ComposeWorkingDir,
+		SizeRw:             e.SizeRw,
+		SizeRootFs:         e.SizeRootFs,
+		Mounts:             mounts,
+		ImageID:            e.ImageID,
+		UpdateAvailable:    e.UpdateAvailable,
+		UpdateChecked:      e.UpdateChecked,
+		LocalDigest:        e.LocalDigest,
+		RemoteDigest:       e.RemoteDigest,
+		ImageVersion:       e.ImageVersion,
+		RemoteVersion:      e.RemoteVersion,
 	}, nil
 }
 
@@ -232,26 +359,51 @@ func (c DockerContainer) ToDockerContainerEntity(metricTimestamp time.Time) (Doc
 		portsJSON = []byte("[]") // Default to empty array on error
 	}
 
+	labelsJSON, err := json.Marshal(c.Labels)
+	if err != nil || c.Labels == nil {
+		labelsJSON = []byte("{}") // Default to empty object on error/nil
+	}
+
+	mountsJSON, err := json.Marshal(c.Mounts)
+	if err != nil || c.Mounts == nil {
+		mountsJSON = []byte("[]")
+	}
+
 	return DockerContainerEntity{
-		ID:                c.ID,
-		MetricTimestamp:   metricTimestamp,
-		Name:              c.Name,
-		Image:             c.Image,
-		State:             c.State,
-		Status:            c.Status,
-		Ports:             string(portsJSON),
-		CPUPercent:        c.Stats.CPUPercent,
-		CPULimit:          c.Stats.CPULimit,
-		CPUPercentOfLimit: c.Stats.CPUPercentOfLimit,
-		MemoryUsage:       c.Stats.MemoryUsage,
-		MemoryLimit:       c.Stats.MemoryLimit,
-		MemoryPercent:     c.Stats.MemoryPercent,
-		NetworkRx:         c.Stats.NetworkRx,
-		NetworkTx:         c.Stats.NetworkTx,
-		BlockRead:         c.Stats.BlockRead,
-		BlockWrite:        c.Stats.BlockWrite,
-		Created:           c.Created,
-		FinishedAt:        c.FinishedAt,
+		ID:                 c.ID,
+		MetricTimestamp:    metricTimestamp,
+		Name:               c.Name,
+		Image:              c.Image,
+		State:              c.State,
+		Status:             c.Status,
+		Ports:              string(portsJSON),
+		CPUPercent:         c.Stats.CPUPercent,
+		CPULimit:           c.Stats.CPULimit,
+		CPUPercentOfLimit:  c.Stats.CPUPercentOfLimit,
+		MemoryUsage:        c.Stats.MemoryUsage,
+		MemoryLimit:        c.Stats.MemoryLimit,
+		MemoryPercent:      c.Stats.MemoryPercent,
+		NetworkRx:          c.Stats.NetworkRx,
+		NetworkTx:          c.Stats.NetworkTx,
+		BlockRead:          c.Stats.BlockRead,
+		BlockWrite:         c.Stats.BlockWrite,
+		Created:            c.Created,
+		FinishedAt:         c.FinishedAt,
+		Project:            c.Project,
+		Service:            c.Service,
+		Labels:             string(labelsJSON),
+		ComposeConfigFiles: c.ComposeConfigFiles,
+		ComposeWorkingDir:  c.ComposeWorkingDir,
+		SizeRw:             c.SizeRw,
+		SizeRootFs:         c.SizeRootFs,
+		Mounts:             string(mountsJSON),
+		ImageID:            c.ImageID,
+		UpdateAvailable:    c.UpdateAvailable,
+		UpdateChecked:      c.UpdateChecked,
+		LocalDigest:        c.LocalDigest,
+		RemoteDigest:       c.RemoteDigest,
+		ImageVersion:       c.ImageVersion,
+		RemoteVersion:      c.RemoteVersion,
 	}, nil
 }
 
@@ -284,6 +436,9 @@ type DockerRepository interface {
 type DockerMetricsCollector interface {
 	CollectDockerMetrics(ctx context.Context) (DockerMetric, error)
 	IsDockerAvailable(ctx context.Context) bool
+	// GetContainerLogs returns the last `tail` log lines of a container (stdout +
+	// stderr, demuxed), with timestamps. Local daemon only.
+	GetContainerLogs(ctx context.Context, containerID string, tail int) (string, error)
 	Close() error
 }
 

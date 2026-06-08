@@ -14,6 +14,7 @@ import { useNetwork } from '@/widgets/network/useNetwork'
 import { CHART_COLORS } from '@/shared/lib/chartColors'
 import type { Host } from '@/widgets/hosts/schemas'
 import { getHostCardTitle } from '@/shared/lib/hostDisplay'
+import { AllApplicationsSection } from '@/widgets/applications/AllApplicationsSection'
 
 const LIVE = { mode: 'poll' } as const
 
@@ -260,51 +261,55 @@ export function MachineListPage() {
   const hosts: Host[] = hostsData?.hosts ?? []
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-8 md:py-10">
-      <div className="flex items-center gap-3 mb-8">
-        <MonitorDot className="h-6 w-6 text-primary drop-shadow-[0_0_10px_oklch(0.72_0.16_195/0.45)]" />
-        <h1 className="text-xl md:text-2xl font-display font-semibold tracking-wide uppercase">Machines</h1>
-        {!isLoading && (
-          <Badge
-            variant="secondary"
-            className="tabular-nums font-mono border border-border/60 bg-primary/10 text-primary dark:bg-cyan-500/10 dark:text-cyan-200 dark:border-cyan-500/25"
-          >
-            {hosts.length}
-          </Badge>
-        )}
-      </div>
-
-      {isLoading ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {[1, 2, 3, 4].map((i) => (
-            <div
-              key={i}
-              className="rounded-xl border border-border/60 bg-card/40 backdrop-blur-lg p-3 space-y-3 dark:border-white/10"
+    <div className="mx-auto max-w-7xl space-y-10 px-4 py-8 md:py-10">
+      <section>
+        <div className="flex items-center gap-3 mb-5">
+          <MonitorDot className="h-6 w-6 text-primary drop-shadow-[0_0_10px_oklch(0.72_0.16_195/0.45)]" />
+          <h2 className="text-xl md:text-2xl font-display font-semibold tracking-wide uppercase">Nodes</h2>
+          {!isLoading && (
+            <Badge
+              variant="secondary"
+              className="tabular-nums font-mono border border-border/60 bg-primary/10 text-primary dark:bg-cyan-500/10 dark:text-cyan-200 dark:border-cyan-500/25"
             >
-              <Skeleton className="h-4 w-28" />
-              <div className="grid grid-cols-2 gap-1.5 pt-1">
-                {[1, 2, 3, 4].map((j) => (
-                  <Skeleton key={j} className="h-12 w-full" />
-                ))}
+              {hosts.length}
+            </Badge>
+          )}
+        </div>
+
+        {isLoading ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {[1, 2, 3, 4].map((i) => (
+              <div
+                key={i}
+                className="rounded-xl border border-border/60 bg-card/40 backdrop-blur-lg p-3 space-y-3 dark:border-white/10"
+              >
+                <Skeleton className="h-4 w-28" />
+                <div className="grid grid-cols-2 gap-1.5 pt-1">
+                  {[1, 2, 3, 4].map((j) => (
+                    <Skeleton key={j} className="h-12 w-full" />
+                  ))}
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
-      ) : hosts.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-24 text-center rounded-2xl border border-dashed border-border/70 bg-card/30 backdrop-blur-md dark:border-white/15 px-6">
-          <Server className="h-16 w-16 text-muted-foreground/25 mb-5" />
-          <p className="text-muted-foreground font-display tracking-wide">No machines registered yet.</p>
-          <p className="text-xs text-muted-foreground/70 mt-2 max-w-sm font-mono">
-            Add a node with a connect key from the setup wizard to see it here.
-          </p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {hosts.map((host) => (
-            <HostCard key={host.id} host={host} />
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        ) : hosts.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-24 text-center rounded-2xl border border-dashed border-border/70 bg-card/30 backdrop-blur-md dark:border-white/15 px-6">
+            <Server className="h-16 w-16 text-muted-foreground/25 mb-5" />
+            <p className="text-muted-foreground font-display tracking-wide">No machines registered yet.</p>
+            <p className="text-xs text-muted-foreground/70 mt-2 max-w-sm font-mono">
+              Add a node with a connect key from the setup wizard to see it here.
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {hosts.map((host) => (
+              <HostCard key={host.id} host={host} />
+            ))}
+          </div>
+        )}
+      </section>
+
+      <AllApplicationsSection />
     </div>
   )
 }

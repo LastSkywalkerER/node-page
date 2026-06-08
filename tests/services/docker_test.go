@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/log"
 
@@ -20,6 +21,11 @@ type mockDockerRepository struct {
 }
 
 func (m *mockDockerRepository) SaveCurrentMetric(_ context.Context, _ docker.DockerMetric, _ uint) error {
+	m.saveCalled = true
+	return m.saveErr
+}
+
+func (m *mockDockerRepository) SaveCurrentMetricAt(_ context.Context, _ docker.DockerMetric, _ uint, _ time.Time) error {
 	m.saveCalled = true
 	return m.saveErr
 }
@@ -54,6 +60,9 @@ func (m *mockDockerCollector) CollectDockerMetrics(_ context.Context) (docker.Do
 }
 func (m *mockDockerCollector) IsDockerAvailable(_ context.Context) bool { return m.err == nil }
 func (m *mockDockerCollector) Close() error                             { return nil }
+func (m *mockDockerCollector) GetContainerLogs(_ context.Context, _ string, _ int) (string, error) {
+	return "", m.err
+}
 
 var _ docker.DockerRepository = (*mockDockerRepository)(nil)
 var _ docker.DockerMetricsCollector = (*mockDockerCollector)(nil)
