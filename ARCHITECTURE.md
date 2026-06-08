@@ -61,10 +61,12 @@ Existing modules: `cpu`, `memory`, `disk`, `network`, `docker`, `sensors`, `host
 **Public:**
 ```
 GET  /health
-GET  /setup/status          # includes machine_hints (suggested hostname / IPv4) while setup_needed
+GET  /version               # build identity + update state (current/latest/update_available/auto_update/deployment)
+GET  /setup/status          # machine_hints + running_in_docker + managed_externally while setup_needed
 GET  /setup/config
 POST /setup/preview-env
-POST /setup/complete
+POST /setup/complete         # returns restart_pending when a DB-engine switch needs a controller recreate
+POST /setup/db/test          # pre-flight an external Postgres DSN (no persist/migrate)
 POST /auth/register
 POST /auth/login
 POST /auth/refresh
@@ -88,6 +90,8 @@ GET    /hosts
 GET    /hosts/current
 POST   /hosts/register
 GET    /stream              # SSE
+POST   /settings/auto-update   # admin; toggle auto-update (persists AUTO_UPDATE to .env.agent)
+POST   /settings/update-now    # admin; apply latest now (docker → controller; native → self-replace)
 ```
 All metric endpoints accept `?hours=<float>` (default `0.0833` ≈ 5 min) and `?host_id=<uint>`. **`host_id=0` means this server instance** (resolved via current host MAC). Latest and history are always scoped to that host row; unknown `host_id` returns empty payloads (`latest: null`, empty history). **Metrics are replicated cluster-wide via Raft (`CmdMetricBatch`)**, so any node serves any host's CPU/mem/disk/net/docker history (and a host's data survives it going offline). The frontend is uniform: one REST load per metric on mount, then a **single SSE stream for every host** — the node publishes its own host's metrics each cycle *and* every replicated peer's metrics (`applyMetricBatch` → `broker.Publish`), and the client keeps events whose `collecting_host_id` matches the viewed host. The browser only ever talks to its own node; nodes sync over Raft. **Sensors are not replicated** (`/sensors` returns empty for remote hosts). See [docs/CLUSTER.md](docs/CLUSTER.md) for the full data-flow.
 
@@ -111,6 +115,18 @@ All metric endpoints accept `?hours=<float>` (default `0.0833` ≈ 5 min) and `?
 | `NODE_STATS_HOSTNAME` | — | Optional; when set, collector uses it and API adds `display_name` (overrides card/breadcrumb label). When unset, UI uses registered `name` from the host row. |
 | `NODE_STATS_IPV4` | — | Optional override for registered IPv4; omit for auto-detect. |
 | `TRAEFIK_DYNAMIC_DIR` | — | Colon-separated Traefik file-provider dynamic-config dir(s) to derive per-service public URLs for the Applications view. Unset → probes well-known defaults (incl. dokploy's `/etc/dokploy/traefik/dynamic`). Must be bind-mounted into the container to be readable. |
+| `AUTO_UPDATE` | `false` | Check GitHub Releases and apply updates (docker → controller pull+recreate; native → self-replace). Persisted to `.env.agent` by the in-app toggle. |
+| `NODE_STATS_REPO` | `LastSkywalkerER/node-page` | GitHub `owner/name` polled for releases. |
+| `NODE_STATS_DATA_DIR` | `/app/data` | Shared data dir holding `desired-state.json` / `controller-status.json` (app↔controller). |
+| `NODE_STATS_MANAGED_EXTERNALLY` | `false` | When true (or `TRAEFIK_DYNAMIC_DIR` set, or `/etc/dokploy` present), disables controller compose mutation — the orchestrator owns the lifecycle. |
+
+**Controller sidecar** (Docker only; same image run as `node-stats controller`). Owns the docker socket and applies the compose stack the app requests:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NODE_STATS_STACK_HOST_DIR` | — | Host path of the compose project dir, identity-mounted at the same path so the docker CLI's relative bind paths resolve to real host paths. |
+| `NODE_STATS_STACK_DIR` | `/app/stack` | Compose project dir as seen by the controller (= `NODE_STATS_STACK_HOST_DIR`). |
+| `NODE_STATS_APP_SERVICE` | `node-stats` | Compose service the controller recreates. |
+| `NODE_STATS_PROJECT` | `node-stats` | Compose `-p` project name (shared with the installer). |
 
 **Raft cluster sync** (optional; see `docker-compose.cluster.yml`). When unset the node runs standalone:
 | Variable | Default | Description |
@@ -125,6 +141,26 @@ All metric endpoints accept `?hours=<float>` (default `0.0833` ≈ 5 min) and `?
 | `RAFT_BOOTSTRAP` | `false` | Bootstrap this node as the initial leader (first node only) |
 
 The setup-wizard "Join an existing cluster" flow writes the resolved `RAFT_*` values to the node's `.env` so the configuration survives restarts/rebuilds.
+
+---
+
+## Distribution & self-update
+
+**Native single binary.** SQLite is pure-Go (`github.com/glebarez/sqlite` → `modernc.org/sqlite`), so the whole app builds with `CGO_ENABLED=0`. The frontend is embedded via `go:embed` behind the `embed_dist` build tag (`internal/webui/embed.go`; `noembed.go` is the dev stub that falls back to on-disk `internal/webui/dist`). Vite outputs to `internal/webui/dist`. Build metadata is injected with `-ldflags -X system-stats/internal/version.{Version,Commit,Date}`.
+
+- **`scripts/build`** — frontend build → `go build -tags embed_dist`.
+- **`.github/workflows/release.yml`** — on `v*` tags, cross-compiles `linux/{amd64,arm64}`, `darwin/arm64`, `windows/amd64` from one runner, packages tar.gz/zip + `SHA256SUMS`, attaches to a GitHub Release.
+- **`.github/workflows/docker.yml`** — multi-arch (`linux/amd64,arm64`) image + semver tags on `v*` (alongside `latest` on main). Image: `ghcr.io/lastskywalkerer/node-page`.
+
+**Subcommands** (single binary): no args → HTTP server; `controller` → compose-applying sidecar; `gen-compose` → emit the canonical base compose; `update [--check]` → native self-update.
+
+**One-line installers** (`scripts/install.sh` curl|bash for Linux/macOS, `scripts/install.ps1` irm|iex for Windows + Docker Desktop). They detect OS/arch, check docker+compose, create a stack dir, write `.env.agent` **as a file** (the bind-mount-dir pitfall), generate the base compose via `docker run <image> gen-compose`, write an OS host-caps `docker-compose.override.yml` (from `install/`), and `docker compose up -d`. Subcommands `install|update|uninstall`.
+
+**Wizard-driven compose mutation + controller.** DB/topology are *not* baked into compose ahead of time. The app writes a **desired-state descriptor** (`internal/platform/setup` `BuildComposeContent`/`DesiredState`) to `NODE_STATS_DATA_DIR/desired-state.json`; the **controller sidecar** (`internal/platform/controller`) polls it, regenerates `docker-compose.yml`, and runs `docker compose up -d --no-deps --force-recreate node-stats` (managed Postgres first `up -d --wait db`). It recreates only the app so the controller survives, and writes `controller-status.json`. DB modes: `sqlite` (file in `/app/data`), `postgres-managed` (injects a `postgres:16-alpine` `db` service + `pgdata` volume), `postgres-external`. `DB_TYPE`/`DB_DSN` live in the controller-managed app `environment:`; `JWT_SECRET`/`REFRESH_SECRET` stay in `.env.agent` (loaded via godotenv). Host caps live in the installer-owned `docker-compose.override.yml`, which the controller never touches.
+
+- **DB choice is first-run-only** (no sqlite↔postgres migration). A DB-engine switch in the wizard returns `restart_pending` and **defers admin creation**: the controller recreates the app on the new (empty) DB, then the frontend re-submits `/setup/complete` so the admin lands on the new DB (two-phase). When `ManagedExternally()` is true the controller is disabled and the wizard tells the operator to edit compose manually.
+
+**Auto-update** (`internal/platform/update`). Polls GitHub Releases (cached, 6 h), semver-compares against the build version (non-semver dev/main builds never claim an update), and exposes state via `GET /version`. The admin toggle persists `AUTO_UPDATE` to `.env.agent`; "update now" / the auto loop apply the latest — **docker** bumps `desired-state.json` with `pull_before_apply` (controller pulls + recreates), **native** downloads the matching release asset, verifies it against `SHA256SUMS`, and self-replaces the binary (`node-stats update`).
 
 ---
 
