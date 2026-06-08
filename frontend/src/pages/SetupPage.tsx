@@ -297,6 +297,7 @@ export function SetupPage() {
             {step === 'review' && configData && adminData && (
               <ReviewWidget
                 adminData={adminData}
+                config={configData}
                 envContent={envPreview.data}
                 envLoading={envPreview.isLoading}
                 envError={envPreview.error}
