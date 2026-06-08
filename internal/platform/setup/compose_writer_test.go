@@ -19,7 +19,7 @@ func TestBuildComposeContent_SQLite(t *testing.T) {
 		"DB_DSN=/app/data/stats.db",
 	})
 	mustNotContain(t, out, []string{
-		"  db:",       // no postgres service for sqlite
+		"  db:", // no postgres service for sqlite
 		"DB_TYPE=postgres",
 		"JWT_SECRET=", // secrets come from .env.agent, never compose env
 	})
