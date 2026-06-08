@@ -85,7 +85,7 @@ func Run() {
 	startTime := time.Now()
 
 	logger.Info("Initializing dependency injection container...", "db_type", cfg.Database.Type, "db_dsn", config.MaskDSN(cfg.Database.DSN))
-	container, err := di.NewContainer(logger, cfg.Database, cfg.JWTSecret, cfg.RefreshSecret, startTime, cfg.Raft)
+	container, err := di.NewContainer(logger, cfg.Database, cfg.JWTSecret, cfg.RefreshSecret, startTime, cfg.Raft, cfg.TraefikDynamicDirs)
 	if err != nil {
 		logger.Fatal("Failed to initialize DI container", "error", err)
 	}
@@ -577,6 +577,13 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.POST("/raft/factory-reset", middleware.RequireAdmin(), raftHandler.FactoryReset)
 		// TCP-probe a voter's advertise addr from this server
 		authAPI.POST("/raft/probe-voter", middleware.RequireAdmin(), raftHandler.ProbeVoter)
+
+		// Form / join a cluster at runtime from an already-provisioned node
+		// (admin). "start" bootstraps this node as the leader (non-destructive);
+		// "join" attaches it to an existing cluster (replaces local data — the
+		// handler requires an explicit acknowledge_data_loss flag).
+		authAPI.POST("/cluster/start", middleware.RequireAdmin(), setupHandler.AdminStartCluster)
+		authAPI.POST("/cluster/join", middleware.RequireAdmin(), setupHandler.AdminJoinCluster)
 	}
 
 	// Static files for React app (hashed bundles from Vite)

@@ -40,6 +40,11 @@ type dockerMetricsCollector struct {
 	containerCPUCache map[string]cpuStatsCache
 	cacheMutex        sync.RWMutex
 
+	// traefikDirs are the Traefik file-provider dynamic-config directories to
+	// scan for per-service public URLs (TRAEFIK_DYNAMIC_DIR). Empty falls back
+	// to well-known defaults.
+	traefikDirs []string
+
 	// Container disk sizes are expensive to compute (the daemon walks layer
 	// dirs), so we refresh them only every sizeRefreshInterval and serve cached
 	// values on the fast (every-tick) collection cycles.
@@ -92,8 +97,10 @@ type cpuStatsCache struct {
 	timestamp time.Time
 }
 
-// NewDockerCollector creates a new Docker metrics collector.
-func NewDockerCollector(logger *log.Logger) DockerMetricsCollector {
+// NewDockerCollector creates a new Docker metrics collector. traefikDirs are
+// optional Traefik file-provider dynamic-config directories scanned for
+// per-service public URLs (nil/empty falls back to well-known defaults).
+func NewDockerCollector(logger *log.Logger, traefikDirs []string) DockerMetricsCollector {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	cli := tryOpenDockerClient(ctx, logger)
@@ -105,6 +112,7 @@ func NewDockerCollector(logger *log.Logger) DockerMetricsCollector {
 		containerSizeCache: make(map[string]containerSize),
 		imageUpdateCache:   make(map[string]imageUpdateInfo),
 		registryClient:     &http.Client{},
+		traefikDirs:        traefikDirs,
 	}
 }
 
@@ -431,12 +439,19 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 	// Kick off a background registry update check on the slow cadence.
 	c.maybeRefreshImageUpdates(containers)
 
-	return DockerMetric{
+	metric := DockerMetric{
 		Stacks:            dockerStacks,
 		TotalContainers:   len(containers),
 		RunningContainers: int(runningCount),
 		DockerAvailable:   true,
-	}, nil
+	}
+
+	// Attach reverse-proxy (Traefik file-provider) public URLs to ports so the
+	// Applications view can surface per-service links — including for ports the
+	// container doesn't publish to the host. Cached + best-effort.
+	enrichWithTraefikRoutes(&metric, loadTraefikRoutes(c.traefikDirs))
+
+	return metric, nil
 }
 
 // getCPULimit extracts CPU limit from container configuration

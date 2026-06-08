@@ -30,6 +30,12 @@ type RaftActivator interface {
 	ShutdownAndWipeRaft() error
 	// RaftEnabled reports whether the running raft layer is active.
 	RaftEnabled() bool
+	// SeedClusterSecrets publishes the local auth secrets into the cluster
+	// (leader-only) so future joiners authenticate. No-op when not leader.
+	SeedClusterSecrets(ctx context.Context, jwtSecret, refreshSecret string) error
+	// AdvertiseSelfNow publishes this node's advertise URL into the catalog
+	// (best-effort, leader-only) so followers can forward writes.
+	AdvertiseSelfNow(ctx context.Context)
 }
 
 // ClusterSecretReader looks up the cluster-shared JWT signing keys from
@@ -530,15 +536,9 @@ type JoinRaftClusterRequest struct {
 func (h *Handler) JoinRaftCluster(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	if h.raftActivator == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"code":  "raft_unavailable",
-			"error": "the Raft activator is not wired; rebuild the binary",
-		})
-		return
-	}
-
-	// Refuse if this node was already provisioned.
+	// Refuse if this node was already provisioned (the wizard path is for
+	// fresh nodes only; post-setup join is the admin AdminJoinCluster path,
+	// which requires an explicit data-loss acknowledgement).
 	count, err := h.userService.Count(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": "Failed to check setup status"})
@@ -555,13 +555,64 @@ func (h *Handler) JoinRaftCluster(c *gin.Context) {
 		return
 	}
 
-	peerURL := strings.TrimSuffix(strings.TrimSpace(req.PeerURL), "/")
-	if peerURL == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "peer_url is required"})
+	status, body := h.performRaftJoin(ctx, req)
+	c.JSON(status, body)
+}
+
+// AdminJoinClusterRequest is the body of the authenticated POST /cluster/join.
+// It is the wizard's join request plus an explicit data-loss acknowledgement,
+// because joining replaces this node's entire local state (users, metrics,
+// settings) with the cluster's snapshot.
+type AdminJoinClusterRequest struct {
+	JoinRaftClusterRequest
+	AcknowledgeDataLoss bool `json:"acknowledge_data_loss"`
+}
+
+// AdminJoinCluster lets an authenticated admin attach an already-provisioned
+// node to an existing cluster (the post-setup analogue of the wizard's join).
+// It does NOT refuse on count>0 — instead it requires acknowledge_data_loss
+// because the incoming snapshot wipes and replaces all managed tables. The
+// admin is logged out once the cluster secrets replace the local ones.
+//
+// POST /api/v1/cluster/join  (AuthJWT + admin)
+func (h *Handler) AdminJoinCluster(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	var req AdminJoinClusterRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "Invalid request data", "detail": err.Error()})
+		return
+	}
+	if !req.AcknowledgeDataLoss {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":  "ack_required",
+			"error": "joining a cluster replaces all local data with the cluster's state; set acknowledge_data_loss=true to proceed",
+		})
 		return
 	}
 
-	// Auto-fill node-level fields when the wizard didn't provide them.
+	status, body := h.performRaftJoin(ctx, req.JoinRaftClusterRequest)
+	c.JSON(status, body)
+}
+
+// performRaftJoin runs the shared "join an existing cluster" sequence used by
+// both the public setup wizard (JoinRaftCluster) and the authenticated admin
+// action (AdminJoinCluster). It returns the HTTP status and response body to
+// send. It assumes the caller already gate-checked provisioning/acknowledgement.
+func (h *Handler) performRaftJoin(ctx context.Context, req JoinRaftClusterRequest) (int, gin.H) {
+	if h.raftActivator == nil {
+		return http.StatusServiceUnavailable, gin.H{
+			"code":  "raft_unavailable",
+			"error": "the Raft activator is not wired; rebuild the binary",
+		}
+	}
+
+	peerURL := strings.TrimSuffix(strings.TrimSpace(req.PeerURL), "/")
+	if peerURL == "" {
+		return http.StatusBadRequest, gin.H{"code": "validation_error", "error": "peer_url is required"}
+	}
+
+	// Auto-fill node-level fields when the caller didn't provide them.
 	hostHint := DetectMachineHints(ctx)
 	if req.NodeID == "" {
 		req.NodeID = defaultNodeID(hostHint.SuggestedHostname)
@@ -586,32 +637,29 @@ func (h *Handler) JoinRaftCluster(c *gin.Context) {
 	// raft_activation_failed. bind may be ":port"; advertise must resolve to
 	// a concrete host:port the peer can dial.
 	if _, _, err := net.SplitHostPort(req.BindAddr); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		return http.StatusBadRequest, gin.H{
 			"code":   "validation_error",
 			"error":  fmt.Sprintf("invalid Raft bind address %q — expected host:port like \":7000\"", req.BindAddr),
 			"detail": err.Error(),
-		})
-		return
+		}
 	}
 	if _, err := net.ResolveTCPAddr("tcp", req.AdvertiseAddr); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		return http.StatusBadRequest, gin.H{
 			"code":   "validation_error",
 			"error":  fmt.Sprintf("invalid Raft advertise address %q — expected host:port like \"10.0.0.2:7000\"", req.AdvertiseAddr),
 			"detail": err.Error(),
-		})
-		return
+		}
 	}
 
 	// Probe the peer first to discover the cluster id we're joining
 	// (so we don't ask the operator to retype it).
 	clusterID, err := probePeerClusterID(ctx, peerURL)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{
+		return http.StatusBadGateway, gin.H{
 			"code":   "peer_unreachable",
 			"error":  peerProbeUserMsg(err, peerURL),
 			"detail": err.Error(),
-		})
-		return
+		}
 	}
 
 	// Activate the local Raft node so it can accept replication from
@@ -636,24 +684,22 @@ func (h *Handler) JoinRaftCluster(c *gin.Context) {
 	// changed.
 	if h.raftActivator.RaftEnabled() {
 		if err := h.raftActivator.ShutdownAndWipeRaft(); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
+			return http.StatusInternalServerError, gin.H{
 				"code":   "raft_wipe_failed",
 				"error":  "could not reset the existing Raft state before joining",
 				"detail": err.Error(),
-			})
-			return
+			}
 		}
 	}
 
 	actCtx, actCancel := context.WithTimeout(ctx, 15*time.Second)
 	if err := h.raftActivator.ActivateRaft(actCtx, rt); err != nil {
 		actCancel()
-		c.JSON(http.StatusInternalServerError, gin.H{
+		return http.StatusInternalServerError, gin.H{
 			"code":   "raft_activation_failed",
 			"error":  raftActivationUserMsg(err, rt.BindAddr),
 			"detail": err.Error(),
-		})
-		return
+		}
 	}
 	actCancel()
 
@@ -708,24 +754,21 @@ func (h *Handler) JoinRaftCluster(c *gin.Context) {
 	defer cancel()
 	httpReq, err := http.NewRequestWithContext(httpCtx, http.MethodPost, peerURL+"/api/v1/raft/join", bytes.NewReader(body))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": err.Error()})
-		return
+		return http.StatusInternalServerError, gin.H{"code": "internal_error", "error": err.Error()}
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(httpReq)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"code": "peer_unreachable", "error": err.Error()})
-		return
+		return http.StatusBadGateway, gin.H{"code": "peer_unreachable", "error": err.Error()}
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode/100 != 2 {
-		c.JSON(http.StatusBadGateway, gin.H{
+		return http.StatusBadGateway, gin.H{
 			"code":   "peer_rejected",
 			"error":  fmt.Sprintf("peer returned %s", resp.Status),
 			"detail": string(respBody),
-		})
-		return
+		}
 	}
 
 	// Once snapshot replay lands the cluster-shared JWT signing keys, swap
@@ -736,11 +779,156 @@ func (h *Handler) JoinRaftCluster(c *gin.Context) {
 		go h.pollClusterSecretsAndSwap()
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	return http.StatusOK, gin.H{
 		"data": gin.H{
-			"message":       "Join accepted. Snapshot replication is starting; the wizard will redirect to /auth once the first admin user lands.",
+			"message":       "Join accepted. Snapshot replication is starting; once the cluster's first admin lands you'll be redirected to sign in.",
 			"cluster_id":    clusterID,
 			"peer_response": json.RawMessage(respBody),
+		},
+	}
+}
+
+// StartClusterRequest is the (optional) body of POST /cluster/start. All
+// fields fall back to sensible defaults derived from the host when empty.
+type StartClusterRequest struct {
+	ClusterID     string `json:"cluster_id"`
+	NodeID        string `json:"node_id"`
+	BindAddr      string `json:"bind_addr"`
+	AdvertiseAddr string `json:"advertise_addr"`
+	AdvertiseURL  string `json:"advertise_url"`
+	DataDir       string `json:"data_dir"`
+}
+
+// AdminStartCluster converts an already-provisioned standalone node into the
+// leader of a new single-voter cluster, at runtime and without a restart.
+// It is the post-setup analogue of the wizard's "Start new cluster" branch.
+// Non-destructive: the node keeps all its local data, which becomes the
+// cluster's initial state. Other nodes then enrol via a join token.
+//
+// POST /api/v1/cluster/start  (AuthJWT + admin)
+func (h *Handler) AdminStartCluster(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	if h.raftActivator == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"code":  "raft_unavailable",
+			"error": "the Raft activator is not wired; rebuild the binary",
+		})
+		return
+	}
+	if h.raftActivator.RaftEnabled() {
+		c.JSON(http.StatusConflict, gin.H{
+			"code":  "raft_already_active",
+			"error": "this node is already part of a cluster",
+		})
+		return
+	}
+
+	var req StartClusterRequest
+	_ = c.ShouldBindJSON(&req) // body is optional; all fields default
+
+	hostHint := DetectMachineHints(ctx)
+	clusterID := strings.TrimSpace(req.ClusterID)
+	if clusterID == "" {
+		clusterID = "local"
+	}
+	nodeID := strings.TrimSpace(req.NodeID)
+	if nodeID == "" {
+		nodeID = defaultNodeID(hostHint.SuggestedHostname)
+	}
+	bindAddr := strings.TrimSpace(req.BindAddr)
+	if bindAddr == "" {
+		bindAddr = ":7000"
+	}
+	advertiseAddr := strings.TrimSpace(req.AdvertiseAddr)
+	if advertiseAddr == "" {
+		if hostHint.SuggestedIPv4 != "" {
+			advertiseAddr = hostHint.SuggestedIPv4 + ":7000"
+		} else {
+			advertiseAddr = bindAddr
+		}
+	}
+	dataDir := strings.TrimSpace(req.DataDir)
+	if dataDir == "" {
+		dataDir = "./data/raft"
+	}
+	advertiseURL := strings.TrimSpace(req.AdvertiseURL)
+
+	// Validate addresses before activation (clean 400 instead of a 500).
+	if _, _, err := net.SplitHostPort(bindAddr); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":   "validation_error",
+			"error":  fmt.Sprintf("invalid Raft bind address %q — expected host:port like \":7000\"", bindAddr),
+			"detail": err.Error(),
+		})
+		return
+	}
+	if _, err := net.ResolveTCPAddr("tcp", advertiseAddr); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":   "validation_error",
+			"error":  fmt.Sprintf("invalid Raft advertise address %q — expected host:port like \"10.0.0.2:7000\"", advertiseAddr),
+			"detail": err.Error(),
+		})
+		return
+	}
+
+	rt := raftcluster.RuntimeConfig{
+		ClusterID:     clusterID,
+		NodeID:        nodeID,
+		BindAddr:      bindAddr,
+		AdvertiseAddr: advertiseAddr,
+		DataDir:       dataDir,
+		Bootstrap:     true,
+		AdvertiseURL:  advertiseURL,
+	}
+	actCtx, actCancel := context.WithTimeout(ctx, 15*time.Second)
+	err := h.raftActivator.ActivateRaft(actCtx, rt)
+	actCancel()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":   "raft_activation_failed",
+			"error":  raftActivationUserMsg(err, rt.BindAddr),
+			"detail": err.Error(),
+		})
+		return
+	}
+
+	// Read the current config once: needed to seed cluster secrets and to
+	// persist the Raft block back to .env.
+	cv, _ := h.configWriter.ReadCurrentConfig()
+	if cv == nil {
+		cv = &ConfigValues{}
+	}
+
+	// Publish the live auth secrets into the cluster so nodes that later
+	// join receive valid JWT signing keys via snapshot (best-effort).
+	seedCtx, seedCancel := context.WithTimeout(ctx, 10*time.Second)
+	_ = h.raftActivator.SeedClusterSecrets(seedCtx, cv.JWTSecret, cv.RefreshSecret)
+	seedCancel()
+
+	// Advertise self so followers can forward writes to this leader.
+	h.raftActivator.AdvertiseSelfNow(ctx)
+
+	// Persist the Raft block so the node comes back as the leader on restart.
+	cv.RaftEnabled = "true"
+	cv.RaftClusterID = clusterID
+	cv.RaftNodeID = nodeID
+	cv.RaftBindAddr = bindAddr
+	cv.RaftAdvertiseAddr = advertiseAddr
+	cv.RaftDataDir = dataDir
+	cv.RaftBootstrap = "true"
+	cv.RaftAdvertisePublicURL = advertiseURL
+	if werr := h.configWriter.WriteConfigFile(cv); werr != nil {
+		// Not fatal — Raft is already running; the operator can re-save later.
+		_ = werr
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data": gin.H{
+			"message":        "This node is now the cluster leader. Issue a join token below to add more nodes.",
+			"cluster_id":     clusterID,
+			"node_id":        nodeID,
+			"advertise_addr": advertiseAddr,
 		},
 	})
 }

@@ -17,6 +17,8 @@ export const dockerPortSchema = z.object({
   public_port: z.number().optional(),
   type: z.string(),
   ip: z.string().optional(),
+  // External URL a reverse proxy (Traefik) routes to this port, if detected.
+  public_url: z.string().optional(),
 });
 
 export const dockerMountSchema = z.object({

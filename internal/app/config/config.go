@@ -58,6 +58,13 @@ type Config struct {
 	// returns the direct peer address and X-Forwarded-Host/Proto are ignored.
 	TrustedProxies []string
 
+	// TraefikDynamicDirs are filesystem paths to Traefik file-provider dynamic
+	// config directories (TRAEFIK_DYNAMIC_DIR, colon-separated) scanned to
+	// derive per-service public URLs for the Applications view. Empty falls
+	// back to a list of well-known defaults probed at read time. The paths
+	// must be reachable from this process (bind-mounted in Docker deployments).
+	TraefikDynamicDirs []string
+
 	// Raft holds optional consensus / cross-cluster sync configuration.
 	Raft RaftConfig
 }
@@ -125,6 +132,14 @@ func Load() (*Config, error) {
 
 	// CORS configuration
 	config.AllowOrigin = getEnv("ALLOW_ORIGIN", "*")
+
+	if raw := strings.TrimSpace(getEnv("TRAEFIK_DYNAMIC_DIR", "")); raw != "" {
+		for _, p := range strings.Split(raw, ":") {
+			if p = strings.TrimSpace(p); p != "" {
+				config.TraefikDynamicDirs = append(config.TraefikDynamicDirs, p)
+			}
+		}
+	}
 
 	// Data retention
 	retentionStr := getEnv("METRICS_RETENTION_DAYS", "30")

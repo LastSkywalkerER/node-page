@@ -1,5 +1,13 @@
 import { toast } from 'sonner';
-import { MoreHorizontal, RotateCcw, Square, Trash2, Play, ArrowUpCircle } from 'lucide-react';
+import {
+  MoreHorizontal,
+  RotateCcw,
+  Square,
+  Trash2,
+  Play,
+  ArrowUpCircle,
+  ExternalLink,
+} from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -31,6 +39,11 @@ function fmtPorts(ports: DockerPort[]): string {
     .map((p) => `:${p.public_port}→${p.private_port}`)
     .slice(0, 4)
     .join(' ');
+}
+
+/** Strip the scheme from a URL for a compact chip label. */
+function hostFromURL(u: string): string {
+  return u.replace(/^https?:\/\//, '').replace(/\/$/, '');
 }
 
 function metricColor(pct: number) {
@@ -115,6 +128,7 @@ export function ContainerRow({ container: c }: { container: DockerContainer }) {
   const cpuColor = metricColor(cpu);
   const memColor = metricColor(mem);
   const ports = fmtPorts(c.ports);
+  const routed = (c.ports ?? []).filter((p) => p.public_url);
   const uptime = c.state === 'running' ? fmtUptime(c.created) : '';
 
   return (
@@ -166,6 +180,28 @@ export function ContainerRow({ container: c }: { container: DockerContainer }) {
         {c.size_root_fs ? <span className="shrink-0">{fmtBytes(c.size_root_fs)}</span> : null}
         {uptime && <span className="shrink-0">{uptime}</span>}
       </div>
+
+      {/* Reverse-proxy (Traefik) public URLs — including ports the container
+          doesn't publish to the host. */}
+      {routed.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 pl-3.5">
+          {routed.map((p, i) => (
+            <a
+              key={`${p.private_port}-${i}`}
+              href={p.public_url}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              title={`${p.public_url} → :${p.private_port}`}
+              className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary transition-colors hover:bg-primary/20"
+            >
+              <ExternalLink className="h-2.5 w-2.5" />
+              {hostFromURL(p.public_url as string)}
+              {p.private_port ? <span className="text-primary/60">:{p.private_port}</span> : null}
+            </a>
+          ))}
+        </div>
+      )}
 
       {/* Update resolution: human-readable running version → registry version */}
       {c.update_available && (

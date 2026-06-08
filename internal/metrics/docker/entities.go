@@ -254,6 +254,11 @@ type DockerPort struct {
 
 	// IP specifies the IP address for port binding (optional)
 	IP string `json:"ip,omitempty"`
+
+	// PublicURL is the external URL a reverse proxy (Traefik file provider /
+	// labels) routes to this port, when one was detected. Present even for
+	// ports the container does not publish to the host.
+	PublicURL string `json:"public_url,omitempty"`
 }
 
 // DockerStats represents real-time performance statistics for a Docker container.

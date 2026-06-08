@@ -9,7 +9,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from '@/components/ui/accordion'
-import { RaftClusterWidget, useRaftStatus } from '@/widgets/raft'
+import { RaftClusterWidget, FormClusterWidget, useRaftStatus } from '@/widgets/raft'
 
 const nodeAccordionTrigger =
   'py-3 text-sm hover:no-underline font-display tracking-wide [&_[data-slot=accordion-trigger-icon]]:text-primary/80'
@@ -33,10 +33,16 @@ export function NodesTab() {
   const { data: raftStatus } = useRaftStatus(true)
   const raftEnabled = Boolean(raftStatus?.status?.enabled)
   const raftPanelVisible = raftEnabled || Boolean(raftStatus?.boot_error)
+  // A standalone node (Raft off, no boot failure) gets the "form a cluster"
+  // panel so an admin can bootstrap or join post-setup. Gated on a status
+  // response having arrived (raftStatus defined) so the panel doesn't flash
+  // before we know the node isn't already in a cluster.
+  const formClusterVisible = Boolean(raftStatus) && !raftPanelVisible
 
   const accordionDefault = [
     ...(hosts.length > 0 ? ['hosts'] : []),
     ...(raftPanelVisible ? ['raft'] : []),
+    ...(formClusterVisible ? ['form-cluster'] : []),
   ]
 
   return (
@@ -50,7 +56,7 @@ export function NodesTab() {
       </CardHeader>
       <CardContent className="pt-0">
         <Accordion
-          key={`${hosts.length}-${raftPanelVisible}`}
+          key={`${hosts.length}-${raftPanelVisible}-${formClusterVisible}`}
           multiple
           defaultValue={accordionDefault}
           className="w-full"
@@ -85,6 +91,20 @@ export function NodesTab() {
                     ))}
                   </div>
                 </ScrollArea>
+              </AccordionContent>
+            </AccordionItem>
+          )}
+
+          {formClusterVisible && (
+            <AccordionItem value="form-cluster" className="border-border/50 dark:border-white/10">
+              <AccordionTrigger className={nodeAccordionTrigger}>
+                Cluster sync
+                <span className="ml-2 font-mono text-xs font-normal text-muted-foreground">
+                  (standalone)
+                </span>
+              </AccordionTrigger>
+              <AccordionContent className="pb-4">
+                <FormClusterWidget />
               </AccordionContent>
             </AccordionItem>
           )}

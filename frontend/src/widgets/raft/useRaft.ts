@@ -65,6 +65,71 @@ export function useRaftStatus(enabled: boolean = true) {
   })
 }
 
+export interface StartClusterInput {
+  cluster_id?: string
+  node_id?: string
+  bind_addr?: string
+  advertise_addr?: string
+  advertise_url?: string
+}
+
+export interface StartClusterResponse {
+  data: {
+    message: string
+    cluster_id: string
+    node_id: string
+    advertise_addr: string
+  }
+}
+
+/**
+ * Bootstraps THIS already-provisioned standalone node into the leader of a
+ * new single-voter cluster, at runtime (no restart). Non-destructive — the
+ * node keeps its local data. POST /cluster/start.
+ */
+export function useStartCluster() {
+  const queryClient = useQueryClient()
+  return useMutation<StartClusterResponse, Error, StartClusterInput>({
+    mutationFn: async (input) => {
+      const resp = await apiClient.post<StartClusterResponse>('/cluster/start', input)
+      return resp.data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['raft', 'status'] })
+      queryClient.invalidateQueries({ queryKey: ['hosts'] })
+    },
+  })
+}
+
+export interface JoinClusterInput {
+  peer_url: string
+  token: string
+  advertise_addr?: string
+  advertise_url?: string
+  acknowledge_data_loss: boolean
+}
+
+/**
+ * Attaches THIS already-provisioned node to an existing cluster.
+ * DESTRUCTIVE: the incoming snapshot replaces all local data (users,
+ * metrics, settings) and the current admin is logged out. POST /cluster/join.
+ */
+export function useJoinCluster() {
+  const queryClient = useQueryClient()
+  return useMutation<{ data: { message: string; cluster_id: string } }, Error, JoinClusterInput>({
+    mutationFn: async (input) => {
+      const resp = await apiClient.post<{ data: { message: string; cluster_id: string } }>(
+        '/cluster/join',
+        input,
+      )
+      return resp.data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['raft', 'status'] })
+    },
+  })
+}
+
 export interface IssueJoinTokenResponse {
   token: string
   expires_at: string

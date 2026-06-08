@@ -115,7 +115,7 @@ func (c *Container) SetPostActivateHook(fn func()) {
 // pieces (picker, sender, receiver) are only constructed when both
 // raftCfg.Enabled and raftCfg.Bridge.Enabled are true and a shared secret
 // is present.
-func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret, refreshSecret string, startTime time.Time, raftCfg config.RaftConfig) (*Container, error) {
+func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret, refreshSecret string, startTime time.Time, raftCfg config.RaftConfig, traefikDirs []string) (*Container, error) {
 	container := &Container{
 		logger: logger,
 		broker: stream.NewBroker(),
@@ -152,7 +152,7 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 	container.memoryService = memory.NewService(container.logger, container.memoryRepository)
 	container.diskService = disk.NewService(container.logger, container.diskRepository)
 	container.networkService = network.NewService(container.logger, container.networkRepository)
-	container.dockerService = docker.NewService(container.logger, docker.NewDockerCollector(container.logger), container.dockerRepository)
+	container.dockerService = docker.NewService(container.logger, docker.NewDockerCollector(container.logger, traefikDirs), container.dockerRepository)
 	container.hostService = hosts.NewService(container.logger, container.hostRepository)
 	container.healthService = health.NewService(container.logger, container.hostRepository, startTime)
 	container.sensorsService = sensors.NewService(container.logger)
@@ -407,6 +407,36 @@ func (c *Container) CurrentRaftConfig() config.RaftConfig {
 	c.activateMu.Lock()
 	defer c.activateMu.Unlock()
 	return c.raftCfgSnapshot
+}
+
+// SeedClusterSecrets publishes the given auth secrets into the replicated
+// cluster_config (CmdAuthSecretSet) so nodes that later join this cluster
+// receive valid JWT signing keys via snapshot replay. Leader-only: a no-op
+// when Raft is disabled or this node is not the leader. Used by the runtime
+// "make this the main node" admin flow (the wizard relies on boot-time
+// BootstrapClusterSecrets instead).
+func (c *Container) SeedClusterSecrets(ctx context.Context, jwtSecret, refreshSecret string) error {
+	if jwtSecret == "" || refreshSecret == "" {
+		return nil
+	}
+	repl := c.GetRaftReplicator()
+	svc := c.GetRaftService()
+	if repl == nil || svc == nil || !svc.IsLeader() {
+		return nil
+	}
+	return repl.SubmitAuthSecretSet(ctx, jwtSecret, refreshSecret)
+}
+
+// AdvertiseSelfNow publishes this node's advertised HTTP URL into the
+// peer-URL catalog (CmdPeerNodeAdvertise) using the currently-active Raft
+// config, so followers can forward writes to it. Best-effort and leader-only;
+// a no-op when no advertise URL is configured (boot re-advertises anyway).
+func (c *Container) AdvertiseSelfNow(ctx context.Context) {
+	cfg := c.CurrentRaftConfig()
+	if cfg.AdvertiseURL == "" {
+		return
+	}
+	raftcluster.AdvertiseSelf(ctx, c.logger, c.GetRaftService(), c.GetRaftReplicator(), cfg.ClusterID, cfg.NodeID, cfg.AdvertiseURL)
 }
 
 // RaftBootError returns the most recent boot-time activation failure (e.g.
