@@ -133,6 +133,23 @@ curl -fsSL .../scripts/install.sh | bash -s -- uninstall   # stop (add --purge t
 Overrides: `NODE_STATS_DIR` (stack dir), `NODE_STATS_PORT` (HTTP port),
 `NODE_STATS_IMAGE` (pin a `:vX.Y.Z` tag).
 
+### Linux SBC / lean host — native install (no Docker, arm64 + amd64)
+
+For Orange Pi, Raspberry Pi, or any Linux box where you'd rather not run Docker,
+install the self-contained native binary (it reads `/proc` directly, so you get
+**real host metrics**) as a systemd service:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scripts/install.sh | sudo bash -s -- native
+```
+
+Downloads the matching `linux/{amd64,arm64}` release binary (checksum-verified),
+installs it to `/usr/local/bin`, and registers a `node-stats` systemd service
+(data/config in `/var/lib/node-stats`). Open **http://localhost:8080** to finish
+setup. Manage with `... | bash -s -- update-native | uninstall-native`. Pin a
+version with `NODE_STATS_VERSION=vX.Y.Z`. (Without `sudo`/systemd it installs to
+`~/.local/bin` and prints how to run it manually.)
+
 ### macOS / Windows — native binary (best host metrics)
 
 Docker Desktop runs in a Linux VM, so its host metrics reflect the **VM**, not

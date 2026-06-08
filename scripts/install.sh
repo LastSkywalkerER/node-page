@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 #
-# install.sh — install / update / uninstall node-stats via Docker Compose.
+# install.sh — install / update / uninstall node-stats.
 #
 #   curl -fsSL https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scripts/install.sh | bash
 #
 # Subcommands (pass with `| bash -s -- <cmd>`):
-#   install    (default) pull the image, write the stack, bring it up
-#   update     pull the latest image and recreate
-#   uninstall  stop the stack (add --purge to also delete data)
+#   install            (default) Docker Compose deployment: pull image, bring up stack
+#   update             pull the latest image and recreate
+#   uninstall          stop the stack (add --purge to also delete data)
+#   native             NATIVE single-binary install (no Docker) — ideal for SBCs
+#                      (Orange Pi / Raspberry Pi, linux amd64 + arm64); installs a
+#                      systemd service. Real host metrics (reads /proc directly).
+#   update-native      self-update the native binary and restart the service
+#   uninstall-native   remove the native service + binary (add --purge for data)
 #
-# Env overrides:  NODE_STATS_DIR (stack dir)   NODE_STATS_PORT (HTTP port)
-#                 NODE_STATS_IMAGE (image ref)
+# Env overrides:  NODE_STATS_DIR   NODE_STATS_PORT   NODE_STATS_IMAGE
+#                 NODE_STATS_VERSION (pin a vX.Y.Z release for native)
 #
 set -euo pipefail
 
@@ -30,6 +35,18 @@ elif [ "$(id -u)" = "0" ]; then
 else
   STACK_DIR="$HOME/.node-stats"
 fi
+
+# --- Native install layout (no Docker) ---
+SERVICE="node-stats"
+NATIVE_PORT="${NODE_STATS_PORT:-8080}" # native default :8080 (docker uses 9090)
+if [ -n "${NODE_STATS_DIR:-}" ]; then
+  NATIVE_DIR="$NODE_STATS_DIR"
+elif [ "$(id -u)" = "0" ]; then
+  NATIVE_DIR="/var/lib/node-stats"
+else
+  NATIVE_DIR="$HOME/.node-stats"
+fi
+if [ "$(id -u)" = "0" ]; then NATIVE_BIN_DIR="/usr/local/bin"; else NATIVE_BIN_DIR="$HOME/.local/bin"; fi
 
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
@@ -57,7 +74,8 @@ detect_platform() {
 
 require_docker() {
   command -v docker >/dev/null 2>&1 ||
-    die "Docker not found. Install Docker Engine (Linux) or Docker Desktop (macOS): https://docs.docker.com/get-docker/"
+    die "Docker not found. Install Docker (https://docs.docker.com/get-docker/), or on a lean host / SBC use the native install:
+  curl -fsSL ${RAW_BASE}/scripts/install.sh | bash -s -- native"
   docker compose version >/dev/null 2>&1 ||
     die "Docker Compose v2 not found. Update Docker, or install the compose plugin: https://docs.docker.com/compose/install/"
   docker info >/dev/null 2>&1 ||
@@ -210,10 +228,137 @@ cmd_uninstall() {
   fi
 }
 
+# ----------------------------------------------------------------------------
+# Native install (no Docker) — for SBCs (Orange Pi / Raspberry Pi) and lean hosts
+# ----------------------------------------------------------------------------
+
+# latest_release_tag prints the newest release tag (e.g. v1.2.3). Honour an
+# explicit NODE_STATS_VERSION override.
+latest_release_tag() {
+  if [ -n "${NODE_STATS_VERSION:-}" ]; then
+    printf '%s' "$NODE_STATS_VERSION"
+    return
+  fi
+  fetch "https://api.github.com/repos/${REPO}/releases/latest" |
+    sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1
+}
+
+# download_native_binary <dest> — fetch + checksum-verify + extract the
+# linux/<arch> release binary into <dest>. NODE_STATS_LOCAL_TARBALL overrides the
+# download (air-gapped / testing).
+download_native_binary() {
+  local dest="$1" tag asset url tmp
+  tag="$(latest_release_tag)"
+  [ -n "$tag" ] || die "could not determine the latest release (no published release yet, or no network). Pin one with NODE_STATS_VERSION=vX.Y.Z."
+  asset="node-stats_${tag}_linux_${ARCH}.tar.gz"
+  tmp="$(mktemp -d)"
+  if [ -n "${NODE_STATS_LOCAL_TARBALL:-}" ]; then
+    cp "$NODE_STATS_LOCAL_TARBALL" "$tmp/$asset" || die "local tarball not found: $NODE_STATS_LOCAL_TARBALL"
+  else
+    url="https://github.com/${REPO}/releases/download/${tag}/${asset}"
+    green "Downloading ${asset} ..."
+    fetch "$url" >"$tmp/$asset"
+    [ -s "$tmp/$asset" ] || die "download failed: $url"
+    local sums want got
+    sums="$(fetch "https://github.com/${REPO}/releases/download/${tag}/SHA256SUMS")"
+    want="$(printf '%s\n' "$sums" | awk -v a="$asset" '{gsub(/^\*/,"",$2)} $2==a {print $1}' | head -1)"
+    if [ -n "$want" ] && command -v sha256sum >/dev/null 2>&1; then
+      got="$(sha256sum "$tmp/$asset" | awk '{print $1}')"
+      [ "$want" = "$got" ] || { rm -rf "$tmp"; die "checksum mismatch for $asset"; }
+      green "checksum OK"
+    fi
+  fi
+  tar -xzf "$tmp/$asset" -C "$tmp" || { rm -rf "$tmp"; die "extract failed"; }
+  [ -f "$tmp/node-stats" ] || { rm -rf "$tmp"; die "binary 'node-stats' not found in archive"; }
+  mkdir -p "$(dirname "$dest")"
+  install -m 0755 "$tmp/node-stats" "$dest" 2>/dev/null || { cp "$tmp/node-stats" "$dest" && chmod 0755 "$dest"; }
+  rm -rf "$tmp"
+}
+
+# install_systemd_unit <bin> <workdir> <port> — returns non-zero when systemd
+# isn't usable (not root / no systemctl), so the caller can fall back.
+install_systemd_unit() {
+  local bin="$1" wd="$2" port="$3"
+  command -v systemctl >/dev/null 2>&1 || return 1
+  [ "$(id -u)" = "0" ] || return 1
+  cat >"/etc/systemd/system/${SERVICE}.service" <<EOF
+[Unit]
+Description=node-stats monitoring
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=${bin}
+WorkingDirectory=${wd}
+Environment=ADDR=:${port}
+Environment=GIN_MODE=release
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now "${SERVICE}" >/dev/null 2>&1
+}
+
+cmd_install_native() {
+  detect_platform
+  [ "$OS" = linux ] || die "native install is Linux-only. On macOS/Windows download the binary from the Releases page."
+  green "Installing node-stats (native, no Docker) for linux/${ARCH}"
+  mkdir -p "$NATIVE_DIR"
+  local bin="$NATIVE_BIN_DIR/node-stats"
+  download_native_binary "$bin"
+  green "Installed → $bin   (data/config dir: $NATIVE_DIR)"
+  if install_systemd_unit "$bin" "$NATIVE_DIR" "$NATIVE_PORT"; then
+    green "systemd service '${SERVICE}' enabled and started."
+  else
+    yellow "No systemd (or not root). Run it manually:"
+    yellow "  cd '$NATIVE_DIR' && ADDR=:${NATIVE_PORT} '$bin'"
+  fi
+  green ""
+  green "node-stats is up → http://localhost:${NATIVE_PORT}"
+  green "Open it in a browser to finish setup. Native reads the host's /proc directly — real host metrics."
+  yellow "Manage: install.sh update-native | uninstall-native"
+}
+
+cmd_update_native() {
+  detect_platform
+  [ "$OS" = linux ] || die "native update is Linux-only."
+  local bin="$NATIVE_BIN_DIR/node-stats"
+  [ -x "$bin" ] || die "no native install found at $bin"
+  green "Self-updating $bin ..."
+  "$bin" update || die "update failed"
+  if command -v systemctl >/dev/null 2>&1 && [ -f "/etc/systemd/system/${SERVICE}.service" ]; then
+    systemctl restart "${SERVICE}" && green "restarted ${SERVICE}"
+  else
+    yellow "Restart node-stats to apply the new version."
+  fi
+}
+
+cmd_uninstall_native() {
+  if command -v systemctl >/dev/null 2>&1 && [ -f "/etc/systemd/system/${SERVICE}.service" ]; then
+    systemctl disable --now "${SERVICE}" 2>/dev/null || true
+    rm -f "/etc/systemd/system/${SERVICE}.service"
+    systemctl daemon-reload 2>/dev/null || true
+  fi
+  rm -f "$NATIVE_BIN_DIR/node-stats"
+  if [ "${1:-}" = "--purge" ]; then
+    rm -rf "$NATIVE_DIR"
+    yellow "Purged data at $NATIVE_DIR"
+  else
+    yellow "Data kept at $NATIVE_DIR (use 'uninstall-native --purge' to delete)."
+  fi
+  green "Native node-stats uninstalled."
+}
+
 case "${1:-install}" in
 install) cmd_install ;;
 update) cmd_update ;;
 uninstall) cmd_uninstall "${2:-}" ;;
--h | --help | help) echo "usage: install.sh {install|update|uninstall [--purge]}" ;;
-*) die "unknown command '${1}' (use install|update|uninstall)" ;;
+native) cmd_install_native ;;
+update-native) cmd_update_native ;;
+uninstall-native) cmd_uninstall_native "${2:-}" ;;
+-h | --help | help) echo "usage: install.sh {install|update|uninstall [--purge] | native|update-native|uninstall-native [--purge]}" ;;
+*) die "unknown command '${1}' (use install|update|uninstall|native|update-native|uninstall-native)" ;;
 esac
