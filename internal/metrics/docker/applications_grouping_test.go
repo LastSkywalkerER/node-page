@@ -80,6 +80,54 @@ func TestRegroupByCommonPrefix_Disabled(t *testing.T) {
 	}
 }
 
+func TestMergeStacksByCommonPrefix(t *testing.T) {
+	os.Unsetenv("NODE_STATS_APP_PREFIX_GROUPING")
+	c := &dockerMetricsCollector{}
+	mk := func(name string) *DockerStack {
+		return &DockerStack{Name: name, Containers: []DockerContainer{{ID: name, Name: name}}, TotalContainers: 1, RunningContainers: 1}
+	}
+	in := map[string]*DockerStack{}
+	for _, n := range []string{
+		"node-stats-app-zwgbyv", "node-stats-db-hfndza", "node-stats-compose-vrlqtf",
+		"ebcenter-app-yxkjot", "ebcenter-db-9zdnjd",
+		"mdata-db-tjmnjq",
+	} {
+		in[n] = mk(n)
+	}
+
+	out := c.mergeStacksByCommonPrefix(in)
+
+	if len(out) != 3 {
+		keys := make([]string, 0, len(out))
+		for k := range out {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		t.Fatalf("got %d stacks %v, want 3 (node-stats, ebcenter, mdata-db-tjmnjq)", len(out), keys)
+	}
+	if out["node-stats"] == nil || out["node-stats"].TotalContainers != 3 {
+		t.Errorf("node-stats stack should merge 3 containers, got %+v", out["node-stats"])
+	}
+	if out["ebcenter"] == nil || out["ebcenter"].TotalContainers != 2 {
+		t.Errorf("ebcenter stack should merge 2 containers, got %+v", out["ebcenter"])
+	}
+	if out["mdata-db-tjmnjq"] == nil {
+		t.Errorf("mdata-db-tjmnjq has no sibling → must stay its own stack")
+	}
+	// No container is duplicated across groups (the old matcher could double-add).
+	seen := map[string]int{}
+	for _, s := range out {
+		for _, ct := range s.Containers {
+			seen[ct.ID]++
+		}
+	}
+	for id, n := range seen {
+		if n != 1 {
+			t.Errorf("container %q appears %d times across merged stacks (want 1)", id, n)
+		}
+	}
+}
+
 func TestRegroupByCommonPrefix_NoSharedPrefix(t *testing.T) {
 	os.Unsetenv("NODE_STATS_APP_PREFIX_GROUPING")
 	// Distinct compose projects with no shared prefix must not merge.
