@@ -102,6 +102,9 @@ func BuildComposeContent(ds DesiredState) string {
 	w("    volumes:")
 	w("      - ./.env.agent:/app/.env")
 	w("      - ./data/docker:/app/data")
+	// Docker socket (read-only) so the Docker collector / Applications view can
+	// query the daemon. The controller mounts it read-write for compose control.
+	w("      - /var/run/docker.sock:/var/run/docker.sock:ro")
 	w("      - /:/host:ro")
 	w("    extra_hosts:")
 	w(`      - "host.docker.internal:host-gateway"`)
