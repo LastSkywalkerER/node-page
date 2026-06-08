@@ -99,10 +99,11 @@ func BuildComposeContent(ds DesiredState) string {
 	w("    image: " + imageRef)
 	w("    ports:")
 	w(`      - "${NODE_STATS_PORT:-9090}:9090"`)
-	// Publish the Raft port so peers on other hosts can reach this node's
-	// consensus transport (the app binds :7000 inside; the host port is
-	// overridable per-instance via NODE_STATS_RAFT_PORT for multi-instance hosts).
-	w(`      - "${NODE_STATS_RAFT_PORT:-7000}:7000"`)
+	// Publish the Raft port 1:1 so peers can reach this node's consensus
+	// transport at the same port it binds/advertises. Override per-instance via
+	// NODE_STATS_RAFT_PORT (and set the wizard's Raft port to match) to run
+	// several instances on one host.
+	w(`      - "${NODE_STATS_RAFT_PORT:-7000}:${NODE_STATS_RAFT_PORT:-7000}"`)
 	w("    volumes:")
 	w("      - ./.env.agent:/app/.env")
 	w("      - ./data/docker:/app/data")

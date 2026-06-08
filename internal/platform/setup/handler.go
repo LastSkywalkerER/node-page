@@ -407,6 +407,18 @@ func (h *Handler) CompleteSetup(c *gin.Context) {
 	ApplySetupDefaults(req.Config)
 	ApplyRaftDefaults(req.Config)
 
+	// Starting a cluster via the wizard: derive the leader's HTTP advertise URL
+	// from its Raft advertise host + this node's HTTP port when the operator left
+	// it blank. Without it the leader has no published API URL, so peers can't
+	// reach it to join / forward writes, and the connect-key panel shows a wrong
+	// default port (the admin/join paths derive this; CompleteSetup didn't).
+	if strings.EqualFold(strings.TrimSpace(req.Config.RaftEnabled), "true") &&
+		strings.TrimSpace(req.Config.RaftAdvertisePublicURL) == "" {
+		if u := deriveJoinerHTTPURL(strings.TrimSpace(req.Config.RaftAdvertiseAddr), h.addr); u != "" {
+			req.Config.RaftAdvertisePublicURL = u
+		}
+	}
+
 	// Managed Postgres: reuse the previously-generated password if one exists.
 	// The pgdata volume keeps the password from its FIRST init, so regenerating
 	// it on a wizard retry (or the two-phase re-submit) would cause an auth
