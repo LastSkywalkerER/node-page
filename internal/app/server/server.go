@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -46,6 +48,8 @@ import (
 	setup "system-stats/internal/platform/setup"
 	platformstream "system-stats/internal/platform/stream"
 	system "system-stats/internal/platform/system"
+	"system-stats/internal/version"
+	"system-stats/internal/webui"
 )
 
 // Run starts the system statistics HTTP server.
@@ -408,13 +412,24 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	router.Use(middleware.LoggingMiddleware(logger))
 	router.Use(middleware.CORSMiddleware(cfg.AllowOrigin, cfg.AllowOrigin != "*"))
 
-	wd, err := os.Getwd()
-	if err != nil {
-		logger.Fatal("Failed to get working directory", "error", err)
+	// Frontend: prefer the embedded build (release binaries built with
+	// -tags embed_dist), falling back to on-disk internal/webui/dist for dev.
+	// In dev the Vite dev-server proxies /api and serves the SPA itself, so the
+	// on-disk fallback is only hit when someone runs the plain binary after a
+	// `yarn build`.
+	var staticFS fs.FS
+	if efs := webui.FS(); efs != nil {
+		staticFS = efs
+		logger.Info("Serving embedded frontend")
+	} else {
+		wd, err := os.Getwd()
+		if err != nil {
+			logger.Fatal("Failed to get working directory", "error", err)
+		}
+		distPath := filepath.Join(wd, "internal", "webui", "dist")
+		staticFS = os.DirFS(distPath)
+		logger.Info("Serving static files from disk", "path", distPath)
 	}
-
-	distPath := filepath.Join(wd, "dist")
-	logger.Info("Serving static files", "path", distPath)
 
 	systemHandler := system.NewHandler(logger, container.GetSystemService(), container.GetHostService())
 	cpuHandler := cpu.NewHandler(logger, container.GetCPUService(), container.GetHostService())
@@ -468,6 +483,12 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 
 		// Public: health check (no auth — used by load balancers and k8s probes)
 		api.GET("/health", healthHandler.HandleHealth)
+
+		// Public: build/version info (no auth) — consumed by the update banner
+		// and the wizard's post-restart readiness gate.
+		api.GET("/version", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"data": version.Get()})
+		})
 
 		// Setup routes (public, only work when no users exist)
 		setup := api.Group("/setup")
@@ -586,8 +607,11 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.POST("/cluster/join", middleware.RequireAdmin(), setupHandler.AdminJoinCluster)
 	}
 
-	// Static files for React app (hashed bundles from Vite)
-	router.Static("/assets", filepath.Join(distPath, "assets"))
+	// Static files for React app (hashed bundles from Vite). Served from the
+	// embedded or on-disk fs; a missing assets subtree just 404s (dev/Vite case).
+	if assetsFS, err := fs.Sub(staticFS, "assets"); err == nil {
+		router.StaticFS("/assets", http.FS(assetsFS))
+	}
 
 	// SPA fallback routing
 	router.NoRoute(func(c *gin.Context) {
@@ -597,8 +621,8 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		}
 		m := c.Request.Method
 		if m == http.MethodGet || m == http.MethodHead {
-			if abs, ok := resolveDistStaticFile(distPath, c.Request.URL.Path); ok {
-				c.File(abs)
+			if name, ok := resolveFSStaticFile(staticFS, c.Request.URL.Path); ok {
+				http.ServeFileFS(c.Writer, c.Request, staticFS, name)
 				return
 			}
 		}
@@ -610,36 +634,29 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 			c.Status(404)
 			return
 		}
-		c.File(filepath.Join(distPath, "index.html"))
+		http.ServeFileFS(c.Writer, c.Request, staticFS, "index.html")
 	})
 
 	return router
 }
 
-// resolveDistStaticFile serves a single file from dist root (Vite copies frontend/public there on build).
-func resolveDistStaticFile(distPath, urlPath string) (absFile string, ok bool) {
+// resolveFSStaticFile validates urlPath against the static fs and returns a
+// slash-cleaned, embed-safe name. fs.ValidPath is the canonical traversal
+// guard for io/fs (rejects "..", absolute paths, and empty segments).
+func resolveFSStaticFile(fsys fs.FS, urlPath string) (name string, ok bool) {
 	rel := strings.TrimPrefix(urlPath, "/")
-	if rel == "" || strings.Contains(rel, "..") {
+	if rel == "" {
 		return "", false
 	}
-	candidate := filepath.Join(distPath, filepath.FromSlash(rel))
-	absDist, err := filepath.Abs(distPath)
-	if err != nil {
+	rel = path.Clean(rel)
+	if !fs.ValidPath(rel) {
 		return "", false
 	}
-	absFile, err = filepath.Abs(candidate)
-	if err != nil {
+	info, err := fs.Stat(fsys, rel)
+	if err != nil || info.IsDir() {
 		return "", false
 	}
-	relResult, err := filepath.Rel(absDist, absFile)
-	if err != nil || strings.HasPrefix(relResult, "..") {
-		return "", false
-	}
-	fi, err := os.Stat(absFile)
-	if err != nil || fi.IsDir() {
-		return "", false
-	}
-	return absFile, true
+	return rel, true
 }
 
 // firstNonEmpty returns a if it's non-empty, else b. Used to fall back from

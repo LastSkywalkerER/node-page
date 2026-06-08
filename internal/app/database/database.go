@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"gorm.io/driver/postgres"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 
@@ -50,13 +50,15 @@ func initSQLite(dbConfig config.DatabaseConfig) (*gorm.DB, error) {
 	}
 	// Embed PRAGMAs in the DSN so every connection in the pool (not just the
 	// first one) gets WAL mode, a generous busy-timeout, and foreign-key checks.
-	// WAL lets multiple readers run alongside one writer; _busy_timeout=30000
+	// WAL lets multiple readers run alongside one writer; busy_timeout(30000)
 	// survives brief lock contention during hot-reloads or concurrent opens.
+	// modernc/glebarez applies pragmas via repeated _pragma=name(value) params
+	// (the mattn-style "_journal_mode=WAL&_busy_timeout=..." form is ignored).
 	sep := "?"
 	if strings.Contains(dsn, "?") {
 		sep = "&"
 	}
-	dsn += sep + "_journal_mode=WAL&_busy_timeout=30000&_foreign_keys=on&_synchronous=NORMAL"
+	dsn += sep + "_pragma=busy_timeout(30000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(on)"
 
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: quietLogger()})
 	if err != nil {

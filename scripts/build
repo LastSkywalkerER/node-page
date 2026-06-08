@@ -5,14 +5,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Build metadata injected via -ldflags (see internal/version).
+VERSION="$(git describe --tags --always 2>/dev/null || echo dev)"
+COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo none)"
+DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+LDFLAGS="-s -w -X system-stats/internal/version.Version=${VERSION} -X system-stats/internal/version.Commit=${COMMIT} -X system-stats/internal/version.Date=${DATE}"
+
 echo "Building React frontend..."
 cd frontend
 yarn
-yarn build
+yarn build   # outputs to ../internal/webui/dist (embedded by the embed_dist build below)
 cd ..
 
 echo "Frontend build completed!"
-echo "Building Go backend..."
-go build -o bin/server ./cmd/server
+echo "Building Go backend (CGO disabled, embedded frontend)..."
+# CGO_ENABLED=0: pure-Go sqlite (modernc) — self-contained, cross-compilable.
+# -tags embed_dist: bake internal/webui/dist into the binary.
+CGO_ENABLED=0 go build -tags embed_dist -ldflags "$LDFLAGS" -o bin/server ./cmd/server
 echo "Backend build completed!"
-echo "Built files: ./dist/ (frontend), ./bin/server (backend)"
+echo "Built: ./bin/server (self-contained — no ./dist needed at runtime)  version=${VERSION}"
