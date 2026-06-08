@@ -407,9 +407,21 @@ func (h *Handler) CompleteSetup(c *gin.Context) {
 	ApplySetupDefaults(req.Config)
 	ApplyRaftDefaults(req.Config)
 
+	// Managed Postgres: reuse the previously-generated password if one exists.
+	// The pgdata volume keeps the password from its FIRST init, so regenerating
+	// it on a wizard retry (or the two-phase re-submit) would cause an auth
+	// mismatch and crash-loop the app. The desired-state descriptor is the
+	// persisted source of truth for that password.
+	if strings.EqualFold(req.Config.DBType, "postgres") && req.Config.DBManaged && strings.TrimSpace(req.Config.DBPassword) == "" {
+		if prev, _ := ReadDesiredState(desiredStateDir()); prev != nil &&
+			prev.DBMode == DBModePostgresManaged && strings.TrimSpace(prev.DB.Password) != "" {
+			req.Config.DBPassword = prev.DB.Password
+		}
+	}
+
 	// For managed Postgres, force the connection to target the compose `db`
-	// service and generate a password if the wizard didn't supply one. Done
-	// before WriteConfigFile so the persisted DSN is consistent.
+	// service and generate a password if none exists yet. Done before
+	// WriteConfigFile so the persisted DSN is consistent.
 	if err := finalizeManagedPostgres(req.Config); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":   "internal_error",

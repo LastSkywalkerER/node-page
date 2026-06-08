@@ -129,6 +129,9 @@ func BuildComposeContent(ds DesiredState) string {
 	w("      - HOST_ETC=/host/etc")
 	w("      - HOST_ROOT=/host")
 	w("      - NODE_HOST_ALIAS=host.docker.internal")
+	// Host outbound IPv4 detected by the installer (the container can't see it
+	// behind a bridge network); empty falls back to the in-container probe.
+	w("      - NODE_STATS_IPV4=${NODE_STATS_IPV4:-}")
 	w("    restart: unless-stopped")
 
 	// --- managed postgres (optional) -----------------------------------------
