@@ -1,0 +1,87 @@
+# install.ps1 — install / update / uninstall node-stats on Windows via Docker Desktop.
+#
+#   irm https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scripts/install.ps1 | iex
+#
+# With a subcommand:
+#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scripts/install.ps1))) update
+#
+# Note: Docker Desktop runs containers in a Linux VM, so host metrics reflect the
+# VM, not your PC. For true host metrics use the native node-stats.exe (see README).
+#Requires -Version 5.1
+[CmdletBinding()]
+param([string]$Command = 'install', [switch]$Purge)
+
+$ErrorActionPreference = 'Stop'
+$Repo    = 'LastSkywalkerER/node-page'
+$RawBase = "https://raw.githubusercontent.com/$Repo/main"
+$Image   = if ($env:NODE_STATS_IMAGE) { $env:NODE_STATS_IMAGE } else { 'ghcr.io/lastskywalkerer/node-page:latest' }
+$Port    = if ($env:NODE_STATS_PORT)  { $env:NODE_STATS_PORT }  else { '9090' }
+$StackDir = if ($env:NODE_STATS_DIR)  { $env:NODE_STATS_DIR }   else { Join-Path $env:USERPROFILE '.node-stats' }
+$Project = 'node-stats'
+
+function Require-Docker {
+  if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+    throw "Docker Desktop not found: https://docs.docker.com/desktop/install/windows-install/"
+  }
+  docker compose version *> $null
+  if ($LASTEXITCODE -ne 0) { throw "Docker Compose v2 unavailable; update Docker Desktop." }
+  docker info *> $null
+  if ($LASTEXITCODE -ne 0) { throw "Docker daemon not running. Start Docker Desktop and retry." }
+}
+
+function Initialize-Stack {
+  New-Item -ItemType Directory -Force -Path (Join-Path $StackDir 'data\docker') | Out-Null
+  $envAgent = Join-Path $StackDir '.env.agent'
+  if (Test-Path $envAgent -PathType Container) { throw "$envAgent is a directory; remove it and re-run." }
+  if (-not (Test-Path $envAgent)) { New-Item -ItemType File -Path $envAgent | Out-Null }
+}
+
+function Write-Env {
+  $envFile = Join-Path $StackDir '.env'
+  if (Test-Path $envFile) { return }
+  @"
+NODE_STATS_IMAGE=$Image
+NODE_STATS_PORT=$Port
+NODE_STATS_STACK_HOST_DIR=$StackDir
+COMPOSE_PROJECT_NAME=$Project
+GIN_MODE=release
+"@ | Set-Content -Path $envFile -Encoding ascii
+}
+
+function Write-Compose {
+  $base = Join-Path $StackDir 'docker-compose.yml'
+  docker run --rm -e NODE_STATS_IMAGE="$Image" "$Image" gen-compose | Set-Content -Path $base -Encoding ascii
+  if (-not (Test-Path $base) -or (Get-Item $base).Length -eq 0) {
+    (Invoke-RestMethod "$RawBase/install/docker-compose.base.yml") | Set-Content -Path $base -Encoding ascii
+  }
+  # Docker Desktop = VM: use the no-host-mode override.
+  "services:`n  node-stats: {}" | Set-Content -Path (Join-Path $StackDir 'docker-compose.override.yml') -Encoding ascii
+  Write-Host "Note: Docker Desktop runs in a VM — host metrics reflect the VM, not your PC." -ForegroundColor Yellow
+}
+
+function Invoke-Compose { Push-Location $StackDir; try { docker compose @args } finally { Pop-Location } }
+
+switch ($Command) {
+  'install' {
+    Require-Docker
+    Write-Host "Installing node-stats into $StackDir" -ForegroundColor Green
+    Initialize-Stack
+    docker pull $Image | Out-Null
+    Write-Env
+    Write-Compose
+    Invoke-Compose up -d
+    Write-Host "`nnode-stats is up -> http://localhost:$Port" -ForegroundColor Green
+    Write-Host "Open it in a browser to finish setup." -ForegroundColor Green
+  }
+  'update' {
+    Require-Docker
+    Invoke-Compose pull
+    Invoke-Compose up -d
+    Write-Host "Update complete -> http://localhost:$Port" -ForegroundColor Green
+  }
+  'uninstall' {
+    Invoke-Compose down
+    if ($Purge) { Remove-Item -Recurse -Force (Join-Path $StackDir 'data') -ErrorAction SilentlyContinue }
+  }
+  default { Write-Host "usage: install.ps1 [install|update|uninstall [-Purge]]" }
+}
