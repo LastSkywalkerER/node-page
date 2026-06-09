@@ -1,0 +1,29 @@
+# nfpm config for the Linux .deb / .rpm packages. Built per-arch in release.yml:
+#   PKG_ARCH (amd64|arm64) + PKG_VERSION (semver, no leading v) are exported,
+#   the freshly built ./node-stats binary sits next to this file.
+name: node-stats
+arch: ${PKG_ARCH}
+platform: linux
+version: ${PKG_VERSION}
+maintainer: "LastSkywalkerER <noreply@github.com>"
+description: |
+  Self-hosted system monitoring dashboard — CPU, memory, disk, network, Docker
+  and sensor metrics with an embedded web UI, shipped as a single static binary.
+homepage: https://github.com/LastSkywalkerER/node-page
+license: MIT
+section: utils
+priority: optional
+contents:
+  - src: ./node-stats
+    dst: /usr/bin/node-stats
+    file_info:
+      mode: 0755
+  - src: ./packaging/node-stats.service
+    dst: /lib/systemd/system/node-stats.service
+    type: config
+  - dst: /var/lib/node-stats
+    type: dir
+scripts:
+  postinstall: ./packaging/postinstall.sh
+  preremove: ./packaging/preremove.sh
+  postremove: ./packaging/postremove.sh

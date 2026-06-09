@@ -1,0 +1,15 @@
+[Unit]
+Description=node-stats system monitoring
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/node-stats
+WorkingDirectory=/var/lib/node-stats
+Environment=ADDR=:8080
+Environment=GIN_MODE=release
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

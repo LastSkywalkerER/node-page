@@ -1,7 +1,10 @@
 name: Release
 
-# Publishes the native multi-OS binaries (linux amd64/arm64, darwin arm64,
-# windows amd64) as a GitHub Release. Two ways to cut a release:
+# Publishes the native multi-OS artifacts as a GitHub Release:
+#   - tarball/zip for linux amd64/arm64, darwin amd64/arm64, windows amd64
+#   - linux .deb + .rpm (binary + systemd service)
+#   - and regenerates the Homebrew formula so `brew install` works.
+# Two ways to cut a release:
 #   1. push a tag:   git tag v0.1.0 && git push origin v0.1.0
 #   2. Actions tab → "Release" → "Run workflow", enter a version like v0.1.0
 # (The "Build and Push Docker Image" workflow is separate — it publishes the
@@ -54,6 +57,7 @@ jobs:
         include:
           - { goos: linux,   goarch: amd64, ext: '',     archive: tar.gz }
           - { goos: linux,   goarch: arm64, ext: '',     archive: tar.gz }
+          - { goos: darwin,  goarch: amd64, ext: '',     archive: tar.gz }
           - { goos: darwin,  goarch: arm64, ext: '',     archive: tar.gz }
           - { goos: windows, goarch: amd64, ext: '.exe', archive: zip }
     steps:
@@ -71,27 +75,38 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
         run: |
+          set -euo pipefail
           VERSION="${RELEASE_VERSION}"
           if [ -z "${VERSION}" ]; then echo "RELEASE_VERSION is empty"; exit 1; fi
           COMMIT="$(git rev-parse --short HEAD)"
           DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p dist
           go build -tags embed_dist \
             -ldflags "-s -w -X system-stats/internal/version.Version=${VERSION} -X system-stats/internal/version.Commit=${COMMIT} -X system-stats/internal/version.Date=${DATE}" \
             -o "node-stats${{ matrix.ext }}" ./cmd/server
           BASE="node-stats_${VERSION}_${GOOS}_${GOARCH}"
           if [ "${{ matrix.archive }}" = "zip" ]; then
-            ASSET="${BASE}.zip"; zip -q "${ASSET}" "node-stats${{ matrix.ext }}"
+            zip -q "dist/${BASE}.zip" "node-stats${{ matrix.ext }}"
           else
-            ASSET="${BASE}.tar.gz"; tar -czf "${ASSET}" "node-stats${{ matrix.ext }}"
+            tar -czf "dist/${BASE}.tar.gz" "node-stats${{ matrix.ext }}"
           fi
-          sha256sum "${ASSET}" > "${ASSET}.sha256"
-          echo "ASSET=${ASSET}" >> "$GITHUB_ENV"
+          # Linux also ships native packages (install the binary + a systemd service).
+          if [ "${GOOS}" = "linux" ]; then
+            go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+            export PKG_ARCH="${GOARCH}" PKG_VERSION="${VERSION#v}"
+            NFPM="$(go env GOPATH)/bin/nfpm"
+            "${NFPM}" package -f packaging/nfpm.yaml -p deb -t dist/
+            "${NFPM}" package -f packaging/nfpm.yaml -p rpm -t dist/
+          fi
+          # Per-file checksums (aggregated into SHA256SUMS by the release job).
+          ( cd dist && for f in node-stats_*.tar.gz node-stats_*.zip node-stats_*.deb node-stats-*.rpm; do
+              [ -e "$f" ] && sha256sum "$f" > "$f.sha256"
+            done )
+          ls -la dist
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: |
-            ${{ env.ASSET }}
-            ${{ env.ASSET }}.sha256
+          path: dist
           if-no-files-found: error
 
   # Aggregate checksums and publish the GitHub Release.
@@ -114,5 +129,38 @@ jobs:
           files: |
             dist-artifacts/*.tar.gz
             dist-artifacts/*.zip
+            dist-artifacts/*.deb
+            dist-artifacts/*.rpm
             dist-artifacts/SHA256SUMS
           generate_release_notes: true
+
+  # Regenerate the Homebrew formula (Formula/node-stats.rb) with the new version
+  # + tarball checksums and commit it back to main, so `brew install` works on
+  # macOS/Linux without any Apple signing. Best-effort: never fails the release.
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist-artifacts
+      - name: Generate + commit formula
+        run: |
+          set -euo pipefail
+          cat dist-artifacts/*.sha256 > dist-artifacts/SHA256SUMS
+          bash scripts/gen-homebrew-formula.sh "${RELEASE_VERSION#v}" dist-artifacts/SHA256SUMS > Formula/node-stats.rb
+          if git diff --quiet -- Formula/node-stats.rb; then
+            echo "formula unchanged"; exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/node-stats.rb
+          git commit -m "chore(brew): update formula for ${RELEASE_VERSION}"
+          git push origin HEAD:main
