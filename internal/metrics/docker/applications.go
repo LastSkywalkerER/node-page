@@ -51,8 +51,16 @@ type DockerApplication struct {
 	// Volumes is the de-duplicated union of the app's volume/bind mounts.
 	Volumes []DockerMount `json:"volumes,omitempty"`
 
-	// UpdatesAvailable is the number of containers with a newer image available.
+	// UpdatesAvailable is the number of containers with a newer *version* in the
+	// registry (the version label increased, e.g. 7.4.8 → 7.4.9), plus updates
+	// whose remote version couldn't be resolved.
 	UpdatesAvailable int `json:"updates_available"`
+
+	// PatchesAvailable is the number of containers whose image was rebuilt under
+	// the same version tag — a newer digest with an identical version label
+	// (typically rebuilt point releases / security patches of a rolling tag like
+	// postgres:18). Tracked separately from UpdatesAvailable.
+	PatchesAvailable int `json:"patches_available"`
 
 	// IconSlug is the resolved icon slug (or explicit override) for the app.
 	IconSlug string `json:"icon_slug,omitempty"`
@@ -180,7 +188,12 @@ func BuildApplications(m *DockerMetric) []DockerApplication {
 			return app.Volumes[i].Source < app.Volumes[j].Source
 		})
 		for _, c := range app.Containers {
-			if c.UpdateAvailable {
+			if !c.UpdateAvailable {
+				continue
+			}
+			if isRebuildUpdate(c) {
+				app.PatchesAvailable++
+			} else {
 				app.UpdatesAvailable++
 			}
 		}
@@ -192,6 +205,14 @@ func BuildApplications(m *DockerMetric) []DockerApplication {
 	out = regroupByCommonPrefix(out)
 	sort.Slice(out, func(i, j int) bool { return out[i].Project < out[j].Project })
 	return out
+}
+
+// isRebuildUpdate reports whether a container's available update is a same-version
+// rebuild (newer digest, identical version label — e.g. a rebuilt postgres:18
+// point release) rather than a version bump. Used to count patches separately
+// from version updates.
+func isRebuildUpdate(c DockerContainer) bool {
+	return c.UpdateAvailable && c.RemoteVersion != "" && c.RemoteVersion == c.ImageVersion
 }
 
 // prefixGroupingEnabled reports whether the common-name-prefix fallback grouping
@@ -274,6 +295,7 @@ func mergeApplications(project string, members []DockerApplication) DockerApplic
 		out.TotalSizeRw += m.TotalSizeRw
 		out.TotalSizeRootFs += m.TotalSizeRootFs
 		out.UpdatesAvailable += m.UpdatesAvailable
+		out.PatchesAvailable += m.PatchesAvailable
 		sumStats(&out.Stats, m.Stats)
 		out.Ports = mergePublicPorts(out.Ports, m.Ports)
 		out.Volumes = mergeVolumes(out.Volumes, m.Volumes)

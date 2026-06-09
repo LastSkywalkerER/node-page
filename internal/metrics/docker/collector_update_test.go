@@ -139,6 +139,33 @@ func TestLocalRepoDigest(t *testing.T) {
 	}
 }
 
+func TestBuildApplications_SeparatesPatchesFromVersionUpdates(t *testing.T) {
+	upd := func(name string, avail bool, local, remote string) DockerContainer {
+		return DockerContainer{
+			ID: name, Name: name, Project: "myapp", Service: name, State: "running",
+			UpdateAvailable: avail, ImageVersion: local, RemoteVersion: remote,
+		}
+	}
+	m := &DockerMetric{Stacks: []DockerStack{{Containers: []DockerContainer{
+		upd("web", true, "1.2.3", "1.2.4"), // version bump → update
+		upd("db", true, "18", "18"),        // same version, newer digest → patch
+		upd("cache", true, "7", ""),        // available but remote version unknown → update
+		upd("idle", false, "1.0.0", ""),    // no update
+	}}}}
+
+	apps := BuildApplications(m)
+	if len(apps) != 1 {
+		t.Fatalf("got %d apps, want 1", len(apps))
+	}
+	a := apps[0]
+	if a.UpdatesAvailable != 2 {
+		t.Errorf("UpdatesAvailable = %d, want 2 (version bump + unknown-remote)", a.UpdatesAvailable)
+	}
+	if a.PatchesAvailable != 1 {
+		t.Errorf("PatchesAvailable = %d, want 1 (same-version rebuild)", a.PatchesAvailable)
+	}
+}
+
 func TestBuildImageCheckTargets_DedupesByImageID(t *testing.T) {
 	stacks := []DockerStack{{Containers: []DockerContainer{
 		{ID: "a", ImageID: "sha256:img1", ConfigImage: "makeplane/plane-backend:stable", Image: "sha256:img1"},
