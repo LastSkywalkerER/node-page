@@ -641,6 +641,13 @@ func (c *dockerMetricsCollector) checkImageUpdate(ctx context.Context, t imageCh
 	}
 	version := resolveImageVersion(labels, env, ref)
 
+	// No repo digest = locally-built image that was never pulled/pushed (e.g.
+	// dokploy's "myapp-backend-xxxxxx:latest"). There is no remote to compare
+	// against — expose the ref/version for display but report no update.
+	if len(img.RepoDigests) == 0 {
+		return imageUpdateInfo{checked: false, version: version, imageRef: ref}
+	}
+
 	dist, err := c.client.DistributionInspect(ctx, ref, "")
 	if err != nil {
 		// Registry unreachable for this ref (private / local-only). Still expose
@@ -673,9 +680,25 @@ func (c *dockerMetricsCollector) checkImageUpdate(ctx context.Context, t imageCh
 }
 
 // isBareDigestRef reports whether ref is a bare content digest / untagged
-// reference with no usable repo:tag (e.g. "sha256:…" or "<none>").
+// reference with no usable repo:tag — "sha256:…", "<none>", or a bare image ID
+// (12- or 64-char hex, as the container-list "Image" shows for some swarm /
+// dokploy deployments, e.g. "b2184f879148").
 func isBareDigestRef(ref string) bool {
-	return ref == "" || strings.HasPrefix(ref, "sha256:") || strings.Contains(ref, "<none>")
+	return ref == "" || strings.HasPrefix(ref, "sha256:") || strings.Contains(ref, "<none>") || isBareImageID(ref)
+}
+
+// isBareImageID reports whether s is a bare hex image ID (12 or 64 hex chars,
+// no repository / tag).
+func isBareImageID(s string) bool {
+	if len(s) != 12 && len(s) != 64 {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // isTrackableRef reports whether ref is a registry-trackable repo[:tag]

@@ -230,13 +230,37 @@ func nameTokens(s string) []string {
 	return strings.FieldsFunc(s, func(r rune) bool { return r == '-' || r == '_' })
 }
 
-// regroupByCommonPrefix merges applications whose names share the longest common
-// dash/underscore-delimited prefix that is shared by ≥2 applications. Apps with
-// no shared prefix are left untouched. This is a fallback for orchestrators
-// (e.g. Dokploy) that name every service of one logical app like
-// "<app>-<service>-<hash>" without a shared compose-project label.
+// regroupByCommonPrefix merges applications whose names share a common
+// dash/underscore-delimited prefix into one logical app. This is a fallback for
+// orchestrators (e.g. Dokploy) that name every service of one logical app like
+// "<project>-<service>-<hash>" without a shared compose-project label.
+//
+// It runs two passes:
+//  1. minTokens=1 — merges single-token projects whose services are uniquely
+//     named (e.g. dokploy / dokploy-postgres / dokploy-redis → "dokploy";
+//     ebcenter-app / ebcenter-db → "ebcenter").
+//  2. minTokens=2 — re-merges multi-token projects that pass 1 split because a
+//     service runs as several instances with distinct random suffixes, which
+//     inflate a deeper prefix's count (e.g. a Dokploy swarm project with
+//     db / docsdb / backend×2 / frontend×2 → all under "docs-templater").
+//     Restricting pass 2 to ≥2-token prefixes keeps unrelated single-token
+//     coincidences apart (e.g. "docs-foo" never absorbs "docs-templater").
+//
+// Apps with no qualifying shared prefix are left untouched.
 func regroupByCommonPrefix(apps []DockerApplication) []DockerApplication {
-	if len(apps) < 2 || !prefixGroupingEnabled() {
+	if !prefixGroupingEnabled() {
+		return apps
+	}
+	apps = groupByPrefix(apps, 1)
+	apps = groupByPrefix(apps, 2)
+	return apps
+}
+
+// groupByPrefix assigns each application to the longest dash/underscore prefix
+// of at least minTokens tokens that is shared by ≥2 applications, merging those
+// that land on the same prefix. Apps with no such prefix are kept as-is.
+func groupByPrefix(apps []DockerApplication, minTokens int) []DockerApplication {
+	if len(apps) < 2 {
 		return apps
 	}
 
@@ -244,17 +268,17 @@ func regroupByCommonPrefix(apps []DockerApplication) []DockerApplication {
 	prefixCount := map[string]int{}
 	for i, a := range apps {
 		toks[i] = nameTokens(a.Project)
-		for j := 1; j <= len(toks[i]); j++ {
+		for j := minTokens; j <= len(toks[i]); j++ {
 			prefixCount[strings.Join(toks[i][:j], "-")]++
 		}
 	}
 
-	// Assign each app to the LONGEST prefix shared by ≥2 apps; else keep it alone.
+	// Assign each app to the LONGEST qualifying prefix shared by ≥2 apps; else keep it alone.
 	groups := map[string][]DockerApplication{}
 	order := []string{}
 	for i, a := range apps {
 		key := "self:" + a.Project
-		for j := len(toks[i]); j >= 1; j-- {
+		for j := len(toks[i]); j >= minTokens; j-- {
 			pfx := strings.Join(toks[i][:j], "-")
 			if prefixCount[pfx] >= 2 {
 				key = "pfx:" + pfx

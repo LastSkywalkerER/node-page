@@ -18,7 +18,11 @@ func TestStripImageDigest(t *testing.T) {
 }
 
 func TestIsBareDigestRef(t *testing.T) {
-	bare := []string{"", "sha256:abc123", "<none>:<none>", "<none>@sha256:x"}
+	bare := []string{
+		"", "sha256:abc123", "<none>:<none>", "<none>@sha256:x",
+		"b2184f879148", // 12-char bare image ID (swarm/dokploy container-list Image)
+		"b2184f8791480200522b52c808168d9e477ac6ae4508adddae7ddf40d13b2190", // 64-char
+	}
 	for _, r := range bare {
 		if !isBareDigestRef(r) {
 			t.Errorf("isBareDigestRef(%q) = false, want true", r)
