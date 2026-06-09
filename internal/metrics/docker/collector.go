@@ -73,6 +73,10 @@ type imageUpdateInfo struct {
 	version       string // running image's human-readable version
 	remoteVersion string // version of the image the registry tag now points to
 	imageRef      string // resolved repo:tag used for the check (also a nicer display than a bare sha256: ID)
+	// Newer version TAGS available in the registry (independent of the same-tag
+	// digest check above) — for pinned-version deployments like makeplane:v1.2.1.
+	newerVersion      string // newest tag with the SAME major (e.g. 1.2.1 → 1.3.2), "" if none
+	newerMajorVersion string // newest tag with a HIGHER major (e.g. 1.2.1 → 2.0.0), "" if none
 }
 
 // imageCheckTarget is the per-image input to a registry update check. The
@@ -342,6 +346,8 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 			RemoteDigest:       upd.remoteDigest,
 			ImageVersion:       upd.version,
 			RemoteVersion:      upd.remoteVersion,
+			NewerVersion:       upd.newerVersion,
+			NewerMajorVersion:  upd.newerMajorVersion,
 		}
 
 		results <- containerResult{
@@ -684,14 +690,21 @@ func (c *dockerMetricsCollector) checkImageUpdate(ctx context.Context, t imageCh
 		remoteVer = remoteImageVersion(ctx, c.registryClient, ref)
 	}
 
+	// Independently of the same-tag digest check, look for newer version TAGS in
+	// the registry — this is what surfaces 1.2.1 → 1.3.x (minor) and → 2.0.0
+	// (major) for pinned-version deployments. Best-effort; never fatal.
+	newer, newerMajor := newerVersions(imageTag(ref), listRepoTags(ctx, c.registryClient, ref))
+
 	return imageUpdateInfo{
-		available:     available,
-		checked:       true,
-		localDigest:   local,
-		remoteDigest:  remote,
-		version:       version,
-		remoteVersion: remoteVer,
-		imageRef:      ref,
+		available:         available,
+		checked:           true,
+		localDigest:       local,
+		remoteDigest:      remote,
+		version:           version,
+		remoteVersion:     remoteVer,
+		imageRef:          ref,
+		newerVersion:      newer,
+		newerMajorVersion: newerMajor,
 	}
 }
 

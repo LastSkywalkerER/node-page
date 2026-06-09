@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -140,6 +142,161 @@ func parseChallenge(s string) map[string]string {
 		}
 	}
 	return out
+}
+
+// tagListPageLimit bounds how many tag-list pages we fetch per image so a huge
+// repository can't make the hourly update check unbounded.
+const tagListPageLimit = 25
+
+// listRepoTags fetches ref's repository tag list via the registry v2 tags/list
+// endpoint, following pagination Link headers. Best-effort: returns whatever it
+// has gathered on any error (including an empty slice).
+func listRepoTags(ctx context.Context, client *http.Client, ref string) []string {
+	host, repo, _ := parseImageRef(ref)
+	if host == "" || repo == "" {
+		return nil
+	}
+	token := registryToken(ctx, client, host, repo)
+	next := "https://" + host + "/v2/" + repo + "/tags/list?n=100"
+	var tags []string
+	for i := 0; i < tagListPageLimit && next != ""; i++ {
+		body, link, err := registryGetWithLink(ctx, client, next, token)
+		if err != nil {
+			break
+		}
+		var page struct {
+			Tags []string `json:"tags"`
+		}
+		if json.Unmarshal(body, &page) != nil {
+			break
+		}
+		tags = append(tags, page.Tags...)
+		next = nextLinkURL(link, host)
+	}
+	return tags
+}
+
+// registryGetWithLink performs a registry GET returning the body and the raw
+// RFC5988 Link response header (used for tags/list pagination).
+func registryGetWithLink(ctx context.Context, client *http.Client, urlStr, token string) ([]byte, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("Accept", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("registry tags GET %s: status %d", urlStr, resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	return body, resp.Header.Get("Link"), err
+}
+
+// nextLinkURL extracts the rel="next" target from a registry Link header,
+// resolving a relative path against host. Returns "" when there is no next page.
+func nextLinkURL(link, host string) string {
+	if !strings.Contains(link, `rel="next"`) {
+		return ""
+	}
+	start := strings.Index(link, "<")
+	end := strings.Index(link, ">")
+	if start < 0 || end < 0 || end <= start {
+		return ""
+	}
+	target := link[start+1 : end]
+	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+		return target
+	}
+	return "https://" + host + target
+}
+
+// tagVersion is a parsed semver-ish image tag: numeric core + a "variant"
+// suffix (e.g. "-alpine", "-management-alpine"). comps is how many numeric
+// components were present (1=major only, 2=major.minor, 3=major.minor.patch).
+type tagVersion struct {
+	major, minor, patch, comps int
+	variant                    string
+}
+
+func (v tagVersion) greaterThan(o tagVersion) bool {
+	if v.major != o.major {
+		return v.major > o.major
+	}
+	if v.minor != o.minor {
+		return v.minor > o.minor
+	}
+	return v.patch > o.patch
+}
+
+// tagVersionRe captures an optional leading v, 1-3 dotted numbers, and a trailing
+// variant. The variant must be empty or begin with a separator (- or +) — this
+// rejects pre-releases like "1.2.3rc1" and calver-with-extra like "1.2.3.4", and
+// keeps clean variants like "-alpine".
+var tagVersionRe = regexp.MustCompile(`^[vV]?(\d+)(?:\.(\d+))?(?:\.(\d+))?(.*)$`)
+
+// parseTagVersion parses a tag into a comparable tagVersion. ok is false for
+// non-version tags (latest, stable, edge, sha-pinned, pre-releases, …).
+func parseTagVersion(tag string) (tagVersion, bool) {
+	m := tagVersionRe.FindStringSubmatch(strings.TrimSpace(tag))
+	if m == nil {
+		return tagVersion{}, false
+	}
+	variant := m[4]
+	if variant != "" && variant[0] != '-' && variant[0] != '+' {
+		return tagVersion{}, false
+	}
+	v := tagVersion{variant: variant, comps: 1}
+	v.major, _ = strconv.Atoi(m[1])
+	if m[2] != "" {
+		v.minor, _ = strconv.Atoi(m[2])
+		v.comps = 2
+	}
+	if m[3] != "" {
+		v.patch, _ = strconv.Atoi(m[3])
+		v.comps = 3
+	}
+	return v, true
+}
+
+// newerVersions inspects the available tags of the same variant as currentTag and
+// returns the newest tag with the SAME major (sameMajor) and the newest tag with
+// a HIGHER major (higherMajor). sameMajor is only reported when currentTag pins a
+// minor/patch (>=2 components) — a bare rolling major tag like "18" already tracks
+// its newest point release via the digest check, so suggesting "18.1" would be
+// redundant noise. higherMajor (e.g. 1.2.1 → 2.0.0) is always reported.
+func newerVersions(currentTag string, tags []string) (sameMajor, higherMajor string) {
+	cur, ok := parseTagVersion(currentTag)
+	if !ok {
+		return "", ""
+	}
+	var bestSame, bestHigher tagVersion
+	var haveSame, haveHigher bool
+	for _, t := range tags {
+		v, ok := parseTagVersion(t)
+		if !ok || v.variant != cur.variant || !v.greaterThan(cur) {
+			continue
+		}
+		if v.major == cur.major {
+			if !haveSame || v.greaterThan(bestSame) {
+				bestSame, sameMajor, haveSame = v, t, true
+			}
+		} else if v.major > cur.major {
+			if !haveHigher || v.greaterThan(bestHigher) {
+				bestHigher, higherMajor, haveHigher = v, t, true
+			}
+		}
+	}
+	if cur.comps < 2 {
+		sameMajor = "" // bare rolling major tag → digest check already covers point releases
+	}
+	return sameMajor, higherMajor
 }
 
 func registryGet(ctx context.Context, client *http.Client, urlStr, accept, token string) ([]byte, error) {

@@ -7,6 +7,7 @@ import {
   Play,
   ArrowUpCircle,
   RefreshCw,
+  ChevronsUp,
   ExternalLink,
 } from 'lucide-react';
 import {
@@ -160,6 +161,24 @@ export function ContainerRow({ container: c }: { container: DockerContainer }) {
             </span>
           ))}
 
+        {/* Newer version TAG available (independent of the same-tag digest check) */}
+        {c.newer_version && (
+          <span
+            className="inline-flex shrink-0 items-center gap-0.5 rounded bg-amber-500/15 px-1 py-0 text-[9px] font-medium text-amber-600 dark:text-amber-400"
+            title={`Newer version available: ${c.image_version || '?'} → ${c.newer_version}`}
+          >
+            <ArrowUpCircle className="h-2.5 w-2.5" /> {c.newer_version}
+          </span>
+        )}
+        {c.newer_major_version && (
+          <span
+            className="inline-flex shrink-0 items-center gap-0.5 rounded bg-rose-500/15 px-1 py-0 text-[9px] font-medium text-rose-600 dark:text-rose-400"
+            title={`Major version available: ${c.image_version || '?'} → ${c.newer_major_version} (may include breaking changes)`}
+          >
+            <ChevronsUp className="h-2.5 w-2.5" /> {c.newer_major_version}
+          </span>
+        )}
+
         <div className="flex shrink-0 items-center gap-1">
           <RingGauge value={cpu} color={cpuColor} />
           <span className="w-7 text-right tabular-nums" style={{ color: cpuColor }}>
@@ -244,6 +263,27 @@ export function ContainerRow({ container: c }: { container: DockerContainer }) {
             </span>
           </div>
         ))}
+
+      {/* Newer version tags available in the registry (pinned-version images) */}
+      {c.newer_version && (
+        <div className="pl-3.5 text-[10px] text-amber-600/80 dark:text-amber-400/70">
+          <span className="font-medium">↑ new version</span>
+          <span className="text-amber-600/60 dark:text-amber-400/50"> — </span>
+          <span className="font-mono">{c.image_version || '?'}</span>
+          <span className="text-amber-600/60 dark:text-amber-400/50"> → </span>
+          <span className="font-mono">{c.newer_version}</span>
+        </div>
+      )}
+      {c.newer_major_version && (
+        <div className="pl-3.5 text-[10px] text-rose-600/80 dark:text-rose-400/70">
+          <span className="font-medium">⇧ major</span>
+          <span className="text-rose-600/60 dark:text-rose-400/50"> — </span>
+          <span className="font-mono">{c.image_version || '?'}</span>
+          <span className="text-rose-600/60 dark:text-rose-400/50"> → </span>
+          <span className="font-mono">{c.newer_major_version}</span>
+          <span className="text-rose-600/50 dark:text-rose-400/40"> (may break)</span>
+        </div>
+      )}
     </div>
   );
 }

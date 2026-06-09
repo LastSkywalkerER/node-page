@@ -62,6 +62,12 @@ type DockerApplication struct {
 	// postgres:18). Tracked separately from UpdatesAvailable.
 	PatchesAvailable int `json:"patches_available"`
 
+	// MajorUpdatesAvailable is the number of containers with a newer MAJOR
+	// version tag available in the registry (e.g. 1.2.1 → 2.0.0; potentially
+	// breaking). Tracked separately so a major bump is never silently lumped in
+	// with routine updates.
+	MajorUpdatesAvailable int `json:"major_updates_available"`
+
 	// IconSlug is the resolved icon slug (or explicit override) for the app.
 	IconSlug string `json:"icon_slug,omitempty"`
 
@@ -188,13 +194,17 @@ func BuildApplications(m *DockerMetric) []DockerApplication {
 			return app.Volumes[i].Source < app.Volumes[j].Source
 		})
 		for _, c := range app.Containers {
-			if !c.UpdateAvailable {
-				continue
-			}
-			if isRebuildUpdate(c) {
+			rebuild := isRebuildUpdate(c)
+			if rebuild {
 				app.PatchesAvailable++
-			} else {
+			}
+			// A "version update": a same-tag digest bump whose version label changed,
+			// or a newer same-major version tag (e.g. pinned 1.2.1 → 1.3.2).
+			if (c.UpdateAvailable && !rebuild) || c.NewerVersion != "" {
 				app.UpdatesAvailable++
+			}
+			if c.NewerMajorVersion != "" {
+				app.MajorUpdatesAvailable++
 			}
 		}
 		out = append(out, *app)
@@ -320,6 +330,7 @@ func mergeApplications(project string, members []DockerApplication) DockerApplic
 		out.TotalSizeRootFs += m.TotalSizeRootFs
 		out.UpdatesAvailable += m.UpdatesAvailable
 		out.PatchesAvailable += m.PatchesAvailable
+		out.MajorUpdatesAvailable += m.MajorUpdatesAvailable
 		sumStats(&out.Stats, m.Stats)
 		out.Ports = mergePublicPorts(out.Ports, m.Ports)
 		out.Volumes = mergeVolumes(out.Volumes, m.Volumes)
