@@ -1,11 +1,28 @@
 name: Release
 
+# Publishes the native multi-OS binaries (linux amd64/arm64, darwin arm64,
+# windows amd64) as a GitHub Release. Two ways to cut a release:
+#   1. push a tag:   git tag v0.1.0 && git push origin v0.1.0
+#   2. Actions tab → "Release" → "Run workflow", enter a version like v0.1.0
+# (The "Build and Push Docker Image" workflow is separate — it publishes the
+#  container image to GHCR, not a GitHub Release.)
 on:
   push:
     tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version tag to create/publish (e.g. v0.1.0)'
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+# Resolve the version once for every job: the dispatch input on manual runs,
+# otherwise the pushed tag name.
+env:
+  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
 
 jobs:
   # Build the frontend once; every native binary embeds the same dist.
@@ -54,7 +71,8 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
         run: |
-          VERSION="${GITHUB_REF_NAME}"
+          VERSION="${RELEASE_VERSION}"
+          if [ -z "${VERSION}" ]; then echo "RELEASE_VERSION is empty"; exit 1; fi
           COMMIT="$(git rev-parse --short HEAD)"
           DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           go build -tags embed_dist \
@@ -90,6 +108,9 @@ jobs:
         run: cat dist-artifacts/*.sha256 > dist-artifacts/SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
+          # Explicit tag so manual (workflow_dispatch) runs publish to the right
+          # tag and create it from this commit; on a tag push it equals the tag.
+          tag_name: ${{ env.RELEASE_VERSION }}
           files: |
             dist-artifacts/*.tar.gz
             dist-artifacts/*.zip
