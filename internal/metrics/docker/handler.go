@@ -282,26 +282,37 @@ func (h *Handler) HandleApplicationLogs(c *gin.Context) {
 
 	// Resolve + validate the container against the application's members.
 	requested := strings.TrimSpace(c.Query("container"))
-	containerID := ""
-	for _, ctr := range app.Containers {
+	var chosen *DockerContainer
+	for i := range app.Containers {
+		ctr := &app.Containers[i]
 		if requested == "" {
 			if ctr.State == "running" {
-				containerID = ctr.ID
+				chosen = ctr
 				break
 			}
 			continue
 		}
 		if ctr.ID == requested || strings.HasPrefix(ctr.ID, requested) || strings.HasPrefix(requested, ctr.ID) {
-			containerID = ctr.ID
+			chosen = ctr
 			break
 		}
 	}
-	if containerID == "" && requested == "" && len(app.Containers) > 0 {
-		containerID = app.Containers[0].ID
+	if chosen == nil && requested == "" && len(app.Containers) > 0 {
+		chosen = &app.Containers[0]
 	}
-	if containerID == "" {
+	if chosen == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "container not found in application"})
 		return
+	}
+	containerID := chosen.ID
+	// The stored id can be stale (swarm recreates task containers); pass enough
+	// identity so the collector resolves the current live container.
+	ref := ContainerLogRef{
+		ID:           chosen.ID,
+		Name:         chosen.Name,
+		Project:      chosen.Project,
+		Service:      chosen.Service,
+		SwarmService: chosen.Labels["com.docker.swarm.service.name"],
 	}
 
 	tail := 200
@@ -317,7 +328,7 @@ func (h *Handler) HandleApplicationLogs(c *gin.Context) {
 		tail = 5000
 	}
 
-	logs, err := h.service.GetContainerLogs(ctx, containerID, tail)
+	logs, err := h.service.GetContainerLogs(ctx, ref, tail)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return

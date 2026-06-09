@@ -30,7 +30,7 @@ import (
 //   - disk_metrics
 //   - network_metrics
 //   - docker_metrics
-//   - docker_containers
+//   - docker_container_entities
 //
 // Other tables (local-only artefacts like the Raft log itself) are not
 // included.
@@ -47,7 +47,8 @@ var managedTables = []string{
 	"disk_metrics",
 	"network_metrics",
 	"docker_metrics",
-	"docker_containers",
+	// GORM's default table name for DockerContainerEntity (NOT "docker_containers").
+	"docker_container_entities",
 }
 
 // SQLiteSnapshotter implements Snapshotter for the GORM-backed DB.
@@ -161,7 +162,7 @@ func (r *SQLiteRestorer) Restore(rc io.ReadCloser) error {
 	}
 
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		// Wipe in reverse FK order — docker_containers FKs onto
+		// Wipe in reverse FK order — docker_container_entities FKs onto
 		// docker_metrics, etc. — but we use raw DELETE so order
 		// flexibility matters less than disabling triggers/FKs would.
 		for _, t := range managedTables {

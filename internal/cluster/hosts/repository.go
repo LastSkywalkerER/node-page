@@ -89,7 +89,7 @@ func (r *hostRepository) UpsertLocalHost(ctx context.Context, hostInfo HostInfo)
 			VirtualizationSystem: hostInfo.VirtualizationSystem,
 			VirtualizationRole:   hostInfo.VirtualizationRole,
 			SystemHostID:         hostInfo.HostID,
-		BootTime:             hostInfo.BootTime,
+			BootTime:             hostInfo.BootTime,
 			LastSeen:             now,
 			CreatedAt:            now,
 			UpdatedAt:            now,
@@ -136,7 +136,7 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		host.VirtualizationSystem = hostInfo.VirtualizationSystem
 		host.VirtualizationRole = hostInfo.VirtualizationRole
 		host.SystemHostID = hostInfo.HostID
-	host.BootTime = hostInfo.BootTime
+		host.BootTime = hostInfo.BootTime
 		host.LastSeen = now
 		host.UpdatedAt = now
 		return &host, r.db.WithContext(ctx).Save(&host).Error
@@ -163,7 +163,7 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		hostByName.VirtualizationSystem = hostInfo.VirtualizationSystem
 		hostByName.VirtualizationRole = hostInfo.VirtualizationRole
 		hostByName.SystemHostID = hostInfo.HostID
-	hostByName.BootTime = hostInfo.BootTime
+		hostByName.BootTime = hostInfo.BootTime
 		hostByName.LastSeen = now
 		hostByName.UpdatedAt = now
 		return &hostByName, r.db.WithContext(ctx).Save(&hostByName).Error
@@ -283,14 +283,26 @@ func (r *hostRepository) UpdateHostLabelsFromAgentPush(ctx context.Context, host
 
 func (r *hostRepository) DeleteHostCascade(ctx context.Context, hostID uint) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Metrics tables (raw SQL to avoid import cycle with metrics packages)
-		tx.Exec("DELETE FROM cpu_metrics WHERE host_id = ?", hostID)
-		tx.Exec("DELETE FROM memory_metrics WHERE host_id = ?", hostID)
-		tx.Exec("DELETE FROM disk_metrics WHERE host_id = ?", hostID)
-		tx.Exec("DELETE FROM network_metrics WHERE host_id = ?", hostID)
-		tx.Exec("DELETE FROM docker_containers WHERE metric_timestamp IN (SELECT timestamp FROM docker_metrics WHERE host_id = ?)", hostID)
-		tx.Exec("DELETE FROM docker_metrics WHERE host_id = ?", hostID)
-		tx.Exec("DELETE FROM hosts WHERE id = ?", hostID)
+		// Metrics tables (raw SQL to avoid an import cycle with the metrics
+		// packages). Statement errors MUST be checked: one failed statement
+		// aborts the transaction, and ignoring it lets the final commit fail with
+		// the opaque "commit unexpectedly resulted in rollback". Child docker rows
+		// live in docker_container_entities (GORM's default name for
+		// DockerContainerEntity), deleted before their parent docker_metrics.
+		stmts := []string{
+			"DELETE FROM cpu_metrics WHERE host_id = ?",
+			"DELETE FROM memory_metrics WHERE host_id = ?",
+			"DELETE FROM disk_metrics WHERE host_id = ?",
+			"DELETE FROM network_metrics WHERE host_id = ?",
+			"DELETE FROM docker_container_entities WHERE metric_timestamp IN (SELECT timestamp FROM docker_metrics WHERE host_id = ?)",
+			"DELETE FROM docker_metrics WHERE host_id = ?",
+			"DELETE FROM hosts WHERE id = ?",
+		}
+		for _, q := range stmts {
+			if err := tx.Exec(q, hostID).Error; err != nil {
+				return fmt.Errorf("cascade delete host %d (%q): %w", hostID, q, err)
+			}
+		}
 		return nil
 	})
 }

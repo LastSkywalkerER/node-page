@@ -26,8 +26,9 @@ type Service interface {
 	// GetComposeView returns the synthetic compose (always) plus the real file(s)
 	// when allowReal and the path is reachable from this process.
 	GetComposeView(ctx context.Context, hostId uint, project string, allowReal bool) (*ComposeView, error)
-	// GetContainerLogs returns recent logs for a container on the local daemon.
-	GetContainerLogs(ctx context.Context, containerID string, tail int) (string, error)
+	// GetContainerLogs returns recent logs for a container on the local daemon,
+	// resolving the live container from the ref (handles recreated/stopped ones).
+	GetContainerLogs(ctx context.Context, ref ContainerLogRef, tail int) (string, error)
 }
 
 type service struct {
@@ -175,6 +176,6 @@ func (s *service) GetComposeView(ctx context.Context, hostId uint, project strin
 	return view, nil
 }
 
-func (s *service) GetContainerLogs(ctx context.Context, containerID string, tail int) (string, error) {
-	return s.collector.GetContainerLogs(ctx, containerID, tail)
+func (s *service) GetContainerLogs(ctx context.Context, ref ContainerLogRef, tail int) (string, error) {
+	return s.collector.GetContainerLogs(ctx, ref, tail)
 }
