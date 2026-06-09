@@ -1168,12 +1168,17 @@ func (c *dockerMetricsCollector) mergeStacksByCommonPrefix(stackMap map[string]*
 // GetContainerLogs returns the last `tail` lines of a container's logs (stdout +
 // stderr) with timestamps. Non-TTY streams are multiplexed and demuxed via
 // stdcopy; TTY streams are copied raw.
-func (c *dockerMetricsCollector) GetContainerLogs(ctx context.Context, containerID string, tail int) (string, error) {
+func (c *dockerMetricsCollector) GetContainerLogs(ctx context.Context, ref ContainerLogRef, tail int) (string, error) {
 	if !c.IsDockerAvailable(ctx) || c.client == nil {
 		return "", fmt.Errorf("docker daemon not available")
 	}
 	if tail <= 0 {
 		tail = 200
+	}
+
+	containerID, ok := c.resolveLiveContainerID(ctx, ref)
+	if !ok {
+		return "", fmt.Errorf("container not found on this node (it may have been recreated, removed, or runs on another node)")
 	}
 
 	tty := false
@@ -1203,6 +1208,61 @@ func (c *dockerMetricsCollector) GetContainerLogs(ctx context.Context, container
 		}
 	}
 	return buf.String(), nil
+}
+
+// resolveLiveContainerID returns the id of the container the ref points to as it
+// exists on the local daemon RIGHT NOW. The stored id is preferred when it still
+// exists; otherwise the current container is found by identity (exact name, then
+// swarm-service label, then compose project+service), preferring a running one
+// and then the most recently created. Includes stopped containers so their logs
+// stay viewable. Returns false when nothing matches (e.g. the container runs on
+// another swarm node).
+func (c *dockerMetricsCollector) resolveLiveContainerID(ctx context.Context, ref ContainerLogRef) (string, bool) {
+	if ref.ID != "" {
+		if _, err := c.client.ContainerInspect(ctx, ref.ID); err == nil {
+			return ref.ID, true
+		}
+	}
+	list, err := c.client.ContainerList(ctx, container.ListOptions{All: true})
+	if err != nil {
+		return "", false
+	}
+	best, bestScore, bestCreated := "", 0, int64(0)
+	for _, ci := range list {
+		score := containerMatchScore(ci, ref)
+		if score == 0 {
+			continue
+		}
+		if ci.State == "running" {
+			score += 10
+		}
+		if score > bestScore || (score == bestScore && ci.Created > bestCreated) {
+			best, bestScore, bestCreated = ci.ID, score, ci.Created
+		}
+	}
+	return best, best != ""
+}
+
+// containerMatchScore scores how strongly a live container matches a log ref.
+// 0 means no match. Exact name is strongest, then a swarm-service-name label,
+// then a compose project+service pair.
+func containerMatchScore(ci container.Summary, ref ContainerLogRef) int {
+	if ref.Name != "" {
+		for _, n := range ci.Names {
+			if strings.TrimPrefix(n, "/") == ref.Name {
+				return 5
+			}
+		}
+	}
+	if ref.SwarmService != "" && ci.Labels["com.docker.swarm.service.name"] == ref.SwarmService {
+		return 4
+	}
+	if ref.Project != "" && ref.Service != "" &&
+		ci.Labels["com.docker.compose.project"] == ref.Project &&
+		ci.Labels["com.docker.compose.service"] == ref.Service {
+		return 4
+	}
+	return 0
 }
 
 func (c *dockerMetricsCollector) Close() error {

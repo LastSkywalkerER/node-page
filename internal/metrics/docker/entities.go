@@ -460,13 +460,28 @@ type DockerRepository interface {
 	GetHistoricalMetricsByHost(ctx context.Context, hostId uint, hours float64) ([]HistoricalDockerMetric, error)
 }
 
+// ContainerLogRef identifies which container's logs to fetch. The stored ID can
+// go stale — swarm recreates task containers with a new ID on every restart /
+// redeploy — so the collector resolves the *current* live container on the local
+// daemon by name, then swarm-service, then compose-service when the ID is gone.
+// Resolving against `All` containers also means a stopped (but not removed)
+// container's logs remain viewable.
+type ContainerLogRef struct {
+	ID           string // stored container id (used directly when still live)
+	Name         string // stored container name
+	Project      string // compose project / swarm service grouping key
+	Service      string // service within the application
+	SwarmService string // com.docker.swarm.service.name label, if any
+}
+
 // DockerMetricsCollector defines the interface for collecting Docker metrics.
 type DockerMetricsCollector interface {
 	CollectDockerMetrics(ctx context.Context) (DockerMetric, error)
 	IsDockerAvailable(ctx context.Context) bool
 	// GetContainerLogs returns the last `tail` log lines of a container (stdout +
-	// stderr, demuxed), with timestamps. Local daemon only.
-	GetContainerLogs(ctx context.Context, containerID string, tail int) (string, error)
+	// stderr, demuxed), with timestamps. Local daemon only. The container is
+	// resolved live from the ref so a recreated/stopped container still works.
+	GetContainerLogs(ctx context.Context, ref ContainerLogRef, tail int) (string, error)
 	Close() error
 }
 
