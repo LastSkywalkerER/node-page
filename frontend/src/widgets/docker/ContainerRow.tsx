@@ -6,6 +6,8 @@ import {
   Trash2,
   Play,
   ArrowUpCircle,
+  RefreshCw,
+  ChevronsUp,
   ExternalLink,
 } from 'lucide-react';
 import {
@@ -130,6 +132,10 @@ export function ContainerRow({ container: c }: { container: DockerContainer }) {
   const ports = fmtPorts(c.ports);
   const routed = (c.ports ?? []).filter((p) => p.public_url);
   const uptime = c.state === 'running' ? fmtUptime(c.created) : '';
+  // A "rebuild" = newer digest under the same version label (e.g. postgres:18
+  // rebuilt); a version bump has a different remote version. Shown distinctly.
+  const isRebuild =
+    !!c.update_available && !!c.remote_version && c.remote_version === c.image_version;
 
   return (
     <div className="space-y-0.5 px-2.5 py-1.5">
@@ -138,12 +144,38 @@ export function ContainerRow({ container: c }: { container: DockerContainer }) {
         <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: getContainerStateColor(c.state) }} />
         <span className="min-w-0 flex-1 truncate font-medium">{c.name}</span>
 
-        {c.update_available && (
+        {c.update_available &&
+          (isRebuild ? (
+            <span
+              className="inline-flex shrink-0 items-center gap-0.5 rounded bg-sky-500/15 px-1 py-0 text-[9px] font-medium text-sky-600 dark:text-sky-400"
+              title={`Image rebuilt under the same version (${c.image_version}). Newer build in registry: ${shortDigest(c.local_digest) || '?'} → ${shortDigest(c.remote_digest) || '?'}`}
+            >
+              <RefreshCw className="h-2.5 w-2.5" /> patch
+            </span>
+          ) : (
+            <span
+              className="inline-flex shrink-0 items-center gap-0.5 rounded bg-amber-500/15 px-1 py-0 text-[9px] font-medium text-amber-600 dark:text-amber-400"
+              title={`Newer version in registry. Running ${c.image_version || shortDigest(c.local_digest) || '?'} (${shortDigest(c.local_digest) || '?'}) → registry now ${shortDigest(c.remote_digest) || '?'}`}
+            >
+              <ArrowUpCircle className="h-2.5 w-2.5" /> update
+            </span>
+          ))}
+
+        {/* Newer version TAG available (independent of the same-tag digest check) */}
+        {c.newer_version && (
           <span
             className="inline-flex shrink-0 items-center gap-0.5 rounded bg-amber-500/15 px-1 py-0 text-[9px] font-medium text-amber-600 dark:text-amber-400"
-            title={`Newer image in registry. Running ${c.image_version || shortDigest(c.local_digest) || '?'} (${shortDigest(c.local_digest) || '?'}) → registry now ${shortDigest(c.remote_digest) || '?'}`}
+            title={`Newer version available: ${c.image_version || '?'} → ${c.newer_version}`}
           >
-            <ArrowUpCircle className="h-2.5 w-2.5" /> update
+            <ArrowUpCircle className="h-2.5 w-2.5" /> {c.newer_version}
+          </span>
+        )}
+        {c.newer_major_version && (
+          <span
+            className="inline-flex shrink-0 items-center gap-0.5 rounded bg-rose-500/15 px-1 py-0 text-[9px] font-medium text-rose-600 dark:text-rose-400"
+            title={`Major version available: ${c.image_version || '?'} → ${c.newer_major_version} (may include breaking changes)`}
+          >
+            <ChevronsUp className="h-2.5 w-2.5" /> {c.newer_major_version}
           </span>
         )}
 
@@ -203,20 +235,53 @@ export function ContainerRow({ container: c }: { container: DockerContainer }) {
         </div>
       )}
 
-      {/* Update resolution: human-readable running version → registry version */}
-      {c.update_available && (
+      {/* Update resolution: human-readable running version → registry version.
+          Rebuilds (same version, newer digest) are shown in sky; version bumps in amber. */}
+      {c.update_available &&
+        (isRebuild ? (
+          <div className="pl-3.5 text-[10px] text-sky-600/80 dark:text-sky-400/70">
+            <span className="font-medium">⟳ patch</span>
+            <span className="text-sky-600/60 dark:text-sky-400/50"> — </span>
+            <span className="font-mono" title={c.local_digest}>
+              {c.image_version}
+            </span>
+            <span className="text-sky-600/60 dark:text-sky-400/50"> rebuilt in registry </span>
+            <span className="font-mono" title={c.remote_digest}>
+              ({shortDigest(c.local_digest) || '?'} → {shortDigest(c.remote_digest) || '?'})
+            </span>
+          </div>
+        ) : (
+          <div className="pl-3.5 text-[10px] text-amber-600/80 dark:text-amber-400/70">
+            <span className="font-medium">↑ update</span>
+            <span className="text-amber-600/60 dark:text-amber-400/50"> — running </span>
+            <span className="font-mono" title={c.local_digest}>
+              {c.image_version || shortDigest(c.local_digest) || '?'}
+            </span>
+            <span className="text-amber-600/60 dark:text-amber-400/50"> → registry </span>
+            <span className="font-mono" title={c.remote_digest}>
+              {c.remote_version || `newer build (${shortDigest(c.remote_digest) || '?'})`}
+            </span>
+          </div>
+        ))}
+
+      {/* Newer version tags available in the registry (pinned-version images) */}
+      {c.newer_version && (
         <div className="pl-3.5 text-[10px] text-amber-600/80 dark:text-amber-400/70">
-          <span className="font-medium">↑ update</span>
-          <span className="text-amber-600/60 dark:text-amber-400/50"> — running </span>
-          <span className="font-mono" title={c.local_digest}>
-            {c.image_version || shortDigest(c.local_digest) || '?'}
-          </span>
-          <span className="text-amber-600/60 dark:text-amber-400/50"> → registry </span>
-          <span className="font-mono" title={c.remote_digest}>
-            {c.remote_version
-              ? `${c.remote_version}${c.remote_version === c.image_version ? ' (rebuilt)' : ''}`
-              : `newer build (${shortDigest(c.remote_digest) || '?'})`}
-          </span>
+          <span className="font-medium">↑ new version</span>
+          <span className="text-amber-600/60 dark:text-amber-400/50"> — </span>
+          <span className="font-mono">{c.image_version || '?'}</span>
+          <span className="text-amber-600/60 dark:text-amber-400/50"> → </span>
+          <span className="font-mono">{c.newer_version}</span>
+        </div>
+      )}
+      {c.newer_major_version && (
+        <div className="pl-3.5 text-[10px] text-rose-600/80 dark:text-rose-400/70">
+          <span className="font-medium">⇧ major</span>
+          <span className="text-rose-600/60 dark:text-rose-400/50"> — </span>
+          <span className="font-mono">{c.image_version || '?'}</span>
+          <span className="text-rose-600/60 dark:text-rose-400/50"> → </span>
+          <span className="font-mono">{c.newer_major_version}</span>
+          <span className="text-rose-600/50 dark:text-rose-400/40"> (may break)</span>
         </div>
       )}
     </div>

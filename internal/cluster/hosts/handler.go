@@ -1,7 +1,9 @@
 package hosts
 
 import (
+	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/charmbracelet/log"
 	"github.com/gin-gonic/gin"
@@ -100,4 +102,42 @@ func (h *Handler) HandleGetAllHosts(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"hosts": hosts,
 	})
+}
+
+// HandleDeleteHost removes a registered host and all of its stored metrics.
+// When Raft is enabled the removal is replicated to every node (keyed by MAC);
+// otherwise it is applied locally. The local collector row (id=1) cannot be
+// removed this way — a node leaves the cluster via the Raft "leave" flow.
+//
+// @Summary     Remove a registered host
+// @Description Deletes a host row and all its metrics (cluster-wide when Raft is enabled). Admin only.
+// @Tags        hosts
+// @Produce     json
+// @Param       id   path     integer  true  "Host ID"
+// @Success     200  {object} map[string]interface{}
+// @Failure     400  {object} map[string]string
+// @Failure     401  {object} map[string]string
+// @Failure     500  {object} map[string]string
+// @Security    BearerAuth
+// @Router      /hosts/{id} [delete]
+func (h *Handler) HandleDeleteHost(c *gin.Context) {
+	id64, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id64 == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid host id"})
+		return
+	}
+	hostID := uint(id64)
+
+	if err := h.service.RemoveHost(c.Request.Context(), hostID); err != nil {
+		if errors.Is(err, ErrCannotRemoveLocalHost) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		h.logger.Error("Failed to remove host", "error", err, "host_id", hostID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	h.logger.Info("Host removed", "host_id", hostID)
+	c.JSON(http.StatusOK, gin.H{"removed": hostID})
 }

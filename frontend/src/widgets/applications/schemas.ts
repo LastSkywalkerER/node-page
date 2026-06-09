@@ -22,6 +22,8 @@ export const dockerApplicationSchema = z.object({
   total_size_root_fs: z.number().optional().default(0),
   volumes: z.array(dockerMountSchema).optional().default([]),
   updates_available: z.number().optional().default(0),
+  patches_available: z.number().optional().default(0),
+  major_updates_available: z.number().optional().default(0),
   icon_slug: z.string().optional().default(''),
   public_url: z.string().optional().default(''),
   // host_id is attached by the all-hosts aggregation endpoint (Phase 2).

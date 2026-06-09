@@ -222,4 +222,3 @@ func TestNode_SingleVoterBootstrapAppliesCommand(t *testing.T) {
 		t.Fatal("applier was not invoked within 2s of SubmitCommand returning")
 	}
 }
-

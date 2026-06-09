@@ -2,6 +2,8 @@ package hosts
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -9,12 +11,19 @@ import (
 	"github.com/charmbracelet/log"
 )
 
+// ErrCannotRemoveLocalHost is returned when a caller tries to remove this
+// node's own collector row (id=1). Use the Raft "leave cluster" flow instead.
+var ErrCannotRemoveLocalHost = errors.New("cannot remove this node's own host; use leave cluster")
+
 // RaftReplicator is the subset of internal/cluster/raft.Service the hosts
 // service needs. Defined locally to avoid an import cycle and to keep
 // service tests easy to mock.
 type RaftReplicator interface {
 	Enabled() bool
 	SubmitHostUpsert(ctx context.Context, info HostInfo) error
+	// SubmitHostDelete cascades a host removal (row + metrics) cluster-wide,
+	// keyed by MAC.
+	SubmitHostDelete(ctx context.Context, mac string) error
 }
 
 // Service defines the hosts service interface.
@@ -25,6 +34,10 @@ type Service interface {
 	GetAllHosts(ctx context.Context) ([]Host, error)
 	GetCurrentHost(ctx context.Context) (*Host, error)
 	GetCurrentHostInfo(ctx context.Context) (HostInfo, error)
+	// RemoveHost deletes a host row and all its metrics. When Raft is enabled
+	// the removal is replicated cluster-wide (by MAC); otherwise it is local.
+	// Removing the local collector row (id=1) is rejected.
+	RemoveHost(ctx context.Context, id uint) error
 }
 
 type service struct {
@@ -132,6 +145,31 @@ func (s *service) GetAllHosts(ctx context.Context) ([]Host, error) {
 	}
 	s.logger.Debug("All hosts retrieved successfully", "count", len(hosts))
 	return hosts, nil
+}
+
+func (s *service) RemoveHost(ctx context.Context, id uint) error {
+	if id == LocalCollectorHostID {
+		return ErrCannotRemoveLocalHost
+	}
+	host, err := s.hostRepository.GetHostByID(ctx, id)
+	if err != nil {
+		s.logger.Error("Failed to load host for removal", "error", err, "host_id", id)
+		return err
+	}
+	// Cluster-wide removal keyed by MAC when Raft is enabled — the FSM applier
+	// on every node (including this one) resolves the MAC to its local row and
+	// cascades. Standalone falls back to a direct local cascade delete.
+	if s.raft != nil && s.raft.Enabled() {
+		if host.MacAddress == "" {
+			// A replicated delete is keyed by MAC; without one the applier would
+			// silently no-op on every node. Refuse rather than delete only locally.
+			return fmt.Errorf("host %d (%q) has no MAC address; cannot remove cluster-wide", id, host.Name)
+		}
+		s.logger.Info("Removing host cluster-wide", "host_id", id, "name", host.Name, "mac", host.MacAddress)
+		return s.raft.SubmitHostDelete(ctx, host.MacAddress)
+	}
+	s.logger.Info("Removing host locally", "host_id", id, "name", host.Name)
+	return s.hostRepository.DeleteHostCascade(ctx, id)
 }
 
 func (s *service) GetCurrentHost(ctx context.Context) (*Host, error) {

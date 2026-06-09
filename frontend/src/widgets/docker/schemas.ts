@@ -57,6 +57,9 @@ export const dockerContainerSchema = z.object({
   remote_digest: z.string().optional(),
   image_version: z.string().optional(),
   remote_version: z.string().optional(),
+  // Newer registry version tags (independent of the same-tag digest check).
+  newer_version: z.string().optional(), // newest same-major tag (e.g. 1.2.1 → 1.3.2)
+  newer_major_version: z.string().optional(), // newest higher-major tag (e.g. 1.2.1 → 2.0.0)
 });
 
 export const dockerStackSchema = z.object({

@@ -607,6 +607,8 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.GET("/hosts", hostHandler.HandleGetAllHosts)
 		authAPI.GET("/hosts/current", hostHandler.HandleGetCurrentHost)
 		authAPI.POST("/hosts/register", hostHandler.HandleRegisterCurrentHost)
+		// Remove a registered host + its metrics (admin; cluster-wide when Raft on)
+		authAPI.DELETE("/hosts/:id", middleware.RequireAdmin(), hostHandler.HandleDeleteHost)
 		authAPI.GET("/stream", streamHandler.HandleStream)
 
 		// Raft cluster status (admin) — surfaces leader, peers, indices, RTTs
@@ -624,6 +626,8 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.POST("/raft/wipe-state", middleware.RequireAdmin(), raftHandler.WipeState)
 		// Fully decouple from Raft: wipe state + remove .env entries
 		authAPI.POST("/raft/factory-reset", middleware.RequireAdmin(), raftHandler.FactoryReset)
+		// Self-leave: remove THIS node from the cluster, then decouple to standalone
+		authAPI.POST("/raft/leave", middleware.RequireAdmin(), raftHandler.Leave)
 		// TCP-probe a voter's advertise addr from this server
 		authAPI.POST("/raft/probe-voter", middleware.RequireAdmin(), raftHandler.ProbeVoter)
 

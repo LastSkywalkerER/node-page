@@ -114,9 +114,26 @@ func (a *appliers) applyHostDelete(cmd Command, _ *hraft.Log) error {
 	if err := DecodeTyped(cmd, &p); err != nil {
 		return err
 	}
+	if p.HostMAC == "" {
+		return nil
+	}
 	ctx, cancel := a.applierCtx()
 	defer cancel()
-	return a.deps.HostRepo.DeleteHostCascade(ctx, p.HostID)
+	host, err := a.deps.HostRepo.GetHostByMacAddress(ctx, p.HostMAC)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Already gone here (or never replicated) — nothing to do.
+			return nil
+		}
+		return err
+	}
+	if host.ID == hosts.LocalCollectorHostID {
+		// This MAC is THIS node's own collector row. A live node must not delete
+		// its own data via a replicated command; it keeps re-publishing itself
+		// anyway. (Removing a live cluster member is done via Raft leave/kick.)
+		return nil
+	}
+	return a.deps.HostRepo.DeleteHostCascade(ctx, host.ID)
 }
 
 func (a *appliers) applyHostLastSeen(cmd Command, _ *hraft.Log) error {

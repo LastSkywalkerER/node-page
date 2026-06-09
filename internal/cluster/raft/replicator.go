@@ -59,12 +59,13 @@ func (r *Replicator) SubmitMetricBatch(ctx context.Context, p MetricBatchPayload
 	return err
 }
 
-// SubmitHostDelete cascades a host delete across the cluster.
-func (r *Replicator) SubmitHostDelete(ctx context.Context, hostID uint) error {
+// SubmitHostDelete cascades a host delete (row + all its metrics) across the
+// cluster, keyed by the host's MAC so every node removes the right local row.
+func (r *Replicator) SubmitHostDelete(ctx context.Context, mac string) error {
 	if !r.Enabled() {
 		return nil
 	}
-	_, err := SubmitTyped(ctx, r.svc, CmdHostDelete, HostDeletePayload{HostID: hostID}, 5*time.Second)
+	_, err := SubmitTyped(ctx, r.svc, CmdHostDelete, HostDeletePayload{HostMAC: mac}, 5*time.Second)
 	return err
 }
 

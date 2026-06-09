@@ -59,8 +59,15 @@ type DockerContainer struct {
 	// Name is the human-readable container name
 	Name string `json:"name"`
 
-	// Image shows the Docker image used to create this container
+	// Image shows the Docker image used to create this container. For swarm /
+	// dokploy deployments whose container-list image is a bare sha256: digest,
+	// this is resolved to a human-readable repo:tag when possible.
 	Image string `json:"image"`
+
+	// ConfigImage is the container's configured image reference (Config.Image),
+	// a more reliable repo:tag source than Image for swarm. In-memory only: it
+	// seeds the registry update check and is not persisted or sent to the client.
+	ConfigImage string `json:"-" gorm:"-"`
 
 	// State indicates the current container state (running, stopped, paused, etc.)
 	State string `json:"state"`
@@ -132,6 +139,15 @@ type DockerContainer struct {
 	// RemoteVersion is the version of the image the registry tag now points to
 	// (resolved from the remote image config). Empty when not resolvable.
 	RemoteVersion string `json:"remote_version,omitempty"`
+
+	// NewerVersion is the newest registry tag with the SAME major as the running
+	// image (e.g. running 1.2.1 → 1.3.2 available). Empty when none / not pinned.
+	NewerVersion string `json:"newer_version,omitempty"`
+
+	// NewerMajorVersion is the newest registry tag with a HIGHER major than the
+	// running image (e.g. running 1.2.1 → 2.0.0 available; possibly breaking).
+	// Empty when none.
+	NewerMajorVersion string `json:"newer_major_version,omitempty"`
 }
 
 // DockerMount describes a single volume or bind mount of a container.
@@ -238,6 +254,9 @@ type DockerContainerEntity struct {
 	RemoteDigest    string `gorm:"column:remote_digest"`
 	ImageVersion    string `gorm:"column:image_version"`
 	RemoteVersion   string `gorm:"column:remote_version"`
+	// NewerVersion / NewerMajorVersion back the newer-version-tag detection.
+	NewerVersion      string `gorm:"column:newer_version"`
+	NewerMajorVersion string `gorm:"column:newer_major_version"`
 }
 
 // DockerPort represents a port mapping for a Docker container.
@@ -353,6 +372,8 @@ func (e DockerContainerEntity) ToDockerContainer() (DockerContainer, error) {
 		RemoteDigest:       e.RemoteDigest,
 		ImageVersion:       e.ImageVersion,
 		RemoteVersion:      e.RemoteVersion,
+		NewerVersion:       e.NewerVersion,
+		NewerMajorVersion:  e.NewerMajorVersion,
 	}, nil
 }
 
@@ -409,6 +430,8 @@ func (c DockerContainer) ToDockerContainerEntity(metricTimestamp time.Time) (Doc
 		RemoteDigest:       c.RemoteDigest,
 		ImageVersion:       c.ImageVersion,
 		RemoteVersion:      c.RemoteVersion,
+		NewerVersion:       c.NewerVersion,
+		NewerMajorVersion:  c.NewerMajorVersion,
 	}, nil
 }
 
