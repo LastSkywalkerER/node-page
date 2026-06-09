@@ -29,6 +29,11 @@ type Service interface {
 	// RemovePeer removes a peer Raft server. Leader-only.
 	RemovePeer(id string) error
 
+	// TransferLeadership hands leadership to a healthy follower and blocks until
+	// the transfer completes. Leader-only; used so a leaving leader can step down
+	// before being removed (avoids the fragile "leader removes itself" path).
+	TransferLeadership() error
+
 	// Stats returns the raw hashicorp/raft Stats map for diagnostics
 	// (term, last_contact, num_peers, leader, applied/commit indices,
 	// snapshot info, etc). Nil when the service is disabled.
@@ -67,6 +72,9 @@ func (DisabledService) AddVoter(id, addr string) error { return ErrDisabled }
 
 // RemovePeer is a no-op for the disabled service.
 func (DisabledService) RemovePeer(id string) error { return ErrDisabled }
+
+// TransferLeadership is a no-op for the disabled service.
+func (DisabledService) TransferLeadership() error { return ErrDisabled }
 
 // Stats returns nil on the disabled service.
 func (DisabledService) Stats() map[string]string { return nil }

@@ -1,7 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import { Trash2, LogOut } from 'lucide-react'
 import { apiClient } from '@/shared/lib/api'
-import { useHosts } from '@/widgets/hosts/useHosts'
+import { useHosts, useDeleteHost } from '@/widgets/hosts/useHosts'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Accordion,
@@ -9,7 +12,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from '@/components/ui/accordion'
-import { RaftClusterWidget, FormClusterWidget, useRaftStatus } from '@/widgets/raft'
+import { RaftClusterWidget, FormClusterWidget, useRaftStatus, useLeaveRaftCluster } from '@/widgets/raft'
 
 const nodeAccordionTrigger =
   'py-3 text-sm hover:no-underline font-display tracking-wide [&_[data-slot=accordion-trigger-icon]]:text-primary/80'
@@ -32,6 +35,30 @@ export function NodesTab() {
   // so the admin can read the error and recover.
   const { data: raftStatus } = useRaftStatus(true)
   const raftEnabled = Boolean(raftStatus?.status?.enabled)
+
+  const deleteHost = useDeleteHost()
+  const leaveCluster = useLeaveRaftCluster()
+
+  const onRemoveHost = (id: number, name: string) => {
+    if (!window.confirm(`Remove host "${name}" and all of its metrics from the cluster? This cannot be undone.`)) return
+    deleteHost.mutate(id, {
+      onSuccess: () => toast.success(`Host "${name}" removed`),
+      onError: (e) => toast.error('Remove failed: ' + e.message),
+    })
+  }
+
+  const onLeaveCluster = () => {
+    if (
+      !window.confirm(
+        'Leave the Raft cluster? This node will be removed from the cluster and revert to standalone (Raft stopped, RAFT_* cleared from .env). Its local data is kept.'
+      )
+    )
+      return
+    leaveCluster.mutate(undefined, {
+      onSuccess: (r) => toast.success(r.next || 'Left the cluster'),
+      onError: (e) => toast.error('Leave failed: ' + e.message),
+    })
+  }
   const raftPanelVisible = raftEnabled || Boolean(raftStatus?.boot_error)
   // A standalone node (Raft off, no boot failure) gets the "form a cluster"
   // panel so an admin can bootstrap or join post-setup. Gated on a status
@@ -72,23 +99,53 @@ export function NodesTab() {
               <AccordionContent className="pb-4">
                 <ScrollArea className="h-[min(48vh,420px)] rounded-lg border border-border/60 dark:border-white/10">
                   <div className="divide-y divide-border/60 dark:divide-white/10">
-                    {hosts.map((host: { id: number; name: string; platform?: string }) => (
-                      <div key={host.id} className="px-4 py-3 transition-colors hover:bg-muted/20">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="min-w-0">
-                            <span className="block truncate font-medium">{host.name}</span>
-                            {host.platform && (
-                              <span className="text-xs text-muted-foreground">{host.platform}</span>
-                            )}
+                    {hosts.map((host: { id: number; name: string; platform?: string }) => {
+                      const isThisNode = localHostId !== undefined && host.id === localHostId
+                      return (
+                        <div key={host.id} className="px-4 py-3 transition-colors hover:bg-muted/20">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <span className="block truncate font-medium">{host.name}</span>
+                              {host.platform && (
+                                <span className="text-xs text-muted-foreground">{host.platform}</span>
+                              )}
+                            </div>
+                            <div className="flex shrink-0 items-center gap-2">
+                              {isThisNode ? (
+                                <>
+                                  <span className="rounded-full border border-primary/40 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary/80">
+                                    this node
+                                  </span>
+                                  {raftEnabled && (
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      className="h-7 gap-1 border-destructive/40 px-2 text-[11px] text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                      disabled={leaveCluster.isPending}
+                                      onClick={onLeaveCluster}
+                                      title="Remove this node from the cluster and revert to standalone"
+                                    >
+                                      <LogOut className="h-3 w-3" /> Leave cluster
+                                    </Button>
+                                  )}
+                                </>
+                              ) : (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7 text-muted-foreground/60 hover:bg-destructive/10 hover:text-destructive"
+                                  disabled={deleteHost.isPending}
+                                  onClick={() => onRemoveHost(host.id, host.name)}
+                                  title="Remove this host and its metrics from the cluster"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                              )}
+                            </div>
                           </div>
-                          {localHostId !== undefined && host.id === localHostId && (
-                            <span className="shrink-0 rounded-full border border-primary/40 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary/80">
-                              this node
-                            </span>
-                          )}
                         </div>
-                      </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 </ScrollArea>
               </AccordionContent>

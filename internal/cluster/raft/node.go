@@ -363,6 +363,19 @@ func (n *Node) IsLeader() bool {
 	return n.raft != nil && n.raft.State() == hraft.Leader
 }
 
+// TransferLeadership hands leadership to a healthy follower (hashicorp/raft picks
+// the most up-to-date one) and blocks until the transfer completes. Returns an
+// error if this node isn't the leader or no eligible follower is reachable.
+func (n *Node) TransferLeadership() error {
+	if n.raft == nil {
+		return ErrDisabled
+	}
+	if err := n.raft.LeadershipTransfer().Error(); err != nil {
+		return fmt.Errorf("raft: transfer leadership: %w", err)
+	}
+	return nil
+}
+
 // Close shuts the Raft node down and closes its stores. Safe to call multiple
 // times.
 func (n *Node) Close() error {

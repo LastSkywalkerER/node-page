@@ -25,13 +25,13 @@ const (
 	CmdUnknown CommandType = 0
 
 	// Host registry
-	CmdHostUpsert     CommandType = 10
-	CmdHostDelete     CommandType = 11
-	CmdHostLastSeen   CommandType = 12
+	CmdHostUpsert   CommandType = 10
+	CmdHostDelete   CommandType = 11
+	CmdHostLastSeen CommandType = 12
 
 	// Metrics
-	CmdMetricBatch              CommandType = 20
-	CmdRetentionDeleteBefore    CommandType = 21
+	CmdMetricBatch           CommandType = 20
+	CmdRetentionDeleteBefore CommandType = 21
 
 	// Peer / URL catalog
 	CmdPeerNodeAdvertise CommandType = 30

@@ -27,10 +27,12 @@ type HostUpsertPayload struct {
 	BootTime             int64  `json:"boot_time,omitempty"`
 }
 
-// HostDeletePayload cascades through metrics tables. Matches
-// hosts.Repository.DeleteHostCascade.
+// HostDeletePayload cascades a host removal (row + all its metrics) across the
+// cluster. It is keyed by MAC — the stable, cluster-wide identity — because the
+// per-node host_id differs on every node (auto-increment, matched by MAC). Each
+// node resolves the MAC to its own local row id before cascading.
 type HostDeletePayload struct {
-	HostID uint `json:"host_id"`
+	HostMAC string `json:"host_mac"`
 }
 
 // HostLastSeenPayload mirrors hosts.Repository.UpdateLastSeenAndAgentSession.
