@@ -7,6 +7,11 @@
 !ifndef OUTFILE
   !define OUTFILE "node-stats_setup.exe"
 !endif
+; File resolves relative to THIS script's dir, so the build passes the built
+; binary's absolute path via -DEXE=...
+!ifndef EXE
+  !define EXE "node-stats.exe"
+!endif
 
 Name "node-stats ${VERSION}"
 OutFile "${OUTFILE}"
@@ -23,7 +28,7 @@ UninstPage instfiles
 
 Section "node-stats"
   SetOutPath "$INSTDIR"
-  File "node-stats.exe"
+  File "/oname=node-stats.exe" "${EXE}"
   WriteRegStr HKLM "Software\node-stats" "InstallDir" "$INSTDIR"
   ; Add/Remove Programs entry
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\node-stats" "DisplayName" "node-stats"

@@ -116,8 +116,10 @@ jobs:
             -ldflags "-s -w -X system-stats/internal/version.Version=${VERSION} -X system-stats/internal/version.Commit=${COMMIT} -X system-stats/internal/version.Date=${DATE}" \
             -o node-stats.exe ./cmd/server
           mkdir -p dist
+          # File/OutFile resolve relative to the .nsi dir — pass absolute paths.
           makensis -DVERSION="${VERSION#v}" \
-            -DOUTFILE="dist/node-stats_${VERSION}_windows_amd64_setup.exe" \
+            -DEXE="${PWD}/node-stats.exe" \
+            -DOUTFILE="${PWD}/dist/node-stats_${VERSION}_windows_amd64_setup.exe" \
             packaging/windows-installer.nsi
           ls -la dist
       - uses: actions/upload-artifact@v4
