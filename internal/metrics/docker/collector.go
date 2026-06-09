@@ -62,7 +62,9 @@ type dockerMetricsCollector struct {
 	registryClient *http.Client
 }
 
-// imageUpdateInfo caches the registry update-check result for one image ref.
+// imageUpdateInfo caches the registry update-check result for one image
+// (keyed by content-addressable image ID, so digest-pinned / tag-less swarm
+// images are still checkable).
 type imageUpdateInfo struct {
 	available     bool   // registry has a newer digest than the running image
 	checked       bool   // a check completed (registry reachable)
@@ -70,6 +72,17 @@ type imageUpdateInfo struct {
 	remoteDigest  string // digest the registry tag currently points to
 	version       string // running image's human-readable version
 	remoteVersion string // version of the image the registry tag now points to
+	imageRef      string // resolved repo:tag used for the check (also a nicer display than a bare sha256: ID)
+}
+
+// imageCheckTarget is the per-image input to a registry update check. The
+// container-list "Image" field is often a bare sha256: digest for swarm /
+// dokploy deployments, so the configured image and the local RepoTags are
+// carried as fallbacks to recover a registry-trackable repo:tag.
+type imageCheckTarget struct {
+	imageID      string // content-addressable image ID (sha256:...), the cache key
+	configImage  string // container's configured image (Config.Image)
+	summaryImage string // container-list "Image" field
 }
 
 // updateCheckInterval bounds how often the registry is queried for newer images.
@@ -274,13 +287,34 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 		// Disk sizes: fresh from the daemon on slow cycles, cached otherwise.
 		szRw, szRootFs := c.resolveContainerSize(containerInfo.ID, withSize, containerInfo.SizeRw, containerInfo.SizeRootFs)
 
-		// Image update status from the (rarely-refreshed) registry check cache.
-		upd := c.lookupImageUpdate(containerInfo.Image)
+		// Image update status from the (rarely-refreshed) registry check cache,
+		// keyed by content-addressable image ID so digest-pinned / tag-less swarm
+		// images resolve too (the summary "Image" can be a bare sha256: digest).
+		upd := c.lookupImageUpdate(containerJSON.Image)
+
+		// Configured image reference (Config.Image) is a more reliable repo:tag
+		// source than the summary Image for swarm/dokploy; kept in-memory only to
+		// seed the update check.
+		configImage := ""
+		if containerJSON.Config != nil {
+			configImage = containerJSON.Config.Image
+		}
+
+		// Prefer a human-readable repo:tag over a bare sha256: digest for display.
+		displayImage := containerInfo.Image
+		if isBareDigestRef(displayImage) {
+			if upd.imageRef != "" {
+				displayImage = upd.imageRef
+			} else if r := stripImageDigest(configImage); isTrackableRef(r) {
+				displayImage = r
+			}
+		}
 
 		dockerContainer := DockerContainer{
 			ID:                 containerID,
 			Name:               name,
-			Image:              containerInfo.Image,
+			Image:              displayImage,
+			ConfigImage:        configImage,
 			State:              containerInfo.State,
 			Status:             containerInfo.Status,
 			Ports:              ports,
@@ -436,8 +470,10 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 	}
 	c.cacheMutex.Unlock()
 
-	// Kick off a background registry update check on the slow cadence.
-	c.maybeRefreshImageUpdates(containers)
+	// Kick off a background registry update check on the slow cadence. Targets
+	// carry the configured image + summary image so digest-pinned swarm images
+	// can recover a registry-trackable repo:tag.
+	c.maybeRefreshImageUpdates(buildImageCheckTargets(dockerStacks))
 
 	metric := DockerMetric{
 		Stacks:            dockerStacks,
@@ -497,16 +533,41 @@ func (c *dockerMetricsCollector) convertPorts(dockerPorts []container.Port) []Do
 	return ports
 }
 
-// lookupImageUpdate returns the cached registry-update result for an image ref.
-func (c *dockerMetricsCollector) lookupImageUpdate(ref string) imageUpdateInfo {
+// lookupImageUpdate returns the cached registry-update result for an image,
+// keyed by content-addressable image ID.
+func (c *dockerMetricsCollector) lookupImageUpdate(imageID string) imageUpdateInfo {
 	c.cacheMutex.RLock()
 	defer c.cacheMutex.RUnlock()
-	return c.imageUpdateCache[ref]
+	return c.imageUpdateCache[imageID]
+}
+
+// buildImageCheckTargets collects the distinct images (by image ID) of all
+// collected containers, keeping the configured/summary image as repo:tag hints.
+func buildImageCheckTargets(stacks []DockerStack) []imageCheckTarget {
+	seen := map[string]struct{}{}
+	targets := make([]imageCheckTarget, 0)
+	for _, st := range stacks {
+		for _, ct := range st.Containers {
+			if ct.ImageID == "" {
+				continue
+			}
+			if _, ok := seen[ct.ImageID]; ok {
+				continue
+			}
+			seen[ct.ImageID] = struct{}{}
+			targets = append(targets, imageCheckTarget{
+				imageID:      ct.ImageID,
+				configImage:  ct.ConfigImage,
+				summaryImage: ct.Image,
+			})
+		}
+	}
+	return targets
 }
 
 // maybeRefreshImageUpdates launches a background registry update check when the
 // interval has elapsed and one is not already running. Never blocks collection.
-func (c *dockerMetricsCollector) maybeRefreshImageUpdates(containers []container.Summary) {
+func (c *dockerMetricsCollector) maybeRefreshImageUpdates(targets []imageCheckTarget) {
 	c.cacheMutex.Lock()
 	due := c.lastUpdateCheckAt.IsZero() || time.Since(c.lastUpdateCheckAt) >= updateCheckInterval
 	if !due || c.updateChecking || c.client == nil {
@@ -517,28 +578,12 @@ func (c *dockerMetricsCollector) maybeRefreshImageUpdates(containers []container
 	c.lastUpdateCheckAt = time.Now()
 	c.cacheMutex.Unlock()
 
-	// Distinct image refs of ALL containers (running or stopped); skip bare IDs
-	// / untagged refs that have no registry reference.
-	seen := map[string]struct{}{}
-	refs := make([]string, 0)
-	for _, ci := range containers {
-		ref := ci.Image
-		if ref == "" || strings.HasPrefix(ref, "sha256:") || strings.Contains(ref, "<none>") {
-			continue
-		}
-		if _, ok := seen[ref]; ok {
-			continue
-		}
-		seen[ref] = struct{}{}
-		refs = append(refs, ref)
-	}
-
-	go c.refreshImageUpdates(refs)
+	go c.refreshImageUpdates(targets)
 }
 
-// refreshImageUpdates queries the registry for each image ref and caches whether
-// a newer image is available. Bounded concurrency + per-image timeout.
-func (c *dockerMetricsCollector) refreshImageUpdates(refs []string) {
+// refreshImageUpdates queries the registry for each distinct image and caches
+// whether a newer image is available. Bounded concurrency + per-image timeout.
+func (c *dockerMetricsCollector) refreshImageUpdates(targets []imageCheckTarget) {
 	defer func() {
 		c.cacheMutex.Lock()
 		c.updateChecking = false
@@ -550,64 +595,42 @@ func (c *dockerMetricsCollector) refreshImageUpdates(refs []string) {
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(4)
-	for _, ref := range refs {
-		ref := ref
+	for _, t := range targets {
+		t := t
 		g.Go(func() error {
 			cctx, ccancel := context.WithTimeout(gctx, 25*time.Second)
 			defer ccancel()
-			info := c.checkImageUpdate(cctx, ref)
+			info := c.checkImageUpdate(cctx, t)
 			c.cacheMutex.Lock()
-			c.imageUpdateCache[ref] = info
+			c.imageUpdateCache[t.imageID] = info
 			c.cacheMutex.Unlock()
 			return nil
 		})
 	}
 	_ = g.Wait()
-	c.logger.Debug("Image update check completed", "images", len(refs))
+	c.logger.Debug("Image update check completed", "images", len(targets))
 }
 
-// checkImageUpdate compares the registry's current digest for ref with the local
-// image's repo digest, and resolves the running image's version label. checked
-// is false when the registry is unreachable (e.g. private/local-only images).
-func (c *dockerMetricsCollector) checkImageUpdate(ctx context.Context, ref string) imageUpdateInfo {
+// checkImageUpdate compares the registry's current digest for the image's
+// repo:tag with the local image's repo digest, and resolves the running image's
+// version label. The image is inspected by its content-addressable ID so
+// digest-pinned / tag-less swarm images still resolve; the repo:tag to query is
+// recovered from the local RepoTags, then the configured / summary image.
+// checked is false when no registry-trackable ref exists or the registry is
+// unreachable (e.g. locally-built / private images).
+func (c *dockerMetricsCollector) checkImageUpdate(ctx context.Context, t imageCheckTarget) imageUpdateInfo {
 	if c.client == nil {
 		return imageUpdateInfo{}
 	}
-	dist, err := c.client.DistributionInspect(ctx, ref, "")
+	img, err := c.client.ImageInspect(ctx, t.imageID)
 	if err != nil {
 		return imageUpdateInfo{}
 	}
-	remote := dist.Descriptor.Digest.String()
-	if remote == "" {
-		return imageUpdateInfo{}
-	}
-	img, err := c.client.ImageInspect(ctx, ref)
-	if err != nil || len(img.RepoDigests) == 0 {
-		return imageUpdateInfo{}
-	}
 
-	// Pick the local repo digest matching ref's repository (strip the tag).
-	repo := ref
-	if at := strings.LastIndex(ref, "/"); at >= 0 {
-		if colon := strings.LastIndex(ref[at:], ":"); colon >= 0 {
-			repo = ref[:at+colon]
-		}
-	} else if colon := strings.LastIndex(ref, ":"); colon >= 0 {
-		repo = ref[:colon]
-	}
-	local := ""
-	for _, rd := range img.RepoDigests {
-		i := strings.LastIndex(rd, "@")
-		if i < 0 {
-			continue
-		}
-		if local == "" {
-			local = rd[i+1:] // fallback
-		}
-		if strings.HasPrefix(rd, repo+"@") {
-			local = rd[i+1:]
-			break
-		}
+	ref := resolveCheckRef(img.RepoTags, t.configImage, t.summaryImage)
+	if ref == "" {
+		// No registry-trackable repo:tag (e.g. locally-built image). Nothing to check.
+		return imageUpdateInfo{}
 	}
 
 	var labels map[string]string
@@ -617,6 +640,18 @@ func (c *dockerMetricsCollector) checkImageUpdate(ctx context.Context, ref strin
 		env = img.Config.Env
 	}
 	version := resolveImageVersion(labels, env, ref)
+
+	dist, err := c.client.DistributionInspect(ctx, ref, "")
+	if err != nil {
+		// Registry unreachable for this ref (private / local-only). Still expose
+		// the resolved ref + version for display, but report no update.
+		return imageUpdateInfo{checked: false, version: version, imageRef: ref}
+	}
+	remote := dist.Descriptor.Digest.String()
+	local := localRepoDigest(img.RepoDigests, ref)
+	if remote == "" || local == "" {
+		return imageUpdateInfo{checked: false, version: version, imageRef: ref}
+	}
 
 	available := local != remote
 	// Resolve what version the registry tag points to now (only when it differs,
@@ -633,7 +668,75 @@ func (c *dockerMetricsCollector) checkImageUpdate(ctx context.Context, ref strin
 		remoteDigest:  remote,
 		version:       version,
 		remoteVersion: remoteVer,
+		imageRef:      ref,
 	}
+}
+
+// isBareDigestRef reports whether ref is a bare content digest / untagged
+// reference with no usable repo:tag (e.g. "sha256:…" or "<none>").
+func isBareDigestRef(ref string) bool {
+	return ref == "" || strings.HasPrefix(ref, "sha256:") || strings.Contains(ref, "<none>")
+}
+
+// isTrackableRef reports whether ref is a registry-trackable repo[:tag]
+// (has a repository, not a bare digest / dangling reference).
+func isTrackableRef(ref string) bool {
+	if isBareDigestRef(ref) {
+		return false
+	}
+	host, repo, _ := parseImageRef(ref)
+	return host != "" && repo != ""
+}
+
+// stripImageDigest removes a trailing @sha256:… digest from a reference,
+// leaving the repo[:tag] portion (e.g. "repo:tag@sha256:…" -> "repo:tag").
+func stripImageDigest(ref string) string {
+	if i := strings.Index(ref, "@"); i >= 0 {
+		return ref[:i]
+	}
+	return ref
+}
+
+// resolveCheckRef recovers a registry-trackable repo:tag for an image. The
+// local RepoTags are the canonical source; the configured and summary images
+// (with any @digest stripped) are fallbacks for tag-less / digest-pinned swarm
+// images. Returns "" when nothing trackable is found.
+func resolveCheckRef(repoTags []string, configImage, summaryImage string) string {
+	for _, t := range repoTags {
+		if isTrackableRef(t) {
+			return t
+		}
+	}
+	for _, cand := range []string{stripImageDigest(configImage), stripImageDigest(summaryImage)} {
+		if isTrackableRef(cand) {
+			return cand
+		}
+	}
+	return ""
+}
+
+// localRepoDigest returns the local manifest digest for ref's repository from
+// the image's RepoDigests, falling back to the first available digest.
+func localRepoDigest(repoDigests []string, ref string) string {
+	repo := stripImageDigest(ref)
+	slash := strings.LastIndex(repo, "/")
+	if colon := strings.LastIndex(repo, ":"); colon > slash {
+		repo = repo[:colon]
+	}
+	local := ""
+	for _, rd := range repoDigests {
+		i := strings.LastIndex(rd, "@")
+		if i < 0 {
+			continue
+		}
+		if local == "" {
+			local = rd[i+1:] // fallback: first digest
+		}
+		if strings.HasPrefix(rd, repo+"@") {
+			return rd[i+1:]
+		}
+	}
+	return local
 }
 
 // resolveImageVersion derives a human-readable version for an image: the OCI

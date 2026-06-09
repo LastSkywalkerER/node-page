@@ -59,8 +59,15 @@ type DockerContainer struct {
 	// Name is the human-readable container name
 	Name string `json:"name"`
 
-	// Image shows the Docker image used to create this container
+	// Image shows the Docker image used to create this container. For swarm /
+	// dokploy deployments whose container-list image is a bare sha256: digest,
+	// this is resolved to a human-readable repo:tag when possible.
 	Image string `json:"image"`
+
+	// ConfigImage is the container's configured image reference (Config.Image),
+	// a more reliable repo:tag source than Image for swarm. In-memory only: it
+	// seeds the registry update check and is not persisted or sent to the client.
+	ConfigImage string `json:"-" gorm:"-"`
 
 	// State indicates the current container state (running, stopped, paused, etc.)
 	State string `json:"state"`
