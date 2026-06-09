@@ -99,8 +99,12 @@ jobs:
             "${NFPM}" package -f packaging/nfpm.yaml -p rpm -t dist/
           fi
           # Per-file checksums (aggregated into SHA256SUMS by the release job).
-          ( cd dist && for f in node-stats_*.tar.gz node-stats_*.zip node-stats_*.deb node-stats-*.rpm; do
-              [ -e "$f" ] && sha256sum "$f" > "$f.sha256"
+          # nullglob so non-matching patterns vanish instead of becoming a
+          # literal that trips `[ -e ]` under `set -e`.
+          ( cd dist
+            shopt -s nullglob
+            for f in node-stats_*.tar.gz node-stats_*.zip node-stats_*.deb node-stats-*.rpm; do
+              sha256sum "$f" > "$f.sha256"
             done )
           ls -la dist
       - uses: actions/upload-artifact@v4
