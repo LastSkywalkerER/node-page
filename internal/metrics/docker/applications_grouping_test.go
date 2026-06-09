@@ -71,6 +71,44 @@ func TestRegroupByCommonPrefix_Dokploy(t *testing.T) {
 	}
 }
 
+// Real dokploy case: a swarm "project" deployed as several standalone services
+// (no compose/stack label), where some services run as multiple instances with
+// distinct random suffixes (backend×2, frontend×2). The duplicate instances
+// must not split the project — everything collapses under "docs-templater" — and
+// an unrelated compose app on the same host must stay separate.
+func TestRegroupByCommonPrefix_SwarmProjectWithDuplicateServices(t *testing.T) {
+	os.Unsetenv("NODE_STATS_APP_PREFIX_GROUPING")
+	apps := BuildApplications(metricWith(
+		"docs-templater-db-otgog7", "docs-templater-docsdb-i9fu69",
+		"docs-templater-backend-vjqn9z", "docs-templater-backend-ncmwi4",
+		"docs-templater-frontend-wwfhqs", "docs-templater-frontend-3pokhx",
+		"board-plane-mvyzj3", // unrelated compose app on the same host
+	))
+
+	got := appByProject(apps)
+	dt, ok := got["docs-templater"]
+	if !ok {
+		keys := make([]string, 0, len(apps))
+		for _, a := range apps {
+			keys = append(keys, a.Project)
+		}
+		sort.Strings(keys)
+		t.Fatalf("expected a merged 'docs-templater' app, got %v", keys)
+	}
+	if dt.TotalContainers != 6 {
+		t.Errorf("docs-templater TotalContainers=%d, want 6 (db+docsdb+backend×2+frontend×2)", dt.TotalContainers)
+	}
+	if dt.IsSingleton {
+		t.Errorf("docs-templater merged 6 services but IsSingleton=true")
+	}
+	if _, ok := got["board-plane-mvyzj3"]; !ok {
+		t.Errorf("unrelated board-plane-mvyzj3 must stay its own app")
+	}
+	if len(apps) != 2 {
+		t.Errorf("got %d apps, want 2 (docs-templater + board-plane-mvyzj3)", len(apps))
+	}
+}
+
 func TestRegroupByCommonPrefix_Disabled(t *testing.T) {
 	os.Setenv("NODE_STATS_APP_PREFIX_GROUPING", "off")
 	defer os.Unsetenv("NODE_STATS_APP_PREFIX_GROUPING")

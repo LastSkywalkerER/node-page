@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { ExternalLink, Box, ArrowUpCircle } from 'lucide-react';
+import { ExternalLink, Box, ArrowUpCircle, RefreshCw, ChevronsUp } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { AppIcon } from '@/shared/ui/AppIcon';
 import { cn } from '@/lib/utils';
@@ -89,9 +89,25 @@ export function ApplicationTile({ app, hostId, hostIPv4 }: ApplicationTileProps)
             {app.updates_available > 0 && (
               <span
                 className="inline-flex items-center gap-0.5 rounded bg-amber-500/15 px-1 py-0 text-[10px] font-medium text-amber-600 dark:text-amber-400"
-                title={`${app.updates_available} container(s) have a newer image available`}
+                title={`${app.updates_available} container(s) have a newer version available`}
               >
                 <ArrowUpCircle className="h-2.5 w-2.5" /> {app.updates_available}
+              </span>
+            )}
+            {app.patches_available > 0 && (
+              <span
+                className="inline-flex items-center gap-0.5 rounded bg-sky-500/15 px-1 py-0 text-[10px] font-medium text-sky-600 dark:text-sky-400"
+                title={`${app.patches_available} container(s) have a rebuilt image (same version, newer build)`}
+              >
+                <RefreshCw className="h-2.5 w-2.5" /> {app.patches_available}
+              </span>
+            )}
+            {app.major_updates_available > 0 && (
+              <span
+                className="inline-flex items-center gap-0.5 rounded bg-rose-500/15 px-1 py-0 text-[10px] font-medium text-rose-600 dark:text-rose-400"
+                title={`${app.major_updates_available} container(s) have a newer major version available (may include breaking changes)`}
+              >
+                <ChevronsUp className="h-2.5 w-2.5" /> {app.major_updates_available}
               </span>
             )}
           </div>
