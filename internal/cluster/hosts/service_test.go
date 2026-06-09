@@ -79,6 +79,19 @@ func TestRemoveHost_ClusterWideByMacWhenRaftEnabled(t *testing.T) {
 	}
 }
 
+func TestRemoveHost_RejectsEmptyMacWhenRaftEnabled(t *testing.T) {
+	repo := &fakeRepo{host: &Host{ID: 5, Name: "peer", MacAddress: ""}}
+	rep := &fakeReplicator{enabled: true}
+	s := newTestService(repo, rep)
+
+	if err := s.RemoveHost(context.Background(), 5); err == nil {
+		t.Fatalf("expected error removing a Raft host with no MAC, got nil")
+	}
+	if len(rep.deletedMACs) != 0 || len(repo.cascadedIDs) != 0 {
+		t.Fatalf("must not delete anything when MAC is empty under Raft: macs=%v ids=%v", rep.deletedMACs, repo.cascadedIDs)
+	}
+}
+
 func TestRemoveHost_LocalCascadeWhenStandalone(t *testing.T) {
 	repo := &fakeRepo{host: &Host{ID: 7, Name: "old", MacAddress: "11:22:33:44:55:66"}}
 	s := newTestService(repo, nil) // no replicator → standalone

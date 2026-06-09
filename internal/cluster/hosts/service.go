@@ -3,6 +3,7 @@ package hosts
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -158,7 +159,12 @@ func (s *service) RemoveHost(ctx context.Context, id uint) error {
 	// Cluster-wide removal keyed by MAC when Raft is enabled — the FSM applier
 	// on every node (including this one) resolves the MAC to its local row and
 	// cascades. Standalone falls back to a direct local cascade delete.
-	if s.raft != nil && s.raft.Enabled() && host.MacAddress != "" {
+	if s.raft != nil && s.raft.Enabled() {
+		if host.MacAddress == "" {
+			// A replicated delete is keyed by MAC; without one the applier would
+			// silently no-op on every node. Refuse rather than delete only locally.
+			return fmt.Errorf("host %d (%q) has no MAC address; cannot remove cluster-wide", id, host.Name)
+		}
 		s.logger.Info("Removing host cluster-wide", "host_id", id, "name", host.Name, "mac", host.MacAddress)
 		return s.raft.SubmitHostDelete(ctx, host.MacAddress)
 	}
