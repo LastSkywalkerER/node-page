@@ -91,8 +91,12 @@ jobs:
             tar -czf "dist/${BASE}.tar.gz" "node-stats${{ matrix.ext }}"
           fi
           # Linux also ships native packages (install the binary + a systemd service).
+          # nfpm runs on the RUNNER, so install it for the host arch — otherwise the
+          # step's GOARCH (e.g. arm64) cross-builds nfpm into bin/<goos>_<goarch>/
+          # and it neither lands at bin/nfpm nor runs on the amd64 runner.
           if [ "${GOOS}" = "linux" ]; then
-            go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+            GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" \
+              go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
             export PKG_ARCH="${GOARCH}" PKG_VERSION="${VERSION#v}"
             NFPM="$(go env GOPATH)/bin/nfpm"
             "${NFPM}" package -f packaging/nfpm.yaml -p deb -t dist/
