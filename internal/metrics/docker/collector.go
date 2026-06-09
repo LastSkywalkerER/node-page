@@ -287,10 +287,16 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 		// Disk sizes: fresh from the daemon on slow cycles, cached otherwise.
 		szRw, szRootFs := c.resolveContainerSize(containerInfo.ID, withSize, containerInfo.SizeRw, containerInfo.SizeRootFs)
 
-		// Image update status from the (rarely-refreshed) registry check cache,
-		// keyed by content-addressable image ID so digest-pinned / tag-less swarm
-		// images resolve too (the summary "Image" can be a bare sha256: digest).
-		upd := c.lookupImageUpdate(containerJSON.Image)
+		// Content-addressable image ID (sha256:...) — the canonical key the update
+		// cache is keyed by, so digest-pinned / tag-less swarm images resolve too
+		// (the container-list "Image" can be a bare digest / short hex ID).
+		imageID := containerInfo.ImageID
+		if imageID == "" {
+			imageID = containerJSON.Image
+		}
+
+		// Image update status from the (rarely-refreshed) registry check cache.
+		upd := c.lookupImageUpdate(imageID)
 
 		// Configured image reference (Config.Image) is a more reliable repo:tag
 		// source than the summary Image for swarm/dokploy; kept in-memory only to
@@ -329,7 +335,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 			SizeRw:             szRw,
 			SizeRootFs:         szRootFs,
 			Mounts:             c.convertMounts(containerJSON.Mounts),
-			ImageID:            containerJSON.Image,
+			ImageID:            imageID,
 			UpdateAvailable:    upd.available,
 			UpdateChecked:      upd.checked,
 			LocalDigest:        upd.localDigest,
@@ -452,11 +458,16 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 		}
 	}
 
-	// Evict CPU cache entries for containers that no longer exist (prevents unbounded growth).
+	// Evict cache entries for containers / images that no longer exist (prevents
+	// unbounded growth across container churn).
 	c.cacheMutex.Lock()
 	currentIDs := make(map[string]struct{}, len(containers))
+	currentImageIDs := make(map[string]struct{}, len(containers))
 	for _, ci := range containers {
 		currentIDs[ci.ID] = struct{}{}
+		if ci.ImageID != "" {
+			currentImageIDs[ci.ImageID] = struct{}{}
+		}
 	}
 	for id := range c.containerCPUCache {
 		if _, ok := currentIDs[id]; !ok {
@@ -466,6 +477,11 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 	for id := range c.containerSizeCache {
 		if _, ok := currentIDs[id]; !ok {
 			delete(c.containerSizeCache, id)
+		}
+	}
+	for id := range c.imageUpdateCache {
+		if _, ok := currentImageIDs[id]; !ok {
+			delete(c.imageUpdateCache, id)
 		}
 	}
 	c.cacheMutex.Unlock()
@@ -739,27 +755,28 @@ func resolveCheckRef(repoTags []string, configImage, summaryImage string) string
 }
 
 // localRepoDigest returns the local manifest digest for ref's repository from
-// the image's RepoDigests, falling back to the first available digest.
+// the image's RepoDigests. It returns the digest of the matching repository
+// only — never an unrelated repo's digest — so we don't compare ref's remote
+// digest against a different registry's local digest (which would yield a false
+// "update available" for multi-registry / aliased images). Returns "" when no
+// RepoDigest matches ref's repository: the caller then reports no update rather
+// than guessing.
 func localRepoDigest(repoDigests []string, ref string) string {
 	repo := stripImageDigest(ref)
 	slash := strings.LastIndex(repo, "/")
 	if colon := strings.LastIndex(repo, ":"); colon > slash {
 		repo = repo[:colon]
 	}
-	local := ""
 	for _, rd := range repoDigests {
 		i := strings.LastIndex(rd, "@")
 		if i < 0 {
 			continue
 		}
-		if local == "" {
-			local = rd[i+1:] // fallback: first digest
-		}
 		if strings.HasPrefix(rd, repo+"@") {
 			return rd[i+1:]
 		}
 	}
-	return local
+	return ""
 }
 
 // resolveImageVersion derives a human-readable version for an image: the OCI

@@ -122,10 +122,10 @@ func TestLocalRepoDigest(t *testing.T) {
 			want:        "sha256:Y",
 		},
 		{
-			name:        "falls back to first digest when no repo matches",
+			name:        "no repo match → empty (never compare against an unrelated repo's digest)",
 			repoDigests: []string{"foo/bar@sha256:Z"},
 			ref:         "postgres:18",
-			want:        "sha256:Z",
+			want:        "",
 		},
 		{
 			name:        "no digests → empty",
