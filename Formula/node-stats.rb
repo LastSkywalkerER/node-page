@@ -9,24 +9,28 @@
 class NodeStats < Formula
   desc "Self-hosted system monitoring dashboard (CPU/mem/disk/net/Docker)"
   homepage "https://github.com/LastSkywalkerER/node-page"
-  version "0.1.0"
+  version "0.1.1"
   license "MIT"
 
   on_macos do
     on_arm do
       url "https://github.com/LastSkywalkerER/node-page/releases/download/v#{version}/node-stats_v#{version}_darwin_arm64.tar.gz"
-      sha256 "328700d5fa69062921593bad4efb4632f5a6b264a37aa1387d1c8ed2292a4825"
+      sha256 "43a002ce8514b1e1ef100b315aa3232e5f6090c11f375e487925624999260855"
+    end
+    on_intel do
+      url "https://github.com/LastSkywalkerER/node-page/releases/download/v#{version}/node-stats_v#{version}_darwin_amd64.tar.gz"
+      sha256 "a6bff0ab35d990dd584fa12e017b0dce790ccf6abda55e84d13c09134e92cdfe"
     end
   end
 
   on_linux do
     on_intel do
       url "https://github.com/LastSkywalkerER/node-page/releases/download/v#{version}/node-stats_v#{version}_linux_amd64.tar.gz"
-      sha256 "eaca3685cd5fc1625cc19a9f4c18272f858d2a9649c49642490dc95f2db9c50e"
+      sha256 "acfa99538ab03f1ac2d12c5985ccc9777ff1b2e244735b7f2e3558e5e50f7094"
     end
     on_arm do
       url "https://github.com/LastSkywalkerER/node-page/releases/download/v#{version}/node-stats_v#{version}_linux_arm64.tar.gz"
-      sha256 "15135b84037457ec95f3e96061da6c5c2f1e82ad6b694f85c8aa816f17f0b1bd"
+      sha256 "512a2726b0d5ce4fdef3c0886e82374b3ef5fc3eb9fa72ad3036fa5ed991e39d"
     end
   end
 
