@@ -175,6 +175,25 @@ export function useRemoveRaftPeer() {
   })
 }
 
+/**
+ * Self-leave: removes THIS node from the Raft cluster (the leader performs the
+ * membership change) and decouples it to standalone — Raft stopped, on-disk
+ * state wiped, RAFT_* removed from .env. The node keeps running standalone.
+ */
+export function useLeaveRaftCluster() {
+  const queryClient = useQueryClient()
+  return useMutation<{ left: boolean; node_id: string; next: string }, Error, void>({
+    mutationFn: async () => {
+      const resp = await apiClient.post<{ left: boolean; node_id: string; next: string }>('/raft/leave')
+      return resp.data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['raft', 'status'] })
+      queryClient.invalidateQueries({ queryKey: ['hosts'] })
+    },
+  })
+}
+
 export interface SaveBridgeConfigInput {
   shared_secret: string
   remote_seeds: string[]

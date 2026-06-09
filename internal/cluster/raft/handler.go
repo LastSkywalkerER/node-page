@@ -6,8 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -25,13 +28,13 @@ type BridgePickerSnapshot interface {
 // under /api/v1/raft and is safe to register even when the Service is the
 // DisabledService — Status() / Ping() still return useful payloads.
 type Handler struct {
-	svc        Service
-	replicator *Replicator
-	db         *gorm.DB
-	logger     *log.Logger
-	clusterID  string
-	pickerInfo func() any
-	bridgeCfg  BridgeConfigurator
+	svc          Service
+	replicator   *Replicator
+	db           *gorm.DB
+	logger       *log.Logger
+	clusterID    string
+	pickerInfo   func() any
+	bridgeCfg    BridgeConfigurator
 	bootError    func() string
 	resetCfg     func() error
 	wipeState    func() error
@@ -156,6 +159,110 @@ func (h *Handler) FactoryReset(c *gin.Context) {
 		"reset": true,
 		"next":  "Raft is now disabled on this node. Restart the process to confirm, then re-run the setup wizard.",
 	})
+}
+
+// Leave removes THIS node from the Raft cluster and decouples it to standalone.
+//
+// Membership removal MUST happen while this node is still up — otherwise a small
+// cluster (e.g. 2 voters) loses quorum the moment this node stops and can never
+// commit the removal. Sequence:
+//  1. Leader & only voter  → nothing to remove; just decouple.
+//  2. Leader with peers     → RemoveServer(self) locally (leadership transfers).
+//  3. Follower              → ask the current leader to RemoveServer(self) over
+//     HTTP, forwarding the admin's credentials (JWT_SECRET is shared
+//     cluster-wide, so the leader accepts them).
+//  4. factory-reset locally → stop Raft, wipe data/raft, clear RAFT_* from .env.
+//
+// Admin-only.
+//
+// POST /api/v1/raft/leave
+func (h *Handler) Leave(c *gin.Context) {
+	if h.factoryReset == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "leave not wired"})
+		return
+	}
+	st := h.svc.Status()
+	if !st.Enabled {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Raft is not enabled on this node"})
+		return
+	}
+	self := st.NodeID
+	voters := 0
+	for _, p := range st.Peers {
+		if p.Suffrage == "voter" {
+			voters++
+		}
+	}
+
+	switch {
+	case strings.EqualFold(st.State, "Leader") && voters <= 1:
+		// Last node in the cluster — no membership change needed.
+	case strings.EqualFold(st.State, "Leader"):
+		if err := h.svc.RemovePeer(self); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "remove self from cluster: " + err.Error()})
+			return
+		}
+	default:
+		// Follower / candidate: only the leader can change membership.
+		if st.LeaderID == "" {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no leader available to process leave; retry shortly or use factory-reset"})
+			return
+		}
+		if h.db == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "leave not available (no db)"})
+			return
+		}
+		lookupCtx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+		leaderURL, err := LookupPeerURL(lookupCtx, h.db, h.clusterID, st.LeaderID)
+		cancel()
+		if err != nil || leaderURL == "" {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "leader URL unknown; cannot leave cleanly (try from the leader, or factory-reset)"})
+			return
+		}
+		if err := h.requestLeaderRemove(c, leaderURL, self); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "leader did not remove this node: " + err.Error()})
+			return
+		}
+	}
+
+	if err := h.factoryReset(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "decouple to standalone failed: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"left":    true,
+		"node_id": self,
+		"next":    "This node left the cluster and is now standalone. Restart to confirm.",
+	})
+}
+
+// requestLeaderRemove asks the leader to RemoveServer(nodeID) via its admin
+// kick endpoint, forwarding the caller's credentials (the cluster shares
+// JWT_SECRET so the leader authenticates the same admin token).
+func (h *Handler) requestLeaderRemove(c *gin.Context, leaderURL, nodeID string) error {
+	url := strings.TrimRight(leaderURL, "/") + "/api/v1/raft/peers/" + nodeID
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return err
+	}
+	if cookie := c.GetHeader("Cookie"); cookie != "" {
+		req.Header.Set("Cookie", cookie)
+	}
+	if authz := c.GetHeader("Authorization"); authz != "" {
+		req.Header.Set("Authorization", authz)
+	}
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
+		return fmt.Errorf("leader %s returned %s: %s", leaderURL, resp.Status, strings.TrimSpace(string(body)))
+	}
+	return nil
 }
 
 // ProbeVoterRequest is the body of POST /api/v1/raft/probe-voter.
@@ -452,11 +559,11 @@ func (h *Handler) Join(c *gin.Context) {
 	}
 	st := h.svc.Status()
 	c.JSON(http.StatusOK, gin.H{
-		"cluster_id":   st.ClusterID,
-		"leader_id":    st.LeaderID,
-		"leader_addr":  st.LeaderAddr,
-		"peers":        st.Peers,
-		"applied_idx":  st.AppliedIndex,
+		"cluster_id":  st.ClusterID,
+		"leader_id":   st.LeaderID,
+		"leader_addr": st.LeaderAddr,
+		"peers":       st.Peers,
+		"applied_idx": st.AppliedIndex,
 	})
 }
 
