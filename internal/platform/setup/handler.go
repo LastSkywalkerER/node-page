@@ -3,15 +3,20 @@ package setup
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 
 	"system-stats/internal/app/dockerenv"
 	users "system-stats/internal/auth/users"
@@ -132,7 +137,11 @@ func (h *Handler) pollClusterSecretsAndSwap() {
 type SetupStatusResponse struct {
 	SetupNeeded     bool         `json:"setup_needed"`
 	RunningInDocker bool         `json:"running_in_docker"`
-	MachineHints    MachineHints `json:"machine_hints"`
+	// ManagedExternally is true when an external orchestrator (Dokploy/Traefik)
+	// owns the stack lifecycle, so the wizard hides the managed-Postgres option
+	// and won't trigger a compose recreate.
+	ManagedExternally bool         `json:"managed_externally"`
+	MachineHints      MachineHints `json:"machine_hints"`
 }
 
 // ConfigResponse represents the current configuration response
@@ -150,6 +159,12 @@ type CompleteSetupRequest struct {
 // CompleteSetupResponse represents the complete setup response
 type CompleteSetupResponse struct {
 	Message string `json:"message"`
+	// RestartPending is true when applying the chosen configuration requires the
+	// docker stack to be recreated by the controller (DB engine change). The
+	// frontend then shows an "applying & restarting" gate and polls /health +
+	// /version until the new backend answers before redirecting to login.
+	RestartPending bool   `json:"restart_pending"`
+	DBMode         string `json:"db_mode,omitempty"`
 }
 
 // PreviewEnvRequest is the body for POST /setup/preview-env.
@@ -192,9 +207,10 @@ func (h *Handler) Status(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"data": SetupStatusResponse{
-			SetupNeeded:     setupNeeded,
-			RunningInDocker: dockerenv.Running(),
-			MachineHints:    hints,
+			SetupNeeded:       setupNeeded,
+			RunningInDocker:   dockerenv.Running(),
+			ManagedExternally: ManagedExternally(),
+			MachineHints:      hints,
 		},
 	})
 }
@@ -391,6 +407,42 @@ func (h *Handler) CompleteSetup(c *gin.Context) {
 	ApplySetupDefaults(req.Config)
 	ApplyRaftDefaults(req.Config)
 
+	// Starting a cluster via the wizard: derive the leader's HTTP advertise URL
+	// from its Raft advertise host + this node's HTTP port when the operator left
+	// it blank. Without it the leader has no published API URL, so peers can't
+	// reach it to join / forward writes, and the connect-key panel shows a wrong
+	// default port (the admin/join paths derive this; CompleteSetup didn't).
+	if strings.EqualFold(strings.TrimSpace(req.Config.RaftEnabled), "true") &&
+		strings.TrimSpace(req.Config.RaftAdvertisePublicURL) == "" {
+		if u := deriveJoinerHTTPURL(strings.TrimSpace(req.Config.RaftAdvertiseAddr), h.addr); u != "" {
+			req.Config.RaftAdvertisePublicURL = u
+		}
+	}
+
+	// Managed Postgres: reuse the previously-generated password if one exists.
+	// The pgdata volume keeps the password from its FIRST init, so regenerating
+	// it on a wizard retry (or the two-phase re-submit) would cause an auth
+	// mismatch and crash-loop the app. The desired-state descriptor is the
+	// persisted source of truth for that password.
+	if strings.EqualFold(req.Config.DBType, "postgres") && req.Config.DBManaged && strings.TrimSpace(req.Config.DBPassword) == "" {
+		if prev, _ := ReadDesiredState(desiredStateDir()); prev != nil &&
+			prev.DBMode == DBModePostgresManaged && strings.TrimSpace(prev.DB.Password) != "" {
+			req.Config.DBPassword = prev.DB.Password
+		}
+	}
+
+	// For managed Postgres, force the connection to target the compose `db`
+	// service and generate a password if none exists yet. Done before
+	// WriteConfigFile so the persisted DSN is consistent.
+	if err := finalizeManagedPostgres(req.Config); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":   "internal_error",
+			"error":  "Failed to prepare managed database configuration",
+			"detail": err.Error(),
+		})
+		return
+	}
+
 	// Write configuration to .env file
 	if err := h.configWriter.WriteConfigFile(req.Config); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -435,6 +487,54 @@ func (h *Handler) CompleteSetup(c *gin.Context) {
 			})
 			return
 		}
+		// As the bootstrap leader, seed the cluster-shared signing keys into the
+		// replicated cluster_config (so joiners receive valid secrets via
+		// snapshot — otherwise their token service stays unconfigured and login
+		// returns auth_not_configured) and advertise our HTTP URL (so followers
+		// can forward writes to us). Both are leader-only, and a synchronous call
+		// races the just-started bootstrap election — so wait for leadership in a
+		// background goroutine first. Mirrors AdminStartCluster. Best-effort.
+		if rt.Bootstrap {
+			jwt, refresh := req.Config.JWTSecret, req.Config.RefreshSecret
+			go func() {
+				for i := 0; i < 50; i++ { // wait up to ~10s for the election
+					if h.raftSvc != nil && strings.EqualFold(h.raftSvc.Status().State, "Leader") {
+						break
+					}
+					time.Sleep(200 * time.Millisecond)
+				}
+				sctx, scancel := context.WithTimeout(context.Background(), 10*time.Second)
+				_ = h.raftActivator.SeedClusterSecrets(sctx, jwt, refresh)
+				scancel()
+				h.raftActivator.AdvertiseSelfNow(context.Background())
+			}()
+		}
+	}
+
+	// If the chosen database engine differs from the one this process is running
+	// on (docker only), the controller must recreate the stack onto the new DB
+	// before we can create the admin user — the new database is empty, so
+	// creating the admin now would land it in the OLD database and be lost.
+	// We persist the desired topology and return restart_pending; the frontend
+	// re-submits this same request once the recreated backend is healthy, at
+	// which point running == desired and the admin is created on the new DB.
+	if mode, needed := dbSwitchNeeded(req.Config); needed {
+		if err := h.writeDesiredState(mode, AssembleDSN(req.Config), req.Config); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"code":   "deploy_state_error",
+				"error":  "Failed to record the deployment state for the controller",
+				"detail": err.Error(),
+			})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"data": CompleteSetupResponse{
+				Message:        "Provisioning the database and restarting — this can take a moment.",
+				RestartPending: true,
+				DBMode:         mode,
+			},
+		})
+		return
 	}
 
 	// Create first admin user
@@ -495,6 +595,155 @@ func (h *Handler) CompleteSetup(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"data": CompleteSetupResponse{Message: msg},
 	})
+}
+
+// finalizeManagedPostgres forces a managed-Postgres config to target the
+// compose `db` service and fills missing fields (generating a password if the
+// wizard didn't). No-op for sqlite / external Postgres.
+func finalizeManagedPostgres(cv *ConfigValues) error {
+	if !strings.EqualFold(cv.DBType, "postgres") || !cv.DBManaged {
+		return nil
+	}
+	cv.DBHost = "db"
+	if cv.DBPort == "" {
+		cv.DBPort = "5432"
+	}
+	if cv.DBSSLMode == "" {
+		cv.DBSSLMode = "disable"
+	}
+	if cv.DBName == "" {
+		cv.DBName = "node_stats"
+	}
+	if cv.DBUser == "" {
+		cv.DBUser = "node_stats"
+	}
+	if strings.TrimSpace(cv.DBPassword) == "" {
+		pw, err := randomHex(24)
+		if err != nil {
+			return err
+		}
+		cv.DBPassword = pw
+	}
+	return nil
+}
+
+// dbSwitchNeeded reports the desired DB mode and whether applying it requires
+// the controller to recreate the stack onto a different engine than the one
+// this process is currently running. Only relevant in Docker, and never when
+// the deployment is managed externally.
+func dbSwitchNeeded(cv *ConfigValues) (mode string, needed bool) {
+	mode = DBModeSQLite
+	desiredEngine := "sqlite"
+	if strings.EqualFold(cv.DBType, "postgres") {
+		desiredEngine = "postgres"
+		if cv.DBManaged {
+			mode = DBModePostgresManaged
+		} else {
+			mode = DBModePostgresExternal
+		}
+	}
+	runningEngine := strings.ToLower(strings.TrimSpace(os.Getenv("DB_TYPE")))
+	if runningEngine == "" {
+		runningEngine = "sqlite"
+	}
+	needed = dockerenv.Running() && !ManagedExternally() && desiredEngine != runningEngine
+	return mode, needed
+}
+
+// writeDesiredState records the target topology for the controller to apply.
+func (h *Handler) writeDesiredState(mode, dsn string, cv *ConfigValues) error {
+	dir := desiredStateDir()
+	gen := 1
+	if prev, _ := ReadDesiredState(dir); prev != nil {
+		gen = prev.Generation + 1
+	}
+	ds := DesiredState{Generation: gen, DBMode: mode, DBDSN: dsn}
+	if mode == DBModePostgresManaged {
+		ds.DB = DBProvision{Name: cv.DBName, User: cv.DBUser, Password: cv.DBPassword}
+	}
+	return WriteDesiredState(dir, ds)
+}
+
+// desiredStateDir is the shared data dir where the app writes desired-state.json
+// for the controller to read (the app's /app/data mount in Docker).
+func desiredStateDir() string {
+	if d := strings.TrimSpace(os.Getenv("NODE_STATS_DATA_DIR")); d != "" {
+		return d
+	}
+	return "/app/data"
+}
+
+// randomHex returns n random bytes hex-encoded (2n chars).
+func randomHex(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// TestDBRequest is the body of POST /setup/db/test.
+type TestDBRequest struct {
+	DBDSN      string `json:"db_dsn"`
+	DBHost     string `json:"db_host"`
+	DBPort     string `json:"db_port"`
+	DBName     string `json:"db_name"`
+	DBUser     string `json:"db_user"`
+	DBPassword string `json:"db_password"`
+	DBSSLMode  string `json:"db_sslmode"`
+}
+
+// TestDB opens a short-lived connection to an EXTERNAL Postgres to validate the
+// credentials before the operator commits to them. It never persists or
+// migrates anything. Public, but only usable pre-setup (no users yet).
+//
+// POST /api/v1/setup/db/test
+func (h *Handler) TestDB(c *gin.Context) {
+	ctx := c.Request.Context()
+	count, err := h.userService.Count(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": "Failed to check setup status"})
+		return
+	}
+	if count > 0 {
+		c.JSON(http.StatusForbidden, gin.H{"code": "setup_already_completed", "error": "Setup has already been completed"})
+		return
+	}
+
+	var req TestDBRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "Invalid request data", "detail": err.Error()})
+		return
+	}
+
+	dsn := strings.TrimSpace(req.DBDSN)
+	if dsn == "" {
+		dsn = AssembleDSN(&ConfigValues{
+			DBType: "postgres", DBHost: req.DBHost, DBPort: req.DBPort, DBName: req.DBName,
+			DBUser: req.DBUser, DBPassword: req.DBPassword, DBSSLMode: req.DBSSLMode,
+		})
+	}
+	if strings.TrimSpace(dsn) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "a host or full DSN is required"})
+		return
+	}
+
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err == nil {
+		if raw, derr := db.DB(); derr == nil {
+			err = raw.PingContext(pingCtx)
+			_ = raw.Close()
+		} else {
+			err = derr
+		}
+	}
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"ok": false, "error": err.Error()}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"ok": true}})
 }
 
 // JoinRaftClusterRequest is the body of POST /setup/join-raft-cluster.

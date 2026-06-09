@@ -38,9 +38,27 @@ type ConfigValues struct {
 	Debug             string `json:"debug"`
 	DBType            string `json:"db_type"`
 	DBDSN             string `json:"db_dsn"`
+	// Structured Postgres connection fields. When DBType=="postgres" and DBHost
+	// is set, AssembleDSN builds the GORM keyword DSN from these (so the wizard
+	// collects + validates components); otherwise the raw DBDSN is used as-is.
+	// These are inputs only — they are not written to .env individually; the
+	// resolved connection string lands in DB_DSN.
+	DBHost     string `json:"db_host"`
+	DBPort     string `json:"db_port"`
+	DBName     string `json:"db_name"`
+	DBUser     string `json:"db_user"`
+	DBPassword string `json:"db_password"`
+	DBSSLMode  string `json:"db_sslmode"`
+	// DBManaged is true when node-stats should provision its own Postgres
+	// container (compose service "db") rather than connect to an external server.
+	// Only meaningful in Docker deployments (the controller injects the service).
+	DBManaged         bool   `json:"db_managed"`
 	PrometheusEnabled string `json:"prometheus_enabled"`
 	PrometheusAuth    string `json:"prometheus_auth"`
 	PrometheusToken   string `json:"prometheus_token"`
+	// AutoUpdate ("true"/"false"): when on, the app checks GitHub Releases and
+	// applies updates (docker → controller pull+recreate; native → self-replace).
+	AutoUpdate string `json:"auto_update"`
 	// DockerHostMetricsCompat adds HOST_* and NODE_HOST_ALIAS for bind-mounted host root at /host.
 	DockerHostMetricsCompat bool `json:"docker_host_metrics_compat"`
 	// NodeStatsHostname optional; written as NODE_STATS_HOSTNAME when non-empty.
@@ -80,6 +98,7 @@ func (cw *ConfigWriter) ReadCurrentConfig() (*ConfigValues, error) {
 		PrometheusEnabled:      getEnv("PROMETHEUS_ENABLED", "false"),
 		PrometheusAuth:         getEnv("PROMETHEUS_AUTH", "false"),
 		PrometheusToken:        os.Getenv("PROMETHEUS_TOKEN"),
+		AutoUpdate:             getEnv("AUTO_UPDATE", "false"),
 		NodeStatsHostname:      os.Getenv("NODE_STATS_HOSTNAME"),
 		NodeStatsIPv4:          os.Getenv("NODE_STATS_IPV4"),
 		RaftEnabled:            os.Getenv("RAFT_ENABLED"),
@@ -147,7 +166,18 @@ func ApplySetupDefaults(cv *ConfigValues) {
 	if cv.DBType == "" {
 		cv.DBType = "sqlite"
 	}
-	if cv.DBDSN == "" {
+	if strings.EqualFold(cv.DBType, "postgres") {
+		if cv.DBPort == "" {
+			cv.DBPort = "5432"
+		}
+		if cv.DBSSLMode == "" {
+			cv.DBSSLMode = "disable"
+		}
+		if cv.DBName == "" {
+			cv.DBName = "node_stats"
+		}
+	}
+	if cv.DBDSN == "" && !strings.EqualFold(cv.DBType, "postgres") {
 		cv.DBDSN = "stats.db"
 	}
 	if cv.PrometheusEnabled == "" {
@@ -163,6 +193,10 @@ func (cw *ConfigWriter) FormatEnvFile(config *ConfigValues) (string, error) {
 	cv := *config
 	ApplySetupDefaults(&cv)
 	applyDockerHostMetricsCompat(&cv)
+	// Resolve the connection string the app will use (DB_DSN). For postgres
+	// with structured fields this builds the GORM keyword form; otherwise the
+	// raw DSN / sqlite path passes through unchanged.
+	cv.DBDSN = AssembleDSN(&cv)
 	if cv.JWTSecret == "" {
 		return "", fmt.Errorf("JWT_SECRET is required")
 	}
@@ -170,6 +204,34 @@ func (cw *ConfigWriter) FormatEnvFile(config *ConfigValues) (string, error) {
 		return "", fmt.Errorf("REFRESH_SECRET is required")
 	}
 	return buildEnvFileContent(&cv), nil
+}
+
+// AssembleDSN returns the connection string to persist as DB_DSN. For
+// DBType=="postgres" with a structured host present it builds the GORM keyword
+// form ("host=… user=… password=… dbname=… port=… sslmode=…", matching
+// database.initPostgres). For sqlite, or postgres with a hand-entered DSN
+// (DBHost empty), it returns the raw DBDSN unchanged.
+func AssembleDSN(cv *ConfigValues) string {
+	if !strings.EqualFold(strings.TrimSpace(cv.DBType), "postgres") {
+		return cv.DBDSN
+	}
+	if strings.TrimSpace(cv.DBHost) == "" {
+		return cv.DBDSN // hand-entered DSN provided directly
+	}
+	port := strings.TrimSpace(cv.DBPort)
+	if port == "" {
+		port = "5432"
+	}
+	ssl := strings.TrimSpace(cv.DBSSLMode)
+	if ssl == "" {
+		ssl = "disable"
+	}
+	name := strings.TrimSpace(cv.DBName)
+	if name == "" {
+		name = "node_stats"
+	}
+	return fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
+		strings.TrimSpace(cv.DBHost), strings.TrimSpace(cv.DBUser), cv.DBPassword, name, port, ssl)
 }
 
 // applyDockerHostMetricsCompat adjusts DSN for typical Docker volume layout when enabled.
@@ -209,6 +271,12 @@ func buildEnvFileContent(config *ConfigValues) string {
 	lines = append(lines, fmt.Sprintf("PROMETHEUS_AUTH=%s", escapeValue(config.PrometheusAuth)))
 	if config.PrometheusToken != "" {
 		lines = append(lines, fmt.Sprintf("PROMETHEUS_TOKEN=%s", escapeValue(config.PrometheusToken)))
+	}
+
+	if strings.EqualFold(strings.TrimSpace(config.AutoUpdate), "true") {
+		lines = append(lines, "")
+		lines = append(lines, "# Auto-update: check GitHub Releases and apply (docker → controller pull+recreate)")
+		lines = append(lines, "AUTO_UPDATE=true")
 	}
 
 	if config.DockerHostMetricsCompat {

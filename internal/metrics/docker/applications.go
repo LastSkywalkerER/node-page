@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -185,7 +186,126 @@ func BuildApplications(m *DockerMetric) []DockerApplication {
 		}
 		out = append(out, *app)
 	}
+	// Fallback: merge apps that share a common name prefix into one logical app
+	// (e.g. Dokploy's "node-stats-app-…", "node-stats-db-…", "node-stats-compose-…"
+	// → "node-stats"). No-op for distinctly-named compose projects.
+	out = regroupByCommonPrefix(out)
 	sort.Slice(out, func(i, j int) bool { return out[i].Project < out[j].Project })
+	return out
+}
+
+// prefixGroupingEnabled reports whether the common-name-prefix fallback grouping
+// is on (default true; disable with NODE_STATS_APP_PREFIX_GROUPING=false/0/off).
+func prefixGroupingEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("NODE_STATS_APP_PREFIX_GROUPING"))) {
+	case "false", "0", "off", "no":
+		return false
+	}
+	return true
+}
+
+// nameTokens splits an app/project name into its dash/underscore tokens.
+func nameTokens(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool { return r == '-' || r == '_' })
+}
+
+// regroupByCommonPrefix merges applications whose names share the longest common
+// dash/underscore-delimited prefix that is shared by ≥2 applications. Apps with
+// no shared prefix are left untouched. This is a fallback for orchestrators
+// (e.g. Dokploy) that name every service of one logical app like
+// "<app>-<service>-<hash>" without a shared compose-project label.
+func regroupByCommonPrefix(apps []DockerApplication) []DockerApplication {
+	if len(apps) < 2 || !prefixGroupingEnabled() {
+		return apps
+	}
+
+	toks := make([][]string, len(apps))
+	prefixCount := map[string]int{}
+	for i, a := range apps {
+		toks[i] = nameTokens(a.Project)
+		for j := 1; j <= len(toks[i]); j++ {
+			prefixCount[strings.Join(toks[i][:j], "-")]++
+		}
+	}
+
+	// Assign each app to the LONGEST prefix shared by ≥2 apps; else keep it alone.
+	groups := map[string][]DockerApplication{}
+	order := []string{}
+	for i, a := range apps {
+		key := "self:" + a.Project
+		for j := len(toks[i]); j >= 1; j-- {
+			pfx := strings.Join(toks[i][:j], "-")
+			if prefixCount[pfx] >= 2 {
+				key = "pfx:" + pfx
+				break
+			}
+		}
+		if _, ok := groups[key]; !ok {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], a)
+	}
+
+	out := make([]DockerApplication, 0, len(order))
+	for _, key := range order {
+		members := groups[key]
+		if len(members) == 1 {
+			out = append(out, members[0])
+			continue
+		}
+		out = append(out, mergeApplications(strings.TrimPrefix(key, "pfx:"), members))
+	}
+	return out
+}
+
+// mergeApplications combines several applications into one logical app keyed by
+// the shared name prefix, summing usage and unioning ports/volumes/containers.
+func mergeApplications(project string, members []DockerApplication) DockerApplication {
+	sort.Slice(members, func(i, j int) bool { return members[i].Project < members[j].Project })
+	out := DockerApplication{
+		Project:     project,
+		DisplayName: humanizeProject(project),
+		HostID:      members[0].HostID,
+	}
+	for _, m := range members {
+		out.Containers = append(out.Containers, m.Containers...)
+		out.TotalContainers += m.TotalContainers
+		out.RunningContainers += m.RunningContainers
+		out.TotalSizeRw += m.TotalSizeRw
+		out.TotalSizeRootFs += m.TotalSizeRootFs
+		out.UpdatesAvailable += m.UpdatesAvailable
+		sumStats(&out.Stats, m.Stats)
+		out.Ports = mergePublicPorts(out.Ports, m.Ports)
+		out.Volumes = mergeVolumes(out.Volumes, m.Volumes)
+		if out.PublicURL == "" {
+			out.PublicURL = m.PublicURL
+		}
+		if out.IconSlug == "" {
+			out.IconSlug = m.IconSlug
+		}
+	}
+	out.IsSingleton = out.TotalContainers == 1
+	out.ServiceCount = countServices(out.Containers)
+	sort.Slice(out.Containers, func(i, j int) bool { return out.Containers[i].Name < out.Containers[j].Name })
+	sort.Slice(out.Ports, func(i, j int) bool {
+		a, b := out.Ports[i], out.Ports[j]
+		if a.PublicPort != b.PublicPort {
+			return a.PublicPort < b.PublicPort
+		}
+		if a.PrivatePort != b.PrivatePort {
+			return a.PrivatePort < b.PrivatePort
+		}
+		if a.Type != b.Type {
+			return a.Type < b.Type
+		}
+		return a.PublicURL < b.PublicURL
+	})
+	sort.Slice(out.Volumes, func(i, j int) bool {
+		if out.Volumes[i].Destination != out.Volumes[j].Destination {
+			return out.Volumes[i].Destination < out.Volumes[j].Destination
+		}
+		return out.Volumes[i].Source < out.Volumes[j].Source
+	})
 	return out
 }
 

@@ -959,133 +959,54 @@ func (c *dockerMetricsCollector) extractStackName(labels map[string]string) stri
 	return ""
 }
 
-// mergeStacksByCommonPrefix merges stacks that have common prefixes in their names
-// For example: myapp-web, myapp-api, myapp-db -> merged into myapp stack
+// mergeStacksByCommonPrefix merges stacks whose names share the longest common
+// dash/underscore-delimited prefix that is shared by ≥2 stacks — e.g. Dokploy's
+// node-stats-app-…, node-stats-db-…, node-stats-compose-… → node-stats. Each
+// stack lands in exactly ONE group (deterministic; no duplicated containers,
+// unlike the previous prefix matcher); stacks with no shared prefix are left
+// as-is. Mirrors the Applications-view grouping (regroupByCommonPrefix) and
+// honours NODE_STATS_APP_PREFIX_GROUPING.
 func (c *dockerMetricsCollector) mergeStacksByCommonPrefix(stackMap map[string]*DockerStack) map[string]*DockerStack {
-	if len(stackMap) <= 1 {
+	if len(stackMap) <= 1 || !prefixGroupingEnabled() {
 		return stackMap
 	}
 
-	// Collect all stack names
-	stackNames := make([]string, 0, len(stackMap))
+	names := make([]string, 0, len(stackMap))
 	for name := range stackMap {
-		stackNames = append(stackNames, name)
+		names = append(names, name)
+	}
+	sort.Strings(names) // deterministic group keys + iteration order
+
+	toks := make(map[string][]string, len(names))
+	prefixCount := map[string]int{}
+	for _, n := range names {
+		toks[n] = nameTokens(n)
+		for j := 1; j <= len(toks[n]); j++ {
+			prefixCount[strings.Join(toks[n][:j], "-")]++
+		}
 	}
 
-	// Find merge candidates - stacks with common prefixes
-	mergeGroups := c.findCommonPrefixGroups(stackNames)
-
-	// If no merges needed, return original map
-	if len(mergeGroups) == 0 {
-		return stackMap
-	}
-
-	// Create new map with merged stacks
-	mergedMap := make(map[string]*DockerStack)
-
-	// Track which stacks have been merged
-	mergedStacks := make(map[string]bool)
-
-	// Process each merge group
-	for commonPrefix, groupStacks := range mergeGroups {
-		if len(groupStacks) < 2 {
-			continue // Skip groups with only one stack
-		}
-
-		c.logger.Debug("Merging stacks with common prefix", "prefix", commonPrefix, "stacks", groupStacks)
-
-		// Create merged stack
-		mergedStack := &DockerStack{
-			Name:       commonPrefix,
-			Containers: make([]DockerContainer, 0),
-		}
-
-		// Collect all containers from stacks in this group
-		for _, stackName := range groupStacks {
-			if stack, exists := stackMap[stackName]; exists {
-				mergedStack.Containers = append(mergedStack.Containers, stack.Containers...)
-				mergedStack.TotalContainers += stack.TotalContainers
-				mergedStack.RunningContainers += stack.RunningContainers
-				mergedStacks[stackName] = true
+	merged := make(map[string]*DockerStack, len(names))
+	for _, n := range names {
+		key := n // own group unless a prefix shared by ≥2 stacks is found
+		for j := len(toks[n]); j >= 1; j-- {
+			pfx := strings.Join(toks[n][:j], "-")
+			if prefixCount[pfx] >= 2 {
+				key = pfx
+				break
 			}
 		}
-
-		mergedMap[commonPrefix] = mergedStack
+		src := stackMap[n]
+		dst := merged[key]
+		if dst == nil {
+			dst = &DockerStack{Name: key}
+			merged[key] = dst
+		}
+		dst.Containers = append(dst.Containers, src.Containers...)
+		dst.TotalContainers += src.TotalContainers
+		dst.RunningContainers += src.RunningContainers
 	}
-
-	// Add unmerged stacks
-	for stackName, stack := range stackMap {
-		if !mergedStacks[stackName] {
-			mergedMap[stackName] = stack
-		}
-	}
-
-	c.logger.Debug("Stack merging completed", "original_stacks", len(stackMap), "merged_stacks", len(mergedMap))
-	return mergedMap
-}
-
-// findCommonPrefixGroups finds groups of stack names that share common prefixes
-func (c *dockerMetricsCollector) findCommonPrefixGroups(stackNames []string) map[string][]string {
-	prefixGroups := make(map[string][]string)
-
-	for _, stackName := range stackNames {
-		// Skip single containers or unknown stacks
-		if stackName == "unknown" || !strings.Contains(stackName, "-") {
-			continue
-		}
-
-		// Extract potential prefixes (parts before the last hyphen)
-		parts := strings.Split(stackName, "-")
-		if len(parts) < 2 {
-			continue
-		}
-
-		// Try different prefix lengths
-		for i := 1; i < len(parts); i++ {
-			prefix := strings.Join(parts[:i], "-")
-
-			// Skip too short prefixes
-			if len(prefix) < 3 {
-				continue
-			}
-
-			// Check if this prefix makes sense (should be followed by a service name)
-			if i >= len(parts)-1 {
-				continue
-			}
-
-			prefixGroups[prefix] = append(prefixGroups[prefix], stackName)
-		}
-	}
-
-	// Filter groups to only include those with multiple stacks
-	result := make(map[string][]string)
-	for prefix, stacks := range prefixGroups {
-		if len(stacks) >= 2 {
-			// Remove duplicates
-			uniqueStacks := c.removeDuplicates(stacks)
-			if len(uniqueStacks) >= 2 {
-				result[prefix] = uniqueStacks
-			}
-		}
-	}
-
-	return result
-}
-
-// removeDuplicates removes duplicate strings from slice
-func (c *dockerMetricsCollector) removeDuplicates(items []string) []string {
-	seen := make(map[string]bool)
-	result := make([]string, 0, len(items))
-
-	for _, item := range items {
-		if !seen[item] {
-			seen[item] = true
-			result = append(result, item)
-		}
-	}
-
-	return result
+	return merged
 }
 
 // GetContainerLogs returns the last `tail` lines of a container's logs (stdout +

@@ -1,0 +1,10 @@
+# Linux host-capabilities override (installed as docker-compose.override.yml).
+# Compose auto-merges this with the controller-generated docker-compose.yml.
+# Kept separate so the controller can regenerate the base without clobbering
+# host caps. pid/ipc host give accurate process/host metrics. We keep the
+# published ports from the base (do NOT add `network_mode: host` together with a
+# `ports:` map — Compose rejects that combination).
+services:
+  node-stats:
+    pid: host
+    ipc: host

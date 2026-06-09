@@ -24,7 +24,12 @@ func DetectMachineHints(ctx context.Context) MachineHints {
 	} else if hi, err := host.InfoWithContext(ctx); err == nil && hi.Hostname != "" {
 		out.SuggestedHostname = hi.Hostname
 	}
-	if ip := primaryIPv4Hint(ctx); ip != "" {
+	// Prefer an explicit NODE_STATS_IPV4 (the installer detects the host's
+	// outbound-interface IP on the host and passes it in — inside a bridge
+	// network the in-container probe below only sees the container's docker IP).
+	if ip := strings.TrimSpace(os.Getenv("NODE_STATS_IPV4")); ip != "" {
+		out.SuggestedIPv4 = ip
+	} else if ip := primaryIPv4Hint(ctx); ip != "" {
 		out.SuggestedIPv4 = ip
 	}
 	return out

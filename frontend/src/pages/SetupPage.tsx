@@ -36,13 +36,14 @@ function extractHost(addr?: string): string {
   return addr.slice(0, idx)
 }
 
-type Step = 'welcome' | 'config' | 'admin' | 'review' | 'success' | 'join'
+type Step = 'welcome' | 'config' | 'admin' | 'review' | 'applying' | 'success' | 'join'
 
 const STEP_META = {
   welcome: WELCOME_STEP_META,
   config: CONFIG_STEP_META,
   admin: ADMIN_STEP_META,
   review: REVIEW_STEP_META,
+  applying: { title: 'Applying configuration', description: 'Provisioning the database and restarting the stack…' },
   success: SUCCESS_STEP_META,
   join: JOIN_CLUSTER_STEP_META,
 } as const
@@ -76,8 +77,8 @@ export function SetupPage() {
           ? c.gin_mode : DEFAULT_SETUP_CONFIG.gin_mode,
         debug: (c.debug === 'true' || c.debug === 'false')
           ? c.debug : DEFAULT_SETUP_CONFIG.debug,
-        db_type: c.db_type || DEFAULT_SETUP_CONFIG.db_type,
-        db_dsn: c.db_dsn || DEFAULT_SETUP_CONFIG.db_dsn,
+        db_type: c.db_type === 'postgres' ? 'postgres' : 'sqlite',
+        db_sqlite_path: c.db_type === 'sqlite' ? (c.db_dsn || DEFAULT_SETUP_CONFIG.db_sqlite_path) : DEFAULT_SETUP_CONFIG.db_sqlite_path,
         prometheus_enabled: (c.prometheus_enabled === 'true' || c.prometheus_enabled === 'false')
           ? c.prometheus_enabled : DEFAULT_SETUP_CONFIG.prometheus_enabled,
         prometheus_auth: (c.prometheus_auth === 'true' || c.prometheus_auth === 'false')
@@ -152,16 +153,66 @@ export function SetupPage() {
   const handleCompleteSetup = async () => {
     if (!configData || !adminData) return
     try {
-      await completeSetup.mutateAsync({
+      const res = await completeSetup.mutateAsync({
         config: configData,
         admin_email: adminData.email,
         admin_password: adminData.password,
       })
-      setStep('success')
+      // A DB-engine switch (Docker) recreates the stack before the admin can be
+      // created on the new database; show the "applying" gate which waits for the
+      // backend to come back and re-submits to create the admin there.
+      setStep(res.restart_pending ? 'applying' : 'success')
     } catch (error) {
       console.error('Setup completion error:', error)
     }
   }
+
+  // Applying gate: after a DB switch the controller recreates the app onto the
+  // new (empty) database. Poll until it answers again, then re-submit to create
+  // the admin on the new DB. Tolerate connection drops during the restart.
+  useEffect(() => {
+    if (step !== 'applying' || !configData || !adminData) return
+    let resubmitting = false
+    let done = false
+    const id = window.setInterval(async () => {
+      if (done) return
+      // /version returns only once the recreated backend is fully up.
+      const up = await fetch('/api/v1/version').then((r) => r.ok).catch(() => false)
+      if (!up) return
+      const status = await fetch('/api/v1/setup/status', { credentials: 'include' })
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null)
+      if (!status?.data) return
+      if (status.data.setup_needed === false) {
+        done = true
+        window.clearInterval(id)
+        navigate('/auth')
+        return
+      }
+      if (!resubmitting) {
+        resubmitting = true
+        try {
+          const r2 = await completeSetup.mutateAsync({
+            config: configData,
+            admin_email: adminData.email,
+            admin_password: adminData.password,
+          })
+          if (!r2.restart_pending) {
+            done = true
+            window.clearInterval(id)
+            setStep('success')
+          } else {
+            resubmitting = false // another switch pending; keep polling
+          }
+        } catch {
+          resubmitting = false // transient (backend mid-restart); retry next tick
+        }
+      }
+    }, 2000)
+    return () => window.clearInterval(id)
+    // completeSetup is a stable mutation; intentionally excluded from deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, configData, adminData, navigate])
 
   const handleJoinCluster = async (values: {
     peer_url: string
@@ -246,6 +297,7 @@ export function SetupPage() {
             {step === 'review' && configData && adminData && (
               <ReviewWidget
                 adminData={adminData}
+                config={configData}
                 envContent={envPreview.data}
                 envLoading={envPreview.isLoading}
                 envError={envPreview.error}
@@ -254,6 +306,16 @@ export function SetupPage() {
                 isCompleting={completeSetup.isPending}
                 error={completeSetup.error}
               />
+            )}
+            {step === 'applying' && (
+              <div className="flex flex-col items-center gap-4 py-8 text-center">
+                <div className="h-8 w-8 animate-spin rounded-full border-2 border-slate-600 border-t-sky-400" />
+                <p className="text-sm text-slate-300">Provisioning the database and restarting the stack…</p>
+                <p className="text-xs text-slate-500">
+                  This can take a moment — the backend is being recreated on the new database.
+                  You'll be redirected to sign in automatically.
+                </p>
+              </div>
             )}
             {step === 'success' && (
               <SuccessWidget

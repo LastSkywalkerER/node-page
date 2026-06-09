@@ -108,47 +108,109 @@ UI collage (dark glass / neon and light themes). Click an image on GitHub to ope
 
 ## Installation & Quick Start
 
-Get Node Stats up and running in minutes. Choose between Docker deployment (recommended for production) or local development setup.
+Pick the path that matches your machine. The database and configuration are
+**not** baked in ahead of time — you choose them in the setup wizard on first
+run, and the stack reconfigures itself automatically.
 
-### Using Docker (Recommended)
-
-The easiest way to deploy Node Stats is using Docker Compose. This method provides automatic container management and easy configuration.
-
-```yaml
-services:
-  node-stats:
-    image: 'ghcr.io/lastskywalkerer/node-page:latest'
-    # ports:
-    #   - "8080:8080"
-    # Optional: host network mode to access host interface metrics
-    network_mode: host
-    volumes:
-      # Mount database file for persistence
-      - ./stats.db:/app/stats.db
-      # Mount Docker socket for Docker metrics
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      # Mount host filesystem for system metrics
-      - /:/host:ro
-    pid: host
-    ipc: host
-    restart: unless-stopped
-    environment:
-      - ADDR=${ADDR:-:8080}
-      - GIN_MODE=release
-      - HOST_PROC=/host/proc
-      - HOST_SYS=/host/sys
-      - HOST_ETC=/host/etc
-      - JWT_SECRET=${JWT_SECRET:-your-jwt-secret-key-change-in-production}
-      - REFRESH_SECRET=${REFRESH_SECRET:-your-refresh-secret-key-change-in-production}
-```
-
-Then run:
+### Linux — one-line install (Docker, recommended)
 
 ```bash
-docker-compose up -d
+curl -fsSL https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scripts/install.sh | bash
 ```
 
-The application will be available at `http://localhost:8080` by default. You can change the port by setting the `ADDR` environment variable (e.g., `ADDR=:9090`).
+This detects your OS/arch, checks Docker + Compose, creates a stack dir
+(`~/.node-stats`, or `/opt/node-stats` as root), pulls the image, sets the right
+host capabilities (`pid`/`ipc: host`, `/host` mount) for accurate metrics, and
+brings the stack up. Then open **http://localhost:9090** to finish setup.
+
+Manage it later:
+
+```bash
+curl -fsSL .../scripts/install.sh | bash -s -- update      # pull + recreate
+curl -fsSL .../scripts/install.sh | bash -s -- uninstall   # stop (add --purge to wipe data)
+```
+
+Overrides: `NODE_STATS_DIR` (stack dir), `NODE_STATS_PORT` (HTTP port),
+`NODE_STATS_IMAGE` (pin a `:vX.Y.Z` tag).
+
+### Linux SBC / lean host — native install (no Docker, arm64 + amd64)
+
+For Orange Pi, Raspberry Pi, or any Linux box where you'd rather not run Docker,
+install the self-contained native binary (it reads `/proc` directly, so you get
+**real host metrics**) as a systemd service:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scripts/install.sh | sudo bash -s -- native
+```
+
+Downloads the matching `linux/{amd64,arm64}` release binary (checksum-verified),
+installs it to `/usr/local/bin`, and registers a `node-stats` systemd service
+(data/config in `/var/lib/node-stats`). Open **http://localhost:8080** to finish
+setup. Manage with `... | bash -s -- update-native | uninstall-native`. Pin a
+version with `NODE_STATS_VERSION=vX.Y.Z`. (Without `sudo`/systemd it installs to
+`~/.local/bin` and prints how to run it manually.)
+
+### macOS / Windows — native binary (best host metrics)
+
+Docker Desktop runs in a Linux VM, so its host metrics reflect the **VM**, not
+your machine. For true host metrics, download the native single binary from the
+[latest release](https://github.com/LastSkywalkerER/node-page/releases/latest):
+
+- macOS (Apple Silicon): `node-stats_<version>_darwin_arm64.tar.gz`
+- Windows (x64): `node-stats_<version>_windows_amd64.zip`
+- Linux (x64/arm64): `node-stats_<version>_linux_{amd64,arm64}.tar.gz`
+
+```bash
+tar -xzf node-stats_*_darwin_arm64.tar.gz
+./node-stats                 # serves http://localhost:8080
+./node-stats update          # self-update to the latest release
+```
+
+The binary is fully self-contained (frontend embedded, pure-Go SQLite — no CGO).
+
+### Windows — one-line install (Docker Desktop, PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scripts/install.ps1 | iex
+```
+
+Requires Docker Desktop. Same VM-metrics caveat as macOS. If your execution
+policy blocks it, run from an elevated prompt with
+`powershell -ExecutionPolicy Bypass`.
+
+### Auto-updates
+
+node-stats checks GitHub Releases and shows an "update available" badge to
+admins. Toggle **auto-update** in settings: Docker deployments pull the new
+image and recreate via the controller; native installs use `node-stats update`.
+
+<details>
+<summary><b>Advanced: manual docker-compose</b></summary>
+
+The installer is just a convenience wrapper around `docker compose`. To run it
+by hand, create a stack directory and let the image generate the base compose:
+
+```bash
+mkdir -p ~/.node-stats/data/docker && cd ~/.node-stats
+: > .env.agent            # MUST be a file (it is bind-mounted to /app/.env);
+                          # a directory mount silently swallows the wizard's config
+cat > .env <<'EOF'
+NODE_STATS_IMAGE=ghcr.io/lastskywalkerer/node-page:latest
+NODE_STATS_PORT=9090
+NODE_STATS_STACK_HOST_DIR=__set_to_this_dir__
+COMPOSE_PROJECT_NAME=node-stats
+EOF
+docker run --rm ghcr.io/lastskywalkerer/node-page:latest gen-compose > docker-compose.yml
+printf 'services:\n  node-stats:\n    pid: host\n    ipc: host\n' > docker-compose.override.yml  # Linux only
+docker compose up -d
+```
+
+`JWT_SECRET`/`REFRESH_SECRET` are generated by the setup wizard into
+`.env.agent` — you do not set them by hand. The wizard also switches the
+database (SQLite ↔ Postgres) and the controller sidecar regenerates this
+`docker-compose.yml` and restarts the app for you.
+
+</details>
 
 #### Clustering (Raft)
 

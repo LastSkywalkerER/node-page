@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { AdminUserFormData } from './schemas';
+import { AdminUserFormData, SetupConfigFormData } from './schemas';
 import { Copy, Check, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -9,6 +9,22 @@ export const REVIEW_STEP_META = {
   title: 'Review',
   description: 'Confirm your settings and copy the generated .env if you deploy with volumes',
 } as const;
+
+// describeDatabase summarizes the chosen DB engine + mode for the review card so
+// the choice is explicit (it's otherwise only visible buried in the .env dump).
+function describeDatabase(c: SetupConfigFormData | null): { engine: string; detail: string } {
+  if (!c) return { engine: '—', detail: '' };
+  if (c.db_type === 'postgres') {
+    if (c.db_managed) {
+      return { engine: 'PostgreSQL', detail: 'Managed — node-stats runs a Postgres container and applies it on restart' };
+    }
+    const host = c.db_host.trim() || 'host';
+    const port = (c.db_port || '5432').trim();
+    const name = c.db_name.trim() || 'node_stats';
+    return { engine: 'PostgreSQL', detail: `External — ${host}:${port}/${name}` };
+  }
+  return { engine: 'SQLite', detail: `File — ${c.db_sqlite_path?.trim() || 'stats.db'}` };
+}
 
 // formatSetupError extracts the most useful message out of an axios error:
 // it prefers backend "error" + "detail" fields (the wizard's CompleteSetup
@@ -35,6 +51,7 @@ function formatSetupError(err: unknown): string {
 
 interface ReviewWidgetProps {
   adminData: AdminUserFormData;
+  config: SetupConfigFormData | null;
   envContent: string | undefined;
   envLoading: boolean;
   envError: Error | null;
@@ -46,6 +63,7 @@ interface ReviewWidgetProps {
 
 export function ReviewWidget({
   adminData,
+  config,
   envContent,
   envLoading,
   envError,
@@ -55,6 +73,7 @@ export function ReviewWidget({
   error,
 }: ReviewWidgetProps) {
   const [copied, setCopied] = useState(false);
+  const db = describeDatabase(config);
 
   const handleCopyEnv = async () => {
     if (!envContent) return;
@@ -77,6 +96,22 @@ export function ReviewWidget({
             <span className="text-slate-400 shrink-0">Email</span>
             <span className="text-white text-right break-all">{adminData.email}</span>
           </div>
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <h3 className="text-white font-semibold">Database</h3>
+        <div className="bg-slate-900/50 p-4 rounded-md text-sm space-y-1.5">
+          <div className="flex justify-between gap-4">
+            <span className="text-slate-400 shrink-0">Engine</span>
+            <span className="text-white text-right break-all font-medium">{db.engine}</span>
+          </div>
+          {db.detail && (
+            <div className="flex justify-between gap-4">
+              <span className="text-slate-400 shrink-0">Mode</span>
+              <span className="text-white text-right break-all">{db.detail}</span>
+            </div>
+          )}
         </div>
       </div>
 

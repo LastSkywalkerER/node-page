@@ -3,6 +3,7 @@ name: Build and Push Docker Image
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
 
@@ -20,6 +21,9 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+
+    - name: Set up QEMU (multi-arch emulation for the arm64 final stage)
+      uses: docker/setup-qemu-action@v3
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
@@ -39,6 +43,9 @@ jobs:
         tags: |
           type=ref,event=branch
           type=ref,event=pr
+          # Semver tags on v* pushes: vX.Y.Z and X.Y (alongside latest on main).
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
           # Branch builds: <branch>-<sha>. On pull_request {{branch}} is empty,
           # which would yield the invalid tag "-<sha>", so emit a PR-prefixed
           # sha tag for that event instead.
@@ -50,7 +57,12 @@ jobs:
       uses: docker/build-push-action@v5
       with:
         context: .
-        push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        platforms: linux/amd64,linux/arm64
+        # Push on any push event (main branch or a v* tag); PRs build only.
+        push: ${{ github.event_name == 'push' }}
+        provenance: false
+        build-args: |
+          VERSION=${{ steps.meta.outputs.version }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha

@@ -1,0 +1,12 @@
+# macOS / Windows (Docker Desktop) host-capabilities override.
+#
+# Docker Desktop runs containers inside a LinuxKit VM, so pid/ipc/network host
+# modes don't reach the real machine and host metrics reflect the VM, not your
+# Mac/PC. We therefore add NO host-mode here — the base file's published ports
+# and bridge network are used as-is.
+#
+# For true host metrics on macOS/Windows, run the native binary instead
+# (see the project README). This override exists so the installer can write a
+# consistent docker-compose.override.yml on every platform.
+services:
+  node-stats: {}

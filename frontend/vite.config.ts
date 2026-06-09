@@ -20,7 +20,9 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: '../dist',
+    // Output into the Go embed package so release binaries (-tags embed_dist)
+    // bundle the frontend. The Go server serves from here (embedded or on-disk).
+    outDir: '../internal/webui/dist',
     emptyOutDir: true,
   },
   test: {

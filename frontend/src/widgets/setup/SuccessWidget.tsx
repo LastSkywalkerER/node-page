@@ -6,6 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { authService } from '@/shared/lib/auth';
 import { useIssueRaftJoinToken, useRaftStatus } from '@/widgets/raft/useRaft';
+import { useSetupStatus } from './useSetup';
 
 export const SUCCESS_STEP_META = {
   title: 'Setup Complete',
@@ -77,8 +78,15 @@ export function SuccessWidget({ raftEnabled, adminEmail, adminPassword }: Succes
   }, [loggedIn, issueToken]);
 
   const token = issueToken.data?.token ?? '';
+  // The URL peers should dial: prefer this node's Raft advertise URL; else build
+  // one from the detected host IPv4 (so it's routable from other machines);
+  // only fall back to the browser origin (localhost) as a last resort.
+  const { data: setupStatus } = useSetupStatus();
   const advertiseUrl = raftStatus?.status?.advertise_url?.trim() || '';
-  const peerUrl = advertiseUrl || window.location.origin;
+  const hintIp = setupStatus?.machine_hints?.suggested_ipv4?.trim() || '';
+  const portSuffix = window.location.port ? `:${window.location.port}` : '';
+  const ipOrigin = hintIp ? `${window.location.protocol}//${hintIp}${portSuffix}` : '';
+  const peerUrl = advertiseUrl || ipOrigin || window.location.origin;
 
   // Live list of OTHER nodes that have joined this cluster — the local node
   // (status.node_id) is filtered out. useRaftStatus polls every 5s, so a node

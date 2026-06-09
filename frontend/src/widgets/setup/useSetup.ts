@@ -60,6 +60,32 @@ export function useCompleteSetup() {
 }
 
 /**
+ * Pre-flights an EXTERNAL Postgres connection (POST /setup/db/test). Returns
+ * { ok, error }; never persists or migrates. Managed Postgres needs no test.
+ */
+export interface TestDbInput {
+  db_dsn?: string;
+  db_host?: string;
+  db_port?: string;
+  db_name?: string;
+  db_user?: string;
+  db_password?: string;
+  db_sslmode?: string;
+}
+export interface TestDbResponse {
+  ok: boolean;
+  error?: string;
+}
+export function useTestDb() {
+  return useMutation<TestDbResponse, Error, TestDbInput>({
+    mutationFn: async (input) => {
+      const resp = await apiClient.post<{ data: TestDbResponse }>('/setup/db/test', input);
+      return resp.data.data;
+    },
+  });
+}
+
+/**
  * Fetches the exact .env file body the server will write (for the review step).
  */
 export function useSetupEnvPreview(config: CompleteSetupFormData['config'] | null, enabled: boolean) {
