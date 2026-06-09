@@ -1,34 +1,38 @@
 name: Release
 
-# Publishes the native multi-OS artifacts as a GitHub Release:
-#   - tarball/zip for linux amd64/arm64, darwin amd64/arm64, windows amd64
-#   - linux .deb + .rpm (binary + systemd service)
-#   - and regenerates the Homebrew formula so `brew install` works.
-# Two ways to cut a release:
-#   1. push a tag:   git tag v0.1.0 && git push origin v0.1.0
-#   2. Actions tab → "Release" → "Run workflow", enter a version like v0.1.0
+# Publishes ONLY clean per-OS installers as a GitHub Release:
+#   - Ubuntu/Debian: node-stats_<v>_amd64.deb and _arm64.deb  (binary + systemd service)
+#   - macOS (Apple Silicon): node-stats_<v>_darwin_arm64.dmg   (drag node-stats.app → Applications)
+#   - Windows: node-stats_<v>_windows_amd64_setup.exe          (NSIS installer)
+# No tarballs/zip/rpm/checksums. Two ways to cut a release:
+#   1. push a tag:   git tag v0.1.2 && git push origin v0.1.2
+#   2. Actions tab → "Release" → "Run workflow", enter a version like v0.1.2
 # (The "Build and Push Docker Image" workflow is separate — it publishes the
 #  container image to GHCR, not a GitHub Release.)
+#
+# NOTE on signing: the .dmg/.app and the .exe are NOT Apple-notarized / Windows-
+# code-signed, so a browser download triggers Gatekeeper / SmartScreen once
+# (right-click → Open on macOS; "More info → Run anyway" on Windows). A seamless
+# download needs an Apple Developer ID + a Windows code-signing cert — wire those
+# (as CI secrets) to remove the one-time prompt.
 on:
   push:
     tags: [ 'v*' ]
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version tag to create/publish (e.g. v0.1.0)'
+        description: 'Release version tag to create/publish (e.g. v0.1.2)'
         required: true
         type: string
 
 permissions:
   contents: write
 
-# Resolve the version once for every job: the dispatch input on manual runs,
-# otherwise the pushed tag name.
 env:
   RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
 
 jobs:
-  # Build the frontend once; every native binary embeds the same dist.
+  # Build the frontend once; every binary embeds the same dist.
   frontend:
     runs-on: ubuntu-latest
     steps:
@@ -47,19 +51,13 @@ jobs:
           path: internal/webui/dist
           if-no-files-found: error
 
-  # Cross-compile each native target (pure-Go, CGO disabled) with the embedded
-  # frontend and ldflags-injected version metadata.
-  build:
+  # Ubuntu/Debian .deb (amd64 + arm64): binary → /usr/bin + systemd service.
+  linux:
     needs: frontend
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        include:
-          - { goos: linux,   goarch: amd64, ext: '',     archive: tar.gz }
-          - { goos: linux,   goarch: arm64, ext: '',     archive: tar.gz }
-          - { goos: darwin,  goarch: amd64, ext: '',     archive: tar.gz }
-          - { goos: darwin,  goarch: arm64, ext: '',     archive: tar.gz }
-          - { goos: windows, goarch: amd64, ext: '.exe', archive: zip }
+        goarch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -69,106 +67,113 @@ jobs:
         with:
           name: webui-dist
           path: internal/webui/dist
-      - name: Build, package, checksum
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: '0'
+      - name: Build .deb
         run: |
           set -euo pipefail
           VERSION="${RELEASE_VERSION}"
           if [ -z "${VERSION}" ]; then echo "RELEASE_VERSION is empty"; exit 1; fi
           COMMIT="$(git rev-parse --short HEAD)"
           DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          mkdir -p dist
-          go build -tags embed_dist \
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} go build -tags embed_dist \
             -ldflags "-s -w -X system-stats/internal/version.Version=${VERSION} -X system-stats/internal/version.Commit=${COMMIT} -X system-stats/internal/version.Date=${DATE}" \
-            -o "node-stats${{ matrix.ext }}" ./cmd/server
-          BASE="node-stats_${VERSION}_${GOOS}_${GOARCH}"
-          if [ "${{ matrix.archive }}" = "zip" ]; then
-            zip -q "dist/${BASE}.zip" "node-stats${{ matrix.ext }}"
-          else
-            tar -czf "dist/${BASE}.tar.gz" "node-stats${{ matrix.ext }}"
-          fi
-          # Linux also ships native packages (install the binary + a systemd service).
-          # nfpm runs on the RUNNER, so install it for the host arch — otherwise the
-          # step's GOARCH (e.g. arm64) cross-builds nfpm into bin/<goos>_<goarch>/
-          # and it neither lands at bin/nfpm nor runs on the amd64 runner.
-          if [ "${GOOS}" = "linux" ]; then
-            GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" \
-              go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
-            export PKG_ARCH="${GOARCH}" PKG_VERSION="${VERSION#v}"
-            NFPM="$(go env GOPATH)/bin/nfpm"
-            "${NFPM}" package -f packaging/nfpm.yaml -p deb -t dist/
-            "${NFPM}" package -f packaging/nfpm.yaml -p rpm -t dist/
-          fi
-          # Per-file checksums (aggregated into SHA256SUMS by the release job).
-          # nullglob so non-matching patterns vanish instead of becoming a
-          # literal that trips `[ -e ]` under `set -e`.
-          ( cd dist
-            shopt -s nullglob
-            for f in node-stats_*.tar.gz node-stats_*.zip node-stats_*.deb node-stats-*.rpm; do
-              sha256sum "$f" > "$f.sha256"
-            done )
+            -o node-stats ./cmd/server
+          # nfpm runs on the runner → install it for the host arch (not the target).
+          GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" \
+            go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          export PKG_ARCH="${{ matrix.goarch }}" PKG_VERSION="${VERSION#v}"
+          mkdir -p dist
+          "$(go env GOPATH)/bin/nfpm" package -f packaging/nfpm.yaml -p deb -t dist/
           ls -la dist
       - uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: installer-linux-${{ matrix.goarch }}
           path: dist
           if-no-files-found: error
 
-  # Aggregate checksums and publish the GitHub Release.
-  release:
-    needs: build
+  # Windows NSIS installer (amd64).
+  windows:
+    needs: frontend
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: release-*
-          merge-multiple: true
-          path: dist-artifacts
-      - name: Aggregate SHA256SUMS
-        run: cat dist-artifacts/*.sha256 > dist-artifacts/SHA256SUMS
-      - uses: softprops/action-gh-release@v2
-        with:
-          # Explicit tag so manual (workflow_dispatch) runs publish to the right
-          # tag and create it from this commit; on a tag push it equals the tag.
-          tag_name: ${{ env.RELEASE_VERSION }}
-          files: |
-            dist-artifacts/*.tar.gz
-            dist-artifacts/*.zip
-            dist-artifacts/*.deb
-            dist-artifacts/*.rpm
-            dist-artifacts/SHA256SUMS
-          generate_release_notes: true
-
-  # Regenerate the Homebrew formula (Formula/node-stats.rb) with the new version
-  # + tarball checksums and commit it back to main, so `brew install` works on
-  # macOS/Linux without any Apple signing. Best-effort: never fails the release.
-  homebrew:
-    needs: release
-    runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
-          ref: main
-          fetch-depth: 0
+          go-version: '1.25'
       - uses: actions/download-artifact@v4
         with:
-          pattern: release-*
-          merge-multiple: true
-          path: dist-artifacts
-      - name: Generate + commit formula
+          name: webui-dist
+          path: internal/webui/dist
+      - name: Install NSIS
+        run: sudo apt-get update && sudo apt-get install -y nsis
+      - name: Build installer .exe
         run: |
           set -euo pipefail
-          cat dist-artifacts/*.sha256 > dist-artifacts/SHA256SUMS
-          bash scripts/gen-homebrew-formula.sh "${RELEASE_VERSION#v}" dist-artifacts/SHA256SUMS > Formula/node-stats.rb
-          if git diff --quiet -- Formula/node-stats.rb; then
-            echo "formula unchanged"; exit 0
-          fi
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/node-stats.rb
-          git commit -m "chore(brew): update formula for ${RELEASE_VERSION}"
-          git push origin HEAD:main
+          VERSION="${RELEASE_VERSION}"
+          if [ -z "${VERSION}" ]; then echo "RELEASE_VERSION is empty"; exit 1; fi
+          COMMIT="$(git rev-parse --short HEAD)"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags embed_dist \
+            -ldflags "-s -w -X system-stats/internal/version.Version=${VERSION} -X system-stats/internal/version.Commit=${COMMIT} -X system-stats/internal/version.Date=${DATE}" \
+            -o node-stats.exe ./cmd/server
+          mkdir -p dist
+          makensis -DVERSION="${VERSION#v}" \
+            -DOUTFILE="dist/node-stats_${VERSION}_windows_amd64_setup.exe" \
+            packaging/windows-installer.nsi
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-windows
+          path: dist
+          if-no-files-found: error
+
+  # macOS .dmg (Apple Silicon) — node-stats.app launches the server + opens the dashboard.
+  macos:
+    needs: frontend
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - uses: actions/download-artifact@v4
+        with:
+          name: webui-dist
+          path: internal/webui/dist
+      - name: Build .dmg
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_VERSION}"
+          if [ -z "${VERSION}" ]; then echo "RELEASE_VERSION is empty"; exit 1; fi
+          COMMIT="$(git rev-parse --short HEAD)"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -tags embed_dist \
+            -ldflags "-s -w -X system-stats/internal/version.Version=${VERSION} -X system-stats/internal/version.Commit=${COMMIT} -X system-stats/internal/version.Date=${DATE}" \
+            -o node-stats ./cmd/server
+          mkdir -p dist
+          bash packaging/make-macos-dmg.sh "${VERSION}" node-stats "dist/node-stats_${VERSION}_darwin_arm64.dmg"
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-macos
+          path: dist
+          if-no-files-found: error
+
+  # Publish ONLY the installers.
+  release:
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: installer-*
+          merge-multiple: true
+          path: dist
+      - run: ls -la dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_VERSION }}
+          files: |
+            dist/*.deb
+            dist/*.dmg
+            dist/*.exe
+          generate_release_notes: true

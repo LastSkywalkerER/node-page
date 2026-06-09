@@ -250,28 +250,29 @@ download_native_binary() {
   local dest="$1" tag asset url tmp
   tag="$(latest_release_tag)"
   [ -n "$tag" ] || die "could not determine the latest release (no published release yet, or no network). Pin one with NODE_STATS_VERSION=vX.Y.Z."
-  asset="node-stats_${tag}_linux_${ARCH}.tar.gz"
+  # Releases publish per-OS installers only. On Linux we pull the .deb and
+  # extract /usr/bin/node-stats from it (works without root via dpkg-deb / ar).
+  asset="node-stats_${tag#v}_${ARCH}.deb"
   tmp="$(mktemp -d)"
-  if [ -n "${NODE_STATS_LOCAL_TARBALL:-}" ]; then
-    cp "$NODE_STATS_LOCAL_TARBALL" "$tmp/$asset" || die "local tarball not found: $NODE_STATS_LOCAL_TARBALL"
+  if [ -n "${NODE_STATS_LOCAL_DEB:-}" ]; then
+    cp "$NODE_STATS_LOCAL_DEB" "$tmp/$asset" || die "local .deb not found: $NODE_STATS_LOCAL_DEB"
   else
     url="https://github.com/${REPO}/releases/download/${tag}/${asset}"
     green "Downloading ${asset} ..."
     fetch "$url" >"$tmp/$asset"
     [ -s "$tmp/$asset" ] || die "download failed: $url"
-    local sums want got
-    sums="$(fetch "https://github.com/${REPO}/releases/download/${tag}/SHA256SUMS")"
-    want="$(printf '%s\n' "$sums" | awk -v a="$asset" '{gsub(/^\*/,"",$2)} $2==a {print $1}' | head -1)"
-    if [ -n "$want" ] && command -v sha256sum >/dev/null 2>&1; then
-      got="$(sha256sum "$tmp/$asset" | awk '{print $1}')"
-      [ "$want" = "$got" ] || { rm -rf "$tmp"; die "checksum mismatch for $asset"; }
-      green "checksum OK"
-    fi
   fi
-  tar -xzf "$tmp/$asset" -C "$tmp" || { rm -rf "$tmp"; die "extract failed"; }
-  [ -f "$tmp/node-stats" ] || { rm -rf "$tmp"; die "binary 'node-stats' not found in archive"; }
+  if command -v dpkg-deb >/dev/null 2>&1; then
+    dpkg-deb -x "$tmp/$asset" "$tmp/x" || { rm -rf "$tmp"; die "extract failed"; }
+  elif command -v ar >/dev/null 2>&1; then
+    ( cd "$tmp" && ar x "$asset" ) || { rm -rf "$tmp"; die "extract failed"; }
+    mkdir -p "$tmp/x" && tar -xf "$tmp"/data.tar.* -C "$tmp/x" || { rm -rf "$tmp"; die "extract failed"; }
+  else
+    rm -rf "$tmp"; die "need 'dpkg-deb' or 'ar' to unpack the .deb"
+  fi
+  [ -f "$tmp/x/usr/bin/node-stats" ] || { rm -rf "$tmp"; die "binary not found in .deb"; }
   mkdir -p "$(dirname "$dest")"
-  install -m 0755 "$tmp/node-stats" "$dest" 2>/dev/null || { cp "$tmp/node-stats" "$dest" && chmod 0755 "$dest"; }
+  install -m 0755 "$tmp/x/usr/bin/node-stats" "$dest" 2>/dev/null || { cp "$tmp/x/usr/bin/node-stats" "$dest" && chmod 0755 "$dest"; }
   rm -rf "$tmp"
 }
 
