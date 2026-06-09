@@ -150,11 +150,23 @@ func TestBuildApplications_SeparatesPatchesFromVersionUpdates(t *testing.T) {
 			UpdateAvailable: avail, ImageVersion: local, RemoteVersion: remote,
 		}
 	}
+	// pinned builds a container with no same-tag digest change but newer version
+	// TAGS available in the registry.
+	pinned := func(name, local, newer, newerMajor string) DockerContainer {
+		return DockerContainer{
+			ID: name, Name: name, Project: "myapp", Service: name, State: "running",
+			ImageVersion: local, NewerVersion: newer, NewerMajorVersion: newerMajor,
+		}
+	}
 	m := &DockerMetric{Stacks: []DockerStack{{Containers: []DockerContainer{
 		upd("web", true, "1.2.3", "1.2.4"), // version bump → update
 		upd("db", true, "18", "18"),        // same version, newer digest → patch
 		upd("cache", true, "7", ""),        // available but remote version unknown → update
 		upd("idle", false, "1.0.0", ""),    // no update
+		// Pinned image, digest unchanged, but a newer minor AND a newer major exist:
+		pinned("api", "1.2.1", "1.3.2", "2.0.0"),
+		// Pinned image with only a major bump available:
+		pinned("worker", "1.2.1", "", "2.0.0"),
 	}}}}
 
 	apps := BuildApplications(m)
@@ -162,11 +174,16 @@ func TestBuildApplications_SeparatesPatchesFromVersionUpdates(t *testing.T) {
 		t.Fatalf("got %d apps, want 1", len(apps))
 	}
 	a := apps[0]
-	if a.UpdatesAvailable != 2 {
-		t.Errorf("UpdatesAvailable = %d, want 2 (version bump + unknown-remote)", a.UpdatesAvailable)
+	// web (bump) + cache (unknown-remote) + api (newer same-major) = 3 updates.
+	if a.UpdatesAvailable != 3 {
+		t.Errorf("UpdatesAvailable = %d, want 3 (bump + unknown-remote + newer same-major)", a.UpdatesAvailable)
 	}
 	if a.PatchesAvailable != 1 {
 		t.Errorf("PatchesAvailable = %d, want 1 (same-version rebuild)", a.PatchesAvailable)
+	}
+	// api + worker both have a newer major.
+	if a.MajorUpdatesAvailable != 2 {
+		t.Errorf("MajorUpdatesAvailable = %d, want 2", a.MajorUpdatesAvailable)
 	}
 }
 

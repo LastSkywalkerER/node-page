@@ -200,21 +200,27 @@ func registryGetWithLink(ctx context.Context, client *http.Client, urlStr, token
 }
 
 // nextLinkURL extracts the rel="next" target from a registry Link header,
-// resolving a relative path against host. Returns "" when there is no next page.
+// resolving a relative path against host. A Link header can carry several
+// comma-separated links (e.g. rel="prev" AND rel="next"), so we locate the
+// "next" segment specifically rather than grabbing the first <...> pair.
+// Returns "" when there is no next page.
 func nextLinkURL(link, host string) string {
-	if !strings.Contains(link, `rel="next"`) {
-		return ""
+	for _, part := range strings.Split(link, ",") {
+		if !strings.Contains(part, `rel="next"`) {
+			continue
+		}
+		start := strings.Index(part, "<")
+		end := strings.Index(part, ">")
+		if start < 0 || end <= start {
+			continue
+		}
+		target := part[start+1 : end]
+		if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+			return target
+		}
+		return "https://" + host + target
 	}
-	start := strings.Index(link, "<")
-	end := strings.Index(link, ">")
-	if start < 0 || end < 0 || end <= start {
-		return ""
-	}
-	target := link[start+1 : end]
-	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
-		return target
-	}
-	return "https://" + host + target
+	return ""
 }
 
 // tagVersion is a parsed semver-ish image tag: numeric core + a "variant"
@@ -280,7 +286,9 @@ func newerVersions(currentTag string, tags []string) (sameMajor, higherMajor str
 	var haveSame, haveHigher bool
 	for _, t := range tags {
 		v, ok := parseTagVersion(t)
-		if !ok || v.variant != cur.variant || !v.greaterThan(cur) {
+		// Variant must match (same flavour: -alpine, -management-alpine, …),
+		// case-insensitively, and the candidate must be strictly newer.
+		if !ok || !strings.EqualFold(v.variant, cur.variant) || !v.greaterThan(cur) {
 			continue
 		}
 		if v.major == cur.major {

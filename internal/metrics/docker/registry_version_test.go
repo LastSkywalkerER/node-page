@@ -36,6 +36,29 @@ func TestParseTagVersion(t *testing.T) {
 	}
 }
 
+func TestNextLinkURL(t *testing.T) {
+	cases := []struct {
+		name, link, host, want string
+	}{
+		{"single next relative", `</v2/repo/tags/list?last=x&n=100>; rel="next"`, "registry-1.docker.io",
+			"https://registry-1.docker.io/v2/repo/tags/list?last=x&n=100"},
+		{"prev before next — must pick next", `</v2/repo/tags/list?last=a>; rel="prev", </v2/repo/tags/list?last=z>; rel="next"`, "ghcr.io",
+			"https://ghcr.io/v2/repo/tags/list?last=z"},
+		{"absolute next", `<https://r.example.com/v2/x/tags/list?last=y>; rel="next"`, "ignored",
+			"https://r.example.com/v2/x/tags/list?last=y"},
+		{"no next (only prev)", `</v2/repo/tags/list?last=a>; rel="prev"`, "ghcr.io", ""},
+		{"empty header", "", "ghcr.io", ""},
+		{"malformed", `garbage; rel="next"`, "ghcr.io", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := nextLinkURL(c.link, c.host); got != c.want {
+				t.Errorf("nextLinkURL(%q) = %q, want %q", c.link, got, c.want)
+			}
+		})
+	}
+}
+
 func TestNewerVersions(t *testing.T) {
 	tests := []struct {
 		name          string
