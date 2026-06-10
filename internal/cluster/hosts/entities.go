@@ -12,6 +12,33 @@ const LocalCollectorHostID uint = 1
 // the local collector and remote Raft peers.
 const HostOfflineThreshold = 45 * time.Second
 
+// HostType values. Empty means unknown (legacy rows / plain agents).
+const (
+	HostTypeHypervisor = "hypervisor"
+	HostTypeVM         = "vm"
+	HostTypeLXC        = "lxc"
+)
+
+// Source values describe who maintains a host row. Empty is treated as
+// SourceAgent (legacy rows created before connectors existed).
+const (
+	SourceAgent          = "agent"
+	SourceConnector      = "connector"
+	SourceAgentConnector = "agent+connector"
+)
+
+// MergeSource combines an existing source with a newly observed one so a row
+// fed by both an agent and a connector converges to SourceAgentConnector.
+func MergeSource(existing, incoming string) string {
+	if existing == "" {
+		existing = SourceAgent
+	}
+	if incoming == "" || existing == incoming || existing == SourceAgentConnector {
+		return existing
+	}
+	return SourceAgentConnector
+}
+
 // Host represents a host machine identified by its MAC address.
 // This structure contains information about the host's name and MAC address,
 // used for tracking metrics from different hosts.
@@ -37,6 +64,26 @@ type Host struct {
 	VirtualizationSystem string `json:"virtualization_system"`
 	VirtualizationRole   string `json:"virtualization_role"`
 	SystemHostID         string `json:"system_host_id"`
+
+	// Virtualization topology (filled by connectors, e.g. Proxmox).
+	// HostType is "" (unknown) | hypervisor | vm | lxc.
+	HostType string `json:"host_type,omitempty"`
+	// ParentMAC is the MAC of the hypervisor host row this guest runs on.
+	// MAC (not local row id) because Raft identity is MAC-based — local
+	// autoincrement ids differ per node. "" = top-level host.
+	ParentMAC string `json:"parent_mac,omitempty" gorm:"index"`
+	// Source is "" / agent (legacy default) | connector | agent+connector.
+	Source string `json:"source,omitempty"`
+	// ExternalID is the stable connector-side identity,
+	// e.g. "pve:<fingerprint>/<node>/qemu/<vmid>".
+	ExternalID string `json:"external_id,omitempty" gorm:"index"`
+	// GuestStatus is the hypervisor-reported power state (running | stopped |
+	// paused). Only set for connector-managed guests; "" for plain agents.
+	GuestStatus string `json:"guest_status,omitempty"`
+
+	// ParentID is the LOCAL row id of the ParentMAC host, resolved at read
+	// time for the UI (not a DB column — ids differ per node).
+	ParentID uint `json:"parent_id,omitempty" gorm:"-"`
 
 	// BootTime is the host's boot time in Unix seconds. Replicated cluster-wide
 	// so any node can show this host's real system uptime (now - boot_time).
@@ -86,6 +133,17 @@ type HostInfo struct {
 	// BootTime is the host's boot time in Unix seconds (from gopsutil). Stable
 	// per boot; used to derive the host's real system uptime on any node.
 	BootTime int64 `json:"boot_time"`
+}
+
+// ConnectorHostInfo is the host info a connector (e.g. the Proxmox poller)
+// publishes for hypervisor nodes and agent-less guests. It extends the plain
+// agent HostInfo with topology fields.
+type ConnectorHostInfo struct {
+	HostInfo
+	HostType    string `json:"host_type,omitempty"`
+	ParentMAC   string `json:"parent_mac,omitempty"`
+	ExternalID  string `json:"external_id,omitempty"`
+	GuestStatus string `json:"guest_status,omitempty"`
 }
 
 // HostHealth represents health check information for a host.

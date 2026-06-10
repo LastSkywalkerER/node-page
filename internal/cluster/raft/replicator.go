@@ -6,6 +6,7 @@ import (
 
 	users "system-stats/internal/auth/users"
 	hosts "system-stats/internal/cluster/hosts"
+	connectors "system-stats/internal/platform/connectors"
 )
 
 // Replicator adapts the generic Service to the small, domain-specific
@@ -44,6 +45,67 @@ func (r *Replicator) SubmitHostUpsert(ctx context.Context, info hosts.HostInfo) 
 		BootTime:             info.BootTime,
 	}
 	_, err := SubmitTyped(ctx, r.svc, CmdHostUpsert, payload, 5*time.Second)
+	return err
+}
+
+// SubmitConnectorHostUpsert publishes a connector-discovered host (hypervisor
+// node or agent-less guest) incl. its topology fields.
+func (r *Replicator) SubmitConnectorHostUpsert(ctx context.Context, info hosts.ConnectorHostInfo) error {
+	if !r.Enabled() {
+		return nil
+	}
+	payload := ConnectorHostUpsertPayload{
+		HostUpsertPayload: HostUpsertPayload{
+			Name:                 info.Name,
+			MacAddress:           info.MacAddress,
+			IPv4:                 info.IPv4,
+			OS:                   info.OS,
+			Platform:             info.Platform,
+			PlatformFamily:       info.PlatformFamily,
+			PlatformVersion:      info.PlatformVersion,
+			KernelVersion:        info.KernelVersion,
+			VirtualizationSystem: info.VirtualizationSystem,
+			VirtualizationRole:   info.VirtualizationRole,
+			HostID:               info.HostID,
+			BootTime:             info.BootTime,
+		},
+		HostType:    info.HostType,
+		ParentMAC:   info.ParentMAC,
+		ExternalID:  info.ExternalID,
+		GuestStatus: info.GuestStatus,
+	}
+	_, err := SubmitTyped(ctx, r.svc, CmdConnectorHostUpsert, payload, 5*time.Second)
+	return err
+}
+
+// SubmitConnectorUpsert replicates a configured connector cluster-wide.
+func (r *Replicator) SubmitConnectorUpsert(ctx context.Context, c connectors.Connector) error {
+	if !r.Enabled() {
+		return nil
+	}
+	_, err := SubmitTyped(ctx, r.svc, CmdConnectorUpsert, ConnectorUpsertPayload{
+		Type:          c.Type,
+		Endpoint:      c.Endpoint,
+		TokenID:       c.TokenID,
+		SecretEnc:     c.SecretEnc,
+		SkipTLSVerify: c.SkipTLSVerify,
+		Fingerprint:   c.Fingerprint,
+		Enabled:       c.Enabled,
+	}, 5*time.Second)
+	return err
+}
+
+// SubmitConnectorDelete removes a connector (and optionally its
+// connector-only host rows) on every node.
+func (r *Replicator) SubmitConnectorDelete(ctx context.Context, connectorType, fingerprint string, removeHosts bool) error {
+	if !r.Enabled() {
+		return nil
+	}
+	_, err := SubmitTyped(ctx, r.svc, CmdConnectorDelete, ConnectorDeletePayload{
+		Type:        connectorType,
+		Fingerprint: fingerprint,
+		RemoveHosts: removeHosts,
+	}, 5*time.Second)
 	return err
 }
 
@@ -149,6 +211,9 @@ func (r *Replicator) BackfillLocalHosts(ctx context.Context, hostRepo hosts.Repo
 	}
 	count := 0
 	for _, h := range all {
+		if h.MacAddress == "" {
+			continue
+		}
 		info := hosts.HostInfo{
 			Name:                 h.Name,
 			MacAddress:           h.MacAddress,
@@ -162,10 +227,21 @@ func (r *Replicator) BackfillLocalHosts(ctx context.Context, hostRepo hosts.Repo
 			VirtualizationRole:   h.VirtualizationRole,
 			HostID:               h.SystemHostID,
 		}
-		if info.MacAddress == "" {
-			continue
+		// Connector-only rows must keep their topology and must NOT be
+		// republished as agent rows (that would flip their source and fake
+		// their liveness on peers).
+		if h.Source == hosts.SourceConnector {
+			err = r.SubmitConnectorHostUpsert(ctx, hosts.ConnectorHostInfo{
+				HostInfo:    info,
+				HostType:    h.HostType,
+				ParentMAC:   h.ParentMAC,
+				ExternalID:  h.ExternalID,
+				GuestStatus: h.GuestStatus,
+			})
+		} else {
+			err = r.SubmitHostUpsert(ctx, info)
 		}
-		if err := r.SubmitHostUpsert(ctx, info); err != nil {
+		if err != nil {
 			return count, err
 		}
 		count++

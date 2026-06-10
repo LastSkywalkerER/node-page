@@ -25,6 +25,16 @@ type Repository interface {
 	UpdateHostLabelsFromAgentPush(ctx context.Context, hostID uint, name, ipv4 string) error
 	// DeleteHostCascade removes a host row, node credentials, and all stored metrics scoped to that host_id.
 	DeleteHostCascade(ctx context.Context, hostID uint) error
+	// UpsertConnectorHost creates/updates a connector-fed host row (hypervisor
+	// node or agent-less guest). Matches by ExternalID, then MAC — never by
+	// name, so a connector can't hijack an agent row that happens to share a
+	// hostname. When the MAC matches an agent-maintained row, only topology
+	// fields are attached (the agent keeps owning everything else).
+	UpsertConnectorHost(ctx context.Context, info ConnectorHostInfo) (*Host, error)
+	// UnlinkConnectorHosts detaches every host whose external_id starts with
+	// prefix: agent rows lose their topology fields; connector-only rows are
+	// cascade-deleted when removeHosts is true, otherwise kept (frozen).
+	UnlinkConnectorHosts(ctx context.Context, prefix string, removeHosts bool) error
 }
 
 type hostRepository struct {
@@ -89,6 +99,7 @@ func (r *hostRepository) UpsertLocalHost(ctx context.Context, hostInfo HostInfo)
 			VirtualizationSystem: hostInfo.VirtualizationSystem,
 			VirtualizationRole:   hostInfo.VirtualizationRole,
 			SystemHostID:         hostInfo.HostID,
+			Source:               SourceAgent,
 			BootTime:             hostInfo.BootTime,
 			LastSeen:             now,
 			CreatedAt:            now,
@@ -110,6 +121,7 @@ func (r *hostRepository) UpsertLocalHost(ctx context.Context, hostInfo HostInfo)
 	host.VirtualizationSystem = hostInfo.VirtualizationSystem
 	host.VirtualizationRole = hostInfo.VirtualizationRole
 	host.SystemHostID = hostInfo.HostID
+	host.Source = MergeSource(host.Source, SourceAgent)
 	host.BootTime = hostInfo.BootTime
 	host.LastSeen = now
 	host.UpdatedAt = now
@@ -136,6 +148,7 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		host.VirtualizationSystem = hostInfo.VirtualizationSystem
 		host.VirtualizationRole = hostInfo.VirtualizationRole
 		host.SystemHostID = hostInfo.HostID
+		host.Source = MergeSource(host.Source, SourceAgent)
 		host.BootTime = hostInfo.BootTime
 		host.LastSeen = now
 		host.UpdatedAt = now
@@ -163,6 +176,7 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		hostByName.VirtualizationSystem = hostInfo.VirtualizationSystem
 		hostByName.VirtualizationRole = hostInfo.VirtualizationRole
 		hostByName.SystemHostID = hostInfo.HostID
+		hostByName.Source = MergeSource(hostByName.Source, SourceAgent)
 		hostByName.BootTime = hostInfo.BootTime
 		hostByName.LastSeen = now
 		hostByName.UpdatedAt = now
@@ -206,12 +220,163 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		VirtualizationSystem: hostInfo.VirtualizationSystem,
 		VirtualizationRole:   hostInfo.VirtualizationRole,
 		SystemHostID:         hostInfo.HostID,
+		Source:               SourceAgent,
 		BootTime:             hostInfo.BootTime,
 		LastSeen:             now,
 		CreatedAt:            now,
 		UpdatedAt:            now,
 	}
 	return &host, r.db.WithContext(ctx).Create(&host).Error
+}
+
+// connectorHostAlive reports whether a connector-fed row should have its
+// last_seen refreshed: the hypervisor says the machine is powered on.
+func connectorHostAlive(status string) bool {
+	return status == "running" || status == "online"
+}
+
+// resolveFreeName returns desired if no OTHER row holds it, otherwise a
+// deterministic suffixed variant (hosts.name is unique; a PVE guest may share
+// a hostname with an unrelated registered machine).
+func (r *hostRepository) resolveFreeName(ctx context.Context, desired string, selfID uint, externalID string) (string, error) {
+	var count int64
+	err := r.db.WithContext(ctx).Model(&Host{}).
+		Where("name = ? AND id != ?", desired, selfID).
+		Count(&count).Error
+	if err != nil {
+		return "", err
+	}
+	if count == 0 {
+		return desired, nil
+	}
+	// e.g. "media-vm [pve/qemu/105]" — stable, so retries converge.
+	suffix := externalID
+	if i := strings.Index(suffix, ":"); i >= 0 {
+		suffix = suffix[i+1:]
+	}
+	if i := strings.Index(suffix, "/"); i >= 0 {
+		suffix = suffix[i+1:]
+	}
+	return fmt.Sprintf("%s [%s]", desired, suffix), nil
+}
+
+func (r *hostRepository) UpsertConnectorHost(ctx context.Context, info ConnectorHostInfo) (*Host, error) {
+	now := time.Now()
+
+	var host Host
+	err := r.db.WithContext(ctx).
+		Where("external_id = ? AND external_id != ''", info.ExternalID).
+		First(&host).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) && info.MacAddress != "" {
+		err = r.db.WithContext(ctx).
+			Where("mac_address = ?", info.MacAddress).
+			First(&host).Error
+	}
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+
+	if err == nil {
+		merged := MergeSource(host.Source, SourceConnector)
+		if merged != SourceConnector {
+			// Agent-maintained row: only attach topology, via a column-limited
+			// update so a concurrent agent upsert is never clobbered.
+			return &host, r.db.WithContext(ctx).Model(&Host{}).
+				Where("id = ?", host.ID).
+				Updates(map[string]interface{}{
+					"host_type":    info.HostType,
+					"parent_mac":   info.ParentMAC,
+					"external_id":  info.ExternalID,
+					"guest_status": info.GuestStatus,
+					"source":       merged,
+					"updated_at":   now,
+				}).Error
+		}
+		// Connector-owned row: the connector is the only writer, refresh everything.
+		name, nerr := r.resolveFreeName(ctx, info.Name, host.ID, info.ExternalID)
+		if nerr != nil {
+			return nil, nerr
+		}
+		host.Source = merged
+		host.HostType = info.HostType
+		host.ParentMAC = info.ParentMAC
+		host.ExternalID = info.ExternalID
+		host.GuestStatus = info.GuestStatus
+		host.Name = name
+		host.MacAddress = info.MacAddress
+		host.IPv4 = info.IPv4
+		host.OS = info.OS
+		host.Platform = info.Platform
+		host.PlatformFamily = info.PlatformFamily
+		host.PlatformVersion = info.PlatformVersion
+		host.KernelVersion = info.KernelVersion
+		host.BootTime = info.BootTime
+		host.UpdatedAt = now
+		if connectorHostAlive(info.GuestStatus) {
+			host.LastSeen = now
+		}
+		return &host, r.db.WithContext(ctx).Save(&host).Error
+	}
+
+	name, nerr := r.resolveFreeName(ctx, info.Name, 0, info.ExternalID)
+	if nerr != nil {
+		return nil, nerr
+	}
+	host = Host{
+		Name:            name,
+		MacAddress:      info.MacAddress,
+		IPv4:            info.IPv4,
+		OS:              info.OS,
+		Platform:        info.Platform,
+		PlatformFamily:  info.PlatformFamily,
+		PlatformVersion: info.PlatformVersion,
+		KernelVersion:   info.KernelVersion,
+		HostType:        info.HostType,
+		ParentMAC:       info.ParentMAC,
+		Source:          SourceConnector,
+		ExternalID:      info.ExternalID,
+		GuestStatus:     info.GuestStatus,
+		BootTime:        info.BootTime,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if connectorHostAlive(info.GuestStatus) {
+		host.LastSeen = now
+	}
+	return &host, r.db.WithContext(ctx).Create(&host).Error
+}
+
+func (r *hostRepository) UnlinkConnectorHosts(ctx context.Context, prefix string, removeHosts bool) error {
+	if prefix == "" {
+		return nil
+	}
+	like := prefix + "%"
+	if removeHosts {
+		var orphans []Host
+		err := r.db.WithContext(ctx).
+			Where("external_id LIKE ? AND source = ? AND id != ?", like, SourceConnector, LocalCollectorHostID).
+			Find(&orphans).Error
+		if err != nil {
+			return err
+		}
+		for _, h := range orphans {
+			if err := r.DeleteHostCascade(ctx, h.ID); err != nil {
+				return err
+			}
+		}
+	}
+	// Every remaining linked row (agent+connector, or kept connector-only)
+	// loses its topology; agents keep running as plain top-level hosts.
+	return r.db.WithContext(ctx).Model(&Host{}).
+		Where("external_id LIKE ?", like).
+		Updates(map[string]interface{}{
+			"host_type":    "",
+			"parent_mac":   "",
+			"external_id":  "",
+			"guest_status": "",
+			"source":       gorm.Expr("CASE WHEN source = ? THEN ? ELSE ? END", SourceConnector, SourceConnector, SourceAgent),
+			"updated_at":   time.Now(),
+		}).Error
 }
 
 func (r *hostRepository) GetHostByMacAddress(ctx context.Context, macAddress string) (*Host, error) {

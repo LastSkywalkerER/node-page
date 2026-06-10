@@ -42,7 +42,9 @@ import (
 	docker "system-stats/internal/metrics/docker"
 	memory "system-stats/internal/metrics/memory"
 	network "system-stats/internal/metrics/network"
+	proxmox "system-stats/internal/metrics/proxmox"
 	sensors "system-stats/internal/metrics/sensors"
+	connectors "system-stats/internal/platform/connectors"
 	health "system-stats/internal/platform/health"
 	history "system-stats/internal/platform/history"
 	setup "system-stats/internal/platform/setup"
@@ -171,6 +173,35 @@ func Run() {
 	// picker / sender immediately if Raft was activated at boot time
 	// (i.e. RAFT_ENABLED=true in env).
 	container.SetAppContext(appCtx)
+
+	// Connectors: external data-source registry + the Proxmox poller. The
+	// cipher key derives from the (cluster-shared) JWT secret so connector
+	// credentials encrypted on one node decrypt on whichever node leads.
+	connCipher := connectors.NewCipher(cfg.JWTSecret)
+	connectorsSvc := connectors.NewService(
+		logger,
+		container.GetConnectorRepository(),
+		container.GetHostRepository(),
+		connectors.NewDetector(logger),
+		connCipher,
+		proxmox.NewProber(),
+		container.GetRaftReplicator(),
+	)
+	pvePoller := proxmox.NewPoller(proxmox.PollerDeps{
+		Logger:     logger,
+		Connectors: container.GetConnectorRepository(),
+		Cipher:     connCipher,
+		HostRepo:   container.GetHostRepository(),
+		Raft:       container.GetRaftReplicator(),
+		RaftSvc:    container.GetRaftService(),
+		CPURepo:    container.GetCPURepository(),
+		MemRepo:    container.GetMemoryRepository(),
+		DiskRepo:   container.GetDiskRepository(),
+		NetRepo:    container.GetNetworkRepository(),
+		Publish:    container.GetBroker().Publish,
+	})
+	connectorsSvc.SetSyncTrigger(pvePoller.TriggerSync)
+	go pvePoller.Run(appCtx)
 
 	historicalMetricsService := container.GetHistoricalMetricsService()
 	retentionSvc := retention.NewService(container.GetDB(), logger, cfg.RetentionDays)
@@ -337,7 +368,7 @@ func Run() {
 		go startMetrics()
 	}
 
-	router := setupRouter(container, startTime, logger, cfg, onSetupComplete)
+	router := setupRouter(container, startTime, logger, cfg, onSetupComplete, connectorsSvc)
 
 	server := &http.Server{
 		Addr:         cfg.Addr,
@@ -380,7 +411,7 @@ func Run() {
 }
 
 // setupRouter configures the Gin router with all routes, middleware, and handlers.
-func setupRouter(container *di.Container, startTime time.Time, logger *log.Logger, cfg *config.Config, onSetupComplete func()) *gin.Engine {
+func setupRouter(container *di.Container, startTime time.Time, logger *log.Logger, cfg *config.Config, onSetupComplete func(), connectorsSvc connectors.Service) *gin.Engine {
 	router := gin.New()
 	// TrustedProxies controls whether X-Forwarded-* headers are honored.
 	// Empty list = trust none (ignore X-Forwarded-For/Host/Proto). Safe default.
@@ -439,6 +470,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	dockerHandler := docker.NewHandler(logger, container.GetDockerService(), container.GetHostService())
 	sensorsHandler := sensors.NewHandler(logger, container.GetSensorsService(), container.GetHostService())
 	hostHandler := hosts.NewHandler(logger, container.GetHostService())
+	connectorsHandler := connectors.NewHandler(logger, connectorsSvc)
 	healthHandler := health.NewHandler(logger, container.GetHealthService())
 	authHandler := users.NewAuthHandler(container.GetUserService(), container.GetTokenService(), cfg.CookieSecure)
 	usersHandler := users.NewUsersHandler(container.GetUserService())
@@ -616,6 +648,15 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		// Remove a registered host + its metrics (admin; cluster-wide when Raft on)
 		authAPI.DELETE("/hosts/:id", middleware.RequireAdmin(), hostHandler.HandleDeleteHost)
 		authAPI.GET("/stream", streamHandler.HandleStream)
+
+		// Connectors (admin): environment-detection hints + external data
+		// sources (Proxmox). Replicated cluster-wide when Raft is on.
+		authAPI.GET("/connectors", middleware.RequireAdmin(), connectorsHandler.HandleList)
+		authAPI.POST("/connectors", middleware.RequireAdmin(), connectorsHandler.HandleCreateProxmox)
+		authAPI.POST("/connectors/proxmox/test", middleware.RequireAdmin(), connectorsHandler.HandleTestProxmox)
+		authAPI.PATCH("/connectors/:id", middleware.RequireAdmin(), connectorsHandler.HandleUpdate)
+		authAPI.DELETE("/connectors/:id", middleware.RequireAdmin(), connectorsHandler.HandleDelete)
+		authAPI.POST("/connectors/:id/sync", middleware.RequireAdmin(), connectorsHandler.HandleSync)
 
 		// Raft cluster status (admin) — surfaces leader, peers, indices, RTTs
 		authAPI.GET("/raft/status", middleware.RequireAdmin(), raftHandler.Status)

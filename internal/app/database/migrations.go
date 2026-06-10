@@ -15,6 +15,7 @@ import (
 	docker "system-stats/internal/metrics/docker"
 	memory "system-stats/internal/metrics/memory"
 	network "system-stats/internal/metrics/network"
+	connectors "system-stats/internal/platform/connectors"
 )
 
 // Migrate performs automatic schema migration for all database entities.
@@ -40,6 +41,11 @@ func Migrate(db *gorm.DB) error {
 	err = db.AutoMigrate(&users.RefreshToken{})
 	if err != nil {
 		return fmt.Errorf("failed to migrate refresh tokens: %w", err)
+	}
+
+	err = db.AutoMigrate(&connectors.Connector{})
+	if err != nil {
+		return fmt.Errorf("failed to migrate connectors: %w", err)
 	}
 
 	// Fix existing invitations with NULL email before adding NOT NULL constraint

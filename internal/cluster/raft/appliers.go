@@ -18,6 +18,7 @@ import (
 	docker "system-stats/internal/metrics/docker"
 	memory "system-stats/internal/metrics/memory"
 	network "system-stats/internal/metrics/network"
+	connectors "system-stats/internal/platform/connectors"
 )
 
 // AppliersDeps bundles every repository the FSM needs to dispatch into.
@@ -33,6 +34,7 @@ type AppliersDeps struct {
 	DiskRepo         disk.Repository
 	NetworkRepo      network.Repository
 	DockerRepo       docker.DockerRepository
+	ConnectorRepo    connectors.Repository
 	// Publish pushes a live SSE envelope (JSON) to this node's stream broker.
 	// Wired so a replicated peer's metrics also stream live to browsers viewing
 	// that peer on this node — uniform SSE for every host. Nil disables it.
@@ -55,6 +57,10 @@ func RegisterAppliers(fsm *FSM, deps AppliersDeps) {
 	fsm.Register(CmdHostUpsert, a.applyHostUpsert)
 	fsm.Register(CmdHostDelete, a.applyHostDelete)
 	fsm.Register(CmdHostLastSeen, a.applyHostLastSeen)
+	fsm.Register(CmdConnectorHostUpsert, a.applyConnectorHostUpsert)
+
+	fsm.Register(CmdConnectorUpsert, a.applyConnectorUpsert)
+	fsm.Register(CmdConnectorDelete, a.applyConnectorDelete)
 
 	fsm.Register(CmdMetricBatch, a.applyMetricBatch)
 
@@ -107,6 +113,80 @@ func (a *appliers) applyHostUpsert(cmd Command, _ *hraft.Log) error {
 		BootTime:             p.BootTime,
 	})
 	return err
+}
+
+func (a *appliers) applyConnectorHostUpsert(cmd Command, _ *hraft.Log) error {
+	var p ConnectorHostUpsertPayload
+	if err := DecodeTyped(cmd, &p); err != nil {
+		return err
+	}
+	ctx, cancel := a.applierCtx()
+	defer cancel()
+	_, err := a.deps.HostRepo.UpsertConnectorHost(ctx, hosts.ConnectorHostInfo{
+		HostInfo: hosts.HostInfo{
+			Name:                 p.Name,
+			MacAddress:           p.MacAddress,
+			IPv4:                 p.IPv4,
+			OS:                   p.OS,
+			Platform:             p.Platform,
+			PlatformFamily:       p.PlatformFamily,
+			PlatformVersion:      p.PlatformVersion,
+			KernelVersion:        p.KernelVersion,
+			VirtualizationSystem: p.VirtualizationSystem,
+			VirtualizationRole:   p.VirtualizationRole,
+			HostID:               p.HostID,
+			BootTime:             p.BootTime,
+		},
+		HostType:    p.HostType,
+		ParentMAC:   p.ParentMAC,
+		ExternalID:  p.ExternalID,
+		GuestStatus: p.GuestStatus,
+	})
+	return err
+}
+
+func (a *appliers) applyConnectorUpsert(cmd Command, _ *hraft.Log) error {
+	var p ConnectorUpsertPayload
+	if err := DecodeTyped(cmd, &p); err != nil {
+		return err
+	}
+	if p.Fingerprint == "" {
+		return errors.New("raft: ConnectorUpsert requires fingerprint")
+	}
+	if a.deps.ConnectorRepo == nil {
+		return nil
+	}
+	ctx, cancel := a.applierCtx()
+	defer cancel()
+	return a.deps.ConnectorRepo.Upsert(ctx, &connectors.Connector{
+		Type:          p.Type,
+		Endpoint:      p.Endpoint,
+		TokenID:       p.TokenID,
+		SecretEnc:     p.SecretEnc,
+		SkipTLSVerify: p.SkipTLSVerify,
+		Fingerprint:   p.Fingerprint,
+		Enabled:       p.Enabled,
+	})
+}
+
+func (a *appliers) applyConnectorDelete(cmd Command, _ *hraft.Log) error {
+	var p ConnectorDeletePayload
+	if err := DecodeTyped(cmd, &p); err != nil {
+		return err
+	}
+	if p.Fingerprint == "" {
+		return errors.New("raft: ConnectorDelete requires fingerprint")
+	}
+	if a.deps.ConnectorRepo == nil {
+		return nil
+	}
+	ctx, cancel := a.applierCtx()
+	defer cancel()
+	if err := a.deps.ConnectorRepo.DeleteByFingerprint(ctx, p.Fingerprint); err != nil {
+		return err
+	}
+	return a.deps.HostRepo.UnlinkConnectorHosts(ctx,
+		connectors.ExternalIDPrefix(p.Type, p.Fingerprint), p.RemoveHosts)
 }
 
 func (a *appliers) applyHostDelete(cmd Command, _ *hraft.Log) error {

@@ -27,6 +27,40 @@ type HostUpsertPayload struct {
 	BootTime             int64  `json:"boot_time,omitempty"`
 }
 
+// ConnectorHostUpsertPayload mirrors hosts.ConnectorHostInfo: a hypervisor
+// node or agent-less guest discovered by a connector. The applier calls
+// hostRepo.UpsertConnectorHost, which links to an existing agent row by MAC
+// instead of duplicating it.
+type ConnectorHostUpsertPayload struct {
+	HostUpsertPayload
+	HostType    string `json:"host_type,omitempty"`
+	ParentMAC   string `json:"parent_mac,omitempty"`
+	ExternalID  string `json:"external_id,omitempty"`
+	GuestStatus string `json:"guest_status,omitempty"`
+}
+
+// ConnectorUpsertPayload replicates a configured connector (credentials are
+// AES-GCM ciphertext under the cluster-shared JWT secret) so any node can
+// take over polling. Keyed by Fingerprint — the connector-side identity.
+type ConnectorUpsertPayload struct {
+	Type          string `json:"type"`
+	Endpoint      string `json:"endpoint"`
+	TokenID       string `json:"token_id"`
+	SecretEnc     []byte `json:"secret_enc"`
+	SkipTLSVerify bool   `json:"skip_tls_verify"`
+	Fingerprint   string `json:"fingerprint"`
+	Enabled       bool   `json:"enabled"`
+}
+
+// ConnectorDeletePayload removes a connector everywhere. RemoveHosts also
+// cascades the connector-only host rows it created; linked agent rows are
+// only unlinked either way.
+type ConnectorDeletePayload struct {
+	Type        string `json:"type"`
+	Fingerprint string `json:"fingerprint"`
+	RemoveHosts bool   `json:"remove_hosts"`
+}
+
 // HostDeletePayload cascades a host removal (row + all its metrics) across the
 // cluster. It is keyed by MAC — the stable, cluster-wide identity — because the
 // per-node host_id differs on every node (auto-increment, matched by MAC). Each

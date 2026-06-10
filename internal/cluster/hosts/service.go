@@ -143,6 +143,19 @@ func (s *service) GetAllHosts(ctx context.Context) ([]Host, error) {
 			}
 		}
 	}
+	// Resolve parent_mac → local parent_id for the UI (row ids differ per node;
+	// only the MAC is cluster-stable).
+	macToID := make(map[string]uint, len(hosts))
+	for _, h := range hosts {
+		if h.MacAddress != "" {
+			macToID[strings.ToLower(h.MacAddress)] = h.ID
+		}
+	}
+	for i := range hosts {
+		if pm := strings.ToLower(hosts[i].ParentMAC); pm != "" {
+			hosts[i].ParentID = macToID[pm]
+		}
+	}
 	s.logger.Debug("All hosts retrieved successfully", "count", len(hosts))
 	return hosts, nil
 }

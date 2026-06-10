@@ -26,6 +26,7 @@ import (
 	memory "system-stats/internal/metrics/memory"
 	network "system-stats/internal/metrics/network"
 	sensors "system-stats/internal/metrics/sensors"
+	connectors "system-stats/internal/platform/connectors"
 	health "system-stats/internal/platform/health"
 	history "system-stats/internal/platform/history"
 	setupcfg "system-stats/internal/platform/setup"
@@ -45,6 +46,8 @@ type Container struct {
 	networkRepository network.Repository
 	dockerRepository  docker.DockerRepository
 	hostRepository    hosts.Repository
+
+	connectorRepository connectors.Repository
 
 	userRepository         users.UserRepository
 	refreshTokenRepository users.RefreshTokenRepository
@@ -147,6 +150,7 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 	container.networkRepository = network.NewRepository(db)
 	container.dockerRepository = docker.NewRepository(db)
 	container.hostRepository = hosts.NewRepository(db)
+	container.connectorRepository = connectors.NewRepository(db)
 
 	container.userRepository = users.NewUserRepository(db)
 	container.refreshTokenRepository = users.NewRefreshTokenRepository(db)
@@ -253,6 +257,7 @@ func (c *Container) activateLocked(ctx context.Context, cfg config.RaftConfig) (
 			DiskRepo:         c.diskRepository,
 			NetworkRepo:      c.networkRepository,
 			DockerRepo:       c.dockerRepository,
+			ConnectorRepo:    c.connectorRepository,
 			Publish:          c.broker.Publish,
 		},
 	}, cfg, c.raftSwap)
@@ -712,6 +717,25 @@ func (c *Container) GetDockerService() docker.Service {
 func (c *Container) GetHostService() hosts.Service {
 	return c.hostService
 }
+
+// GetHostRepository exposes the hosts repository for platform services that
+// need read access outside the Service surface (e.g. connector MAC matching).
+func (c *Container) GetHostRepository() hosts.Repository {
+	return c.hostRepository
+}
+
+// GetConnectorRepository returns the connector registry repository.
+func (c *Container) GetConnectorRepository() connectors.Repository {
+	return c.connectorRepository
+}
+
+// GetCPURepository / GetMemoryRepository / GetDiskRepository /
+// GetNetworkRepository expose metric repositories for the connector pollers'
+// standalone (non-Raft) direct-write path.
+func (c *Container) GetCPURepository() cpu.Repository         { return c.cpuRepository }
+func (c *Container) GetMemoryRepository() memory.Repository   { return c.memoryRepository }
+func (c *Container) GetDiskRepository() disk.Repository       { return c.diskRepository }
+func (c *Container) GetNetworkRepository() network.Repository { return c.networkRepository }
 
 func (c *Container) GetHealthService() health.Service {
 	return c.healthService

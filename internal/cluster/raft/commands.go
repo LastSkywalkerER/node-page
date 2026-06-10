@@ -28,6 +28,9 @@ const (
 	CmdHostUpsert   CommandType = 10
 	CmdHostDelete   CommandType = 11
 	CmdHostLastSeen CommandType = 12
+	// CmdConnectorHostUpsert feeds connector-discovered hosts (hypervisor
+	// nodes / agent-less guests) incl. topology fields.
+	CmdConnectorHostUpsert CommandType = 13
 
 	// Metrics
 	CmdMetricBatch           CommandType = 20
@@ -53,6 +56,10 @@ const (
 	// Bootstrap / join
 	CmdJoinTokenIssue   CommandType = 70
 	CmdJoinTokenConsume CommandType = 71
+
+	// Connectors (external data sources, e.g. the Proxmox API)
+	CmdConnectorUpsert CommandType = 80
+	CmdConnectorDelete CommandType = 81
 )
 
 // Command is the envelope persisted in every Raft log entry.
