@@ -512,8 +512,13 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		api.GET("/health", healthHandler.HandleHealth)
 
 		// Public: build/version + update info (no auth) — consumed by the update
-		// banner and the wizard's post-restart readiness gate.
+		// banner and the wizard's post-restart readiness gate. ?refresh=1 forces a
+		// release re-check (rate-limited service-side) so the update popup shows
+		// fresh state instead of the hourly cache.
 		api.GET("/version", func(c *gin.Context) {
+			if c.Query("refresh") != "" {
+				updateSvc.RefreshIfStale(c.Request.Context(), time.Minute)
+			}
 			c.JSON(http.StatusOK, gin.H{"data": updateSvc.Status()})
 		})
 

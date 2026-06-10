@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -27,7 +28,17 @@ import (
 // DefaultRepo is the GitHub repo polled for releases (owner/name).
 const DefaultRepo = "LastSkywalkerER/node-page"
 
-const checkInterval = 6 * time.Hour
+const checkInterval = time.Hour
+
+// forcedCheckMinInterval rate-limits operator-triggered re-checks
+// (GET /version?refresh=1) so the public endpoint can't hammer the GitHub API.
+const forcedCheckMinInterval = time.Minute
+
+// dateFallbackMargin guards the build-date update heuristic for non-semver
+// builds: a release published within this window after the running build was
+// produced is treated as "the same batch" (a tag typically follows its main
+// push by minutes), not as an update.
+const dateFallbackMargin = time.Hour
 
 // Info is the JSON returned by GET /api/v1/version — build identity + update state.
 type Info struct {
@@ -40,6 +51,9 @@ type Info struct {
 	UpdateAvailable bool   `json:"update_available"`
 	AutoUpdate      bool   `json:"auto_update"`
 	CheckedAt       string `json:"checked_at,omitempty"`
+	// ManagedExternally is true when an orchestrator (dokploy, …) owns the
+	// container lifecycle — in-app "update now" can't apply; redeploy there.
+	ManagedExternally bool `json:"managed_externally,omitempty"`
 }
 
 // PersistFn persists the auto-update toggle (to .env.agent). May be nil.
@@ -57,10 +71,11 @@ type Service struct {
 	dbState DBStateFn
 	client  *http.Client
 
-	mu         sync.RWMutex
-	latest     string
-	checkedAt  time.Time
-	autoUpdate bool
+	mu              sync.RWMutex
+	latest          string
+	latestPublished time.Time
+	checkedAt       time.Time
+	autoUpdate      bool
 }
 
 // NewService constructs the update service. repo empty → DefaultRepo.
@@ -82,22 +97,79 @@ func NewService(repo, dataDir string, autoUpdate bool, persist PersistFn, dbStat
 func (s *Service) Status() Info {
 	v := version.Get()
 	s.mu.RLock()
-	latest, checkedAt, auto := s.latest, s.checkedAt, s.autoUpdate
+	latest, published, checkedAt, auto := s.latest, s.latestPublished, s.checkedAt, s.autoUpdate
 	s.mu.RUnlock()
 	info := Info{
-		Current:    v.Current,
-		Commit:     v.Commit,
-		BuiltAt:    v.BuiltAt,
-		Deployment: v.Deployment,
-		Channel:    "stable",
-		Latest:     latest,
-		AutoUpdate: auto,
+		Current:           v.Current,
+		Commit:            v.Commit,
+		BuiltAt:           v.BuiltAt,
+		Deployment:        v.Deployment,
+		Channel:           "stable",
+		Latest:            latest,
+		AutoUpdate:        auto,
+		ManagedExternally: setup.ManagedExternally(),
 	}
 	if !checkedAt.IsZero() {
 		info.CheckedAt = checkedAt.UTC().Format(time.RFC3339)
 	}
-	info.UpdateAvailable = newerAvailable(v.Current, latest)
+	info.UpdateAvailable = newerAvailable(v.Current, latest) ||
+		dateBasedUpdateAvailable(v.Deployment, v.Current, latest, buildTime(v.BuiltAt), published)
 	return info
+}
+
+// RefreshIfStale forces a release re-check when the cached state is older than
+// maxAge, rate-limited to forcedCheckMinInterval so the public /version
+// endpoint can't be abused into hammering the GitHub API. Best-effort.
+func (s *Service) RefreshIfStale(ctx context.Context, maxAge time.Duration) {
+	s.mu.RLock()
+	checkedAt := s.checkedAt
+	s.mu.RUnlock()
+	age := time.Since(checkedAt)
+	if !checkedAt.IsZero() && (age < maxAge || age < forcedCheckMinInterval) {
+		return
+	}
+	if err := s.Check(ctx); err != nil {
+		log.Debug("update: forced check failed", "error", err)
+	}
+}
+
+// buildTime resolves when the running build was produced: the ldflags-injected
+// date when parseable, otherwise the executable's own mtime — which IS the
+// build time for container images built from source without build args (e.g.
+// dokploy building the repo's Dockerfile, where VERSION/DATE stay defaults).
+func buildTime(builtAt string) time.Time {
+	if t, err := time.Parse(time.RFC3339, strings.TrimSpace(builtAt)); err == nil {
+		return t
+	}
+	if exe, err := os.Executable(); err == nil {
+		if st, err := os.Stat(exe); err == nil {
+			return st.ModTime()
+		}
+	}
+	return time.Time{}
+}
+
+// dateBasedUpdateAvailable is the update heuristic for builds whose version is
+// NOT a semver (dev / "docker" / source-built images): a release published
+// meaningfully after this build was produced is an update. The semver compare
+// stays authoritative for tagged builds; this only widens detection where it
+// was previously impossible.
+func dateBasedUpdateAvailable(deployment, current, latest string, built, published time.Time) bool {
+	if _, currentIsSemver := parseSemver(current); currentIsSemver {
+		return false // tagged build → semver compare already decided
+	}
+	if _, ok := parseSemver(latest); !ok {
+		return false
+	}
+	if deployment != "docker" {
+		// A native dev build (go run / air) is a developer workstation — never
+		// nag it to "update" to a release.
+		return false
+	}
+	if built.IsZero() || published.IsZero() {
+		return false
+	}
+	return published.After(built.Add(dateFallbackMargin))
 }
 
 // AutoUpdate reports the current toggle state.
@@ -136,11 +208,16 @@ func (s *Service) Check(ctx context.Context) error {
 		return err
 	}
 	latest := ""
+	var published time.Time
 	if rel != nil {
 		latest = rel.TagName
+		if t, err := time.Parse(time.RFC3339, rel.PublishedAt); err == nil {
+			published = t
+		}
 	}
 	s.mu.Lock()
 	s.latest = latest
+	s.latestPublished = published
 	s.checkedAt = time.Now()
 	s.mu.Unlock()
 	return nil
@@ -182,6 +259,12 @@ func (s *Service) Start(ctx context.Context) {
 // updateDocker bumps the desired-state so the controller pulls the new image and
 // recreates the app, preserving the current DB topology.
 func (s *Service) updateDocker() (string, error) {
+	// When an external orchestrator (dokploy, portainer, …) owns the lifecycle
+	// there is no controller to apply the desired-state — point the operator at
+	// the right tool instead of silently writing a file nothing reads.
+	if setup.ManagedExternally() {
+		return "", fmt.Errorf("this deployment is managed by an external orchestrator — trigger a redeploy/rebuild there to update")
+	}
 	ds, _ := setup.ReadDesiredState(s.dataDir)
 	if ds == nil {
 		// No prior switch recorded (e.g. a plain sqlite install): construct a
@@ -211,8 +294,9 @@ type ghAsset struct {
 }
 
 type ghRelease struct {
-	TagName string    `json:"tag_name"`
-	Assets  []ghAsset `json:"assets"`
+	TagName     string    `json:"tag_name"`
+	PublishedAt string    `json:"published_at"`
+	Assets      []ghAsset `json:"assets"`
 }
 
 func (s *Service) fetchLatestRelease(ctx context.Context) (*ghRelease, error) {

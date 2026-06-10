@@ -11,6 +11,7 @@ export interface VersionInfo {
   update_available?: boolean;
   auto_update?: boolean;
   checked_at?: string;
+  managed_externally?: boolean;
 }
 
 /** Public build/version + update state (GET /version). Polled hourly. */
@@ -25,6 +26,22 @@ export function useVersion() {
     staleTime: 30 * 60 * 1000,
     retry: false,
     refetchOnWindowFocus: false,
+  });
+}
+
+/**
+ * Force a fresh release check (GET /version?refresh=1, rate-limited server-side)
+ * and sync the result into the version cache. Used when the update popup opens
+ * so the operator sees current state instead of the hourly cache.
+ */
+export function useRefreshVersion() {
+  const qc = useQueryClient();
+  return useMutation<VersionInfo, Error, void>({
+    mutationFn: async () => {
+      const r = await apiClient.get<{ data: VersionInfo }>('/version?refresh=1');
+      return r.data.data;
+    },
+    onSuccess: (data) => qc.setQueryData(['version'], data),
   });
 }
 
