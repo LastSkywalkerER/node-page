@@ -1,16 +1,19 @@
 package docker
 
 import (
+	"context"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/charmbracelet/log"
+	"github.com/docker/docker/api/types/container"
 	yaml "gopkg.in/yaml.v2"
 )
 
@@ -373,4 +376,165 @@ func firstContainerPortURL(c DockerContainer) string {
 		}
 	}
 	return ""
+}
+
+// traefikDirsFromStaticConfig reads a Traefik STATIC config (traefik.yml) at a
+// host path (tried directly, then under HOST_ROOT) and returns the file
+// provider's directory/filename mapped from container paths to host paths via
+// the proxy container's mounts. This is how dokploy wires its file provider —
+// in the static config, not CLI args. Best-effort.
+func traefikDirsFromStaticConfig(hostPath string, mounts []container.MountPoint) []string {
+	data, ok := readHostFile(hostPath)
+	if !ok {
+		return nil
+	}
+	var cfg struct {
+		Providers struct {
+			File struct {
+				Directory string `yaml:"directory"`
+				Filename  string `yaml:"filename"`
+			} `yaml:"file"`
+		} `yaml:"providers"`
+	}
+	if yaml.Unmarshal(data, &cfg) != nil {
+		return nil
+	}
+	var out []string
+	if d := strings.TrimSpace(cfg.Providers.File.Directory); d != "" {
+		out = append(out, containerPathToHost(d, mounts))
+	}
+	if f := strings.TrimSpace(cfg.Providers.File.Filename); f != "" {
+		out = append(out, containerPathToHost(filepath.Dir(f), mounts))
+	}
+	return out
+}
+
+// readHostFile reads a host-path file directly or under the HOST_ROOT bind-mount.
+func readHostFile(p string) ([]byte, bool) {
+	if b, err := os.ReadFile(p); err == nil { // #nosec G304 — path derived from container mounts/args, not user input
+		return b, true
+	}
+	if root := hostComposeRoot(); root != "" && filepath.IsAbs(p) {
+		if b, err := os.ReadFile(filepath.Join(root, p)); err == nil { // #nosec G304
+			return b, true
+		}
+	}
+	return nil, false
+}
+
+// ---- Domain-detection diagnostic (GET /docker/traefik-discovery) ----
+
+// TraefikDirStatus describes one candidate dynamic-config dir in the report.
+type TraefikDirStatus struct {
+	Path      string `json:"path"`
+	Readable  bool   `json:"readable"`
+	YAMLFiles int    `json:"yaml_files"`
+}
+
+// TraefikRouteStatus is one parsed route and its attachment outcome.
+type TraefikRouteStatus struct {
+	Host              string   `json:"host"`
+	URL               string   `json:"url"`
+	UpstreamHost      string   `json:"upstream_host"`
+	UpstreamPort      int      `json:"upstream_port"`
+	MatchedContainers []string `json:"matched_containers,omitempty"`
+	MatchedProjects   []string `json:"matched_projects,omitempty"`
+	Attached          bool     `json:"attached"`
+	Reason            string   `json:"reason,omitempty"`
+}
+
+// TraefikDiscoveryReport explains the whole domain-detection pipeline for this
+// node: which dirs were configured/discovered and are actually readable, which
+// routes parsed out of them, and why each route did or didn't land on an app.
+type TraefikDiscoveryReport struct {
+	EnvDirs         []string             `json:"env_dirs,omitempty"`
+	DiscoveredDirs  []string             `json:"discovered_dirs,omitempty"`
+	DefaultDirs     []string             `json:"default_dirs"`
+	HostRoot        string               `json:"host_root,omitempty"`
+	ProxyCandidates []string             `json:"proxy_candidates,omitempty"`
+	Dirs            []TraefikDirStatus   `json:"dirs"`
+	Routes          []TraefikRouteStatus `json:"routes"`
+}
+
+// TraefikDiscoveryReport runs a FRESH discovery (no caches) and simulates route
+// attachment against the live container list, so an operator can see exactly
+// where domain detection breaks on their layout.
+func (c *dockerMetricsCollector) TraefikDiscoveryReport(ctx context.Context) TraefikDiscoveryReport {
+	rep := TraefikDiscoveryReport{
+		EnvDirs:     c.traefikDirs,
+		DefaultDirs: defaultTraefikDirs(),
+		HostRoot:    hostComposeRoot(),
+	}
+	if c.client == nil || !c.IsDockerAvailable(ctx) {
+		return rep
+	}
+	containers, err := c.client.ContainerList(ctx, container.ListOptions{All: true})
+	if err != nil {
+		return rep
+	}
+
+	for _, ci := range containers {
+		if !isProxyCandidate(ci) {
+			continue
+		}
+		name := ci.Image
+		if len(ci.Names) > 0 {
+			name = strings.TrimPrefix(ci.Names[0], "/") + " (" + ci.Image + ")"
+		}
+		rep.ProxyCandidates = append(rep.ProxyCandidates, name)
+		rep.DiscoveredDirs = append(rep.DiscoveredDirs, c.introspectProxyContainer(ctx, ci.ID)...)
+	}
+
+	all := expandTraefikDirs(append(append(append([]string{}, c.traefikDirs...), rep.DiscoveredDirs...), defaultTraefikDirs()...))
+	for _, d := range all {
+		st := TraefikDirStatus{Path: d}
+		if entries, err := os.ReadDir(d); err == nil {
+			st.Readable = true
+			for _, e := range entries {
+				if !e.IsDir() && (strings.HasSuffix(e.Name(), ".yml") || strings.HasSuffix(e.Name(), ".yaml")) {
+					st.YAMLFiles++
+				}
+			}
+		}
+		rep.Dirs = append(rep.Dirs, st)
+	}
+
+	// Light containers carry exactly what routeMatchesContainer consults.
+	light := make([]DockerContainer, 0, len(containers))
+	for _, ci := range containers {
+		name := ""
+		if len(ci.Names) > 0 {
+			name = strings.TrimPrefix(ci.Names[0], "/")
+		}
+		project, svc, _ := resolveProject(ci.Labels, name)
+		light = append(light, DockerContainer{Name: name, Project: project, Service: svc, Labels: ci.Labels})
+	}
+
+	for _, r := range parseTraefikDirs(all) {
+		st := TraefikRouteStatus{
+			Host: r.Host, URL: r.URL(),
+			UpstreamHost: r.UpstreamHost, UpstreamPort: r.UpstreamPort,
+		}
+		projects := map[string]struct{}{}
+		for i := range light {
+			if routeMatchesContainer(r, &light[i]) {
+				st.MatchedContainers = append(st.MatchedContainers, light[i].Name)
+				projects[light[i].Project] = struct{}{}
+			}
+		}
+		for p := range projects {
+			st.MatchedProjects = append(st.MatchedProjects, p)
+		}
+		sort.Strings(st.MatchedProjects)
+		switch {
+		case len(st.MatchedContainers) == 0:
+			st.Reason = "no container matches the upstream host"
+		case len(projects) > 1:
+			st.Reason = "ambiguous: upstream matches several projects"
+		default:
+			st.Attached = true
+		}
+		rep.Routes = append(rep.Routes, st)
+	}
+	return rep
 }

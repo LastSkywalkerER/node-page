@@ -343,3 +343,13 @@ func (h *Handler) HandleApplicationLogs(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"available": true, "logs": logs, "container": containerID})
 }
+
+// HandleTraefikDiscovery returns the domain-detection diagnostic: which Traefik
+// config dirs were configured/discovered and are readable from this process,
+// which routes parsed out of them, and why each route did or didn't attach to
+// a container. Reflects the LOCAL node's daemon and filesystem only.
+//
+// GET /api/v1/docker/traefik-discovery
+func (h *Handler) HandleTraefikDiscovery(c *gin.Context) {
+	c.JSON(http.StatusOK, h.service.TraefikDiscovery(c.Request.Context()))
+}

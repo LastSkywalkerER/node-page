@@ -288,3 +288,83 @@ func TestContainerPathToHost(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// Dokploy wires the file provider in the STATIC traefik.yml (not CLI args):
+// the directory it names is a container path that must map back to a host path
+// through the proxy container's mounts.
+func TestTraefikDirsFromStaticConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "traefik.yml")
+	static := `
+entryPoints:
+  web:
+    address: ":80"
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+  swarm:
+    exposedByDefault: false
+`
+	if err := os.WriteFile(cfgPath, []byte(static), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Container mounts /etc/dokploy/traefik (host) at /etc/traefik → the
+	// file-provider dir must resolve to the HOST location.
+	mounts := []container.MountPoint{
+		{Type: "bind", Source: "/etc/dokploy/traefik", Destination: "/etc/traefik"},
+	}
+	dirs := traefikDirsFromStaticConfig(cfgPath, mounts)
+	if len(dirs) != 1 || dirs[0] != "/etc/dokploy/traefik/dynamic" {
+		t.Fatalf("dirs = %v, want [/etc/dokploy/traefik/dynamic]", dirs)
+	}
+
+	// Identity mount (dokploy's actual layout): the path passes through as-is.
+	identity := []container.MountPoint{
+		{Type: "bind", Source: "/etc/dokploy/traefik/dynamic", Destination: "/etc/dokploy/traefik/dynamic"},
+	}
+	static2 := "providers:\n  file:\n    directory: /etc/dokploy/traefik/dynamic\n"
+	if err := os.WriteFile(cfgPath, []byte(static2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dirs = traefikDirsFromStaticConfig(cfgPath, identity)
+	if len(dirs) != 1 || dirs[0] != "/etc/dokploy/traefik/dynamic" {
+		t.Fatalf("identity dirs = %v", dirs)
+	}
+
+	// Unreadable path → nothing, no panic.
+	if got := traefikDirsFromStaticConfig(filepath.Join(dir, "missing.yml"), nil); got != nil {
+		t.Fatalf("missing config should yield nil, got %v", got)
+	}
+}
+
+// A container publishing host 80/443 is introspected even when nothing about
+// its name/image says "traefik" (the user's port-based fallback).
+func TestIsProxyCandidate_PortFallback(t *testing.T) {
+	traefikByImage := container.Summary{Image: "traefik:v3.1", Names: []string{"/edge"}}
+	if !isProxyCandidate(traefikByImage) {
+		t.Fatal("traefik image must be a candidate")
+	}
+	port80 := container.Summary{
+		Image: "custom/proxy:1", Names: []string{"/myproxy"},
+		Ports: []container.Port{{PrivatePort: 80, PublicPort: 80, Type: "tcp"}},
+	}
+	if !isProxyCandidate(port80) {
+		t.Fatal("host-port-80 publisher must be a candidate")
+	}
+	port443 := container.Summary{
+		Image: "custom/proxy:1", Names: []string{"/myproxy"},
+		Ports: []container.Port{{PrivatePort: 443, PublicPort: 443, Type: "tcp"}},
+	}
+	if !isProxyCandidate(port443) {
+		t.Fatal("host-port-443 publisher must be a candidate")
+	}
+	app := container.Summary{
+		Image: "nginx:alpine", Names: []string{"/site"},
+		Ports: []container.Port{{PrivatePort: 80, PublicPort: 8081, Type: "tcp"}},
+	}
+	if isProxyCandidate(app) {
+		t.Fatal("a container on a non-80/443 public port must NOT be a candidate")
+	}
+}

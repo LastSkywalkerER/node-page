@@ -604,6 +604,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.GET("/disk", diskHandler.HandleDiskStats)
 		authAPI.GET("/network", networkHandler.HandleNetworkStats)
 		authAPI.GET("/docker", dockerHandler.HandleDockerStats)
+		authAPI.GET("/docker/traefik-discovery", dockerHandler.HandleTraefikDiscovery)
 		authAPI.GET("/applications", dockerHandler.HandleApplications)
 		authAPI.GET("/applications/:project", dockerHandler.HandleApplicationDetail)
 		authAPI.GET("/applications/:project/compose", dockerHandler.HandleApplicationCompose)

@@ -60,6 +60,9 @@ func (m *mockDockerCollector) CollectDockerMetrics(_ context.Context) (docker.Do
 }
 func (m *mockDockerCollector) IsDockerAvailable(_ context.Context) bool { return m.err == nil }
 func (m *mockDockerCollector) Close() error                             { return nil }
+func (m *mockDockerCollector) TraefikDiscoveryReport(_ context.Context) docker.TraefikDiscoveryReport {
+	return docker.TraefikDiscoveryReport{}
+}
 func (m *mockDockerCollector) GetContainerLogs(_ context.Context, _ docker.ContainerLogRef, _ int) (string, error) {
 	return "", m.err
 }

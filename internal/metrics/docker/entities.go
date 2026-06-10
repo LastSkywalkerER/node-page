@@ -486,6 +486,9 @@ type DockerMetricsCollector interface {
 	// stderr, demuxed), with timestamps. Local daemon only. The container is
 	// resolved live from the ref so a recreated/stopped container still works.
 	GetContainerLogs(ctx context.Context, ref ContainerLogRef, tail int) (string, error)
+	// TraefikDiscoveryReport runs a fresh Traefik config discovery and route
+	// match simulation — the domain-detection diagnostic. Local daemon only.
+	TraefikDiscoveryReport(ctx context.Context) TraefikDiscoveryReport
 	Close() error
 }
 

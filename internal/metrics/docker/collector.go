@@ -569,36 +569,11 @@ func (c *dockerMetricsCollector) discoverTraefikDirs(ctx context.Context, contai
 	}
 
 	for _, ci := range containers {
-		if !isTraefikContainer(ci) {
+		if !isProxyCandidate(ci) {
 			continue
 		}
-		info, err := c.client.ContainerInspect(ctx, ci.ID)
-		if err != nil {
-			continue
-		}
-		var args []string
-		if info.Config != nil {
-			args = append(args, info.Config.Entrypoint...)
-			args = append(args, info.Config.Cmd...)
-		}
-		for _, a := range args {
-			if v, ok := strings.CutPrefix(a, "--providers.file.directory="); ok {
-				add(containerPathToHost(v, info.Mounts))
-			}
-			if v, ok := strings.CutPrefix(a, "--providers.file.filename="); ok {
-				add(containerPathToHost(filepath.Dir(v), info.Mounts))
-			}
-		}
-		// Heuristic net: bind mounts that look like a Traefik config tree (e.g.
-		// dokploy mounts /etc/dokploy/traefik into its traefik container).
-		for _, m := range info.Mounts {
-			if m.Type != "bind" || m.Source == "" {
-				continue
-			}
-			if strings.Contains(strings.ToLower(m.Source), "traefik") {
-				add(m.Source)
-				add(filepath.Join(m.Source, "dynamic"))
-			}
+		for _, d := range c.introspectProxyContainer(ctx, ci.ID) {
+			add(d)
 		}
 	}
 
@@ -610,6 +585,67 @@ func (c *dockerMetricsCollector) discoverTraefikDirs(ctx context.Context, contai
 		c.logger.Debug("Discovered Traefik config dirs from container introspection", "dirs", found)
 	}
 	return found
+}
+
+// introspectProxyContainer extracts Traefik file-provider config dirs from one
+// proxy container: CLI args (--providers.file.*), the static config file
+// (traefik.yml providers.file.directory — how dokploy configures it), and
+// traefik-looking bind-mount sources. All results are HOST paths.
+func (c *dockerMetricsCollector) introspectProxyContainer(ctx context.Context, id string) []string {
+	info, err := c.client.ContainerInspect(ctx, id)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	var args []string
+	if info.Config != nil {
+		args = append(args, info.Config.Entrypoint...)
+		args = append(args, info.Config.Cmd...)
+	}
+	for _, a := range args {
+		if v, ok := strings.CutPrefix(a, "--providers.file.directory="); ok {
+			out = append(out, containerPathToHost(v, info.Mounts))
+		}
+		if v, ok := strings.CutPrefix(a, "--providers.file.filename="); ok {
+			out = append(out, containerPathToHost(filepath.Dir(v), info.Mounts))
+		}
+		// Static config referenced by arg → parse it for the file provider.
+		for _, flag := range []string{"--configfile=", "--configFile="} {
+			if v, ok := strings.CutPrefix(a, flag); ok {
+				out = append(out, traefikDirsFromStaticConfig(containerPathToHost(v, info.Mounts), info.Mounts)...)
+			}
+		}
+	}
+	for _, m := range info.Mounts {
+		if m.Source == "" {
+			continue
+		}
+		// Conventional static-config mount (e.g. dokploy:
+		// /etc/dokploy/traefik/traefik.yml → /etc/traefik/traefik.yml).
+		if base := filepath.Base(m.Destination); base == "traefik.yml" || base == "traefik.yaml" {
+			out = append(out, traefikDirsFromStaticConfig(m.Source, info.Mounts)...)
+		}
+		// Traefik-looking bind-mounted config trees.
+		if m.Type == "bind" && strings.Contains(strings.ToLower(m.Source), "traefik") {
+			out = append(out, m.Source, filepath.Join(m.Source, "dynamic"))
+		}
+	}
+	return out
+}
+
+// isProxyCandidate reports whether a container is worth introspecting for
+// Traefik config: a traefik image/name, or — when nothing is named traefik —
+// whatever publishes the host's 80/443 (the de-facto edge proxy).
+func isProxyCandidate(ci container.Summary) bool {
+	if isTraefikContainer(ci) {
+		return true
+	}
+	for _, p := range ci.Ports {
+		if p.PublicPort == 80 || p.PublicPort == 443 {
+			return true
+		}
+	}
+	return false
 }
 
 // isTraefikContainer reports whether a container looks like a Traefik instance

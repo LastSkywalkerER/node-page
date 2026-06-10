@@ -29,6 +29,10 @@ type Service interface {
 	// GetContainerLogs returns recent logs for a container on the local daemon,
 	// resolving the live container from the ref (handles recreated/stopped ones).
 	GetContainerLogs(ctx context.Context, ref ContainerLogRef, tail int) (string, error)
+	// TraefikDiscovery returns the domain-detection diagnostic for this node:
+	// discovered config dirs, their readability, parsed routes and per-route
+	// attachment outcomes. Local daemon only.
+	TraefikDiscovery(ctx context.Context) TraefikDiscoveryReport
 }
 
 type service struct {
@@ -174,6 +178,10 @@ func (s *service) GetComposeView(ctx context.Context, hostId uint, project strin
 		view.RealAvailable = available
 	}
 	return view, nil
+}
+
+func (s *service) TraefikDiscovery(ctx context.Context) TraefikDiscoveryReport {
+	return s.collector.TraefikDiscoveryReport(ctx)
 }
 
 func (s *service) GetContainerLogs(ctx context.Context, ref ContainerLogRef, tail int) (string, error) {
