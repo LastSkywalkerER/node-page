@@ -23,6 +23,10 @@ import type { DockerContainer, DockerPort } from './schemas';
 const fmtBytes = (b: number) =>
   b >= 1e9 ? `${(b / 1e9).toFixed(1)}G` : b >= 1e6 ? `${(b / 1e6).toFixed(1)}M` : b >= 1e3 ? `${(b / 1e3).toFixed(0)}K` : `${b}B`;
 
+/** Sub-10% CPU keeps a decimal so small-but-real load doesn't display as a flat
+ *  0% (nine containers at ~0.15% legitimately sum to >1% at the app level). */
+export const fmtCpuPct = (pct: number) => (pct >= 10 ? pct.toFixed(0) : pct.toFixed(1));
+
 function fmtUptime(created: string) {
   const ms = Date.now() - new Date(created).getTime();
   if (isNaN(ms) || ms < 0) return '';
@@ -181,8 +185,8 @@ export function ContainerRow({ container: c }: { container: DockerContainer }) {
 
         <div className="flex shrink-0 items-center gap-1">
           <RingGauge value={cpu} color={cpuColor} />
-          <span className="w-7 text-right tabular-nums" style={{ color: cpuColor }}>
-            {cpu.toFixed(0)}%
+          <span className="w-9 text-right tabular-nums" style={{ color: cpuColor }}>
+            {fmtCpuPct(cpu)}%
           </span>
           <span className="text-[10px] text-muted-foreground/50">cpu</span>
         </div>

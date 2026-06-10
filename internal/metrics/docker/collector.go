@@ -59,6 +59,13 @@ type dockerMetricsCollector struct {
 	volumeSizeCache      map[string]int64
 	volumeSizeRefreshing bool
 
+	// Traefik file-provider dirs discovered by introspecting the running
+	// Traefik container (its --providers.file.directory arg mapped to host
+	// paths via its mounts). Refreshed on a slow cadence; merged with the
+	// operator-configured traefikDirs.
+	discoveredTraefikDirs []string
+	traefikDiscoveryAt    time.Time
+
 	// Image update checks hit the registry (network), so they run rarely
 	// (updateCheckInterval) in a background goroutine; results are cached per
 	// image reference and applied to containers on every cycle.
@@ -519,10 +526,129 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 
 	// Attach reverse-proxy (Traefik file-provider) public URLs to ports so the
 	// Applications view can surface per-service links — including for ports the
-	// container doesn't publish to the host. Cached + best-effort.
-	enrichWithTraefikRoutes(&metric, loadTraefikRoutes(c.traefikDirs))
+	// container doesn't publish to the host. Cached + best-effort. The dir list
+	// merges operator config (TRAEFIK_DYNAMIC_DIR) with dirs discovered from the
+	// running Traefik container itself, then well-known defaults.
+	traefikDirs := append(append([]string{}, c.traefikDirs...), c.discoverTraefikDirs(ctx, containers)...)
+	enrichWithTraefikRoutes(&metric, loadTraefikRoutes(traefikDirs), c.logger)
 
 	return metric, nil
+}
+
+// traefikDiscoveryInterval bounds how often the (cheap, but per-container
+// inspect) Traefik introspection runs.
+const traefikDiscoveryInterval = 60 * time.Second
+
+// discoverTraefikDirs introspects running Traefik containers to locate their
+// file-provider dynamic-config directories: the --providers.file.directory /
+// .filename argument is resolved to a HOST path through the container's bind
+// mounts, and any bind mount that looks like a Traefik config tree is added as
+// a candidate. This makes domain discovery work regardless of where an
+// orchestrator keeps its Traefik config — no env var or well-known path needed.
+func (c *dockerMetricsCollector) discoverTraefikDirs(ctx context.Context, containers []container.Summary) []string {
+	c.cacheMutex.RLock()
+	fresh := !c.traefikDiscoveryAt.IsZero() && time.Since(c.traefikDiscoveryAt) < traefikDiscoveryInterval
+	cached := c.discoveredTraefikDirs
+	c.cacheMutex.RUnlock()
+	if fresh || c.client == nil {
+		return cached
+	}
+
+	var found []string
+	seen := map[string]struct{}{}
+	add := func(p string) {
+		p = filepath.Clean(strings.TrimSpace(p))
+		if p == "" || p == "." || p == "/" {
+			return
+		}
+		if _, ok := seen[p]; ok {
+			return
+		}
+		seen[p] = struct{}{}
+		found = append(found, p)
+	}
+
+	for _, ci := range containers {
+		if !isTraefikContainer(ci) {
+			continue
+		}
+		info, err := c.client.ContainerInspect(ctx, ci.ID)
+		if err != nil {
+			continue
+		}
+		var args []string
+		if info.Config != nil {
+			args = append(args, info.Config.Entrypoint...)
+			args = append(args, info.Config.Cmd...)
+		}
+		for _, a := range args {
+			if v, ok := strings.CutPrefix(a, "--providers.file.directory="); ok {
+				add(containerPathToHost(v, info.Mounts))
+			}
+			if v, ok := strings.CutPrefix(a, "--providers.file.filename="); ok {
+				add(containerPathToHost(filepath.Dir(v), info.Mounts))
+			}
+		}
+		// Heuristic net: bind mounts that look like a Traefik config tree (e.g.
+		// dokploy mounts /etc/dokploy/traefik into its traefik container).
+		for _, m := range info.Mounts {
+			if m.Type != "bind" || m.Source == "" {
+				continue
+			}
+			if strings.Contains(strings.ToLower(m.Source), "traefik") {
+				add(m.Source)
+				add(filepath.Join(m.Source, "dynamic"))
+			}
+		}
+	}
+
+	c.cacheMutex.Lock()
+	c.discoveredTraefikDirs = found
+	c.traefikDiscoveryAt = time.Now()
+	c.cacheMutex.Unlock()
+	if len(found) > 0 {
+		c.logger.Debug("Discovered Traefik config dirs from container introspection", "dirs", found)
+	}
+	return found
+}
+
+// isTraefikContainer reports whether a container looks like a Traefik instance
+// (by image or name).
+func isTraefikContainer(ci container.Summary) bool {
+	if strings.Contains(strings.ToLower(ci.Image), "traefik") {
+		return true
+	}
+	for _, n := range ci.Names {
+		if strings.Contains(strings.ToLower(strings.TrimPrefix(n, "/")), "traefik") {
+			return true
+		}
+	}
+	return false
+}
+
+// containerPathToHost maps a path inside a container to the host path backing
+// it via the container's mounts (longest matching destination wins). Paths not
+// covered by any mount are returned as-is (identity mounts / native installs).
+func containerPathToHost(p string, mounts []container.MountPoint) string {
+	best, bestLen := "", -1
+	for _, m := range mounts {
+		if m.Source == "" {
+			continue
+		}
+		dst := strings.TrimRight(m.Destination, "/")
+		if dst == "" {
+			continue
+		}
+		if p == dst || strings.HasPrefix(p, dst+"/") {
+			if len(dst) > bestLen {
+				best, bestLen = m.Source+strings.TrimPrefix(p, dst), len(dst)
+			}
+		}
+	}
+	if best != "" {
+		return best
+	}
+	return p
 }
 
 // getCPULimit extracts CPU limit from container configuration

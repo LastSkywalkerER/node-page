@@ -4,11 +4,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/log"
 	yaml "gopkg.in/yaml.v2"
 )
 
@@ -89,6 +91,8 @@ const traefikCacheTTL = 30 * time.Second
 func loadTraefikRoutes(dirs []string) []traefikRoute {
 	if len(dirs) == 0 {
 		dirs = defaultTraefikDirs()
+	} else {
+		dirs = append(dirs, defaultTraefikDirs()...)
 	}
 	traefikRouteCache.mu.Lock()
 	defer traefikRouteCache.mu.Unlock()
@@ -101,6 +105,34 @@ func loadTraefikRoutes(dirs []string) []traefikRoute {
 	return routes
 }
 
+// expandTraefikDirs dedupes the candidate dirs and adds a HOST_ROOT-prefixed
+// variant for each absolute path, so a containerised node-stats with the host
+// root bind-mounted (e.g. /host) can read configs at their host locations
+// without per-dir bind mounts.
+func expandTraefikDirs(dirs []string) []string {
+	root := hostComposeRoot()
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(dirs)*2)
+	add := func(d string) {
+		d = filepath.Clean(strings.TrimSpace(d))
+		if d == "" || d == "." || d == "/" {
+			return
+		}
+		if _, ok := seen[d]; ok {
+			return
+		}
+		seen[d] = struct{}{}
+		out = append(out, d)
+	}
+	for _, d := range dirs {
+		add(d)
+		if root != "" && filepath.IsAbs(d) && !strings.HasPrefix(d, root+string(filepath.Separator)) {
+			add(filepath.Join(root, d))
+		}
+	}
+	return out
+}
+
 // parseTraefikDirs reads every *.yml/*.yaml document under the given dirs,
 // merges all routers + services (so cross-file references resolve), and
 // returns the resolved routes. Missing/unreadable dirs are skipped silently.
@@ -109,6 +141,7 @@ func parseTraefikDirs(dirs []string) []traefikRoute {
 	services := map[string]traefikServiceSpec{}
 	dirHasACME := false
 
+	dirs = expandTraefikDirs(dirs)
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -145,8 +178,8 @@ func parseTraefikDirs(dirs []string) []traefikRoute {
 
 	var out []traefikRoute
 	for _, rt := range routers {
-		host := firstHostRule(rt.Rule)
-		if host == "" {
+		hosts := hostsFromRule(rt.Rule)
+		if len(hosts) == 0 {
 			continue
 		}
 		upstreamHost, upstreamPort := "", 0
@@ -158,23 +191,47 @@ func parseTraefikDirs(dirs []string) []traefikRoute {
 				}
 			}
 		}
-		out = append(out, traefikRoute{
-			Host:         host,
-			Scheme:       traefikScheme(rt.EntryPoints, rt.TLS != nil, dirHasACME, host),
-			UpstreamHost: upstreamHost,
-			UpstreamPort: upstreamPort,
-		})
+		// One route per hostname — a single router can carry several domains
+		// (Host(`a`) || Host(`b`), or Host(`a`, `b`)) and none may be dropped.
+		for _, host := range hosts {
+			out = append(out, traefikRoute{
+				Host:         host,
+				Scheme:       traefikScheme(rt.EntryPoints, rt.TLS != nil, dirHasACME, host),
+				UpstreamHost: upstreamHost,
+				UpstreamPort: upstreamPort,
+			})
+		}
 	}
 	return out
 }
 
-// firstHostRule extracts the first Host(`…`) hostname from a Traefik router
-// rule (reusing traefikHostRule defined in applications.go).
-func firstHostRule(rule string) string {
-	if m := traefikHostRule.FindStringSubmatch(rule); len(m) == 2 {
-		return strings.TrimSpace(m[1])
+var (
+	// traefikHostCall matches every Host(...) call in a router rule.
+	traefikHostCall = regexp.MustCompile(`(?i)Host\(([^)]*)\)`)
+	// traefikBacktickArg extracts each backtick-quoted argument inside a call.
+	traefikBacktickArg = regexp.MustCompile("`([^`]+)`")
+)
+
+// hostsFromRule extracts EVERY hostname from a Traefik router rule — across
+// multiple Host() calls (`Host(`a`) || Host(`b`)`) and comma-separated args
+// (`Host(`a`, `b`)`). Wildcards are skipped.
+func hostsFromRule(rule string) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	for _, call := range traefikHostCall.FindAllStringSubmatch(rule, -1) {
+		for _, arg := range traefikBacktickArg.FindAllStringSubmatch(call[1], -1) {
+			h := strings.TrimSpace(arg[1])
+			if h == "" || strings.Contains(h, "*") {
+				continue
+			}
+			if _, ok := seen[h]; ok {
+				continue
+			}
+			seen[h] = struct{}{}
+			out = append(out, h)
+		}
 	}
-	return ""
+	return out
 }
 
 // parseUpstreamURL splits a Traefik server URL ("http://tasks.web:3000") into
@@ -214,7 +271,7 @@ func traefikScheme(entryPoints []string, hasTLS, dirHasACME bool, host string) s
 // container's ports. A route whose upstream port isn't an already-known port
 // is appended as a synthetic (unpublished) port carrying the URL, so the UI
 // can surface "reachable at <url>" even when the container publishes nothing.
-func enrichWithTraefikRoutes(m *DockerMetric, routes []traefikRoute) {
+func enrichWithTraefikRoutes(m *DockerMetric, routes []traefikRoute, logger *log.Logger) {
 	if m == nil || len(routes) == 0 {
 		return
 	}
@@ -245,6 +302,13 @@ func enrichWithTraefikRoutes(m *DockerMetric, routes []traefikRoute) {
 		// project we can't tell which is intended, so skip rather than mislabel.
 		// Replicas of a single service all share one project and still match.
 		if len(matches) == 0 || len(projects) > 1 {
+			// Surface WHY a domain didn't land on any app (run with DEBUG=true):
+			// either no container matched the upstream name, or it was ambiguous.
+			if logger != nil {
+				logger.Debug("Traefik route not attached",
+					"host", r.Host, "upstream", r.UpstreamHost, "port", r.UpstreamPort,
+					"matched_containers", len(matches), "matched_projects", len(projects))
+			}
 			continue
 		}
 		for _, c := range matches {
@@ -276,16 +340,25 @@ func routeMatchesContainer(r traefikRoute, c *DockerContainer) bool {
 	return false
 }
 
-// attachRouteURL records the route's URL on the matching private port, or
-// appends a synthetic unpublished port when the target port isn't listed.
+// attachRouteURL records the route's URL on the matching private port. When the
+// target port isn't listed — or already carries a DIFFERENT domain (several
+// routers can front one upstream, e.g. two domains → one service:3000) — a
+// synthetic unpublished port row is appended so no domain is ever dropped.
 func attachRouteURL(c *DockerContainer, r traefikRoute) {
 	u := r.URL()
+	for i := range c.Ports {
+		if c.Ports[i].PublicURL == u {
+			return // this domain is already attached
+		}
+	}
 	for i := range c.Ports {
 		if r.UpstreamPort == 0 || c.Ports[i].PrivatePort == r.UpstreamPort {
 			if c.Ports[i].PublicURL == "" {
 				c.Ports[i].PublicURL = u
+				return
 			}
-			return
+			// Slot taken by another domain — keep scanning for a free row on the
+			// same private port (an earlier synthetic append may have created one).
 		}
 	}
 	c.Ports = append(c.Ports, DockerPort{PrivatePort: r.UpstreamPort, Type: "tcp", PublicURL: u})

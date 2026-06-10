@@ -2,7 +2,7 @@ import { useNavigate } from 'react-router-dom';
 import { ExternalLink, Box, ArrowUpCircle, RefreshCw, ChevronsUp } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { AppIcon } from '@/shared/ui/AppIcon';
-import { RingGauge } from '@/widgets/docker/ContainerRow';
+import { RingGauge, fmtCpuPct } from '@/widgets/docker/ContainerRow';
 import { cn } from '@/lib/utils';
 import type { DockerApplication } from './schemas';
 
@@ -122,7 +122,7 @@ export function ApplicationTile({ app, hostId, hostIPv4 }: ApplicationTileProps)
           <div className="flex min-w-0 flex-col gap-0.5 leading-none">
             <span className="text-[10px] uppercase tracking-wider text-muted-foreground">CPU</span>
             <span className="font-mono font-medium tabular-nums" style={{ color: metricColor(cpu) }}>
-              {cpu.toFixed(0)}%
+              {fmtCpuPct(cpu)}%
             </span>
           </div>
         </div>

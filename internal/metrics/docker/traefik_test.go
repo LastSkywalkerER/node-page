@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/docker/docker/api/types/container"
 )
 
 const sampleDynamicYAML = `http:
@@ -133,7 +135,7 @@ func TestEnrichWithTraefikRoutes_AttachesAndSynthesizes(t *testing.T) {
 		{Name: "front-svc.1.bbb", Project: "front-svc", Ports: []DockerPort{}},
 	}}}}
 
-	enrichWithTraefikRoutes(m, routes)
+	enrichWithTraefikRoutes(m, routes, nil)
 
 	api := m.Stacks[0].Containers[0]
 	if len(api.Ports) != 1 || api.Ports[0].PublicURL != "https://api.example.com" {
@@ -158,7 +160,7 @@ func TestEnrichWithTraefikRoutes_SkipsAmbiguousCrossProject(t *testing.T) {
 		{Name: "web", Project: "web", Ports: []DockerPort{{PrivatePort: 80, Type: "tcp"}}},
 	}}}}
 
-	enrichWithTraefikRoutes(m, routes)
+	enrichWithTraefikRoutes(m, routes, nil)
 
 	for _, c := range m.Stacks[0].Containers {
 		for _, p := range c.Ports {
@@ -177,11 +179,112 @@ func TestEnrichWithTraefikRoutes_AttachesToAllReplicasInOneProject(t *testing.T)
 		{Name: "websvc.2.bbb", Project: "websvc", Ports: []DockerPort{{PrivatePort: 8080, Type: "tcp"}}},
 	}}}}
 
-	enrichWithTraefikRoutes(m, routes)
+	enrichWithTraefikRoutes(m, routes, nil)
 
 	for _, c := range m.Stacks[0].Containers {
 		if c.Ports[0].PublicURL != "https://svc.example.com" {
 			t.Fatalf("replica %s missing URL: %+v", c.Name, c.Ports)
 		}
+	}
+}
+
+func TestHostsFromRule_MultipleDomains(t *testing.T) {
+	cases := []struct {
+		rule string
+		want []string
+	}{
+		{"Host(`a.example.com`)", []string{"a.example.com"}},
+		{"Host(`a.example.com`) || Host(`b.example.com`)", []string{"a.example.com", "b.example.com"}},
+		{"Host(`a.example.com`, `b.example.com`)", []string{"a.example.com", "b.example.com"}},
+		{"Host(`a.example.com`) && PathPrefix(`/api`)", []string{"a.example.com"}},
+		{"HostRegexp(`{sub:.+}.x.com`)", nil}, // wildcard-ish → skipped
+		{"PathPrefix(`/only-path`)", nil},
+	}
+	for _, tc := range cases {
+		got := hostsFromRule(tc.rule)
+		if len(got) != len(tc.want) {
+			t.Fatalf("hostsFromRule(%q) = %v, want %v", tc.rule, got, tc.want)
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Fatalf("hostsFromRule(%q) = %v, want %v", tc.rule, got, tc.want)
+			}
+		}
+	}
+}
+
+// Two routers → ONE upstream service:port (the dokploy pattern: two domains for
+// one app). Both URLs must survive on the container — the second must not be
+// silently dropped because the port slot already carries the first.
+func TestEnrichWithTraefikRoutes_MultipleDomainsOneService(t *testing.T) {
+	routes := []traefikRoute{
+		{Host: "ebcenter.sky-tehnol.uk", Scheme: "https", UpstreamHost: "ebcenter-app-yxkjot", UpstreamPort: 3000},
+		{Host: "prosmety.by", Scheme: "https", UpstreamHost: "ebcenter-app-yxkjot", UpstreamPort: 3000},
+	}
+	m := &DockerMetric{Stacks: []DockerStack{{Containers: []DockerContainer{
+		{Name: "ebcenter-app-yxkjot.1.sgmey", Project: "ebcenter-app-yxkjot", Ports: []DockerPort{}},
+	}}}}
+
+	enrichWithTraefikRoutes(m, routes, nil)
+
+	c := m.Stacks[0].Containers[0]
+	urls := map[string]bool{}
+	for _, p := range c.Ports {
+		if p.PublicURL != "" {
+			urls[p.PublicURL] = true
+		}
+	}
+	if !urls["https://ebcenter.sky-tehnol.uk"] || !urls["https://prosmety.by"] {
+		t.Fatalf("expected BOTH domains attached, got ports %+v", c.Ports)
+	}
+
+	// Re-running enrichment (next collection tick) must not duplicate entries.
+	enrichWithTraefikRoutes(m, routes, nil)
+	if n := len(m.Stacks[0].Containers[0].Ports); n != 2 {
+		t.Fatalf("idempotency: got %d port rows after second enrich, want 2", n)
+	}
+}
+
+func TestParseTraefikDirs_MultiHostRouter(t *testing.T) {
+	multi := `http:
+  routers:
+    app-router:
+      rule: Host(` + "`one.example.com`" + `) || Host(` + "`two.example.com`" + `)
+      service: app-svc
+      entryPoints:
+        - websecure
+  services:
+    app-svc:
+      loadBalancer:
+        servers:
+          - url: http://tasks.app:3000
+`
+	dir := writeDynamicDir(t, map[string]string{"app.yml": multi})
+	routes := parseTraefikDirs([]string{dir})
+	if len(routes) != 2 {
+		t.Fatalf("got %d routes, want 2 (one per domain): %+v", len(routes), routes)
+	}
+	for _, r := range routes {
+		if r.UpstreamHost != "app" || r.UpstreamPort != 3000 || r.Scheme != "https" {
+			t.Fatalf("route %+v: want upstream app:3000 https", r)
+		}
+	}
+}
+
+func TestContainerPathToHost(t *testing.T) {
+	mounts := []container.MountPoint{
+		{Type: "bind", Source: "/etc/dokploy/traefik", Destination: "/etc/traefik"},
+		{Type: "bind", Source: "/etc/dokploy/traefik/dynamic", Destination: "/etc/traefik/dynamic"},
+	}
+	// Longest destination prefix wins.
+	if got := containerPathToHost("/etc/traefik/dynamic", mounts); got != "/etc/dokploy/traefik/dynamic" {
+		t.Fatalf("got %q", got)
+	}
+	if got := containerPathToHost("/etc/traefik/traefik.yml", mounts); got != "/etc/dokploy/traefik/traefik.yml" {
+		t.Fatalf("got %q", got)
+	}
+	// Unmapped paths pass through.
+	if got := containerPathToHost("/data/conf", mounts); got != "/data/conf" {
+		t.Fatalf("got %q", got)
 	}
 }
