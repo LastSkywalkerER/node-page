@@ -7,7 +7,8 @@ details, with all of its guests (VMs/LXCs) rendered **minimized inside** that ca
 inside the node's detail page — **without duplicating** machines in the DB or the UI
 when one or several of those guests already run node-stats themselves.
 
-Status: design document, not implemented yet.
+Status: **implemented** (phases 1–2 and most of 3; deltas from this design are
+listed at the end of the document).
 
 **One-line model:** a *connector* is a configured external data source (first one:
 Proxmox VE API). It discovers the hypervisor and its guest topology, links guests to
@@ -346,7 +347,46 @@ PVE `ostype` field drives the mapping (stored on the host row's `Platform` as e.
 
 ---
 
-## 10. Open questions
+## 10. Implementation deltas
+
+Decisions made while implementing (where the code deviates from or refines the
+sections above):
+
+- **No `CmdHostTopologySet`** — `CmdHostTopologySet`/`TopologyLink` collapsed
+  into `CmdConnectorHostUpsert`: `UpsertConnectorHost` detects an
+  agent-maintained row by source and then applies a column-limited topology
+  update only, which is the same semantics with one less command type. Agent
+  rows are only re-submitted when topology/power-state actually changed.
+- **Secrets replicate by decision** — every node is a full clone able to take
+  over (per review); the token secret is AES-GCM ciphertext under a key
+  derived from the cluster-shared `JWT_SECRET` in the Raft log/snapshots.
+- **Connector runtime status is local** — `status`/`last_sync_at`/`last_error`
+  are written directly by the polling node and not replicated (cosmetic;
+  followers may show the last value from their own leadership term).
+- **No third health state on `/health`** — liveness stays last_seen-based.
+  The poller refreshes `last_seen` for *running* connector-owned rows only,
+  and the UI derives the amber "running (no agent)" / grey "stopped" states
+  from `source` + `guest_status` client-side.
+- **Hint dismissal is client-side** (localStorage + once-per-session toast),
+  not a replicated config key; the Connectors tab always lists hints.
+- **No UUID matching yet** — linking is MAC-only (gopsutil's `HostID` is
+  machine-id, not the SMBIOS UUID, so matching `smbios1` needs collecting
+  `product_uuid` separately). The poller does prefer an agent row over a
+  previously-created connector row when both match, and deletes the stale
+  connector duplicate.
+- **No rrddata backfill** — connector-only guests accumulate history from
+  connect time onward; guest disk usage is written only when PVE reports it
+  (QEMU without guest agent reports 0).
+- **Guest chips don't show per-guest cpu/mem** in the card (would cost N
+  metric queries per card); minimized rows show OS icon, name, type, IP and
+  state, and click through to the full stats page (connector guests have
+  normal chart history there).
+- **Metrics for an `agent+connector` host never fall back to the connector**
+  when the agent goes silent — the row stays visible with PVE power state,
+  but history pauses until the agent returns (avoids mixing two writers under
+  one host id).
+
+## 11. Open questions
 
 1. **Secret replication trade-off** — AES-GCM-under-`JWT_SECRET` in the Raft log is the
    proposal; the alternative (secret stays on the configuring node, `.env.agent`-style)

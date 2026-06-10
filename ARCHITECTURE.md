@@ -22,7 +22,7 @@ internal/modules/{name}/
     ├── entities/          # GORM models
     └── repositories/      # Repository interface + GORM implementation
 ```
-Existing modules: `cpu`, `memory`, `disk`, `network`, `docker`, `sensors`, `hosts`, `users`, `history_metrics`, `setup`, `health`, `system`, `stream`.
+Existing modules: `cpu`, `memory`, `disk`, `network`, `docker`, `sensors`, `hosts`, `users`, `history_metrics`, `setup`, `health`, `system`, `stream`, `connectors` (+ `proxmox` under `internal/metrics`).
 
 ### Hard rules
 1. **Handlers depend only on the Service interface** — never on a repository directly.
@@ -45,6 +45,8 @@ Existing modules: `cpu`, `memory`, `disk`, `network`, `docker`, `sensors`, `host
 | `internal/app/retention/service.go` | Data retention cleanup (runs hourly) |
 | `internal/modules/history_metrics/core/service.go` | Periodic collection every 5 s |
 | `users/application/token_service.go` | Refresh tokens hashed with SHA-256 |
+| `internal/platform/connectors/` | External data-source registry (Proxmox detection, CRUD, AES-GCM secrets) |
+| `internal/metrics/proxmox/` | PVE API client + leader-only poller (topology + metrics) |
 
 ### Repository interfaces (use for test mocks)
 - `cpu/infrastructure/repositories.CPURepository`
@@ -92,8 +94,16 @@ POST   /hosts/register
 GET    /stream              # SSE
 POST   /settings/auto-update   # admin; toggle auto-update (persists AUTO_UPDATE to .env.agent)
 POST   /settings/update-now    # admin; apply latest now (docker → controller; native → self-replace)
+GET    /connectors             # admin; environment-detection hints + configured connectors
+POST   /connectors             # admin; connect Proxmox (validates token, encrypts secret, replicates)
+POST   /connectors/proxmox/test  # admin; pre-flight creds → preview (nodes/guests/matched hosts)
+PATCH  /connectors/:id         # admin; enable/disable
+DELETE /connectors/:id         # admin; ?remove_hosts=true also drops connector-only host rows
+POST   /connectors/:id/sync    # admin; force a poller resync
 ```
 All metric endpoints accept `?hours=<float>` (default `0.0833` ≈ 5 min) and `?host_id=<uint>`. **`host_id=0` means this server instance** (resolved via current host MAC). Latest and history are always scoped to that host row; unknown `host_id` returns empty payloads (`latest: null`, empty history). **Metrics are replicated cluster-wide via Raft (`CmdMetricBatch`)**, so any node serves any host's CPU/mem/disk/net/docker history (and a host's data survives it going offline). The frontend is uniform: one REST load per metric on mount, then a **single SSE stream for every host** — the node publishes its own host's metrics each cycle *and* every replicated peer's metrics (`applyMetricBatch` → `broker.Publish`), and the client keeps events whose `collecting_host_id` matches the viewed host. The browser only ever talks to its own node; nodes sync over Raft. **Sensors are not replicated** (`/sensors` returns empty for remote hosts). See [docs/CLUSTER.md](docs/CLUSTER.md) for the full data-flow.
+
+**Connectors & host topology (Proxmox).** Hosts carry topology columns (`host_type`, `parent_mac`, `source`, `external_id`, `guest_status`). A configured **Proxmox connector** (admin → Connectors tab) is polled by the Raft leader (or the standalone node) every 10 s: the PVE node becomes a `hypervisor` host row, guests become `vm`/`lxc` children, and **guests are matched to already-registered agent hosts by NIC MAC** (`UpsertConnectorHost`) so nothing is duplicated — an agent row only gains topology (`agent+connector`), while agent-less guests get connector-fed metrics through the normal `CmdMetricBatch` pipeline. Credential-free probes (DMI / `lxc/<vmid>` cgroup / virtio guest-agent port, honouring `HOST_PROC`/`HOST_SYS`) surface a "running inside Proxmox" hint via `GET /connectors`. Connector rows replicate via Raft (`CmdConnectorUpsert/Delete`) with the token secret AES-GCM-encrypted under the cluster-shared `JWT_SECRET`. The UI nests guest rows inside the hypervisor's machine card / stats page. See [docs/PROXMOX.md](docs/PROXMOX.md).
 
 ### Environment variables
 | Variable | Default | Description |
