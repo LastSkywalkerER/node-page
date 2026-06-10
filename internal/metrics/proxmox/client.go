@@ -157,10 +157,10 @@ func (c *Client) ClusterResources(ctx context.Context) ([]Resource, error) {
 
 // NodeStatus is the hypervisor detail from /nodes/{node}/status.
 type NodeStatus struct {
-	PVEVersion string   `json:"pveversion"`
-	KVersion   string   `json:"kversion"`
-	Uptime     int64    `json:"uptime"`
-	LoadAvg    []any    `json:"loadavg"` // strings or numbers depending on PVE version
+	PVEVersion string `json:"pveversion"`
+	KVersion   string `json:"kversion"`
+	Uptime     int64  `json:"uptime"`
+	LoadAvg    []any  `json:"loadavg"` // strings or numbers depending on PVE version
 	CPUInfo    struct {
 		Model   string  `json:"model"`
 		CPUs    int     `json:"cpus"`
