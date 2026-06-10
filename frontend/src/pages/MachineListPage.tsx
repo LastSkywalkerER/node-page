@@ -14,6 +14,8 @@ import { useNetwork } from '@/widgets/network/useNetwork'
 import { CHART_COLORS } from '@/shared/lib/chartColors'
 import { formatBytes } from '@/shared/lib/utils'
 import type { Host } from '@/widgets/hosts/schemas'
+import { GuestList } from '@/widgets/hosts/GuestList'
+import { OSIcon } from '@/shared/components/OSIcon'
 import { getHostCardTitle } from '@/shared/lib/hostDisplay'
 import { AllApplicationsSection } from '@/widgets/applications/AllApplicationsSection'
 
@@ -42,6 +44,12 @@ function netSpeedKbps(interfaces?: { speed_kbps_recv: number; speed_kbps_sent: n
 function fmtSpeed(kbps: number): string {
   if (kbps >= 1000) return `${(kbps / 1000).toFixed(1)} Mb/s`
   return `${Math.round(kbps)} kb/s`
+}
+
+// Connector hosts without a readable NIC get a synthetic "proxmox:…" identity
+// in mac_address — not worth showing as a MAC.
+function isRealMac(mac: string): boolean {
+  return /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(mac)
 }
 
 /** Minimalist sparkline — no axes, no tooltip, fills with a soft gradient. */
@@ -179,7 +187,7 @@ function MetaCell({ label, value, mono = true }: { label: string; value: string;
   )
 }
 
-function HostCard({ host }: { host: Host }) {
+function HostCard({ host, guests = [] }: { host: Host; guests?: Host[] }) {
   const { isConnected, latency, uptime, showUptime, isLoading: connLoading } = useConnectionStatus(host.id)
   const cardTitle = getHostCardTitle(host)
 
@@ -210,18 +218,21 @@ function HostCard({ host }: { host: Host }) {
           <div className="relative z-2 flex-1 p-3 pt-5">
             {/* Header */}
             <div className="mb-2.5 flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                {cardTitle && (
-                  <h2 className="truncate font-display text-sm font-semibold leading-tight tracking-wide transition-colors duration-200 group-hover:text-primary">
-                    {cardTitle}
-                  </h2>
-                )}
-                {(host.platform || host.os) && (
-                  <p className="truncate font-mono text-[10px] text-muted-foreground">
-                    {host.platform || host.os}
-                    {host.platform_version ? ` ${host.platform_version}` : ''}
-                  </p>
-                )}
+              <div className="flex min-w-0 items-start gap-2">
+                <OSIcon host={host} className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                <div className="min-w-0">
+                  {cardTitle && (
+                    <h2 className="truncate font-display text-sm font-semibold leading-tight tracking-wide transition-colors duration-200 group-hover:text-primary">
+                      {cardTitle}
+                    </h2>
+                  )}
+                  {(host.platform || host.os) && (
+                    <p className="truncate font-mono text-[10px] text-muted-foreground">
+                      {host.platform || host.os}
+                      {host.platform_version ? ` ${host.platform_version}` : ''}
+                    </p>
+                  )}
+                </div>
               </div>
               <span
                 className={cn(
@@ -241,8 +252,11 @@ function HostCard({ host }: { host: Host }) {
               {host.ipv4 && <MetaCell label="IPv4" value={host.ipv4} />}
               {host.virtualization_system && <MetaCell label="Virt" value={host.virtualization_system} />}
               {host.kernel_version && <MetaCell label="Kernel" value={host.kernel_version} />}
-              {host.mac_address && <MetaCell label="MAC" value={host.mac_address} />}
+              {isRealMac(host.mac_address) && <MetaCell label="MAC" value={host.mac_address} />}
             </div>
+
+            {/* Nested guests (hypervisor cards) */}
+            <GuestList guests={guests} compact className="mt-2.5" />
           </div>
 
           {/* Footer */}
@@ -282,6 +296,17 @@ export function MachineListPage() {
   const { data: hostsData, isLoading } = useHosts()
   const hosts: Host[] = hostsData?.hosts ?? []
 
+  // Topology grouping: guests (parent resolved) nest inside their hypervisor's
+  // card and leave the top-level grid — the no-duplication rule.
+  const knownIds = new Set(hosts.map((h) => h.id))
+  const guestsByParent = new Map<number, Host[]>()
+  for (const h of hosts) {
+    if (h.parent_id && h.parent_id !== h.id && knownIds.has(h.parent_id)) {
+      guestsByParent.set(h.parent_id, [...(guestsByParent.get(h.parent_id) ?? []), h])
+    }
+  }
+  const topLevel = hosts.filter((h) => !(h.parent_id && h.parent_id !== h.id && knownIds.has(h.parent_id)))
+
   return (
     <div className="mx-auto max-w-7xl space-y-10 px-4 py-8 md:py-10">
       <section>
@@ -293,7 +318,7 @@ export function MachineListPage() {
               variant="secondary"
               className="tabular-nums font-mono border border-border/60 bg-primary/10 text-primary dark:bg-cyan-500/10 dark:text-cyan-200 dark:border-cyan-500/25"
             >
-              {hosts.length}
+              {topLevel.length}
             </Badge>
           )}
         </div>
@@ -324,8 +349,8 @@ export function MachineListPage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {hosts.map((host) => (
-              <HostCard key={host.id} host={host} />
+            {topLevel.map((host) => (
+              <HostCard key={host.id} host={host} guests={guestsByParent.get(host.id) ?? []} />
             ))}
           </div>
         )}

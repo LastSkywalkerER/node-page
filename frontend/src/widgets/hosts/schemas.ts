@@ -14,6 +14,17 @@ export const HostSchema = z.object({
   virtualization_system: z.string().optional().default(''),
   virtualization_role: z.string().optional().default(''),
   system_host_id: z.string().optional().default(''),
+  // Virtualization topology (filled by connectors, e.g. Proxmox):
+  // '' | 'hypervisor' | 'vm' | 'lxc'
+  host_type: z.string().optional().default(''),
+  // Local row id of the hypervisor this guest runs on; 0/absent = top-level.
+  parent_id: z.number().optional().default(0),
+  parent_mac: z.string().optional().default(''),
+  // '' / 'agent' (legacy default) | 'connector' | 'agent+connector'
+  source: z.string().optional().default(''),
+  external_id: z.string().optional().default(''),
+  // Hypervisor-reported power state for connector guests: running | stopped | paused | online | offline
+  guest_status: z.string().optional().default(''),
   last_seen: z.string().optional().default(''),
   created_at: z.string(),
   updated_at: z.string(),

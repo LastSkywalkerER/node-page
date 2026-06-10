@@ -1,7 +1,8 @@
-import { useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import { useHosts } from '@/widgets/hosts/useHosts'
 import { getHostNavLabel } from '@/shared/lib/hostDisplay'
 import ConnectionStatusWidget from '@/widgets/connection-status/ConnectionStatusWidget'
+import { OSIcon } from '@/shared/components/OSIcon'
 import { cn } from '@/lib/utils'
 
 type Section = 'stats' | 'containers'
@@ -17,6 +18,10 @@ export function MachineWorkspaceBar({ section }: { section: Section }) {
   const { data: hostsData } = useHosts()
   const hostRow = hostsData?.hosts?.find((h) => h.id === hostId)
   const hostName = hostRow ? getHostNavLabel(hostRow) : `Host #${id}`
+  // Guests expose their hypervisor in the crumb: "pve1 ▸ media-vm".
+  const parentRow = hostRow?.parent_id
+    ? hostsData?.hosts?.find((h) => h.id === hostRow.parent_id)
+    : undefined
   const title = SECTION_TITLE[section]
 
   return (
@@ -27,7 +32,17 @@ export function MachineWorkspaceBar({ section }: { section: Section }) {
       )}
     >
       <div className="min-w-0 space-y-1">
-        <p className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground truncate">
+        <p className="flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider text-muted-foreground truncate">
+          {parentRow && (
+            <>
+              <OSIcon host={parentRow} className="h-3 w-3" />
+              <Link to={`/machines/${parentRow.id}/stats`} className="hover:text-foreground">
+                {getHostNavLabel(parentRow)}
+              </Link>
+              <span className="text-muted-foreground/50">▸</span>
+            </>
+          )}
+          {hostRow && <OSIcon host={hostRow} className="h-3 w-3" />}
           {hostName}
         </p>
         <h1 className="font-display text-lg font-semibold tracking-wide sm:text-xl">

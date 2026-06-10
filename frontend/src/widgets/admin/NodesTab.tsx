@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Trash2, LogOut } from 'lucide-react'
+import { OSIcon } from '@/shared/components/OSIcon'
 import { apiClient } from '@/shared/lib/api'
 import { useHosts, useDeleteHost } from '@/widgets/hosts/useHosts'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -124,16 +125,19 @@ export function NodesTab() {
               <AccordionContent className="pb-4">
                 <ScrollArea className="h-[min(48vh,420px)] rounded-lg border border-border/60 dark:border-white/10">
                   <div className="divide-y divide-border/60 dark:divide-white/10">
-                    {hosts.map((host: { id: number; name: string; platform?: string }) => {
+                    {hosts.map((host) => {
                       const isThisNode = localHostId !== undefined && host.id === localHostId
                       return (
                         <div key={host.id} className="px-4 py-3 transition-colors hover:bg-muted/20">
                           <div className="flex items-center justify-between gap-2">
-                            <div className="min-w-0">
-                              <span className="block truncate font-medium">{host.name}</span>
-                              {host.platform && (
-                                <span className="text-xs text-muted-foreground">{host.platform}</span>
-                              )}
+                            <div className="flex min-w-0 items-center gap-2.5">
+                              <OSIcon host={host} className="h-4 w-4 shrink-0 text-muted-foreground" />
+                              <div className="min-w-0">
+                                <span className="block truncate font-medium">{host.name}</span>
+                                {host.platform && (
+                                  <span className="text-xs text-muted-foreground">{host.platform}</span>
+                                )}
+                              </div>
                             </div>
                             <div className="flex shrink-0 items-center gap-2">
                               {isThisNode ? (

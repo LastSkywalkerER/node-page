@@ -14,6 +14,7 @@ import { ApplicationDetailPage } from './pages/ApplicationDetailPage'
 import { AdminPage } from './pages/AdminPage'
 import { UsersTab } from './widgets/admin/UsersTab'
 import { NodesTab } from './widgets/admin/NodesTab'
+import { ConnectorsTab } from './widgets/connectors/ConnectorsTab'
 import { AdminRoute } from './shared/guards/AdminRoute'
 import { CyberBackdrop } from './shared/components/CyberBackdrop'
 
@@ -70,6 +71,7 @@ function App() {
             <Route index element={<Navigate to="users" replace />} />
             <Route path="users" element={<UsersTab />} />
             <Route path="nodes" element={<NodesTab />} />
+            <Route path="connectors" element={<ConnectorsTab />} />
           </Route>
         </Route>
       </Route>

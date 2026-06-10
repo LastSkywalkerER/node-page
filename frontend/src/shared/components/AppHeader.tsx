@@ -16,12 +16,16 @@ import { useHosts } from '@/widgets/hosts/useHosts'
 import { getHostNavLabel } from '@/shared/lib/hostDisplay'
 import { authService } from '@/shared/lib/auth'
 import { UpdateBadge } from '@/widgets/update/UpdateBadge'
+import { ConnectorHintDot, useConnectorHintToast } from '@/widgets/connectors/ConnectorHint'
 import { cn } from '@/lib/utils'
 
 function AdminNav() {
   const { pathname } = useLocation()
-  const isNodes = pathname.includes('/admin/nodes')
-  const sectionLabel = isNodes ? 'Nodes' : 'Users'
+  const sectionLabel = pathname.includes('/admin/nodes')
+    ? 'Nodes'
+    : pathname.includes('/admin/connectors')
+      ? 'Connectors'
+      : 'Users'
 
   return (
     <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
@@ -93,6 +97,24 @@ function AdminNav() {
               )}
             >
               Nodes
+            </span>
+          )}
+        </NavLink>
+        <NavLink
+          to="/admin/connectors"
+          className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        >
+          {({ isActive }) => (
+            <span
+              className={cn(
+                'relative px-3 py-1 rounded-md transition-all duration-200 cursor-pointer select-none text-xs font-medium inline-block',
+                isActive
+                  ? 'bg-primary text-primary-foreground shadow-[0_0_20px_-4px_oklch(0.72_0.16_195/0.45)]'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-background/50 dark:hover:bg-white/5'
+              )}
+            >
+              Connectors
+              <ConnectorHintDot className="absolute -right-0.5 -top-0.5" />
             </span>
           )}
         </NavLink>
@@ -233,6 +255,7 @@ export function AppHeader() {
   const onMachineDetail = !!useMatch('/machines/:id/*')
   const onApplicationDetail = !!useMatch('/applications/:hostId/:project')
   const onAdmin = !!useMatch('/admin/*')
+  useConnectorHintToast()
 
   const handleLogout = async () => {
     try { await authService.logout() } finally { clearAuth() }
@@ -273,11 +296,12 @@ export function AppHeader() {
                   <Link
                     to="/admin/users"
                     aria-label="Administration"
-                    className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-lg text-foreground outline-none transition-colors hover:bg-muted hover:text-foreground dark:hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                    className="relative inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-lg text-foreground outline-none transition-colors hover:bg-muted hover:text-foreground dark:hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                   />
                 )}
               >
                 <Settings className="h-[15px] w-[15px]" />
+                <ConnectorHintDot className="absolute right-0.5 top-0.5" />
               </TooltipTrigger>
               <TooltipContent side="bottom">Users and cluster admin</TooltipContent>
             </Tooltip>

@@ -4400,6 +4400,11 @@ signal-exit@^4.1.0:
   resolved "https://registry.npmjs.org/signal-exit/-/signal-exit-4.1.0.tgz"
   integrity sha512-bzyZ1e88w9O1iNJbKnOlvYTrWPDl46O1bG0D3XInv+9tkPrxrN8jUUTiFlDkkmKWgn1M6CfIA13SuGqOa9Korw==
 
+simple-icons@16.23.0:
+  version "16.23.0"
+  resolved "https://registry.yarnpkg.com/simple-icons/-/simple-icons-16.23.0.tgz#c769d675e111375009246f7fe72175a56136872d"
+  integrity sha512-08MaTpxj9zGYUIe38tfELYkaHiGE1YgbrbXmTBf+GPxi5mEqLSORQqOXrP0QKPdaFuzEDSmW5o4xkbLlFhmdCw==
+
 sisteransi@^1.0.5:
   version "1.0.5"
   resolved "https://registry.npmjs.org/sisteransi/-/sisteransi-1.0.5.tgz"

@@ -8,6 +8,8 @@ import { DiskWidget } from '@/widgets/disk/DiskWidget'
 import { NetworkWidget } from '@/widgets/network/NetworkWidget'
 import SensorsWidget from '@/widgets/sensors/SensorsWidget'
 import { MachineWorkspaceBar } from '@/shared/components/MachineWorkspaceBar'
+import { useHosts } from '@/widgets/hosts/useHosts'
+import { GuestList } from '@/widgets/hosts/GuestList'
 
 export function MachineStatsPage() {
   const { id } = useParams<{ id: string }>()
@@ -15,6 +17,10 @@ export function MachineStatsPage() {
 
   useMetricsStream(hostId)
   useLiveMetricsQuerySync(hostId)
+
+  // Hypervisor pages list their guests minimized below the metric widgets.
+  const { data: hostsData } = useHosts()
+  const guests = (hostsData?.hosts ?? []).filter((h) => h.parent_id === hostId && h.id !== hostId)
 
   return (
     <div className="mx-auto max-w-7xl">
@@ -24,6 +30,13 @@ export function MachineStatsPage() {
         <ErrorBoundary name="Memory"><MemoryWidget hostId={hostId} /></ErrorBoundary>
         <ErrorBoundary name="Disk"><DiskWidget hostId={hostId} /></ErrorBoundary>
         <ErrorBoundary name="Network"><NetworkWidget hostId={hostId} /></ErrorBoundary>
+        {guests.length > 0 && (
+          <ErrorBoundary name="Guests">
+            <div className="md:col-span-2 xl:col-span-3">
+              <GuestList guests={guests} />
+            </div>
+          </ErrorBoundary>
+        )}
         <ErrorBoundary name="Sensors">
           <div className="md:col-span-2 xl:col-span-3">
             <SensorsWidget hostId={hostId} />
