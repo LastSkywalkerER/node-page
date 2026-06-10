@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom';
 import { ExternalLink, Box, ArrowUpCircle, RefreshCw, ChevronsUp } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { AppIcon } from '@/shared/ui/AppIcon';
+import { RingGauge } from '@/widgets/docker/ContainerRow';
 import { cn } from '@/lib/utils';
 import type { DockerApplication } from './schemas';
 
@@ -67,6 +68,7 @@ export function ApplicationTile({ app, hostId, hostIPv4 }: ApplicationTileProps)
       <div className="flex items-start gap-3">
         <AppIcon
           slug={app.icon_slug}
+          publicUrl={app.public_url}
           name={app.display_name}
           className="h-10 w-10 shrink-0 rounded-md"
         />
@@ -115,19 +117,25 @@ export function ApplicationTile({ app, hostId, hostIPv4 }: ApplicationTileProps)
       </div>
 
       <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
-        <div className="flex flex-col gap-0.5 rounded-md bg-muted/30 px-2 py-1">
-          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">CPU</span>
-          <span className="font-mono font-medium tabular-nums" style={{ color: metricColor(cpu) }}>
-            {cpu.toFixed(0)}%
-          </span>
+        <div className="flex items-center gap-1.5 rounded-md bg-muted/30 px-2 py-1">
+          <RingGauge value={cpu} color={metricColor(cpu)} size={22} />
+          <div className="flex min-w-0 flex-col gap-0.5 leading-none">
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">CPU</span>
+            <span className="font-mono font-medium tabular-nums" style={{ color: metricColor(cpu) }}>
+              {cpu.toFixed(0)}%
+            </span>
+          </div>
         </div>
-        <div className="flex flex-col gap-0.5 rounded-md bg-muted/30 px-2 py-1">
-          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">MEM</span>
-          <span className="font-mono font-medium tabular-nums" style={{ color: metricColor(mem) }}>
-            {fmtBytes(app.stats.memory_usage ?? 0)}
-          </span>
+        <div className="flex items-center gap-1.5 rounded-md bg-muted/30 px-2 py-1">
+          <RingGauge value={mem} color={metricColor(mem)} size={22} />
+          <div className="flex min-w-0 flex-col gap-0.5 leading-none">
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">MEM</span>
+            <span className="truncate font-mono font-medium tabular-nums" style={{ color: metricColor(mem) }}>
+              {fmtBytes(app.stats.memory_usage ?? 0)}
+            </span>
+          </div>
         </div>
-        <div className="flex flex-col gap-0.5 rounded-md bg-muted/30 px-2 py-1">
+        <div className="flex flex-col justify-center gap-0.5 rounded-md bg-muted/30 px-2 py-1">
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground">DISK</span>
           <span className="font-mono font-medium tabular-nums text-foreground/80">
             {fmtBytes(app.total_size_root_fs ?? 0)}
@@ -143,9 +151,11 @@ export function ApplicationTile({ app, hostId, hostIPv4 }: ApplicationTileProps)
               target="_blank"
               rel="noreferrer"
               onClick={stop}
-              className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary transition-colors hover:bg-primary/20"
+              title={app.public_url}
+              className="inline-flex max-w-full items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary transition-colors hover:bg-primary/20"
             >
-              <ExternalLink className="h-2.5 w-2.5" /> open
+              <ExternalLink className="h-2.5 w-2.5 shrink-0" />
+              <span className="truncate">{stripScheme(app.public_url)}</span>
             </a>
           )}
           {internalLinks.length > 0

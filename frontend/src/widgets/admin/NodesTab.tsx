@@ -12,7 +12,13 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from '@/components/ui/accordion'
-import { RaftClusterWidget, FormClusterWidget, useRaftStatus, useLeaveRaftCluster } from '@/widgets/raft'
+import {
+  RaftClusterWidget,
+  FormClusterWidget,
+  useRaftStatus,
+  useLeaveRaftCluster,
+  useFactoryResetRaft,
+} from '@/widgets/raft'
 
 const nodeAccordionTrigger =
   'py-3 text-sm hover:no-underline font-display tracking-wide [&_[data-slot=accordion-trigger-icon]]:text-primary/80'
@@ -38,6 +44,7 @@ export function NodesTab() {
 
   const deleteHost = useDeleteHost()
   const leaveCluster = useLeaveRaftCluster()
+  const factoryReset = useFactoryResetRaft()
 
   const onRemoveHost = (id: number, name: string) => {
     if (!window.confirm(`Remove host "${name}" and all of its metrics from the cluster? This cannot be undone.`)) return
@@ -56,7 +63,25 @@ export function NodesTab() {
       return
     leaveCluster.mutate(undefined, {
       onSuccess: (r) => toast.success(r.next || 'Left the cluster'),
-      onError: (e) => toast.error('Leave failed: ' + e.message),
+      onError: (e) => {
+        // A clean leave can fail when this node is wedged (e.g. a half-completed
+        // join with no quorum, so no leader can process the membership removal).
+        // Offer the force path: factory-reset wipes Raft state + RAFT_* from .env
+        // and reverts to standalone without needing a leader.
+        toast.error('Leave failed: ' + e.message)
+        if (
+          window.confirm(
+            'Leave failed — this node may be stuck (e.g. a failed cluster join with no quorum).\n\n' +
+              'Force it out with a Factory reset? This wipes Raft state and removes RAFT_* from .env, ' +
+              'reverting this node to standalone after a restart. Local data (users, hosts, metrics) is kept.'
+          )
+        ) {
+          factoryReset.mutate(undefined, {
+            onSuccess: () => toast.success('Raft factory-reset done. Restart the process to apply.'),
+            onError: (err) => toast.error('Factory reset failed: ' + err.message),
+          })
+        }
+      },
     })
   }
   const raftPanelVisible = raftEnabled || Boolean(raftStatus?.boot_error)

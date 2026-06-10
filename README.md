@@ -57,10 +57,10 @@ Node Stats is perfect for:
 - ✅ Backend unit tests for service layer
 - ✅ Multi-node statistics synchronization and aggregation (Raft consensus replication — nodes form a cluster via the setup wizard and replicate state across peers; see "Clustering (Raft)" below)
 - ❌ Alert system (configurable notifications when metric thresholds are exceeded)
-- ❌ Stack detection with aggregation into apps with icons and minimal stats
+- ✅ Stack detection with aggregation into apps with icons and minimal stats
 - ❌ Auto config for reverse proxy for apps routing
-- ❌ Application port tunneling (tunnel selected application ports from closed machines through the central node to local machine for fast, direct, and secure access)
-- ❌ Container logs monitoring (real-time viewing and filtering of Docker container logs)
+- 🚫 Application port tunneling (tunnel selected application ports from closed machines through the central node to local machine for fast, direct, and secure access) — declined; [NetBird](https://netbird.io/) solves this better
+- ✅ Container logs monitoring (real-time viewing and filtering of Docker container logs)
 - ❌ Additional time-series databases support (integration with databases better suited for time-series data like InfluxDB, TimescaleDB)
 
 ## Screenshots

@@ -117,6 +117,33 @@ function mergeLatestIntoQuery(
 }
 
 /**
+ * Syncs the live applications projection from SSE into the applications query
+ * caches so the list (per-host) and any open detail view update in lockstep with
+ * the 5s collection cycle instead of polling on an independent clock.
+ */
+function syncApplications(qc: QueryClient, hostId: number, apps: unknown[] | undefined) {
+  if (!Array.isArray(apps)) return;
+
+  // Per-host applications list cache, when one is mounted.
+  qc.setQueryData(['applications', hostId], (old: unknown) => {
+    if (old == null || typeof old !== 'object') return old;
+    return { ...(old as Record<string, unknown>), applications: apps };
+  });
+
+  // Open application-detail views for this host: replace the matching app by project.
+  qc.setQueriesData({ queryKey: ['application-detail', hostId] }, (old: unknown) => {
+    if (old == null || typeof old !== 'object') return old;
+    const cur = old as { application?: { project?: string } };
+    const project = cur.application?.project;
+    if (!project) return old;
+    const match = apps.find(
+      (a) => a != null && typeof a === 'object' && (a as { project?: string }).project === project
+    );
+    return match ? { application: match } : old;
+  });
+}
+
+/**
  * Pushes SSE live snapshots from metricsStore into React Query caches so widgets
  * keep using useCPU/useMemory/... without polling, and chart `history` grows from the stream.
  */
@@ -131,6 +158,7 @@ export function useLiveMetricsQuerySync(hostId: number) {
       mergeLatestIntoQuery(qc, 'disk-metrics', hostId, state.disk, streamTs, buildDiskHistoryPoint);
       mergeLatestIntoQuery(qc, 'network-metrics', hostId, state.network, streamTs, buildNetworkHistoryPoint);
       mergeLatestIntoQuery(qc, 'docker-metrics', hostId, state.docker, streamTs, null);
+      syncApplications(qc, hostId, state.applications);
     });
   }, [hostId, qc]);
 }

@@ -170,3 +170,49 @@ func TestBuildSyntheticCompose_DisambiguatesReplicas(t *testing.T) {
 		t.Fatalf("expected a disambiguated 'web-2' service block:\n%s", out)
 	}
 }
+
+// TestResolveAppIcon_PrefersMainService verifies the app icon comes from the
+// user-facing container, not a database/cache, and honours an explicit override.
+func TestResolveAppIcon_PrefersMainService(t *testing.T) {
+	// Stack: a postgres DB + a user-facing app image. The app should win even
+	// though the DB container sorts first by name.
+	app := DockerContainer{Name: "myapp-web-1", Image: "ghcr.io/acme/dashboard:1.0", Service: "web",
+		Ports: []DockerPort{{PrivatePort: 80, PublicPort: 8080, Type: "tcp"}}}
+	db := DockerContainer{Name: "aaa-db-1", Image: "postgres:16-alpine", Service: "db"}
+	if got := resolveAppIcon([]DockerContainer{db, app}); got != "dashboard" {
+		t.Fatalf("expected main-service icon 'dashboard', got %q", got)
+	}
+
+	// Database-only stack still yields the database's icon.
+	if got := resolveAppIcon([]DockerContainer{db}); got != "postgres" {
+		t.Fatalf("expected db-only icon 'postgres', got %q", got)
+	}
+
+	// Explicit nodestats.icon override on any container wins outright.
+	labeled := DockerContainer{Name: "x", Image: "postgres:16", Labels: map[string]string{"nodestats.icon": "sh-custom"}}
+	if got := resolveAppIcon([]DockerContainer{labeled, app}); got != "sh-custom" {
+		t.Fatalf("expected override 'sh-custom', got %q", got)
+	}
+}
+
+// TestIsInfraContainer covers the database/cache/app classification.
+func TestIsInfraContainer(t *testing.T) {
+	cases := []struct {
+		image, service string
+		infra          bool
+	}{
+		{"postgres:16-alpine", "db", true},
+		{"valkey/valkey:7.2.11-alpine", "redis", true},
+		{"rabbitmq:3.13-management", "mq", true},
+		{"minio/minio:latest", "minio", true},
+		{"ghcr.io/acme/dashboard:1.0", "web", false},
+		{"makeplane/plane-frontend:v1.3.1", "web", false},
+		{"nginx:alpine", "frontend", false},
+	}
+	for _, c := range cases {
+		got := isInfraContainer(DockerContainer{Image: c.image, Service: c.service})
+		if got != c.infra {
+			t.Errorf("isInfraContainer(%q,%q) = %v, want %v", c.image, c.service, got, c.infra)
+		}
+	}
+}

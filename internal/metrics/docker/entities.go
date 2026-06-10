@@ -162,6 +162,10 @@ type DockerMount struct {
 	Destination string `json:"destination"`
 	// RW indicates whether the mount is read-write (false = read-only).
 	RW bool `json:"rw"`
+	// Size is the named volume's on-disk size in bytes (from the daemon's
+	// volume disk-usage report). 0 for bind/tmpfs mounts or when not yet
+	// computed. Refreshed on the slow size cadence to avoid daemon load.
+	Size int64 `json:"size,omitempty"`
 }
 
 // DockerContainerEntity represents a Docker container stored in the database.

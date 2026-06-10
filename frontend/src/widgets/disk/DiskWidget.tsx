@@ -44,9 +44,16 @@ export function DiskWidget({ hostId }: DiskWidgetProps) {
             <HardDrive className="h-4 w-4 text-muted-foreground" />
             <span className="text-sm font-medium text-muted-foreground">Disk</span>
           </div>
-          <span className="text-2xl font-bold tabular-nums" style={{ color }}>
-            {pct.toFixed(1)}%
-          </span>
+          <div className="flex flex-col items-end leading-none">
+            <span className="text-2xl font-bold tabular-nums" style={{ color }}>
+              {pct.toFixed(1)}%
+            </span>
+            {latest.used != null && latest.total != null && (
+              <span className="mt-0.5 text-[10px] tabular-nums text-muted-foreground">
+                {formatBytes(latest.used)} / {formatBytes(latest.total)}
+              </span>
+            )}
+          </div>
         </div>
         <div className="mt-2 h-1 rounded-full bg-muted overflow-hidden">
           <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: color }} />

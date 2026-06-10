@@ -27,6 +27,8 @@ export const dockerMountSchema = z.object({
   source: z.string(),
   destination: z.string(),
   rw: z.boolean(),
+  // Named-volume on-disk size in bytes (0/absent for bind/tmpfs or unknown).
+  size: z.number().optional(),
 });
 
 export const dockerContainerSchema = z.object({

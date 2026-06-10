@@ -218,9 +218,25 @@ func (h *Handler) Leave(c *gin.Context) {
 		st = h.svc.Status() // refresh — should now be a follower with a new leader
 	}
 
-	// Follower / candidate: only the (other) leader can change membership.
+	// Follower / candidate: only the (other) leader can change membership. But a
+	// node whose JOIN never completed — or a lone node that never formed a quorum
+	// — sits here forever with no elected leader. There is no remote membership to
+	// remove (this node was never a committed voter in a working cluster), so
+	// decouple it locally instead of wedging the operator with a 503. A genuine
+	// multi-voter cluster that merely lost quorum keeps the strict path; the
+	// operator can still force out via Factory reset.
 	if st.LeaderID == "" || strings.EqualFold(st.LeaderID, self) {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no other leader available to process leave yet; retry shortly"})
+		liveVoters := 0
+		for _, p := range st.Peers {
+			if p.Suffrage == "voter" {
+				liveVoters++
+			}
+		}
+		if liveVoters <= 1 {
+			h.finishLeave(c, self)
+			return
+		}
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no reachable leader to process leave (cluster has no quorum); retry shortly, or use Factory reset to force this node out"})
 		return
 	}
 	if h.db == nil {

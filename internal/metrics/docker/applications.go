@@ -151,9 +151,6 @@ func BuildApplications(m *DockerMetric) []DockerApplication {
 			app.TotalSizeRw += c.SizeRw
 			app.TotalSizeRootFs += c.SizeRootFs
 			app.Volumes = mergeVolumes(app.Volumes, c.Mounts)
-			if app.IconSlug == "" {
-				app.IconSlug = iconSlug(c)
-			}
 			if app.PublicURL == "" {
 				app.PublicURL = publicURL(c.Labels)
 			}
@@ -193,6 +190,9 @@ func BuildApplications(m *DockerMetric) []DockerApplication {
 			}
 			return app.Volumes[i].Source < app.Volumes[j].Source
 		})
+		// Resolve the icon from the application's MAIN (user-facing) container —
+		// not the first one, which is often a database/cache.
+		app.IconSlug = resolveAppIcon(app.Containers)
 		for _, c := range app.Containers {
 			rebuild := isRebuildUpdate(c)
 			if rebuild {
@@ -337,10 +337,10 @@ func mergeApplications(project string, members []DockerApplication) DockerApplic
 		if out.PublicURL == "" {
 			out.PublicURL = m.PublicURL
 		}
-		if out.IconSlug == "" {
-			out.IconSlug = m.IconSlug
-		}
 	}
+	// Re-resolve the icon across ALL merged containers so the main service wins
+	// (members were grouped by name prefix; the first member is often a "-db").
+	out.IconSlug = resolveAppIcon(out.Containers)
 	out.IsSingleton = out.TotalContainers == 1
 	out.ServiceCount = countServices(out.Containers)
 	sort.Slice(out.Containers, func(i, j int) bool { return out.Containers[i].Name < out.Containers[j].Name })
@@ -461,15 +461,84 @@ var (
 	traefikHostRule  = regexp.MustCompile("Host\\(\\s*`([^`]+)`")
 )
 
-// iconSlug derives an icon slug for the container: an explicit override label
-// wins, otherwise it is derived from the image reference, then the service /
-// project name.
-func iconSlug(c DockerContainer) string {
-	if c.Labels != nil {
-		if v := strings.TrimSpace(c.Labels["nodestats.icon"]); v != "" {
-			return v
+// infraImageTokens matches images/services that are typically SUPPORTING
+// services (databases, caches, queues, search, object storage, proxies) rather
+// than the user-facing "main" app of a stack. Used to pick which container's
+// icon best represents the application.
+var infraImageTokens = []string{
+	"postgres", "postgresql", "pgvector", "timescaledb", "supabase", "mysql",
+	"mariadb", "percona", "mongo", "mongodb", "redis", "valkey", "keydb",
+	"dragonfly", "memcached", "rabbitmq", "kafka", "zookeeper", "nats",
+	"pulsar", "elasticsearch", "opensearch", "solr", "meilisearch", "typesense",
+	"clickhouse", "cassandra", "scylla", "cockroach", "influxdb", "victoriametrics",
+	"etcd", "consul", "vault", "minio", "garage", "traefik", "haproxy", "varnish",
+	"pgbouncer", "pgadmin", "adminer", "mailhog", "maildev",
+}
+
+// infraServiceTokens are common compose service names for supporting services.
+var infraServiceTokens = []string{
+	"db", "database", "postgres", "mysql", "mariadb", "mongo", "redis", "cache",
+	"valkey", "queue", "mq", "broker", "amqp", "rabbitmq", "kafka", "search",
+	"elastic", "storage", "s3", "minio", "proxy", "traefik",
+}
+
+// isInfraContainer reports whether a container looks like a supporting service
+// (DB/cache/queue/search/storage/proxy) rather than the main user-facing app.
+func isInfraContainer(c DockerContainer) bool {
+	seg := strings.ToLower(lastImageSegment(c.Image))
+	for _, tok := range infraImageTokens {
+		if seg == tok || strings.HasPrefix(seg, tok) {
+			return true
 		}
 	}
+	svc := strings.ToLower(strings.TrimSpace(c.Service))
+	for _, tok := range infraServiceTokens {
+		if svc == tok {
+			return true
+		}
+	}
+	return false
+}
+
+// containerHasPublicEntry reports whether a container exposes a host-published
+// port or a reverse-proxy route — a signal that it's the user-facing service.
+func containerHasPublicEntry(c DockerContainer) bool {
+	for _, p := range c.Ports {
+		if p.PublicPort != 0 || p.PublicURL != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// pickMainContainerIndex returns the index of the application's main
+// (user-facing) container, scoring non-infra services and externally-reachable
+// containers above databases/caches. Returns -1 for no containers; for an
+// all-infra stack it returns the best-scoring (first, deterministic) member so
+// a database-only stack still gets its database's icon.
+func pickMainContainerIndex(containers []DockerContainer) int {
+	best, bestScore := -1, -1<<31
+	for i, c := range containers {
+		score := 0
+		if !isInfraContainer(c) {
+			score += 100
+		}
+		if containerHasPublicEntry(c) {
+			score += 20
+		}
+		if publicURL(c.Labels) != "" {
+			score += 10
+		}
+		if score > bestScore {
+			best, bestScore = i, score
+		}
+	}
+	return best
+}
+
+// imageDerivedSlug derives an icon slug from a container's image, then its
+// service / project name (no label lookup).
+func imageDerivedSlug(c DockerContainer) string {
 	if s := slugify(lastImageSegment(c.Image)); s != "" {
 		return s
 	}
@@ -477,6 +546,24 @@ func iconSlug(c DockerContainer) string {
 		return s
 	}
 	return slugify(c.Project)
+}
+
+// resolveAppIcon picks an application's icon slug: an explicit nodestats.icon
+// label on ANY container wins; otherwise it derives the slug from the main
+// (user-facing) container so a stack's app icon — not its database — represents it.
+func resolveAppIcon(containers []DockerContainer) string {
+	for _, c := range containers {
+		if c.Labels != nil {
+			if v := strings.TrimSpace(c.Labels["nodestats.icon"]); v != "" {
+				return v
+			}
+		}
+	}
+	idx := pickMainContainerIndex(containers)
+	if idx < 0 {
+		return ""
+	}
+	return imageDerivedSlug(containers[idx])
 }
 
 // lastImageSegment strips registry/namespace and any tag/digest from an image

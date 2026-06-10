@@ -1,13 +1,16 @@
 import { useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { useMetricsStream } from '@/shared/hooks/useEventSource';
+import { useLiveMetricsQuerySync } from '@/shared/hooks/useLiveMetricsQuerySync';
 import { Boxes, Cpu, MemoryStick, Network, HardDrive, Database, FolderOpen, ExternalLink, ArrowUpCircle } from 'lucide-react';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { MetricCardSkeleton } from '@/shared/components/MetricCardSkeleton';
 import { MetricWidgetEmpty } from '@/shared/components/MetricWidgetEmpty';
 import { AppIcon } from '@/shared/ui/AppIcon';
-import { ContainerRow } from '@/widgets/docker/ContainerRow';
+import { ContainerRow, RingGauge } from '@/widgets/docker/ContainerRow';
 import { LogViewer } from '@/widgets/applications/LogViewer';
+import { ComposeYaml } from '@/widgets/applications/ComposeYaml';
 import { cn } from '@/lib/utils';
 import { useHosts } from '@/widgets/hosts/useHosts';
 import {
@@ -33,10 +36,14 @@ function fmtBytes(b: number): string {
         : `${b} B`;
 }
 
-function StatChip({ icon: Icon, label, value, color }: { icon: typeof Cpu; label: string; value: string; color?: string }) {
+function StatChip({ icon: Icon, label, value, color, pct }: { icon: typeof Cpu; label: string; value: string; color?: string; pct?: number }) {
   return (
     <div className="flex items-center gap-2 rounded-xl border border-border/60 bg-card backdrop-blur-xl backdrop-saturate-150 px-3 py-2 dark:border-white/10">
-      <Icon className="h-4 w-4 text-muted-foreground" />
+      {pct != null ? (
+        <RingGauge value={pct} color={color ?? '#10b981'} size={26} />
+      ) : (
+        <Icon className="h-4 w-4 text-muted-foreground" />
+      )}
       <div className="min-w-0">
         <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
         <p className="font-mono text-sm font-medium tabular-nums" style={color ? { color } : undefined}>{value}</p>
@@ -49,6 +56,11 @@ export function ApplicationDetailPage() {
   const { hostId, project } = useParams<{ hostId: string; project: string }>();
   const hid = Number(hostId);
   const proj = decodeURIComponent(project ?? '');
+
+  // Live SSE updates for the local host: keeps the per-container + aggregate
+  // stats in lockstep with the 5s collection cycle (synced into the detail cache).
+  useMetricsStream(hid);
+  useLiveMetricsQuerySync(hid);
 
   const { data, isLoading } = useApplicationDetail(hid, proj);
   const { data: hostsData } = useHosts();
@@ -77,11 +89,21 @@ export function ApplicationDetailPage() {
 
   const cpu = app.stats.cpu_percent ?? 0;
 
+  // All externally-reachable URLs: the primary public link + every reverse-proxy
+  // routed port URL, de-duplicated. Rendered as individual "open" links.
+  const stripScheme = (u: string) => u.replace(/^https?:\/\//, '').replace(/\/$/, '');
+  const urls = Array.from(
+    new Set([
+      ...(app.public_url ? [app.public_url] : []),
+      ...((app.ports ?? []).map((p) => p.public_url).filter(Boolean) as string[]),
+    ])
+  );
+
   return (
     <div className="mx-auto max-w-5xl px-4 py-6">
       {/* Header */}
       <div className="mb-5 flex items-start gap-4">
-        <AppIcon slug={app.icon_slug} name={app.display_name} className="h-12 w-12 shrink-0 rounded-lg" />
+        <AppIcon slug={app.icon_slug} publicUrl={app.public_url} name={app.display_name} className="h-12 w-12 shrink-0 rounded-lg" />
         <div className="min-w-0 flex-1">
           <h1 className="truncate font-display text-2xl font-semibold tracking-wide">{app.display_name}</h1>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -98,22 +120,35 @@ export function ApplicationDetailPage() {
             )}
           </div>
         </div>
-        {app.public_url && (
-          <a
-            href={app.public_url}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-primary/10 px-3 py-1.5 text-xs text-primary transition-colors hover:bg-primary/20"
-          >
-            <ExternalLink className="h-3.5 w-3.5" /> Open
-          </a>
+        {urls.length > 0 && (
+          <div className="flex max-w-[55%] shrink-0 flex-wrap justify-end gap-1.5">
+            {urls.map((u) => (
+              <a
+                key={u}
+                href={u}
+                target="_blank"
+                rel="noreferrer"
+                title={u}
+                className="inline-flex max-w-full items-center gap-1.5 rounded-lg bg-primary/10 px-3 py-1.5 text-xs text-primary transition-colors hover:bg-primary/20"
+              >
+                <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">{stripScheme(u)}</span>
+              </a>
+            ))}
+          </div>
         )}
       </div>
 
       {/* Summary chips */}
       <div className="mb-6 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-        <StatChip icon={Cpu} label="CPU total" value={`${cpu.toFixed(1)}%`} color={metricColor(cpu)} />
-        <StatChip icon={MemoryStick} label="Memory" value={fmtBytes(app.stats.memory_usage ?? 0)} />
+        <StatChip icon={Cpu} label="CPU total" value={`${cpu.toFixed(1)}%`} color={metricColor(cpu)} pct={cpu} />
+        <StatChip
+          icon={MemoryStick}
+          label="Memory"
+          value={fmtBytes(app.stats.memory_usage ?? 0)}
+          color={metricColor(app.stats.memory_percent ?? 0)}
+          pct={app.stats.memory_percent ?? 0}
+        />
         <StatChip icon={Database} label="Disk" value={fmtBytes(app.total_size_root_fs ?? 0)} />
         <StatChip icon={Network} label="Net ↓/↑" value={`${fmtBytes(app.stats.network_rx ?? 0)} / ${fmtBytes(app.stats.network_tx ?? 0)}`} />
         <StatChip icon={HardDrive} label="Block r/w" value={`${fmtBytes(app.stats.block_read ?? 0)} / ${fmtBytes(app.stats.block_write ?? 0)}`} />
@@ -199,6 +234,11 @@ export function ApplicationDetailPage() {
                                     <Badge variant="secondary" className="h-4 px-1 py-0 text-[9px]">
                                       {v.rw ? 'rw' : 'ro'}
                                     </Badge>
+                                    {v.size ? (
+                                      <span className="shrink-0 font-mono text-[9px] tabular-nums text-muted-foreground/80">
+                                        {fmtBytes(v.size)}
+                                      </span>
+                                    ) : null}
                                   </div>
                                   <p
                                     className="truncate font-mono text-[10px] text-muted-foreground/70"
@@ -286,9 +326,11 @@ export function ApplicationDetailPage() {
                       Reconstructed from container metadata (read-only). The original compose file is not reachable from this server.
                     </p>
                   )}
-                  <pre className="max-h-[60vh] overflow-auto rounded-md bg-muted/40 p-3 font-mono text-[11px] leading-relaxed text-foreground/90">
-                    {showReal && compose.data?.real_available ? compose.data?.real : compose.data?.synthetic}
-                  </pre>
+                  <ComposeYaml
+                    content={
+                      (showReal && compose.data?.real_available ? compose.data?.real : compose.data?.synthetic) ?? ''
+                    }
+                  />
                   {showReal && compose.data?.config_files && compose.data.config_files.length > 0 && (
                     <p className="mt-2 font-mono text-[10px] text-muted-foreground/60">
                       {compose.data.config_files.join(', ')}

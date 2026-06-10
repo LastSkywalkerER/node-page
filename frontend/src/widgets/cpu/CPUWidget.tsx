@@ -40,6 +40,7 @@ export function CPUWidget({ hostId }: CPUWidgetProps) {
   const pct = metrics.latest?.usage_percent ?? 0
   const color = usageColor(pct)
   const latest = metrics.latest as Record<string, unknown>
+  const cores = typeof latest.cores === 'number' ? (latest.cores as number) : undefined
   const details = SHOW_KEYS
     .filter(k => latest[k] != null && latest[k] !== 0 && latest[k] !== '')
     .map(k => ({ key: k, label: LABEL_MAP[k] ?? k, value: fmt(k, latest[k]) }))
@@ -54,9 +55,14 @@ export function CPUWidget({ hostId }: CPUWidgetProps) {
             <Cpu className="h-4 w-4 text-muted-foreground" />
             <span className="text-sm font-medium text-muted-foreground">CPU</span>
           </div>
-          <span className="text-2xl font-bold tabular-nums" style={{ color }}>
-            {pct.toFixed(1)}%
-          </span>
+          <div className="flex flex-col items-end leading-none">
+            <span className="text-2xl font-bold tabular-nums" style={{ color }}>
+              {pct.toFixed(1)}%
+            </span>
+            {cores != null && (
+              <span className="mt-0.5 text-[10px] tabular-nums text-muted-foreground">of {cores} cores</span>
+            )}
+          </div>
         </div>
         <div className="mt-2 h-1 rounded-full bg-muted overflow-hidden">
           <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: color }} />

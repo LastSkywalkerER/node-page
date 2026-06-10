@@ -9,6 +9,8 @@ export interface MetricsPayload {
   disk?: Record<string, unknown>;
   network?: Record<string, unknown>;
   docker?: Record<string, unknown>;
+  /** Pre-built application projection for the collecting host (live app stats). */
+  applications?: unknown[];
 }
 
 interface MetricsState extends MetricsPayload {
@@ -22,6 +24,7 @@ export const useMetricsStore = create<MetricsState>((set) => ({
   disk: undefined,
   network: undefined,
   docker: undefined,
+  applications: undefined,
   // Do not assign undefined — a partial SSE envelope must not wipe keys that were omitted from JSON.
   setMetrics: (data) =>
     set((state) => {
@@ -29,7 +32,7 @@ export const useMetricsStore = create<MetricsState>((set) => ({
       if ('streamTimestamp' in data) {
         next.streamTimestamp = data.streamTimestamp;
       }
-      (['cpu', 'memory', 'disk', 'network', 'docker'] as const).forEach((k) => {
+      (['cpu', 'memory', 'disk', 'network', 'docker', 'applications'] as const).forEach((k) => {
         if (k in data && data[k] !== undefined) {
           next[k] = data[k] as never;
         }
@@ -47,5 +50,6 @@ export function resetLiveMetrics() {
     disk: undefined,
     network: undefined,
     docker: undefined,
+    applications: undefined,
   });
 }

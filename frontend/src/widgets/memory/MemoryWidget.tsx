@@ -34,6 +34,8 @@ export function MemoryWidget({ hostId }: MemoryWidgetProps) {
   const pct = metrics.latest?.usage_percent ?? 0
   const color = usageColor(pct)
   const latest = metrics.latest as Record<string, unknown>
+  const usedBytes = typeof latest.used === 'number' ? (latest.used as number) : undefined
+  const totalBytes = typeof latest.total === 'number' ? (latest.total as number) : undefined
   const details = SHOW_KEYS
     .filter(k => latest[k] != null && latest[k] !== 0)
     .map(k => ({
@@ -68,9 +70,16 @@ export function MemoryWidget({ hostId }: MemoryWidgetProps) {
             <MemoryStick className="h-4 w-4 text-muted-foreground" />
             <span className="text-sm font-medium text-muted-foreground">Memory</span>
           </div>
-          <span className="text-2xl font-bold tabular-nums" style={{ color }}>
-            {pct.toFixed(1)}%
-          </span>
+          <div className="flex flex-col items-end leading-none">
+            <span className="text-2xl font-bold tabular-nums" style={{ color }}>
+              {pct.toFixed(1)}%
+            </span>
+            {usedBytes != null && totalBytes != null && (
+              <span className="mt-0.5 text-[10px] tabular-nums text-muted-foreground">
+                {formatBytes(usedBytes)} / {formatBytes(totalBytes)}
+              </span>
+            )}
+          </div>
         </div>
         <div className="mt-2 h-1 rounded-full bg-muted overflow-hidden">
           <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: color }} />

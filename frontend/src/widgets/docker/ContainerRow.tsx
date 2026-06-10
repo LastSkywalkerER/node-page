@@ -189,8 +189,12 @@ export function ContainerRow({ container: c }: { container: DockerContainer }) {
 
         <div className="flex shrink-0 items-center gap-1">
           <RingGauge value={mem} color={memColor} />
-          <span className="w-7 text-right tabular-nums" style={{ color: memColor }}>
-            {mem.toFixed(0)}%
+          <span
+            className="w-10 text-right tabular-nums"
+            style={{ color: memColor }}
+            title={`${mem.toFixed(1)}% of limit`}
+          >
+            {fmtBytes(c.stats.memory_usage ?? 0)}
           </span>
           <span className="text-[10px] text-muted-foreground/50">mem</span>
         </div>

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
@@ -50,6 +51,13 @@ type dockerMetricsCollector struct {
 	// values on the fast (every-tick) collection cycles.
 	containerSizeCache map[string]containerSize
 	lastSizeAt         time.Time
+
+	// Named-volume on-disk sizes (daemon walks the volume dir, so also slow):
+	// refreshed in the background on the sizeRefreshInterval cadence and looked
+	// up by volume name when converting container mounts. volumeSizeRefreshing
+	// guards against overlapping refreshes.
+	volumeSizeCache      map[string]int64
+	volumeSizeRefreshing bool
 
 	// Image update checks hit the registry (network), so they run rarely
 	// (updateCheckInterval) in a background goroutine; results are cached per
@@ -127,6 +135,7 @@ func NewDockerCollector(logger *log.Logger, traefikDirs []string) DockerMetricsC
 		checkInterval:      5 * time.Second,
 		containerCPUCache:  make(map[string]cpuStatsCache),
 		containerSizeCache: make(map[string]containerSize),
+		volumeSizeCache:    make(map[string]int64),
 		imageUpdateCache:   make(map[string]imageUpdateInfo),
 		registryClient:     &http.Client{},
 		traefikDirs:        traefikDirs,
@@ -201,6 +210,10 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 		c.cacheMutex.Lock()
 		c.lastSizeAt = time.Now()
 		c.cacheMutex.Unlock()
+		// Refresh named-volume sizes on the slow cadence in the BACKGROUND — the
+		// daemon's volume df can be slow on large volumes and must never stall the
+		// collection cycle. convertMounts serves the last cached values meanwhile.
+		c.maybeRefreshVolumeSizes()
 	}
 
 	// Structure for parallel container processing results
@@ -663,23 +676,33 @@ func (c *dockerMetricsCollector) checkImageUpdate(ctx context.Context, t imageCh
 	}
 	version := resolveImageVersion(labels, env, ref)
 
+	// Newer version-TAG check (pinned deployments: 1.2.1 → 1.3.x minor, → 2.0.0
+	// major). This is INDEPENDENT of the same-tag digest comparison below and is
+	// computed FIRST so it survives a failed digest check: it uses our own
+	// anonymous-token registry client (listRepoTags), so it still surfaces
+	// upgrades when the daemon's DistributionInspect is unavailable — e.g. Docker
+	// Hub rate-limiting the daemon when a stack has many distinct Hub images
+	// (makeplane/plane-backend, -admin, -live, -proxy, …). Best-effort; never fatal.
+	newer, newerMajor := newerVersions(imageTag(ref), listRepoTags(ctx, c.registryClient, ref))
+
 	// No repo digest = locally-built image that was never pulled/pushed (e.g.
-	// dokploy's "myapp-backend-xxxxxx:latest"). There is no remote to compare
-	// against — expose the ref/version for display but report no update.
+	// dokploy's "myapp-backend-xxxxxx:latest"). There is no remote digest to
+	// compare against — still surface any newer version tag found above.
 	if len(img.RepoDigests) == 0 {
-		return imageUpdateInfo{checked: false, version: version, imageRef: ref}
+		return imageUpdateInfo{checked: false, version: version, imageRef: ref, newerVersion: newer, newerMajorVersion: newerMajor}
 	}
 
 	dist, err := c.client.DistributionInspect(ctx, ref, "")
 	if err != nil {
-		// Registry unreachable for this ref (private / local-only). Still expose
-		// the resolved ref + version for display, but report no update.
-		return imageUpdateInfo{checked: false, version: version, imageRef: ref}
+		// Same-tag digest comparison unavailable (registry unreachable for the
+		// daemon / private / rate-limited). The version-tag check above may still
+		// have found an upgrade — surface it rather than dropping the image.
+		return imageUpdateInfo{checked: false, version: version, imageRef: ref, newerVersion: newer, newerMajorVersion: newerMajor}
 	}
 	remote := dist.Descriptor.Digest.String()
 	local := localRepoDigest(img.RepoDigests, ref)
 	if remote == "" || local == "" {
-		return imageUpdateInfo{checked: false, version: version, imageRef: ref}
+		return imageUpdateInfo{checked: false, version: version, imageRef: ref, newerVersion: newer, newerMajorVersion: newerMajor}
 	}
 
 	available := local != remote
@@ -689,11 +712,6 @@ func (c *dockerMetricsCollector) checkImageUpdate(ctx context.Context, t imageCh
 	if available {
 		remoteVer = remoteImageVersion(ctx, c.registryClient, ref)
 	}
-
-	// Independently of the same-tag digest check, look for newer version TAGS in
-	// the registry — this is what surfaces 1.2.1 → 1.3.x (minor) and → 2.0.0
-	// (major) for pinned-version deployments. Best-effort; never fatal.
-	newer, newerMajor := newerVersions(imageTag(ref), listRepoTags(ctx, c.registryClient, ref))
 
 	return imageUpdateInfo{
 		available:         available,
@@ -859,17 +877,71 @@ func (c *dockerMetricsCollector) resolveContainerSize(id string, withSize bool, 
 	return e.rw, e.rootFs
 }
 
-// convertMounts maps Docker mount points to our DockerMount structure.
+// maybeRefreshVolumeSizes launches a background named-volume disk-usage refresh
+// unless one is already running. Never blocks the caller.
+func (c *dockerMetricsCollector) maybeRefreshVolumeSizes() {
+	c.cacheMutex.Lock()
+	if c.volumeSizeRefreshing || c.client == nil {
+		c.cacheMutex.Unlock()
+		return
+	}
+	c.volumeSizeRefreshing = true
+	c.cacheMutex.Unlock()
+	go c.refreshVolumeSizes()
+}
+
+// refreshVolumeSizes queries the daemon for named-volume disk usage and caches
+// it by volume name. Scoped to volumes only (lighter than a full system df).
+// Best-effort: on error the previous cache is kept.
+func (c *dockerMetricsCollector) refreshVolumeSizes() {
+	defer func() {
+		c.cacheMutex.Lock()
+		c.volumeSizeRefreshing = false
+		c.cacheMutex.Unlock()
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	du, err := c.client.DiskUsage(ctx, types.DiskUsageOptions{Types: []types.DiskUsageObject{types.VolumeObject}})
+	if err != nil {
+		c.logger.Debug("Volume disk-usage query failed", "error", err)
+		return
+	}
+	sizes := make(map[string]int64, len(du.Volumes))
+	for _, v := range du.Volumes {
+		// Size is -1 when the driver doesn't report usage (non-local drivers).
+		if v == nil || v.UsageData == nil || v.UsageData.Size < 0 {
+			continue
+		}
+		sizes[v.Name] = v.UsageData.Size
+	}
+	c.cacheMutex.Lock()
+	c.volumeSizeCache = sizes
+	c.cacheMutex.Unlock()
+}
+
+// convertMounts maps Docker mount points to our DockerMount structure, annotating
+// named volumes with their cached on-disk size.
 func (c *dockerMetricsCollector) convertMounts(mounts []container.MountPoint) []DockerMount {
 	out := make([]DockerMount, 0, len(mounts))
+	// refreshVolumeSizes replaces the map wholesale, so a snapshot reference is
+	// safe to read after releasing the lock.
+	c.cacheMutex.RLock()
+	sizes := c.volumeSizeCache
+	c.cacheMutex.RUnlock()
 	for _, m := range mounts {
-		out = append(out, DockerMount{
+		dm := DockerMount{
 			Type:        string(m.Type),
 			Name:        m.Name,
 			Source:      m.Source,
 			Destination: m.Destination,
 			RW:          m.RW,
-		})
+		}
+		if m.Name != "" {
+			if sz, ok := sizes[m.Name]; ok {
+				dm.Size = sz
+			}
+		}
+		out = append(out, dm)
 	}
 	return out
 }

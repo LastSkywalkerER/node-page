@@ -149,13 +149,23 @@ func (s *service) CollectAllCurrent(ctx context.Context) (map[string]interface{}
 		}
 	}
 
+	// Pre-build the application projection so the live SSE stream carries it
+	// (the frontend syncs it into the applications caches for lockstep 5s updates,
+	// instead of the slower independent REST poll). Derived from the same docker
+	// metric; not replicated (peers rebuild apps from the replicated docker rows).
+	var applications []docker.DockerApplication
+	if dm, ok := dockerMetric.(docker.DockerMetric); ok {
+		applications = docker.BuildApplications(&dm)
+	}
+
 	s.logger.Debug("Current metrics collected successfully")
 	return map[string]interface{}{
-		"timestamp": time.Now(),
-		"cpu":       cpuMetric,
-		"memory":    memoryMetric,
-		"disk":      diskMetric,
-		"network":   networkMetric,
-		"docker":    dockerMetric,
+		"timestamp":    time.Now(),
+		"cpu":          cpuMetric,
+		"memory":       memoryMetric,
+		"disk":         diskMetric,
+		"network":      networkMetric,
+		"docker":       dockerMetric,
+		"applications": applications,
 	}, nil
 }

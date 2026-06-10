@@ -30,6 +30,7 @@ export function useMetricsStream(hostId?: number | null) {
           disk: rest.disk as Record<string, unknown> | undefined,
           network: rest.network as Record<string, unknown> | undefined,
           docker: rest.docker as Record<string, unknown> | undefined,
+          applications: Array.isArray(rest.applications) ? (rest.applications as unknown[]) : undefined,
         });
       } catch {
         // ignore malformed messages

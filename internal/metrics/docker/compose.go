@@ -3,6 +3,7 @@ package docker
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -104,27 +105,48 @@ func ReadRealCompose(app *DockerApplication) (content string, files []string, av
 
 	seen := map[string]struct{}{}
 	var paths []string
+	add := func(p string) {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return
+		}
+		if _, ok := seen[p]; ok {
+			return
+		}
+		seen[p] = struct{}{}
+		paths = append(paths, p)
+	}
 	for _, c := range app.Containers {
-		for _, p := range splitConfigFiles(c.ComposeConfigFiles) {
-			if _, ok := seen[p]; ok {
-				continue
+		// Authoritative source: the compose project's config_files label, set by
+		// every `docker compose` deployment (Dokploy, Portainer, plain compose).
+		if cfgs := splitConfigFiles(c.ComposeConfigFiles); len(cfgs) > 0 {
+			for _, p := range cfgs {
+				add(p)
 			}
-			seen[p] = struct{}{}
-			paths = append(paths, p)
+			continue
+		}
+		// Fallback (universal, label-driven — no orchestrator-specific paths): the
+		// canonical compose file inside the project working_dir label, for the rare
+		// deployment that sets working_dir but not config_files.
+		if wd := strings.TrimSpace(c.ComposeWorkingDir); wd != "" {
+			for _, name := range []string{"docker-compose.yml", "docker-compose.yaml", "compose.yaml", "compose.yml"} {
+				add(filepath.Join(wd, name))
+			}
 		}
 	}
 	sort.Strings(paths)
 
+	hostRoot := hostComposeRoot()
 	var b strings.Builder
 	for _, p := range paths {
-		data, err := os.ReadFile(p) // #nosec G304 — path comes from the daemon's compose labels, not user input
-		if err != nil {
+		data, readPath, ok := readComposeFile(p, hostRoot)
+		if !ok {
 			continue
 		}
 		if b.Len() > 0 {
 			b.WriteString("\n")
 		}
-		fmt.Fprintf(&b, "# ── %s ──\n", p)
+		fmt.Fprintf(&b, "# ── %s ──\n", readPath)
 		b.Write(data)
 		if !strings.HasSuffix(b.String(), "\n") {
 			b.WriteString("\n")
@@ -133,6 +155,37 @@ func ReadRealCompose(app *DockerApplication) (content string, files []string, av
 	}
 
 	return b.String(), paths, available
+}
+
+// readComposeFile reads a compose file by its host path, trying the path
+// directly first (native install, or an identity bind-mount like the controller
+// uses) and then under the HOST_ROOT bind-mount prefix — so a containerised
+// node-stats with the host root mounted at /host can still read an orchestrator's
+// compose files (e.g. Dokploy's /etc/dokploy/compose/<project>/docker-compose.yml).
+// Returns the bytes and the path that actually resolved.
+func readComposeFile(p, hostRoot string) (data []byte, readPath string, ok bool) {
+	if b, err := os.ReadFile(p); err == nil { // #nosec G304 — path comes from the daemon's compose labels, not user input
+		return b, p, true
+	}
+	if hostRoot != "" && filepath.IsAbs(p) {
+		hp := filepath.Join(hostRoot, p)
+		if b, err := os.ReadFile(hp); err == nil { // #nosec G304 — derived from compose labels under the host bind-mount
+			return b, hp, true
+		}
+	}
+	return nil, "", false
+}
+
+// hostComposeRoot returns the host root bind-mount (HOST_ROOT, or /host when
+// present) used to resolve absolute compose paths from inside a container.
+func hostComposeRoot() string {
+	if r := strings.TrimSpace(os.Getenv("HOST_ROOT")); r != "" {
+		return filepath.Clean(r)
+	}
+	if st, err := os.Stat("/host"); err == nil && st.IsDir() {
+		return "/host"
+	}
+	return ""
 }
 
 func serviceKey(c DockerContainer) string {

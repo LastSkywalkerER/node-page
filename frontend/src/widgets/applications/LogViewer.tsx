@@ -127,8 +127,25 @@ export function LogViewer({ logs, loading }: LogViewerProps) {
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
   const activeRef = useRef<HTMLElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Terminal-style "stick to bottom": auto-scroll to the newest line on each
+  // refresh, unless the user has scrolled up to read history.
+  const stickRef = useRef(true);
 
   const lines = useMemo(() => (logs ? logs.replace(/\n+$/, '').split('\n') : []), [logs]);
+
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (el) stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  };
+
+  // Follow the tail when new logs arrive (and on first load), unless searching —
+  // active-match navigation owns scrolling while a query is set.
+  useEffect(() => {
+    if (query) return;
+    const el = scrollRef.current;
+    if (el && stickRef.current) el.scrollTop = el.scrollHeight;
+  }, [logs, loading, query]);
 
   // Per-line match counts → cumulative base offsets → total matches.
   const { bases, total } = useMemo(() => {
@@ -230,7 +247,11 @@ export function LogViewer({ logs, loading }: LogViewerProps) {
         </button>
       </div>
 
-      <div className="max-h-[60vh] overflow-auto rounded-md bg-muted/40 font-mono text-[11px]">
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        className="max-h-[60vh] overflow-auto rounded-md bg-muted/40 font-mono text-[11px]"
+      >
         {loading ? (
           <p className="p-3 text-muted-foreground">Loading…</p>
         ) : lines.length === 0 ? (

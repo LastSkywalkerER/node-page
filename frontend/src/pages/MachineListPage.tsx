@@ -12,6 +12,7 @@ import { useMemory } from '@/widgets/memory/useMemory'
 import { useDisk } from '@/widgets/disk/useDisk'
 import { useNetwork } from '@/widgets/network/useNetwork'
 import { CHART_COLORS } from '@/shared/lib/chartColors'
+import { formatBytes } from '@/shared/lib/utils'
 import type { Host } from '@/widgets/hosts/schemas'
 import { getHostCardTitle } from '@/shared/lib/hostDisplay'
 import { AllApplicationsSection } from '@/widgets/applications/AllApplicationsSection'
@@ -74,12 +75,14 @@ function MetricTile({
   id,
   label,
   value,
+  sub,
   data,
   color,
 }: {
   id: string
   label: string
   value: string
+  sub?: string
   data: number[]
   color: string
 }) {
@@ -91,6 +94,11 @@ function MetricTile({
           {value}
         </span>
       </div>
+      {sub && (
+        <div className="truncate text-right font-mono text-[9px] leading-tight tabular-nums text-muted-foreground/70">
+          {sub}
+        </div>
+      )}
       <Spark id={id} data={data} color={color} />
     </div>
   )
@@ -107,6 +115,17 @@ function HostMetrics({ hostId }: { hostId: number }) {
   const diskPct = disk?.latest?.usage_percent ?? null
   const netNow = netSpeedKbps(net?.latest?.interfaces)
 
+  const cpuCores = cpu?.latest?.cores
+  const cpuSub = cpuCores ? `${cpuCores} cores` : undefined
+  const memSub =
+    mem?.latest?.used != null && mem?.latest?.total != null
+      ? `${formatBytes(mem.latest.used)} / ${formatBytes(mem.latest.total)}`
+      : undefined
+  const diskSub =
+    disk?.latest?.used != null && disk?.latest?.total != null
+      ? `${formatBytes(disk.latest.used)} / ${formatBytes(disk.latest.total)}`
+      : undefined
+
   const cpuSeries = (cpu?.history ?? []).map((p) => p.usage)
   const memSeries = (mem?.history ?? []).map((p) => p.usage_percent)
   const diskSeries = (disk?.history ?? []).map((p) => p.usage_percent)
@@ -118,6 +137,7 @@ function HostMetrics({ hostId }: { hostId: number }) {
         id={`spk-${hostId}-cpu`}
         label="CPU"
         value={cpuPct == null ? '--' : `${cpuPct.toFixed(0)}%`}
+        sub={cpuSub}
         data={cpuSeries}
         color={usageColor(cpuPct, CHART_COLORS.cpu)}
       />
@@ -125,6 +145,7 @@ function HostMetrics({ hostId }: { hostId: number }) {
         id={`spk-${hostId}-mem`}
         label="RAM"
         value={memPct == null ? '--' : `${memPct.toFixed(0)}%`}
+        sub={memSub}
         data={memSeries}
         color={usageColor(memPct, CHART_COLORS.memory)}
       />
@@ -132,6 +153,7 @@ function HostMetrics({ hostId }: { hostId: number }) {
         id={`spk-${hostId}-disk`}
         label="Disk"
         value={diskPct == null ? '--' : `${diskPct.toFixed(0)}%`}
+        sub={diskSub}
         data={diskSeries}
         color={usageColor(diskPct, CHART_COLORS.disk)}
       />
