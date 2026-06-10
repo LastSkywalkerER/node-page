@@ -46,10 +46,11 @@ jobs:
           # Semver tags on v* pushes: vX.Y.Z and X.Y (alongside latest on main).
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
-          # Branch builds: <branch>-<sha>. On pull_request {{branch}} is empty,
-          # which would yield the invalid tag "-<sha>", so emit a PR-prefixed
-          # sha tag for that event instead.
-          type=sha,prefix={{branch}}-,enable=${{ github.event_name != 'pull_request' }}
+          # Branch builds: <branch>-<sha>. {{branch}} is empty on BOTH tag pushes
+          # and pull_requests, which would yield the invalid tag "-<sha>" and fail
+          # the build — so only emit it for real branch refs. Tag pushes are
+          # covered by the semver tags above; PRs get a pr-prefixed sha tag below.
+          type=sha,prefix={{branch}}-,enable=${{ startsWith(github.ref, 'refs/heads/') }}
           type=sha,prefix=pr-${{ github.event.number }}-,enable=${{ github.event_name == 'pull_request' }}
           type=raw,value=latest,enable={{is_default_branch}}
 
