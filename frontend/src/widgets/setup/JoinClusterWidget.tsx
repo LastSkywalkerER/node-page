@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useCheckReachable, useRaftProgress } from './useSetup';
+import { detectPublicUrl } from './detectPublicUrl';
 
 export const JOIN_CLUSTER_STEP_META = {
   title: 'Join an existing cluster',
@@ -39,7 +40,9 @@ export function JoinClusterWidget({
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [peerUrl, setPeerUrl] = useState(defaultPeerUrl);
   const [token, setToken] = useState('');
-  const [advertiseUrl, setAdvertiseUrl] = useState('');
+  // Opened through a real domain (reverse proxy / public DNS) → that address
+  // is what cluster peers should use to reach this node over HTTP.
+  const [advertiseUrl, setAdvertiseUrl] = useState(() => detectPublicUrl());
 
   const busy = isJoining || status === 'replicating';
 
@@ -97,6 +100,14 @@ export function JoinClusterWidget({
           {showAdvanced ? 'Hide advanced' : 'Advanced (optional)'}
         </button>
 
+        {!showAdvanced && advertiseUrl.trim() && (
+          <p className="text-xs text-slate-400">
+            Public URL: <code className="text-slate-300">{advertiseUrl.trim()}</code> —
+            detected from this browser's address; the cluster will use it to reach this
+            node. Change or clear it under Advanced.
+          </p>
+        )}
+
         {showAdvanced && (
           <div className="rounded-md border border-border/50 bg-muted/10 p-3 space-y-1.5">
             <Label htmlFor="join-public">Public URL override</Label>
@@ -108,8 +119,9 @@ export function JoinClusterWidget({
               disabled={busy}
             />
             <p className="text-xs text-slate-400">
-              Only needed if peers must reach this node at a different public URL than its
-              auto-detected address (e.g. behind a reverse proxy). Leave blank otherwise.
+              The HTTP address other nodes use to reach this one. Prefilled from this
+              browser's address when the page is opened through a domain (reverse proxy);
+              clear it to fall back to the auto-detected LAN address.
             </p>
           </div>
         )}

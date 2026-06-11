@@ -9,6 +9,7 @@ import { Switch } from '@/shared/ui/switch';
 import { PasswordInput } from '@/shared/ui/password-input';
 import { setupConfigSchema, SetupConfigFormData, type MachineHintsResponse } from './schemas';
 import { useTestDb } from './useSetup';
+import { detectPublicUrl } from './detectPublicUrl';
 import { DEFAULT_SETUP_CONFIG } from '../../shared/config/setup';
 
 export const CONFIG_STEP_META = {
@@ -130,6 +131,20 @@ export function ConfigFormWidget({ initialValues, runningInDocker, machineHints,
     }
     raftDefaultsApplied.current = true;
   }, [machineHints, form]);
+
+  // When setup is opened through a real domain (reverse proxy / public DNS),
+  // that address is what cluster peers should use for HTTP join/forward —
+  // prefill the public URL override with it. IPs/localhost give no signal.
+  const publicUrlApplied = useRef(false);
+  useEffect(() => {
+    if (publicUrlApplied.current) return;
+    publicUrlApplied.current = true;
+    if (!form.getValues('raft_advertise_public_url').trim()) {
+      const detected = detectPublicUrl();
+      if (detected) form.setValue('raft_advertise_public_url', detected);
+    }
+  }, [form]);
+  const publicUrl = useWatch({ control: form.control, name: 'raft_advertise_public_url' });
 
   const prevDbType = useRef(dbType);
   useEffect(() => {
@@ -513,6 +528,14 @@ export function ConfigFormWidget({ initialValues, runningInDocker, machineHints,
             setup you'll get a one-shot <strong>connect key</strong> to add the next node.
           </p>
 
+          {publicUrl.trim() && (
+            <p className="text-xs text-slate-400">
+              Public URL: <code className="text-slate-300">{publicUrl.trim()}</code> —
+              detected from this browser's address; other nodes will use it to reach this
+              node. Change or clear it under Advanced.
+            </p>
+          )}
+
           <button
             type="button"
             onClick={() => setShowRaftAdvanced((v) => !v)}
@@ -530,8 +553,9 @@ export function ConfigFormWidget({ initialValues, runningInDocker, machineHints,
                 error={form.formState.errors.raft_advertise_public_url}
               />
               <p className="text-xs text-slate-400">
-                Only set this if peers must reach this node at a different public URL than
-                its auto-detected address (e.g. behind a reverse proxy).
+                The HTTP address other nodes use to reach this one (join, forwarding, the
+                Nodes list). Prefilled from this browser's address when you open setup
+                through a domain; clear it to fall back to the auto-detected LAN address.
               </p>
             </div>
           )}

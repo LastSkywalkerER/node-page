@@ -131,7 +131,11 @@ Only the HTTP API (`:9090`) goes through the proxy. **Raft replication is
 raw TCP** (default `:7000`) — an HTTP proxy like NPM cannot forward it;
 cluster peers must reach each other's Raft port directly (LAN, VPN/NetBird,
 or a TCP-level forward). What you *can* route through the proxy is the
-HTTP side of clustering: set the node's public URL
-(`RAFT_ADVERTISE_PUBLIC_URL`, or the wizard's "public URL" field) to the
-proxied `https://stats.example.com` so join/forward requests and the Nodes
-list use the nice address.
+HTTP side of clustering: the node's public URL
+(`RAFT_ADVERTISE_PUBLIC_URL`) lets join/forward requests and the Nodes
+list use the proxied `https://stats.example.com`. **The setup wizard
+detects it automatically**: when you open setup (or the join form)
+through a domain rather than an IP, the browser's address is prefilled
+as the public URL — adjust or clear it under *Advanced*. The admin
+Nodes → Cluster form goes further and TCP-probes the candidates from
+the server, showing green/amber reachability chips.
