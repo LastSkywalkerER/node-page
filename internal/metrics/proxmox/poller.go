@@ -163,7 +163,7 @@ func (p *Poller) syncConnector(ctx context.Context, conn connectors.Connector) {
 	resources, err := client.ClusterResources(ctx)
 	if err != nil {
 		if _, ok := err.(*AuthError); ok {
-			p.setStatus(ctx, conn.ID, connectors.StatusAuthFailed, err.Error())
+			p.setStatus(ctx, conn.ID, connectors.StatusAuthFailed, wrapAuth(err, conn.TokenID).Error())
 		} else {
 			p.setStatus(ctx, conn.ID, connectors.StatusUnreachable, err.Error())
 		}

@@ -26,11 +26,11 @@ func (p *Prober) Probe(ctx context.Context, endpoint, tokenID, secret string, sk
 	}
 	version, err := client.Version(ctx)
 	if err != nil {
-		return nil, wrapAuth(err)
+		return nil, wrapAuth(err, tokenID)
 	}
 	status, err := client.ClusterStatus(ctx)
 	if err != nil {
-		return nil, wrapAuth(err)
+		return nil, wrapAuth(err, tokenID)
 	}
 	fingerprint := Fingerprint(status)
 	if fingerprint == "" {
@@ -49,7 +49,7 @@ func (p *Prober) Probe(ctx context.Context, endpoint, tokenID, secret string, sk
 	}
 	resources, err := client.ClusterResources(ctx)
 	if err != nil {
-		return nil, wrapAuth(err)
+		return nil, wrapAuth(err, tokenID)
 	}
 
 	var nodes []string
@@ -81,10 +81,20 @@ func (p *Prober) Probe(ctx context.Context, endpoint, tokenID, secret string, sk
 	}, nil
 }
 
-func wrapAuth(err error) error {
+func wrapAuth(err error, tokenID string) error {
 	var ae *AuthError
-	if errors.As(err, &ae) {
-		return fmt.Errorf("%w: %s", connectors.ErrAuthFailed, ae.Error())
+	if !errors.As(err, &ae) {
+		return err
 	}
-	return err
+	// PVE puts the denial reason in the HTTP status line. "Permission check
+	// failed" means the token AUTHENTICATED but has no privileges — the classic
+	// Privilege Separation pitfall: a privsep token (the default) inherits
+	// nothing from its user, even root@pam, until an ACL names the token.
+	if strings.Contains(ae.Status, "Permission check failed") {
+		return fmt.Errorf(
+			"%w: %s. The token is valid but has no privileges — with Privilege Separation enabled (the Proxmox default) permissions must be granted to the token itself, not just the user. On the PVE node run:\npveum acl modify / -token '%s' -role PVEAuditor\nor in the UI: Datacenter → Permissions → Add → API Token Permission → path /, token %s, role PVEAuditor",
+			connectors.ErrAuthFailed, ae.Error(), tokenID, tokenID,
+		)
+	}
+	return fmt.Errorf("%w: %s", connectors.ErrAuthFailed, ae.Error())
 }

@@ -1,9 +1,11 @@
 package proxmox
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -90,5 +92,44 @@ func TestProbeAuthFailure(t *testing.T) {
 	_, err := NewProber().Probe(context.Background(), srv.URL, "monitor@pam!stats", "WRONG", false)
 	if !errors.Is(err, connectors.ErrAuthFailed) {
 		t.Errorf("err = %v, want ErrAuthFailed", err)
+	}
+}
+
+// PVE signals "token valid but unprivileged" via the HTTP reason phrase
+// ("403 Permission check failed (/, Sys.Audit)") — the Privilege Separation
+// pitfall. Go's httptest cannot write a custom reason phrase, so a raw TCP
+// listener plays the PVE side.
+func TestProbePrivilegeSeparationHint(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				br := bufio.NewReader(c)
+				for {
+					line, rerr := br.ReadString('\n')
+					if rerr != nil || line == "\r\n" {
+						break
+					}
+				}
+				_, _ = c.Write([]byte("HTTP/1.1 403 Permission check failed (/, Sys.Audit)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"))
+			}(conn)
+		}
+	}()
+
+	_, err = NewProber().Probe(context.Background(), "http://"+ln.Addr().String(), "root@pam!node-stats", "secret", false)
+	if !errors.Is(err, connectors.ErrAuthFailed) {
+		t.Fatalf("err = %v, want ErrAuthFailed", err)
+	}
+	if !strings.Contains(err.Error(), "pveum acl modify / -token 'root@pam!node-stats' -role PVEAuditor") {
+		t.Errorf("error lacks the actionable privsep hint: %v", err)
 	}
 }

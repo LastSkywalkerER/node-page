@@ -80,6 +80,9 @@ function ConnectForm({ suggestedEndpoint, onDone }: { suggestedEndpoint?: string
   const [secret, setSecret] = useState('')
   const [skipVerify, setSkipVerify] = useState(true)
   const [preview, setPreview] = useState<ConnectorPreview | null>(null)
+  // Errors render inline (and survive) — PVE failures like the Privilege
+  // Separation pitfall carry multi-line fix instructions a toast would eat.
+  const [errMsg, setErrMsg] = useState<string | null>(null)
 
   const test = useTestProxmox()
   const create = useCreateProxmox()
@@ -89,10 +92,14 @@ function ConnectForm({ suggestedEndpoint, onDone }: { suggestedEndpoint?: string
 
   const onTest = () =>
     test.mutate(req, {
-      onSuccess: (p) => setPreview(p),
+      onSuccess: (p) => {
+        setPreview(p)
+        setErrMsg(null)
+      },
       onError: (e) => {
         setPreview(null)
-        toast.error('Connection test failed: ' + e.message)
+        setErrMsg(e.message)
+        toast.error('Connection test failed')
       },
     })
 
@@ -102,7 +109,10 @@ function ConnectForm({ suggestedEndpoint, onDone }: { suggestedEndpoint?: string
         toast.success('Proxmox connected — discovering machines…')
         onDone()
       },
-      onError: (e) => toast.error('Connect failed: ' + e.message),
+      onError: (e) => {
+        setErrMsg(e.message)
+        toast.error('Connect failed')
+      },
     })
 
   return (
@@ -147,6 +157,12 @@ function ConnectForm({ suggestedEndpoint, onDone }: { suggestedEndpoint?: string
         <ShieldAlert className="h-3.5 w-3.5 text-amber-400" />
         <span className="text-[11px]">(Proxmox ships a self-signed certificate by default)</span>
       </label>
+
+      {errMsg && (
+        <div className="whitespace-pre-wrap break-words rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 font-mono text-xs text-red-400">
+          {errMsg}
+        </div>
+      )}
 
       {preview && (
         <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-xs">
