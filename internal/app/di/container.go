@@ -249,6 +249,7 @@ func (c *Container) activateLocked(ctx context.Context, cfg config.RaftConfig) (
 		Appliers: raftcluster.AppliersDeps{
 			Logger:           c.logger,
 			DB:               c.db,
+			ClusterID:        cfg.ClusterID,
 			HostRepo:         c.hostRepository,
 			UserRepo:         c.userRepository,
 			RefreshTokenRepo: c.refreshTokenRepository,
@@ -312,9 +313,7 @@ func (c *Container) activateLocked(ctx context.Context, cfg config.RaftConfig) (
 	// Build bridge primitives only when a shared secret is present —
 	// without it the receiver would reject every request anyway.
 	if cfg.Bridge.Enabled || cfg.Bridge.SharedSecret != "" {
-		c.bridgePicker = raftbridge.NewPicker(c.logger, c.db, cfg.ClusterID)
-		c.bridgeReceiver = raftbridge.NewReceiver(c.logger, c.raftSwap, c.db, cfg.Bridge.SharedSecret, cfg.ClusterID)
-		c.bridgeSender = raftbridge.NewSender(c.logger, c.raftSwap, act.FSM.ApplyEvents(), c.bridgePicker, cfg.Bridge.SharedSecret, cfg.ClusterID, cfg.NodeID)
+		c.buildBridgeLocked(cfg.Bridge, cfg.ClusterID, cfg.NodeID, act.FSM)
 	}
 	// Start bridge goroutines if appCtx is already set (server startup
 	// has run and we're being called from the wizard); otherwise the
@@ -407,6 +406,7 @@ func (c *Container) ActivateRaft(ctx context.Context, rt raftcluster.RuntimeConf
 			Enabled:      rt.BridgeEnabled,
 			SharedSecret: rt.BridgeSharedSecret,
 			RemoteSeeds:  rt.BridgeRemoteSeeds,
+			Mode:         config.NormalizeBridgeMode(rt.BridgeMode),
 		},
 	}
 	if cfg.DataDir == "" {
@@ -438,13 +438,46 @@ func (c *Container) ConfigureBridge(bridge config.RaftBridgeConfig, advertiseURL
 		c.raftCfgSnapshot.AdvertiseURL = advertiseURL
 	}
 
-	c.bridgePicker = raftbridge.NewPicker(c.logger, c.db, c.raftCfgSnapshot.ClusterID)
-	c.bridgeReceiver = raftbridge.NewReceiver(c.logger, c.raftSwap, c.db, bridge.SharedSecret, c.raftCfgSnapshot.ClusterID)
-	if c.raftFSM != nil {
-		c.bridgeSender = raftbridge.NewSender(c.logger, c.raftSwap, c.raftFSM.ApplyEvents(), c.bridgePicker, bridge.SharedSecret, c.raftCfgSnapshot.ClusterID, c.raftCfgSnapshot.NodeID)
-	}
+	c.buildBridgeLocked(bridge, c.raftCfgSnapshot.ClusterID, c.raftCfgSnapshot.NodeID, c.raftFSM)
 	c.startBridgeGoroutinesLocked()
 	return nil
+}
+
+// buildBridgeLocked constructs picker/sender/receiver per the bridge mode:
+// "push" (spoke uplink) runs the sender only, restricted to host/metric
+// commands; "receive" (hub) runs the receiver only, with the same allowlist
+// as defense in depth; "both" keeps the legacy symmetric pair. Seeds prime
+// the picker — the replicated catalog can't know a peer cluster's URL before
+// the bridge is up. activateMu must be held.
+func (c *Container) buildBridgeLocked(bridge config.RaftBridgeConfig, clusterID, nodeID string, fsm *raftcluster.FSM) {
+	mode := config.NormalizeBridgeMode(bridge.Mode)
+	c.bridgePicker = nil
+	c.bridgeSender = nil
+	c.bridgeReceiver = nil
+
+	if mode != config.BridgeModePush {
+		c.bridgeReceiver = raftbridge.NewReceiver(c.logger, c.raftSwap, c.db, bridge.SharedSecret, clusterID).
+			WithUplinkOnly(mode == config.BridgeModeReceive)
+	}
+	if mode != config.BridgeModeReceive && fsm != nil {
+		c.bridgePicker = raftbridge.NewPicker(c.logger, c.db, clusterID, bridge.RemoteSeeds)
+		c.bridgeSender = raftbridge.NewSender(c.logger, c.raftSwap, fsm.ApplyEvents(), c.bridgePicker, bridge.SharedSecret, clusterID, nodeID).
+			WithUplinkOnly(mode == config.BridgeModePush)
+		// Reconcile re-publishes ALL local host rows as own-origin entries —
+		// correct for a push spoke (every row is its own), wrong for a legacy
+		// symmetric pair (peer-origin rows would be relabelled): push-only.
+		if mode == config.BridgeModePush {
+			c.bridgeSender.WithReconcile(func(ctx context.Context) {
+				bctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				defer cancel()
+				if n, err := c.raftReplicator.BackfillLocalHosts(bctx, c.hostRepository); err != nil {
+					c.logger.Warn("bridge: reconcile backfill failed", "submitted", n, "error", err)
+				} else if n > 0 {
+					c.logger.Debug("bridge: reconcile backfill submitted", "hosts", n)
+				}
+			})
+		}
+	}
 }
 
 // CurrentRaftConfig returns the last RaftConfig applied via ActivateRaft.
@@ -517,6 +550,7 @@ func (c *Container) ResetRaftConfig() error {
 	cv.RaftBridgeEnabled = ""
 	cv.RaftBridgeSharedSecret = ""
 	cv.RaftBridgeRemoteSeeds = ""
+	cv.RaftBridgeMode = ""
 	if werr := cw.WriteConfigFile(cv); werr != nil {
 		return werr
 	}
@@ -657,18 +691,21 @@ func (c *Container) FactoryResetRaft() error {
 	cv.RaftBridgeEnabled = ""
 	cv.RaftBridgeSharedSecret = ""
 	cv.RaftBridgeRemoteSeeds = ""
+	cv.RaftBridgeMode = ""
 	c.raftBootError = ""
 	c.raftCfgSnapshot = config.RaftConfig{}
 	return cw.WriteConfigFile(cv)
 }
+
 // running bridge primitives, then persists the new values into .env so
 // the change survives a restart. The advertiseURL argument is optional;
 // pass "" to leave the previously configured URL untouched.
-func (c *Container) SaveBridge(secret string, remoteSeeds []string, advertiseURL string) error {
+func (c *Container) SaveBridge(secret string, remoteSeeds []string, advertiseURL, mode string) error {
 	bridge := config.RaftBridgeConfig{
 		Enabled:      true,
 		SharedSecret: secret,
 		RemoteSeeds:  remoteSeeds,
+		Mode:         config.NormalizeBridgeMode(mode),
 	}
 	if err := c.ConfigureBridge(bridge, advertiseURL); err != nil {
 		return err
@@ -684,6 +721,7 @@ func (c *Container) SaveBridge(secret string, remoteSeeds []string, advertiseURL
 	cv.RaftBridgeEnabled = "true"
 	cv.RaftBridgeSharedSecret = secret
 	cv.RaftBridgeRemoteSeeds = strings.Join(remoteSeeds, ",")
+	cv.RaftBridgeMode = bridge.Mode
 	if advertiseURL != "" {
 		cv.RaftAdvertisePublicURL = advertiseURL
 	}
@@ -802,6 +840,24 @@ func (c *Container) GetBridgePicker() *raftbridge.Picker {
 	c.activateMu.Lock()
 	defer c.activateMu.Unlock()
 	return c.bridgePicker
+}
+
+// BridgeInfo returns the bridge runtime view for /raft/status: configured
+// mode plus the sender's ship health (nil when the bridge isn't built).
+func (c *Container) BridgeInfo() any {
+	c.activateMu.Lock()
+	defer c.activateMu.Unlock()
+	if c.bridgeSender == nil && c.bridgeReceiver == nil {
+		return nil
+	}
+	out := map[string]any{
+		"mode": config.NormalizeBridgeMode(c.raftCfgSnapshot.Bridge.Mode),
+	}
+	if c.bridgeSender != nil {
+		out["sender"] = c.bridgeSender.Snapshot()
+	}
+	out["receiving"] = c.bridgeReceiver != nil
+	return out
 }
 
 // GetBridgeSender returns the cross-cluster sender, or nil.

@@ -86,6 +86,9 @@ type Host struct {
 	// GuestStatus is the hypervisor-reported power state (running | stopped |
 	// paused). Only set for connector-managed guests; "" for plain agents.
 	GuestStatus string `json:"guest_status,omitempty"`
+	// OriginCluster is the uplink site this row arrived from over the
+	// cross-cluster bridge ("home", "office"); "" for rows of this cluster.
+	OriginCluster string `json:"origin_cluster,omitempty" gorm:"index"`
 
 	// ParentID is the LOCAL row id of the ParentMAC host, resolved at read
 	// time for the UI (not a DB column — ids differ per node).
@@ -118,6 +121,10 @@ func (Host) TableName() string { return "hosts" }
 // HostInfo represents the basic information collected about a host.
 // This structure contains hostname and MAC address for host identification.
 type HostInfo struct {
+	// OriginCluster marks rows arriving over the cross-cluster bridge (set
+	// by the applier from the command envelope, not collected).
+	OriginCluster string `json:"origin_cluster,omitempty"`
+
 	// Name is the hostname of the machine
 	Name string `json:"name"`
 

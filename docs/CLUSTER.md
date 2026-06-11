@@ -225,3 +225,50 @@ another node. *(Sensors are Linux-only and not replicated, so remote sensor pane
 | Setup wizard (create / join / success) | `frontend/src/widgets/setup/` |
 | Cluster admin panel | `frontend/src/widgets/raft/RaftClusterWidget.tsx` |
 | Local 2-node test harness | `scripts/localcluster.sh`, `docker-compose.cluster.yml` |
+
+---
+
+## Metrics uplink (hub-and-spoke, one-way)
+
+Several independent site clusters ("home", "office") can ship their **hosts,
+topology and metrics** to one public **hub** cluster — one-way: the hub sees
+everything, each site keeps knowing only its own data, and identities stay
+separate (users, auth secrets and config are NEVER shipped; the sender
+enforces an allowlist of `CmdHostUpsert / CmdConnectorHostUpsert /
+CmdHostDelete / CmdHostLastSeen / CmdMetricBatch`, and a `receive`-mode hub
+drops anything else as defense in depth).
+
+```mermaid
+graph LR
+  subgraph HOME["cluster home"]
+    H1[leader]
+  end
+  subgraph OFFICE["cluster office"]
+    O1[leader]
+  end
+  subgraph PUBLIC["cluster public (hub)"]
+    P1[leader + receiver]
+  end
+  H1 -- "HTTPS POST /raft/bridge/replicate (HMAC)" --> P1
+  O1 -- "HTTPS POST (HMAC)" --> P1
+```
+
+- **Spoke** (`RAFT_BRIDGE_MODE=push`): the leader streams its FSM-applied
+  entries to the hub, chosen from `RAFT_BRIDGE_REMOTE_SEEDS` (the seeds prime
+  the URL picker — the replicated catalog cannot contain the hub's URL before
+  the bridge is up). Outbound-only: no ports to open on the site. A
+  reconcile pass (on start, every 10 min, and after an outage ends) re-submits
+  the local host registry so the hub heals any gap the live stream dropped.
+  A spoke must run as a Raft cluster (1 node is fine — "Make this the main
+  node"): the bridge rides on the Raft log.
+- **Hub** (`RAFT_BRIDGE_MODE=receive`): leader-only receiver, HMAC-verified,
+  dedupes by `(origin_cluster_id, origin_index)` (`applied_remote_log`,
+  auto-pruned after 48 h), applies entries with the origin stamped — host rows
+  carry `origin_cluster` and the UI badges them. Name collisions between
+  sites are split (a bare hostname match only merges when machine-id /
+  SMBIOS UUID corroborates), MAC remains the identity within a site.
+- **UI**: Admin → Nodes → Raft → "Metrics uplink" — pick the mode, on the hub
+  generate the shared secret, on each site paste hub URL + secret. The panel
+  shows ship health on spokes and the uplinked-sites list on the hub.
+- `both` keeps the legacy symmetric pair behaviour (full state convergence
+  incl. users/secrets between exactly two clusters).

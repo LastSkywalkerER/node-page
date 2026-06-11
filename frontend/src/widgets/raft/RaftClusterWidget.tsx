@@ -115,6 +115,8 @@ export function RaftClusterWidget() {
   const [bridgeSecret, setBridgeSecret] = useState('')
   const [bridgeSeeds, setBridgeSeeds] = useState('')
   const [bridgeAdvertise, setBridgeAdvertise] = useState('')
+  // null = untouched → mirror the active mode from status.
+  const [modeDraft, setModeDraft] = useState<'push' | 'receive' | 'both' | null>(null)
 
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>
@@ -174,6 +176,8 @@ export function RaftClusterWidget() {
     }
   }
 
+  const bridgeMode = modeDraft ?? data.bridge?.mode ?? 'push'
+
   const onSaveBridge = async (e: React.FormEvent) => {
     e.preventDefault()
     const seeds = bridgeSeeds
@@ -184,16 +188,27 @@ export function RaftClusterWidget() {
       toast.error('Shared secret is required')
       return
     }
+    if (bridgeMode === 'push' && seeds.length === 0) {
+      toast.error('The hub URL is required in uplink mode')
+      return
+    }
     try {
       await saveBridge.mutateAsync({
+        mode: bridgeMode,
         shared_secret: bridgeSecret.trim(),
         remote_seeds: seeds,
         advertise_url: bridgeAdvertise.trim().replace(/\/+$/, '') || undefined,
       })
-      toast.success('Bridge config applied and saved to .env')
+      toast.success('Uplink config applied and saved to .env')
     } catch (err) {
       toast.error('Save failed: ' + (err as Error).message)
     }
+  }
+
+  const onGenerateSecret = () => {
+    const buf = new Uint8Array(32)
+    crypto.getRandomValues(buf)
+    setBridgeSecret(Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join(''))
   }
 
   const onRemove = async (id: string) => {
@@ -486,47 +501,144 @@ export function RaftClusterWidget() {
       </section>
 
       <section className="space-y-2">
-        <h4 className="text-sm font-display tracking-wide">Cross-cluster bridge</h4>
+        <h4 className="text-sm font-display tracking-wide">Metrics uplink</h4>
         <p className="text-xs text-muted-foreground">
-          Configure the async link to the peer Raft cluster. Changes apply live
-          (the running sender / picker / receiver are rebuilt) and persist to
-          <code> .env</code> for the next restart.
+          Ship this cluster's hosts and metrics to a public hub cluster (one-way: the hub sees
+          everything, this cluster keeps knowing only its own data), or turn this cluster into the
+          hub that receives uplinks from several sites. Changes apply live and persist to{' '}
+          <code>.env</code>.
         </p>
+
+        <div className="flex gap-2">
+          {(
+            [
+              ['push', 'Send to a hub', 'This site uplinks its hosts & metrics'],
+              ['receive', 'Receive uplinks', 'This is the public hub'],
+              ['both', 'Two-way pair', 'Legacy symmetric bridge'],
+            ] as const
+          ).map(([m, label, hint]) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setModeDraft(m)}
+              title={hint}
+              className={`rounded-md border px-2.5 py-1.5 text-xs transition-colors ${
+                bridgeMode === m
+                  ? 'border-primary/60 bg-primary/10 text-primary'
+                  : 'border-border/60 text-muted-foreground hover:text-foreground dark:border-white/10'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
         <form onSubmit={onSaveBridge} className="space-y-2">
+          {bridgeMode === 'push' && (
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Hub URL</label>
+              <Input
+                value={bridgeSeeds}
+                onChange={(e) => setBridgeSeeds(e.target.value)}
+                placeholder="https://vps.example.com — the public cluster's web address"
+                className="h-9 font-mono text-xs"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Outbound-only: this site POSTs to the hub — no ports to open here.
+              </p>
+            </div>
+          )}
+          {bridgeMode === 'both' && (
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Remote seed URLs (comma-separated)</label>
+              <Input
+                value={bridgeSeeds}
+                onChange={(e) => setBridgeSeeds(e.target.value)}
+                placeholder="https://vps1.example.com,https://vps2.example.com"
+                className="h-9 font-mono text-xs"
+              />
+            </div>
+          )}
           <div className="space-y-1">
             <label className="text-xs text-muted-foreground">Shared HMAC secret</label>
-            <Input
-              type="password"
-              value={bridgeSecret}
-              onChange={(e) => setBridgeSecret(e.target.value)}
-              placeholder="paste the secret shared between this cluster and the peer"
-              className="h-9 font-mono text-xs"
-            />
+            <div className="flex gap-2">
+              <Input
+                type="password"
+                value={bridgeSecret}
+                onChange={(e) => setBridgeSecret(e.target.value)}
+                placeholder={
+                  bridgeMode === 'receive'
+                    ? 'generate one here, paste the same value on every site'
+                    : 'paste the secret generated on the hub'
+                }
+                className="h-9 flex-1 font-mono text-xs"
+              />
+              {bridgeMode === 'receive' && (
+                <Button type="button" size="sm" variant="outline" onClick={onGenerateSecret}>
+                  Generate
+                </Button>
+              )}
+            </div>
           </div>
-          <div className="space-y-1">
-            <label className="text-xs text-muted-foreground">Remote seed URLs (comma-separated)</label>
-            <Input
-              value={bridgeSeeds}
-              onChange={(e) => setBridgeSeeds(e.target.value)}
-              placeholder="https://vps1.example.com,https://vps2.example.com"
-              className="h-9 font-mono text-xs"
-            />
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs text-muted-foreground">This node's advertise URL (optional)</label>
-            <Input
-              value={bridgeAdvertise}
-              onChange={(e) => setBridgeAdvertise(e.target.value)}
-              placeholder={st.advertise_url || 'https://local-1.example.com'}
-              className="h-9 font-mono text-xs"
-            />
-          </div>
+          {bridgeMode !== 'push' && (
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">This node's advertise URL (optional)</label>
+              <Input
+                value={bridgeAdvertise}
+                onChange={(e) => setBridgeAdvertise(e.target.value)}
+                placeholder={st.advertise_url || 'https://local-1.example.com'}
+                className="h-9 font-mono text-xs"
+              />
+            </div>
+          )}
           <div className="pt-1">
             <Button type="submit" size="sm" disabled={saveBridge.isPending}>
               {saveBridge.isPending ? 'Applying…' : 'Apply & save to .env'}
             </Button>
           </div>
         </form>
+
+        {bridgeMode === 'receive' && bridgeSecret && (
+          <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-xs">
+            On each site's admin panel (Nodes → Raft → Metrics uplink) pick{' '}
+            <span className="font-medium">Send to a hub</span> and paste: Hub URL{' '}
+            <span className="font-mono">{st.advertise_url || window.location.origin}</span>, secret{' '}
+            <span className="font-mono">{bridgeSecret.slice(0, 8)}…</span> (the value above).
+          </div>
+        )}
+
+        {data.bridge?.sender && (
+          <p className="text-xs text-muted-foreground">
+            Uplink status:{' '}
+            {data.bridge.sender.last_ship_err ? (
+              <span className="text-rose-300">failing — {data.bridge.sender.last_ship_err}</span>
+            ) : data.bridge.sender.last_ship_at ? (
+              <span className="text-emerald-400">
+                last shipped {new Date(data.bridge.sender.last_ship_at).toLocaleTimeString()} ·{' '}
+                {data.bridge.sender.shipped_total} entries total
+              </span>
+            ) : (
+              <span>waiting for the first batch…</span>
+            )}
+            {data.bridge.sender.pending > 0 ? ` · ${data.bridge.sender.pending} pending` : ''}
+          </p>
+        )}
+
+        {data.uplinks && data.uplinks.length > 0 && (
+          <div className="space-y-1">
+            <p className="text-xs font-medium">Uplinked sites</p>
+            <ul className="divide-y divide-border/50 rounded border border-border/50">
+              {data.uplinks.map((u) => (
+                <li key={u.cluster_id} className="flex items-center justify-between gap-3 px-3 py-1.5 text-xs">
+                  <span className="font-mono">{u.cluster_id}</span>
+                  <span className="text-muted-foreground">
+                    last entry {new Date(u.last_applied_at).toLocaleString()} · idx {u.last_origin_index}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </section>
 
       {data.bridge_samples && data.bridge_samples.length > 0 ? (

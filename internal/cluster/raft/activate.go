@@ -44,6 +44,7 @@ type RuntimeConfig struct {
 	BridgeEnabled      bool
 	BridgeSharedSecret string
 	BridgeRemoteSeeds  []string
+	BridgeMode         string // push | receive | both
 }
 
 // Activate builds and starts a real Raft Node with the given configuration,

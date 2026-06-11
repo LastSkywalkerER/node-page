@@ -152,6 +152,8 @@ All metric endpoints accept `?hours=<float>` (default `0.0833` ≈ 5 min) and `?
 | `RAFT_ADVERTISE_PUBLIC_URL` | — | HTTP base URL peers use for join/forward |
 | `RAFT_DATA_DIR` | — | Directory for Raft log/snapshot storage |
 | `RAFT_BOOTSTRAP` | `false` | Bootstrap this node as the initial leader (first node only) |
+| `RAFT_BRIDGE_MODE` | `both` | Bridge direction: `push` (spoke — uplink hosts+metrics to a hub, receive nothing), `receive` (hub — accept uplinks from many spokes, ship nothing), `both` (legacy symmetric pair) |
+| `RAFT_BRIDGE_ENABLED` / `RAFT_BRIDGE_SHARED_SECRET` / `RAFT_BRIDGE_REMOTE_SEEDS` | — | Cross-cluster bridge: HMAC secret shared by all sites; seeds = hub URL(s) the spoke POSTs to (outbound-only) |
 
 The setup-wizard "Join an existing cluster" flow writes the resolved `RAFT_*` values to the node's `.env` so the configuration survives restarts/rebuilds.
 

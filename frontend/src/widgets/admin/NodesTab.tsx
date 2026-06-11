@@ -146,6 +146,14 @@ export function NodesTab() {
                                 <span className="block truncate font-medium">{host.name}</span>
                                 <span className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
                                   {host.platform && <span>{host.platform}</span>}
+                                  {host.origin_cluster && (
+                                    <span
+                                      className="rounded border border-violet-500/40 bg-violet-500/10 px-1 font-mono text-[10px] uppercase text-violet-500 dark:text-violet-300"
+                                      title={`Uplinked from the "${host.origin_cluster}" cluster`}
+                                    >
+                                      {host.origin_cluster}
+                                    </span>
+                                  )}
                                   {host.ipv4 && <span className="font-mono">{host.ipv4}</span>}
                                   {(() => {
                                     const url = isThisNode ? window.location.origin : hostURL(host.ipv4)

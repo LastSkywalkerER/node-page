@@ -1,66 +1,108 @@
-package hosts_test
+package hosts
 
 import (
 	"context"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
-
-	hosts "system-stats/internal/cluster/hosts"
-	cpu "system-stats/internal/metrics/cpu"
-	disk "system-stats/internal/metrics/disk"
-	docker "system-stats/internal/metrics/docker"
-	memory "system-stats/internal/metrics/memory"
-	network "system-stats/internal/metrics/network"
+	"gorm.io/gorm/logger"
 )
 
-// TestDeleteHostCascade_RealSchema migrates the actual entities (so the cascade's
-// hardcoded table names must match GORM's real names) and verifies a host + its
-// docker rows are removed without the "commit unexpectedly resulted in rollback"
-// that a wrong table name (docker_containers vs docker_container_entities) caused.
-func TestDeleteHostCascade_RealSchema(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+func newTestRepo(t *testing.T) Repository {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Discard})
 	if err != nil {
-		t.Fatalf("open db: %v", err)
+		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(
-		&cpu.HistoricalCPUMetric{},
-		&memory.HistoricalMemoryMetric{},
-		&disk.HistoricalDiskMetric{},
-		&network.HistoricalNetworkMetric{},
-		&docker.HistoricalDockerMetric{},
-		&docker.DockerContainerEntity{},
-		&hosts.Host{},
-	); err != nil {
+	if err := db.AutoMigrate(&Host{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
+	// Real deployments always own id=1 (the local collector row, written by
+	// UpsertLocalHost at boot); without it the first created row would land
+	// on the reserved id and trip the local-row guards.
+	if err := db.Create(&Host{ID: LocalCollectorHostID, Name: "local-node", MacAddress: "00:00:00:00:00:01"}).Error; err != nil {
+		t.Fatalf("seed local row: %v", err)
+	}
+	return NewRepository(db)
+}
 
-	r := hosts.NewRepository(db)
+// Two DIFFERENT machines sharing a hostname (e.g. "dokploy" on two uplinked
+// sites) must stay two rows — the second gets a suffixed name. Before the
+// hardening they merged by name and flipped the MAC back and forth.
+func TestUpsertHostSameNameDifferentMachinesSplit(t *testing.T) {
+	repo := newTestRepo(t)
 	ctx := context.Background()
-	two := uint(2)
-	ts := time.Now().UTC().Truncate(time.Second)
 
-	if err := db.Create(&hosts.Host{ID: 2, Name: "peer", MacAddress: "aa:bb:cc:dd:ee:ff"}).Error; err != nil {
-		t.Fatalf("seed host: %v", err)
+	a, err := repo.UpsertHost(ctx, HostInfo{
+		Name: "dokploy", MacAddress: "aa:aa:aa:aa:aa:01", HostID: "machine-a", OriginCluster: "home",
+	})
+	if err != nil {
+		t.Fatalf("upsert a: %v", err)
 	}
-	if err := db.Create(&docker.HistoricalDockerMetric{HostID: &two, Timestamp: ts, TotalContainers: 1}).Error; err != nil {
-		t.Fatalf("seed docker metric: %v", err)
+	b, err := repo.UpsertHost(ctx, HostInfo{
+		Name: "dokploy", MacAddress: "bb:bb:bb:bb:bb:02", HostID: "machine-b", OriginCluster: "office",
+	})
+	if err != nil {
+		t.Fatalf("upsert b: %v", err)
 	}
-	if err := db.Create(&docker.DockerContainerEntity{ID: "c1", MetricTimestamp: ts, Name: "peer-web"}).Error; err != nil {
-		t.Fatalf("seed docker container: %v", err)
+	if a.ID == b.ID {
+		t.Fatal("different machines merged into one row")
 	}
+	if b.Name == "dokploy" || !strings.HasPrefix(b.Name, "dokploy") {
+		t.Errorf("second row name = %q, want suffixed dokploy variant", b.Name)
+	}
+	again, err := repo.GetHostByMacAddress(ctx, "aa:aa:aa:aa:aa:01")
+	if err != nil || again.ID != a.ID || again.Name != "dokploy" {
+		t.Errorf("first row corrupted: %+v err=%v", again, err)
+	}
+	if a2, _ := repo.GetHostByID(ctx, a.ID); a2.OriginCluster != "home" {
+		t.Errorf("origin_cluster a = %q", a2.OriginCluster)
+	}
+}
 
-	if err := r.DeleteHostCascade(ctx, 2); err != nil {
-		t.Fatalf("DeleteHostCascade returned error (the bug): %v", err)
-	}
+// The SAME machine re-registering with a changed MAC (docker veth churn) must
+// still merge by name when the machine-id corroborates it.
+func TestUpsertHostSameMachineNewMACMerges(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
 
-	var hostCount, dockerCount, ctrCount int64
-	db.Model(&hosts.Host{}).Where("id = ?", 2).Count(&hostCount)
-	db.Model(&docker.HistoricalDockerMetric{}).Where("host_id = ?", 2).Count(&dockerCount)
-	db.Model(&docker.DockerContainerEntity{}).Where("id = ?", "c1").Count(&ctrCount)
-	if hostCount != 0 || dockerCount != 0 || ctrCount != 0 {
-		t.Fatalf("rows remain after cascade: host=%d docker=%d container=%d", hostCount, dockerCount, ctrCount)
+	a, err := repo.UpsertHost(ctx, HostInfo{
+		Name: "media-vm", MacAddress: "aa:aa:aa:aa:aa:01", HostID: "machine-a",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	b, err := repo.UpsertHost(ctx, HostInfo{
+		Name: "media-vm", MacAddress: "cc:cc:cc:cc:cc:03", HostID: "machine-a",
+	})
+	if err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	if a.ID != b.ID {
+		t.Fatalf("same machine split into two rows: %d vs %d", a.ID, b.ID)
+	}
+	if b.MacAddress != "cc:cc:cc:cc:cc:03" {
+		t.Errorf("MAC not updated: %q", b.MacAddress)
+	}
+}
+
+// HardwareUUID corroboration also merges (VM whose hostname AND MAC changed).
+func TestUpsertHostHardwareUUIDMerges(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+
+	a, _ := repo.UpsertHost(ctx, HostInfo{
+		Name: "vm-a", MacAddress: "aa:aa:aa:aa:aa:01", HardwareUUID: "uuid-1",
+	})
+	b, err := repo.UpsertHost(ctx, HostInfo{
+		Name: "vm-a", MacAddress: "dd:dd:dd:dd:dd:04", HardwareUUID: "uuid-1",
+	})
+	if err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	if a.ID != b.ID {
+		t.Fatal("uuid-corroborated name match should merge")
 	}
 }

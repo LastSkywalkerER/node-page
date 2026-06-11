@@ -96,6 +96,10 @@ type RaftBridgeConfig struct {
 	Enabled      bool     // RAFT_BRIDGE_ENABLED
 	RemoteSeeds  []string // RAFT_BRIDGE_REMOTE_SEEDS — initial peer cluster URLs
 	SharedSecret string   // RAFT_BRIDGE_SHARED_SECRET — HMAC key
+	// Mode is the bridge direction: "push" (spoke — ship hosts/metrics up to
+	// a hub, receive nothing), "receive" (hub — accept uplinks, ship nothing)
+	// or "both" (legacy symmetric pair). Default "both".
+	Mode string // RAFT_BRIDGE_MODE
 }
 
 // Load loads application configuration from environment variables.
@@ -205,6 +209,7 @@ func loadRaftConfig() RaftConfig {
 	cfg.Bridge = RaftBridgeConfig{
 		Enabled:      bridgeEnabled == "true" || bridgeEnabled == "1",
 		SharedSecret: getEnv("RAFT_BRIDGE_SHARED_SECRET", ""),
+		Mode:         NormalizeBridgeMode(getEnv("RAFT_BRIDGE_MODE", "")),
 	}
 	if raw := strings.TrimSpace(getEnv("RAFT_BRIDGE_REMOTE_SEEDS", "")); raw != "" {
 		for _, s := range strings.Split(raw, ",") {
@@ -278,4 +283,23 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// Bridge modes.
+const (
+	BridgeModePush    = "push"
+	BridgeModeReceive = "receive"
+	BridgeModeBoth    = "both"
+)
+
+// NormalizeBridgeMode maps free-form input onto a valid bridge mode.
+func NormalizeBridgeMode(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case BridgeModePush, "send", "uplink":
+		return BridgeModePush
+	case BridgeModeReceive, "hub":
+		return BridgeModeReceive
+	default:
+		return BridgeModeBoth
+	}
 }

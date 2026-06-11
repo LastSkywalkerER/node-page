@@ -25,6 +25,8 @@ export const HostSchema = z.object({
   external_id: z.string().optional().default(''),
   // Hypervisor-reported power state for connector guests: running | stopped | paused | online | offline
   guest_status: z.string().optional().default(''),
+  // Uplink site this row arrived from over the cross-cluster bridge ('' = local cluster).
+  origin_cluster: z.string().optional().default(''),
   last_seen: z.string().optional().default(''),
   created_at: z.string(),
   updated_at: z.string(),

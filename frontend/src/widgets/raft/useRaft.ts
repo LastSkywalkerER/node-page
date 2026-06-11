@@ -41,9 +41,33 @@ export interface PeerURL {
   url: string
 }
 
+export interface BridgeSenderInfo {
+  last_ship_at?: string
+  last_ship_err?: string
+  shipped_total: number
+  pending: number
+  uplink_only: boolean
+}
+
+export interface BridgeInfo {
+  mode: 'push' | 'receive' | 'both'
+  sender?: BridgeSenderInfo
+  receiving: boolean
+}
+
+export interface UplinkInfo {
+  cluster_id: string
+  last_origin_index: number
+  last_applied_at: string
+}
+
 export interface RaftStatusResponse {
   status: RaftStatus
   bridge_samples?: BridgeSample[]
+  /** Bridge runtime state: mode + sender ship health. */
+  bridge?: BridgeInfo
+  /** Hub side: spoke clusters that have shipped entries here. */
+  uplinks?: UplinkInfo[]
   /** Set when the most recent boot-time activation failed (e.g. port in use). */
   boot_error?: string
   /** Raw hashicorp/raft Stats() map — string-to-string. Used by the
@@ -205,6 +229,8 @@ export interface SaveBridgeConfigInput {
   shared_secret: string
   remote_seeds: string[]
   advertise_url?: string
+  /** push (spoke uplink) | receive (hub) | both (legacy pair). */
+  mode?: string
 }
 
 /**

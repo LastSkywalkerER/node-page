@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sort"
 	"sync"
 	"time"
@@ -26,6 +27,11 @@ type Picker struct {
 	myCluster  string
 	httpClient *http.Client
 	probeEvery time.Duration
+	// seeds are operator-provided peer URLs (RAFT_BRIDGE_REMOTE_SEEDS / the
+	// uplink form). They bootstrap the bridge: the replicated catalog cannot
+	// contain a peer cluster's URL before the bridge is up — chicken & egg —
+	// so seeds are probed alongside catalog entries.
+	seeds []string
 
 	mu       sync.RWMutex
 	measures map[string]*measure // keyed by URL
@@ -43,13 +49,20 @@ type measure struct {
 
 // NewPicker wires the picker. myClusterID is used to filter the catalog
 // (we only probe peer-cluster URLs, never our own).
-func NewPicker(logger *log.Logger, db *gorm.DB, myClusterID string) *Picker {
+func NewPicker(logger *log.Logger, db *gorm.DB, myClusterID string, seeds []string) *Picker {
+	clean := make([]string, 0, len(seeds))
+	for _, s := range seeds {
+		if v := strings.TrimSuffix(strings.TrimSpace(s), "/"); v != "" {
+			clean = append(clean, v)
+		}
+	}
 	return &Picker{
 		logger:     logger,
 		db:         db,
 		myCluster:  myClusterID,
 		httpClient: &http.Client{Timeout: 3 * time.Second},
 		probeEvery: 30 * time.Second,
+		seeds:      clean,
 		measures:   make(map[string]*measure),
 	}
 }
@@ -77,11 +90,22 @@ func (p *Picker) probeOnce(ctx context.Context) {
 		}
 		return
 	}
-	var wg sync.WaitGroup
+	// Seeds first, then catalog rows; catalog entries carry richer identity
+	// (cluster/node ids) and overwrite a bare seed measure for the same URL.
+	seen := map[string]bool{}
+	probeList := make([]raftcluster.PeerAdvertise, 0, len(p.seeds)+len(entries))
+	for _, u := range p.seeds {
+		probeList = append(probeList, raftcluster.PeerAdvertise{URL: u, ClusterID: "", NodeID: "seed"})
+		seen[u] = true
+	}
 	for _, e := range entries {
-		if e.ClusterID == p.myCluster || e.URL == "" {
+		if e.ClusterID == p.myCluster || e.URL == "" || seen[e.URL] {
 			continue
 		}
+		probeList = append(probeList, e)
+	}
+	var wg sync.WaitGroup
+	for _, e := range probeList {
 		entry := e
 		wg.Add(1)
 		go func() {

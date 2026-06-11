@@ -24,8 +24,11 @@ import (
 // AppliersDeps bundles every repository the FSM needs to dispatch into.
 // DI builds this once when Raft is enabled and calls RegisterAppliers.
 type AppliersDeps struct {
-	Logger           *log.Logger
-	DB               *gorm.DB
+	Logger *log.Logger
+	DB     *gorm.DB
+	// ClusterID is the LOCAL cluster id; commands whose OriginClusterID
+	// differs stamp it onto host rows so the UI can badge uplinked sites.
+	ClusterID        string
 	HostRepo         hosts.Repository
 	UserRepo         users.UserRepository
 	RefreshTokenRepo users.RefreshTokenRepository
@@ -91,6 +94,14 @@ func (a *appliers) applierCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(WithApplier(context.Background()), 10*time.Second)
 }
 
+// remoteOrigin returns the foreign cluster id, or "" for local commands.
+func (a *appliers) remoteOrigin(cmd Command) string {
+	if cmd.OriginClusterID != "" && cmd.OriginClusterID != a.deps.ClusterID {
+		return cmd.OriginClusterID
+	}
+	return ""
+}
+
 func (a *appliers) applyHostUpsert(cmd Command, _ *hraft.Log) error {
 	var p HostUpsertPayload
 	if err := DecodeTyped(cmd, &p); err != nil {
@@ -99,6 +110,7 @@ func (a *appliers) applyHostUpsert(cmd Command, _ *hraft.Log) error {
 	ctx, cancel := a.applierCtx()
 	defer cancel()
 	_, err := a.deps.HostRepo.UpsertHost(ctx, hosts.HostInfo{
+		OriginCluster:        a.remoteOrigin(cmd),
 		Name:                 p.Name,
 		MacAddress:           p.MacAddress,
 		IPv4:                 p.IPv4,
@@ -125,6 +137,7 @@ func (a *appliers) applyConnectorHostUpsert(cmd Command, _ *hraft.Log) error {
 	defer cancel()
 	_, err := a.deps.HostRepo.UpsertConnectorHost(ctx, hosts.ConnectorHostInfo{
 		HostInfo: hosts.HostInfo{
+			OriginCluster:        a.remoteOrigin(cmd),
 			Name:                 p.Name,
 			MacAddress:           p.MacAddress,
 			IPv4:                 p.IPv4,

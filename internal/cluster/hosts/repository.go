@@ -165,6 +165,7 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		host.VirtualizationRole = hostInfo.VirtualizationRole
 		host.SystemHostID = hostInfo.HostID
 		host.HardwareUUID = hostInfo.HardwareUUID
+		host.OriginCluster = hostInfo.OriginCluster
 		host.Source = MergeSource(host.Source, SourceAgent)
 		host.BootTime = hostInfo.BootTime
 		host.LastSeen = now
@@ -175,11 +176,18 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		return nil, err
 	}
 
-	// 2) Not found by MAC → try to find by Name
+	// 2) Not found by MAC → try to find by Name. A bare name match is only
+	// trusted as "same machine, its MAC changed" when a stable hardware
+	// identity corroborates it — different machines on different sites
+	// (uplinked clusters) often share default hostnames, and merging them
+	// would flip the row's MAC back and forth every cycle.
 	var hostByName Host
 	err = r.db.WithContext(ctx).
 		Where("name = ? AND id != ?", hostInfo.Name, LocalCollectorHostID).
 		First(&hostByName).Error
+	if err == nil && !sameMachineIdentity(&hostByName, hostInfo) {
+		err = gorm.ErrRecordNotFound
+	}
 	if err == nil {
 		// Found by Name → update fields and timestamps
 		now := time.Now()
@@ -194,6 +202,7 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		hostByName.VirtualizationRole = hostInfo.VirtualizationRole
 		hostByName.SystemHostID = hostInfo.HostID
 		hostByName.HardwareUUID = hostInfo.HardwareUUID
+		hostByName.OriginCluster = hostInfo.OriginCluster
 		hostByName.Source = MergeSource(hostByName.Source, SourceAgent)
 		hostByName.BootTime = hostInfo.BootTime
 		hostByName.LastSeen = now
@@ -224,10 +233,15 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		return nil, err
 	}
 
-	// 3) Not found by MAC or Name → create new record
+	// 3) No (corroborated) match → create. The name may still be taken by a
+	// DIFFERENT machine (hosts.name is unique) — suffix with the MAC tail.
+	freeName, nerr := r.resolveFreeName(ctx, hostInfo.Name, 0, macTail(hostInfo.MacAddress))
+	if nerr != nil {
+		return nil, nerr
+	}
 	now := time.Now()
 	host = Host{
-		Name:                 hostInfo.Name,
+		Name:                 freeName,
 		MacAddress:           hostInfo.MacAddress,
 		IPv4:                 hostInfo.IPv4,
 		OS:                   hostInfo.OS,
@@ -239,6 +253,7 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		VirtualizationRole:   hostInfo.VirtualizationRole,
 		SystemHostID:         hostInfo.HostID,
 		HardwareUUID:         hostInfo.HardwareUUID,
+		OriginCluster:        hostInfo.OriginCluster,
 		Source:               SourceAgent,
 		BootTime:             hostInfo.BootTime,
 		LastSeen:             now,
@@ -246,6 +261,26 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		UpdatedAt:            now,
 	}
 	return &host, r.db.WithContext(ctx).Create(&host).Error
+}
+
+// sameMachineIdentity reports whether a name-matched row is genuinely the
+// same machine: the stable ids (machine-id or SMBIOS UUID) must agree.
+func sameMachineIdentity(existing *Host, info HostInfo) bool {
+	if info.HostID != "" && existing.SystemHostID == info.HostID {
+		return true
+	}
+	if info.HardwareUUID != "" && existing.HardwareUUID == info.HardwareUUID {
+		return true
+	}
+	return false
+}
+
+// macTail is a short, human-readable disambiguation suffix ("a0:56").
+func macTail(mac string) string {
+	if len(mac) >= 5 {
+		return mac[len(mac)-5:]
+	}
+	return mac
 }
 
 // connectorHostAlive reports whether a connector-fed row should have its
@@ -303,12 +338,13 @@ func (r *hostRepository) UpsertConnectorHost(ctx context.Context, info Connector
 			return &host, r.db.WithContext(ctx).Model(&Host{}).
 				Where("id = ?", host.ID).
 				Updates(map[string]interface{}{
-					"host_type":    info.HostType,
-					"parent_mac":   info.ParentMAC,
-					"external_id":  info.ExternalID,
-					"guest_status": info.GuestStatus,
-					"source":       merged,
-					"updated_at":   now,
+					"host_type":      info.HostType,
+					"parent_mac":     info.ParentMAC,
+					"external_id":    info.ExternalID,
+					"guest_status":   info.GuestStatus,
+					"origin_cluster": info.OriginCluster,
+					"source":         merged,
+					"updated_at":     now,
 				}).Error
 		}
 		// Connector-owned row: the connector is the only writer, refresh everything.
@@ -321,6 +357,7 @@ func (r *hostRepository) UpsertConnectorHost(ctx context.Context, info Connector
 		host.ParentMAC = info.ParentMAC
 		host.ExternalID = info.ExternalID
 		host.GuestStatus = info.GuestStatus
+		host.OriginCluster = info.OriginCluster
 		host.Name = name
 		host.MacAddress = info.MacAddress
 		host.IPv4 = info.IPv4
@@ -355,6 +392,7 @@ func (r *hostRepository) UpsertConnectorHost(ctx context.Context, info Connector
 		Source:          SourceConnector,
 		ExternalID:      info.ExternalID,
 		GuestStatus:     info.GuestStatus,
+		OriginCluster:   info.OriginCluster,
 		BootTime:        info.BootTime,
 		CreatedAt:       now,
 		UpdatedAt:       now,

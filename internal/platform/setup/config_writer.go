@@ -78,6 +78,7 @@ type ConfigValues struct {
 
 	// Cross-cluster bridge (optional).
 	RaftBridgeEnabled      string `json:"raft_bridge_enabled"`
+	RaftBridgeMode         string `json:"raft_bridge_mode"`
 	RaftBridgeSharedSecret string `json:"raft_bridge_shared_secret"`
 	RaftBridgeRemoteSeeds  string `json:"raft_bridge_remote_seeds"`
 }
@@ -110,6 +111,7 @@ func (cw *ConfigWriter) ReadCurrentConfig() (*ConfigValues, error) {
 		RaftBootstrap:          os.Getenv("RAFT_BOOTSTRAP"),
 		RaftAdvertisePublicURL: os.Getenv("RAFT_ADVERTISE_PUBLIC_URL"),
 		RaftBridgeEnabled:      os.Getenv("RAFT_BRIDGE_ENABLED"),
+		RaftBridgeMode:         os.Getenv("RAFT_BRIDGE_MODE"),
 		RaftBridgeSharedSecret: os.Getenv("RAFT_BRIDGE_SHARED_SECRET"),
 		RaftBridgeRemoteSeeds:  os.Getenv("RAFT_BRIDGE_REMOTE_SEEDS"),
 	}

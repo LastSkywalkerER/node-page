@@ -223,8 +223,17 @@ function HostCard({ host, guests = [] }: { host: Host; guests?: Host[] }) {
                 <OSIcon host={host} className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
                 <div className="min-w-0">
                   {cardTitle && (
-                    <h2 className="truncate font-display text-sm font-semibold leading-tight tracking-wide transition-colors duration-200 group-hover:text-primary">
-                      {cardTitle}
+                    <h2 className="flex items-center gap-1.5 truncate font-display text-sm font-semibold leading-tight tracking-wide transition-colors duration-200 group-hover:text-primary">
+                      <span className="truncate">{cardTitle}</span>
+                      {host.origin_cluster && (
+                        <Badge
+                          variant="secondary"
+                          className="h-4 shrink-0 border border-violet-500/40 bg-violet-500/10 px-1 font-mono text-[9px] uppercase text-violet-500 dark:text-violet-300"
+                          title={`Uplinked from the "${host.origin_cluster}" cluster`}
+                        >
+                          {host.origin_cluster}
+                        </Badge>
+                      )}
                     </h2>
                   )}
                   {(host.platform || host.os) && (

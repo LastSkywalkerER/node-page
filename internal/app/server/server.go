@@ -530,7 +530,8 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 				return p.Snapshot()
 			}
 			return nil
-		})
+		}).
+		WithBridgeInfo(container.BridgeInfo)
 
 	// Swagger UI (always available)
 	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
@@ -625,12 +626,16 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		api.POST("/raft/forward", raftForwardRL, raftHandler.Forward)
 
 		// Cross-cluster bridge receiver — HMAC-authenticated by the
-		// handler itself, so no JWT middleware here. Always registered
-		// when the receiver was built; if not, the route is omitted and
-		// peer cluster POSTs get a clean 404.
-		if br := container.GetBridgeReceiver(); br != nil {
-			api.POST("/raft/bridge/replicate", br.Handle)
-		}
+		// handler itself, so no JWT middleware here. Resolved per request:
+		// the receiver may be (re)built at runtime when the admin enables
+		// uplink receiving, long after the routes were registered.
+		api.POST("/raft/bridge/replicate", func(c *gin.Context) {
+			if br := container.GetBridgeReceiver(); br != nil {
+				br.Handle(c)
+				return
+			}
+			c.JSON(http.StatusNotFound, gin.H{"error": "bridge receiving is not enabled on this node"})
+		})
 
 		// Metrics current snapshot
 		api.GET("/metrics/current", middleware.AuthJWT(container.GetTokenService()), systemHandler.HandleCurrentMetrics)

@@ -34,6 +34,7 @@ type Handler struct {
 	logger       *log.Logger
 	clusterID    string
 	pickerInfo   func() any
+	bridgeInfo   func() any
 	bridgeCfg    BridgeConfigurator
 	bootError    func() string
 	resetCfg     func() error
@@ -63,13 +64,20 @@ func (h *Handler) WithPickerInfo(fn func() any) *Handler {
 	return h
 }
 
+// WithBridgeInfo wires a snapshot accessor for the bridge runtime state
+// (mode + sender health). Embedded under "bridge" in /raft/status.
+func (h *Handler) WithBridgeInfo(fn func() any) *Handler {
+	h.bridgeInfo = fn
+	return h
+}
+
 // BridgeConfigurator is the small interface the admin "Bridge config"
 // panel uses to hot-update the cross-cluster bridge at runtime.
 type BridgeConfigurator interface {
-	// SaveBridge updates the shared HMAC secret + remote seed list and
+	// SaveBridge updates the bridge mode, shared HMAC secret + remote seed list and
 	// rebuilds the sender/picker/receiver. AdvertiseURL is optional;
 	// when empty the previously configured advertise URL is kept.
-	SaveBridge(secret string, remoteSeeds []string, advertiseURL string) error
+	SaveBridge(secret string, remoteSeeds []string, advertiseURL, mode string) error
 }
 
 // WithBridgeConfigurator wires the runtime bridge configurator so the
@@ -130,6 +138,30 @@ func (h *Handler) Status(c *gin.Context) {
 		// UI can render last_contact / num_peers / latest_configuration
 		// for diagnostics when the cluster fails to elect.
 		resp["raft_stats"] = stats
+	}
+	if h.bridgeInfo != nil {
+		if bi := h.bridgeInfo(); bi != nil {
+			resp["bridge"] = bi
+		}
+	}
+	// Uplinked spoke clusters (hub side): summarized from the bridge dedupe
+	// table. Raw table name to avoid a raft→bridge import cycle.
+	if h.db != nil {
+		var uplinks []struct {
+			OriginClusterID string `gorm:"column:origin_cluster_id" json:"cluster_id"`
+			LastIndex       uint64 `gorm:"column:last_index" json:"last_origin_index"`
+			// String, not time.Time: the aggregated MAX(applied_at) comes back
+			// as a raw SQLite string and fails the time scan otherwise.
+			LastAt string `gorm:"column:last_at" json:"last_applied_at"`
+		}
+		err := h.db.WithContext(c.Request.Context()).
+			Table("applied_remote_log").
+			Select("origin_cluster_id, MAX(origin_index) AS last_index, MAX(applied_at) AS last_at").
+			Group("origin_cluster_id").
+			Scan(&uplinks).Error
+		if err == nil && len(uplinks) > 0 {
+			resp["uplinks"] = uplinks
+		}
 	}
 	// Advertised HTTP URLs from the peer catalog: lets the UI attach a
 	// clickable address to each cluster node (matched to hosts by the IP in
@@ -621,6 +653,8 @@ type SaveBridgeConfigRequest struct {
 	SharedSecret string   `json:"shared_secret"`
 	RemoteSeeds  []string `json:"remote_seeds"`
 	AdvertiseURL string   `json:"advertise_url"`
+	// Mode: "push" (spoke uplink), "receive" (hub) or "both" (legacy pair).
+	Mode string `json:"mode"`
 }
 
 // SaveBridgeConfig hot-updates the cross-cluster bridge configuration
@@ -644,7 +678,7 @@ func (h *Handler) SaveBridgeConfig(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := h.bridgeCfg.SaveBridge(req.SharedSecret, req.RemoteSeeds, req.AdvertiseURL); err != nil {
+	if err := h.bridgeCfg.SaveBridge(req.SharedSecret, req.RemoteSeeds, req.AdvertiseURL, req.Mode); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
