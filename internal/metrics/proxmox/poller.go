@@ -351,10 +351,10 @@ func (p *Poller) syncGuest(ctx context.Context, client *Client, conn connectors.
 	if len(cfg.macs) > 0 {
 		mac = cfg.macs[0]
 	}
-	// Linking: if ANY of the guest's NIC MACs — or, for VMs, its SMBIOS UUID —
-	// matches a registered host (the agent inside the guest), that row becomes
-	// the guest — no duplicate.
-	existing, stale := p.findExisting(ctx, externalID, cfg.macs, cfg.uuid)
+	// Linking: if ANY of the guest's NIC MACs — or, for VMs, its SMBIOS UUID,
+	// or (weakest) an agent whose hostname equals the guest name — matches a
+	// registered host, that row becomes the guest — no duplicate.
+	existing, stale := p.findExisting(ctx, externalID, cfg.macs, cfg.uuid, r.Name)
 	if stale != nil {
 		// An agent row appeared for a guest we had been tracking through a
 		// different MAC — drop our redundant connector-only row.
@@ -418,13 +418,15 @@ func (p *Poller) syncGuest(ctx context.Context, client *Client, conn connectors.
 	p.submitMetrics(ctx, host, cpuM, memM, diskM, p.guestNetwork(externalID, r))
 }
 
-// findExisting resolves the guest to an already-known host row by any of its
-// NIC MACs (or the synthetic external-id MAC), or — for VMs — by SMBIOS UUID
-// (the agent's product_uuid equals the guest's smbios1 UUID even when its
-// registered MAC is a Docker-bridge one the PVE config has never seen). When
-// both an agent row and a connector-only row match, the agent row wins and
-// the connector row is returned as stale for cleanup.
-func (p *Poller) findExisting(ctx context.Context, externalID string, macs []string, uuid string) (best, stale *hosts.Host) {
+// findExisting resolves the guest to an already-known host row, strongest key
+// first: the external_id column, NIC MACs (or the synthetic external-id MAC),
+// the SMBIOS UUID (a VM agent's product_uuid equals the guest's smbios1 UUID
+// even when its registered MAC is a Docker-bridge one the PVE config has never
+// seen), and finally an unlinked agent whose hostname equals the guest name —
+// the only handle for an LXC agent behind a Docker bridge. When both an agent
+// row and a connector-only row match, the agent row wins and the connector
+// row is returned as stale for cleanup.
+func (p *Poller) findExisting(ctx context.Context, externalID string, macs []string, uuid, guestName string) (best, stale *hosts.Host) {
 	var matches []*hosts.Host
 	add := func(h *hosts.Host) {
 		for _, m := range matches {
@@ -446,6 +448,13 @@ func (p *Poller) findExisting(ctx context.Context, externalID string, macs []str
 	}
 	if uuid != "" {
 		if h, err := p.deps.HostRepo.GetHostByHardwareUUID(ctx, uuid); err == nil {
+			add(h)
+		}
+	}
+	if guestName != "" {
+		if h, err := p.deps.HostRepo.GetUnlinkedAgentHostByName(ctx, guestName); err == nil {
+			p.deps.Logger.Info("proxmox: linking guest to agent host by matching name",
+				"name", guestName, "host_id", h.ID)
 			add(h)
 		}
 	}

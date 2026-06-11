@@ -37,6 +37,10 @@ type Repository interface {
 	// VM linking key when the agent's registered MAC is absent from the
 	// guest's PVE config (agent behind a Docker bridge).
 	GetHostByHardwareUUID(ctx context.Context, uuid string) (*Host, error)
+	// GetUnlinkedAgentHostByName resolves an agent-maintained row that is not
+	// yet attached to any hypervisor — the weakest linking key (a PVE guest
+	// name usually equals the hostname the agent registered with).
+	GetUnlinkedAgentHostByName(ctx context.Context, name string) (*Host, error)
 	// FindConnectorOnlyHostsByExternalIDSuffix lists connector-owned rows whose
 	// external_id ends with suffix (e.g. "/lxc/105") — used by the self-link
 	// flow to find this node's own guest row across configured connectors.
@@ -379,6 +383,21 @@ func (r *hostRepository) GetHostByHardwareUUID(ctx context.Context, uuid string)
 	}
 	var host Host
 	err := r.db.WithContext(ctx).Where("hardware_uuid = ?", uuid).First(&host).Error
+	if err != nil {
+		return nil, err
+	}
+	return &host, nil
+}
+
+func (r *hostRepository) GetUnlinkedAgentHostByName(ctx context.Context, name string) (*Host, error) {
+	if name == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var host Host
+	err := r.db.WithContext(ctx).
+		Where("name = ? AND source != ? AND (external_id = '' OR external_id IS NULL)",
+			name, SourceConnector).
+		First(&host).Error
 	if err != nil {
 		return nil, err
 	}

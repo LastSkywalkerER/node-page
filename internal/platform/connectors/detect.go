@@ -65,6 +65,25 @@ func hostSys() string {
 
 var lxcCgroupRe = regexp.MustCompile(`(?m)[:/]lxc/(\d+)`)
 
+// pveVolumeRe matches the PVE storage volume name of an LXC rootfs as it leaks
+// through /proc/1/mountinfo: vm--105--disk--0 (LVM-thin), subvol-105-disk-0
+// (ZFS), /images/105/ (dir storage). Unlike the cgroup path, the mount source
+// survives the container's cgroup/mount namespaces.
+var pveVolumeRe = regexp.MustCompile(`(?:vm|subvol)-+(\d+)-+disk|/images/(\d+)/`)
+
+// vmidFromMountinfo extracts this container's VMID from its mountinfo.
+func vmidFromMountinfo(data []byte) int {
+	if m := pveVolumeRe.FindSubmatch(data); m != nil {
+		for _, g := range m[1:] {
+			if len(g) > 0 {
+				v, _ := strconv.Atoi(string(g))
+				return v
+			}
+		}
+	}
+	return 0
+}
+
 func (d *Detector) probeProxmox() []DiscoveredHint {
 	var (
 		evidence  []string
@@ -90,6 +109,19 @@ func (d *Detector) probeProxmox() []DiscoveredHint {
 			high = true
 			vmid, _ = strconv.Atoi(string(m[1]))
 			evidence = append(evidence, fmt.Sprintf("cgroup:/lxc/%d", vmid))
+		}
+	}
+	// Inside a real PVE LXC the cgroup namespace hides the /lxc/<vmid> path
+	// (PID 1 sees 0::/init.scope), but the rootfs volume name in mountinfo
+	// still carries the VMID. Only trusted once an LXC marker was seen — a
+	// PVE node with a guest volume mounted must not claim to be that guest.
+	if vmid == 0 && guestKind == "lxc" {
+		if mi, err := os.ReadFile(filepath.Join(proc, "1", "mountinfo")); err == nil {
+			if v := vmidFromMountinfo(mi); v > 0 {
+				vmid = v
+				high = true
+				evidence = append(evidence, fmt.Sprintf("mountinfo:disk-of-vmid-%d", v))
+			}
 		}
 	}
 

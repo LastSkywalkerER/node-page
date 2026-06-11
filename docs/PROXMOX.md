@@ -382,17 +382,27 @@ sections above):
   registered a Docker-bridge MAC. The poller prefers an agent row over a
   previously-created connector row when both match, and deletes the stale
   connector duplicate.
-- **Self-link by cgroup VMID** — MAC linking fails when the agent registered
-  through a NIC absent from the PVE config (Docker bridge / random veth — the
-  dokploy-in-LXC case). Every node therefore runs a non-leader-gated
-  `selfLink` pass: the LXC cgroup leaks this machine's VMID with high
-  confidence, and when exactly one connector-fed guest matches
-  `<kind>/<vmid>`, the node claims that topology onto its own collector row
-  and deletes the duplicate (ambiguous matches across connectors are skipped
-  with a warning). Guest resolution checks the `external_id` column before
-  MACs so the claim sticks on subsequent polls. VMs don't leak a VMID — the
-  same situation on QEMU guests is covered by the `hardware_uuid`↔`smbios1`
-  matching above (works for every agent VM, not just this node).
+- **Self-link by VMID (cgroup, then mountinfo)** — MAC linking fails when the
+  agent registered through a NIC absent from the PVE config (Docker bridge /
+  random veth — the dokploy-in-LXC case). Every node therefore runs a
+  non-leader-gated `selfLink` pass keyed on this machine's own VMID. The
+  `/lxc/<vmid>` cgroup path is only visible without a cgroup namespace (i.e.
+  rarely on modern PVE); the reliable source is `/proc/1/mountinfo`, where the
+  rootfs volume name leaks through every namespace (`vm--105--disk--0`,
+  `subvol-105-disk-0`, `/images/105/`). When exactly one connector-fed guest
+  matches `<kind>/<vmid>`, the node claims that topology onto its own
+  collector row and deletes the duplicate (ambiguous matches across
+  connectors are skipped with a warning). Guest resolution checks the
+  `external_id` column before MACs so the claim sticks on subsequent polls.
+  VMs don't leak a VMID — QEMU guests are covered by the
+  `hardware_uuid`↔`smbios1` matching above (works for every agent VM, not
+  just this node).
+- **Name matching is the last-resort linking key** — an unlinked agent row
+  whose hostname exactly equals the PVE guest name is linked by the poller
+  (external_id → MACs → SMBIOS UUID → name). This is what catches an LXC
+  agent that exposes neither a config MAC nor a VMID. Known trade-off: an
+  unrelated machine that happens to share a guest's name would link wrongly —
+  only unlinked agent rows participate, and stronger keys always win.
 - **No rrddata backfill** — connector-only guests accumulate history from
   connect time onward; guest disk usage is written only when PVE reports it
   (QEMU without guest agent reports 0).
