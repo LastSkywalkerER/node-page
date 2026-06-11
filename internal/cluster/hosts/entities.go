@@ -64,6 +64,12 @@ type Host struct {
 	VirtualizationSystem string `json:"virtualization_system"`
 	VirtualizationRole   string `json:"virtualization_role"`
 	SystemHostID         string `json:"system_host_id"`
+	// HardwareUUID is the SMBIOS product UUID (/sys/class/dmi/id/product_uuid,
+	// lowercased). Inside a QEMU VM it equals the guest's `smbios1` UUID in
+	// its PVE config, so connectors can link a VM whose registered MAC the
+	// hypervisor has never seen (agent behind a Docker bridge). Empty when
+	// unreadable (non-root native installs).
+	HardwareUUID string `json:"hardware_uuid,omitempty" gorm:"index"`
 
 	// Virtualization topology (filled by connectors, e.g. Proxmox).
 	// HostType is "" (unknown) | hypervisor | vm | lxc.
@@ -130,6 +136,8 @@ type HostInfo struct {
 	VirtualizationSystem string `json:"virtualization_system"`
 	VirtualizationRole   string `json:"virtualization_role"`
 	HostID               string `json:"host_id"`
+	// HardwareUUID is the SMBIOS product UUID (see Host.HardwareUUID).
+	HardwareUUID string `json:"hardware_uuid,omitempty"`
 	// BootTime is the host's boot time in Unix seconds (from gopsutil). Stable
 	// per boot; used to derive the host's real system uptime on any node.
 	BootTime int64 `json:"boot_time"`

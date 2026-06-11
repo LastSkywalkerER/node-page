@@ -54,7 +54,7 @@ func (p *Prober) Probe(ctx context.Context, endpoint, tokenID, secret string, sk
 
 	var nodes []string
 	guestCount := 0
-	var guestMACs []string
+	var guestMACs, guestUUIDs []string
 	for _, r := range resources {
 		switch r.Type {
 		case "node":
@@ -66,6 +66,9 @@ func (p *Prober) Probe(ctx context.Context, endpoint, tokenID, secret string, sk
 			guestCount++
 			if cfg, cerr := client.GuestConfig(ctx, r.Node, r.Type, r.VMID); cerr == nil {
 				guestMACs = append(guestMACs, ConfigMACs(cfg)...)
+				if u := SMBIOSUUID(cfg); u != "" {
+					guestUUIDs = append(guestUUIDs, u)
+				}
 			}
 		}
 	}
@@ -78,6 +81,7 @@ func (p *Prober) Probe(ctx context.Context, endpoint, tokenID, secret string, sk
 		Nodes:       nodes,
 		GuestCount:  guestCount,
 		GuestMACs:   guestMACs,
+		GuestUUIDs:  guestUUIDs,
 	}, nil
 }
 

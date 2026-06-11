@@ -130,16 +130,23 @@ func (s *service) TestProxmox(ctx context.Context, req ConnectRequest) (*Preview
 	if err != nil {
 		return nil, err
 	}
-	matched := 0
+	// Count distinct already-registered hosts reachable by either linking key
+	// (NIC MAC or SMBIOS UUID) — the same set the poller will link, not dupe.
+	matchedIDs := map[uint]bool{}
 	for _, mac := range res.GuestMACs {
 		if mac == "" {
 			continue
 		}
-		if _, err := s.hostRepo.GetHostByMacAddress(ctx, strings.ToLower(mac)); err == nil {
-			matched++
+		if h, err := s.hostRepo.GetHostByMacAddress(ctx, strings.ToLower(mac)); err == nil {
+			matchedIDs[h.ID] = true
 		}
 	}
-	return &Preview{ProbeResult: *res, MatchedHosts: matched}, nil
+	for _, uuid := range res.GuestUUIDs {
+		if h, err := s.hostRepo.GetHostByHardwareUUID(ctx, uuid); err == nil {
+			matchedIDs[h.ID] = true
+		}
+	}
+	return &Preview{ProbeResult: *res, MatchedHosts: len(matchedIDs)}, nil
 }
 
 func (s *service) CreateProxmox(ctx context.Context, req ConnectRequest) (*Connector, error) {

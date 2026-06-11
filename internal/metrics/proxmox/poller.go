@@ -73,6 +73,7 @@ type cachedNodeIdentity struct {
 type cachedGuestConfig struct {
 	macs      []string
 	ostype    string
+	uuid      string // smbios1 UUID (QEMU only)
 	fetchedAt time.Time
 }
 
@@ -350,9 +351,10 @@ func (p *Poller) syncGuest(ctx context.Context, client *Client, conn connectors.
 	if len(cfg.macs) > 0 {
 		mac = cfg.macs[0]
 	}
-	// Linking: if ANY of the guest's NIC MACs matches a registered host (the
-	// agent inside the guest), that row becomes the guest — no duplicate.
-	existing, stale := p.findExisting(ctx, externalID, cfg.macs)
+	// Linking: if ANY of the guest's NIC MACs — or, for VMs, its SMBIOS UUID —
+	// matches a registered host (the agent inside the guest), that row becomes
+	// the guest — no duplicate.
+	existing, stale := p.findExisting(ctx, externalID, cfg.macs, cfg.uuid)
 	if stale != nil {
 		// An agent row appeared for a guest we had been tracking through a
 		// different MAC — drop our redundant connector-only row.
@@ -417,11 +419,12 @@ func (p *Poller) syncGuest(ctx context.Context, client *Client, conn connectors.
 }
 
 // findExisting resolves the guest to an already-known host row by any of its
-// NIC MACs (or the synthetic external-id MAC). When both an agent row and a
-// connector-only row match (the agent registered through a different NIC than
-// the one we keyed on), the agent row wins and the connector row is returned
-// as stale for cleanup.
-func (p *Poller) findExisting(ctx context.Context, externalID string, macs []string) (best, stale *hosts.Host) {
+// NIC MACs (or the synthetic external-id MAC), or — for VMs — by SMBIOS UUID
+// (the agent's product_uuid equals the guest's smbios1 UUID even when its
+// registered MAC is a Docker-bridge one the PVE config has never seen). When
+// both an agent row and a connector-only row match, the agent row wins and
+// the connector row is returned as stale for cleanup.
+func (p *Poller) findExisting(ctx context.Context, externalID string, macs []string, uuid string) (best, stale *hosts.Host) {
 	var matches []*hosts.Host
 	add := func(h *hosts.Host) {
 		for _, m := range matches {
@@ -438,6 +441,11 @@ func (p *Poller) findExisting(ctx context.Context, externalID string, macs []str
 	}
 	for _, key := range append([]string{externalID}, macs...) {
 		if h, err := p.deps.HostRepo.GetHostByMacAddress(ctx, key); err == nil {
+			add(h)
+		}
+	}
+	if uuid != "" {
+		if h, err := p.deps.HostRepo.GetHostByHardwareUUID(ctx, uuid); err == nil {
 			add(h)
 		}
 	}
@@ -569,6 +577,7 @@ func (p *Poller) guestIdentity(ctx context.Context, client *Client, connID uint,
 	out := cachedGuestConfig{fetchedAt: time.Now()}
 	if cfg, err := client.GuestConfig(ctx, r.Node, r.Type, r.VMID); err == nil {
 		out.macs = ConfigMACs(cfg)
+		out.uuid = SMBIOSUUID(cfg)
 		if v, ok := cfg["ostype"].(string); ok {
 			out.ostype = v
 		}

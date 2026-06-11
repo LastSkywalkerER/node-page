@@ -110,6 +110,7 @@ func (a *appliers) applyHostUpsert(cmd Command, _ *hraft.Log) error {
 		VirtualizationSystem: p.VirtualizationSystem,
 		VirtualizationRole:   p.VirtualizationRole,
 		HostID:               p.HostID,
+		HardwareUUID:         p.HardwareUUID,
 		BootTime:             p.BootTime,
 	})
 	return err
@@ -135,6 +136,7 @@ func (a *appliers) applyConnectorHostUpsert(cmd Command, _ *hraft.Log) error {
 			VirtualizationSystem: p.VirtualizationSystem,
 			VirtualizationRole:   p.VirtualizationRole,
 			HostID:               p.HostID,
+			HardwareUUID:         p.HardwareUUID,
 			BootTime:             p.BootTime,
 		},
 		HostType:    p.HostType,

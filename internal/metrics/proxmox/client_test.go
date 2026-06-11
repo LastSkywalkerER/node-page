@@ -27,6 +27,27 @@ func TestConfigMACs(t *testing.T) {
 	}
 }
 
+func TestSMBIOSUUID(t *testing.T) {
+	cases := []struct {
+		smbios1 any
+		want    string
+	}{
+		{"uuid=11111111-2222-3333-4444-555555555555", "11111111-2222-3333-4444-555555555555"},
+		{"uuid=AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE,serial=c2VyaWFs,base64=1", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"},
+		{"serial=abc", ""},
+		{nil, ""},
+	}
+	for _, c := range cases {
+		cfg := map[string]any{}
+		if c.smbios1 != nil {
+			cfg["smbios1"] = c.smbios1
+		}
+		if got := SMBIOSUUID(cfg); got != c.want {
+			t.Errorf("SMBIOSUUID(%v) = %q, want %q", c.smbios1, got, c.want)
+		}
+	}
+}
+
 func TestOSTypeInfo(t *testing.T) {
 	cases := []struct {
 		ostype                   string

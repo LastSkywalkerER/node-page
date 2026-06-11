@@ -268,6 +268,24 @@ func ConfigMACs(cfg map[string]any) []string {
 	return macs
 }
 
+// SMBIOSUUID extracts the guest UUID from a QEMU config's `smbios1` value
+// ("uuid=xxx[,base64=1,...]"; the uuid field itself is never base64-encoded).
+// Lowercased to match the agent-collected product_uuid. "" for LXC (no
+// smbios1) or when unset.
+func SMBIOSUUID(cfg map[string]any) string {
+	raw, ok := cfg["smbios1"].(string)
+	if !ok {
+		return ""
+	}
+	for _, part := range strings.Split(raw, ",") {
+		kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
+		if len(kv) == 2 && strings.EqualFold(kv[0], "uuid") {
+			return strings.ToLower(strings.TrimSpace(kv[1]))
+		}
+	}
+	return ""
+}
+
 func normalizeMAC(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	if len(s) != 17 || strings.Count(s, ":") != 5 {

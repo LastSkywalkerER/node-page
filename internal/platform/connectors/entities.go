@@ -98,6 +98,9 @@ type ProbeResult struct {
 	Nodes       []string `json:"nodes"`
 	GuestCount  int      `json:"guest_count"`
 	GuestMACs   []string `json:"-"`
+	// GuestUUIDs are the QEMU guests' smbios1 UUIDs — the secondary linking
+	// key (agents report their product_uuid as hardware_uuid).
+	GuestUUIDs []string `json:"-"`
 }
 
 // Preview is the test-connection response shown before saving.

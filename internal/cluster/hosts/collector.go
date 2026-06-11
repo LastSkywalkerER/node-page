@@ -224,6 +224,25 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (HostInfo, error) {
 		VirtualizationSystem: hostInfo.VirtualizationSystem,
 		VirtualizationRole:   hostInfo.VirtualizationRole,
 		HostID:               hostInfo.HostID,
+		HardwareUUID:         readProductUUID(),
 		BootTime:             int64(hostInfo.BootTime),
 	}, nil
+}
+
+// readProductUUID reads the SMBIOS product UUID. Inside a QEMU VM it equals
+// the guest's `smbios1` UUID in its Proxmox config — the linking key for VMs
+// whose registered MAC the hypervisor has never seen. Best-effort: the file
+// is root-only on most distros; honours HOST_SYS for Docker deployments.
+// Note: inside an LXC container sysfs shows the HOST's DMI, but LXC guests
+// have no smbios1 config so the value never participates in matching there.
+func readProductUUID() string {
+	sys := strings.TrimSpace(os.Getenv("HOST_SYS"))
+	if sys == "" {
+		sys = "/sys"
+	}
+	data, err := os.ReadFile(filepath.Join(sys, "class", "dmi", "id", "product_uuid"))
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(string(data)))
 }

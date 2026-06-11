@@ -374,9 +374,12 @@ sections above):
   from `source` + `guest_status` client-side.
 - **Hint dismissal is client-side** (localStorage + once-per-session toast),
   not a replicated config key; the Connectors tab always lists hints.
-- **No UUID matching yet** — linking is MAC-only (gopsutil's `HostID` is
-  machine-id, not the SMBIOS UUID, so matching `smbios1` needs collecting
-  `product_uuid` separately). The poller does prefer an agent row over a
+- **SMBIOS UUID matching is implemented** (gopsutil's `HostID` is machine-id,
+  so the agent additionally collects `product_uuid` into `hosts.hardware_uuid`,
+  replicated with the row). Guest resolution order: `external_id` → NIC MACs →
+  `smbios1` UUID. Because the UUID lives on replicated host rows, the leader
+  links ANY agent VM in the cluster — not just itself — even when the agent
+  registered a Docker-bridge MAC. The poller prefers an agent row over a
   previously-created connector row when both match, and deletes the stale
   connector duplicate.
 - **Self-link by cgroup VMID** — MAC linking fails when the agent registered
@@ -387,9 +390,9 @@ sections above):
   `<kind>/<vmid>`, the node claims that topology onto its own collector row
   and deletes the duplicate (ambiguous matches across connectors are skipped
   with a warning). Guest resolution checks the `external_id` column before
-  MACs so the claim sticks on subsequent polls. VMs don't leak a VMID — a
-  `product_uuid`↔`smbios1` self-link is the follow-up for the same situation
-  on QEMU guests.
+  MACs so the claim sticks on subsequent polls. VMs don't leak a VMID — the
+  same situation on QEMU guests is covered by the `hardware_uuid`↔`smbios1`
+  matching above (works for every agent VM, not just this node).
 - **No rrddata backfill** — connector-only guests accumulate history from
   connect time onward; guest disk usage is written only when PVE reports it
   (QEMU without guest agent reports 0).

@@ -24,6 +24,7 @@ type HostUpsertPayload struct {
 	VirtualizationSystem string `json:"virtualization_system"`
 	VirtualizationRole   string `json:"virtualization_role"`
 	HostID               string `json:"host_id"`
+	HardwareUUID         string `json:"hardware_uuid,omitempty"`
 	BootTime             int64  `json:"boot_time,omitempty"`
 }
 

@@ -33,6 +33,10 @@ type Repository interface {
 	UpsertConnectorHost(ctx context.Context, info ConnectorHostInfo) (*Host, error)
 	// GetHostByExternalID resolves a host by its connector-side identity.
 	GetHostByExternalID(ctx context.Context, externalID string) (*Host, error)
+	// GetHostByHardwareUUID resolves a host by its SMBIOS product UUID — the
+	// VM linking key when the agent's registered MAC is absent from the
+	// guest's PVE config (agent behind a Docker bridge).
+	GetHostByHardwareUUID(ctx context.Context, uuid string) (*Host, error)
 	// FindConnectorOnlyHostsByExternalIDSuffix lists connector-owned rows whose
 	// external_id ends with suffix (e.g. "/lxc/105") — used by the self-link
 	// flow to find this node's own guest row across configured connectors.
@@ -105,6 +109,7 @@ func (r *hostRepository) UpsertLocalHost(ctx context.Context, hostInfo HostInfo)
 			VirtualizationSystem: hostInfo.VirtualizationSystem,
 			VirtualizationRole:   hostInfo.VirtualizationRole,
 			SystemHostID:         hostInfo.HostID,
+			HardwareUUID:         hostInfo.HardwareUUID,
 			Source:               SourceAgent,
 			BootTime:             hostInfo.BootTime,
 			LastSeen:             now,
@@ -127,6 +132,7 @@ func (r *hostRepository) UpsertLocalHost(ctx context.Context, hostInfo HostInfo)
 	host.VirtualizationSystem = hostInfo.VirtualizationSystem
 	host.VirtualizationRole = hostInfo.VirtualizationRole
 	host.SystemHostID = hostInfo.HostID
+	host.HardwareUUID = hostInfo.HardwareUUID
 	host.Source = MergeSource(host.Source, SourceAgent)
 	host.BootTime = hostInfo.BootTime
 	host.LastSeen = now
@@ -154,6 +160,7 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		host.VirtualizationSystem = hostInfo.VirtualizationSystem
 		host.VirtualizationRole = hostInfo.VirtualizationRole
 		host.SystemHostID = hostInfo.HostID
+		host.HardwareUUID = hostInfo.HardwareUUID
 		host.Source = MergeSource(host.Source, SourceAgent)
 		host.BootTime = hostInfo.BootTime
 		host.LastSeen = now
@@ -182,6 +189,7 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		hostByName.VirtualizationSystem = hostInfo.VirtualizationSystem
 		hostByName.VirtualizationRole = hostInfo.VirtualizationRole
 		hostByName.SystemHostID = hostInfo.HostID
+		hostByName.HardwareUUID = hostInfo.HardwareUUID
 		hostByName.Source = MergeSource(hostByName.Source, SourceAgent)
 		hostByName.BootTime = hostInfo.BootTime
 		hostByName.LastSeen = now
@@ -226,6 +234,7 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		VirtualizationSystem: hostInfo.VirtualizationSystem,
 		VirtualizationRole:   hostInfo.VirtualizationRole,
 		SystemHostID:         hostInfo.HostID,
+		HardwareUUID:         hostInfo.HardwareUUID,
 		Source:               SourceAgent,
 		BootTime:             hostInfo.BootTime,
 		LastSeen:             now,
@@ -358,6 +367,18 @@ func (r *hostRepository) GetHostByExternalID(ctx context.Context, externalID str
 	}
 	var host Host
 	err := r.db.WithContext(ctx).Where("external_id = ?", externalID).First(&host).Error
+	if err != nil {
+		return nil, err
+	}
+	return &host, nil
+}
+
+func (r *hostRepository) GetHostByHardwareUUID(ctx context.Context, uuid string) (*Host, error) {
+	if uuid == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var host Host
+	err := r.db.WithContext(ctx).Where("hardware_uuid = ?", uuid).First(&host).Error
 	if err != nil {
 		return nil, err
 	}

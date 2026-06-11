@@ -42,6 +42,7 @@ func (r *Replicator) SubmitHostUpsert(ctx context.Context, info hosts.HostInfo) 
 		VirtualizationSystem: info.VirtualizationSystem,
 		VirtualizationRole:   info.VirtualizationRole,
 		HostID:               info.HostID,
+		HardwareUUID:         info.HardwareUUID,
 		BootTime:             info.BootTime,
 	}
 	_, err := SubmitTyped(ctx, r.svc, CmdHostUpsert, payload, 5*time.Second)
@@ -67,6 +68,7 @@ func (r *Replicator) SubmitConnectorHostUpsert(ctx context.Context, info hosts.C
 			VirtualizationSystem: info.VirtualizationSystem,
 			VirtualizationRole:   info.VirtualizationRole,
 			HostID:               info.HostID,
+			HardwareUUID:         info.HardwareUUID,
 			BootTime:             info.BootTime,
 		},
 		HostType:    info.HostType,
@@ -226,6 +228,7 @@ func (r *Replicator) BackfillLocalHosts(ctx context.Context, hostRepo hosts.Repo
 			VirtualizationSystem: h.VirtualizationSystem,
 			VirtualizationRole:   h.VirtualizationRole,
 			HostID:               h.SystemHostID,
+			HardwareUUID:         h.HardwareUUID,
 		}
 		// Connector-only rows must keep their topology and must NOT be
 		// republished as agent rows (that would flip their source and fake
