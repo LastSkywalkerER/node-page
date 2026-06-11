@@ -104,6 +104,8 @@ export type CompleteSetupFormData = z.infer<typeof completeSetupSchema>;
 export interface MachineHintsResponse {
   suggested_hostname: string;
   suggested_ipv4: string;
+  /** Raft port this deployment publishes (installer may auto-pick ≠7000). */
+  suggested_raft_port?: string;
 }
 
 export interface SetupStatusResponse {

@@ -14,11 +14,18 @@ import (
 type MachineHints struct {
 	SuggestedHostname string `json:"suggested_hostname"`
 	SuggestedIPv4     string `json:"suggested_ipv4"`
+	// SuggestedRaftPort is the Raft port this deployment actually publishes.
+	// The installer auto-picks a non-default one when 7000 is taken on the
+	// host and passes it in via NODE_STATS_RAFT_PORT — the wizard's bind and
+	// advertise defaults must follow it or the in-container listener won't
+	// match the published host port.
+	SuggestedRaftPort string `json:"suggested_raft_port"`
 }
 
 // DetectMachineHints probes hostname and primary IPv4 the same way registration does, but never fails the caller.
 func DetectMachineHints(ctx context.Context) MachineHints {
 	var out MachineHints
+	out.SuggestedRaftPort = defaultRaftPort()
 	if h := hostnameHint(); h != "" {
 		out.SuggestedHostname = h
 	} else if hi, err := host.InfoWithContext(ctx); err == nil && hi.Hostname != "" {

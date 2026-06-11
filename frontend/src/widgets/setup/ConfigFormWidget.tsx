@@ -129,6 +129,13 @@ export function ConfigFormWidget({ initialValues, runningInDocker, machineHints,
     if (!advertiseHost.trim() && machineHints.suggested_ipv4) {
       form.setValue('raft_advertise_host', machineHints.suggested_ipv4);
     }
+    // The installer publishes a non-default Raft port when 7000 was taken on
+    // the host — bind/advertise must follow it, so override the untouched
+    // form default with the port the deployment actually exposes.
+    const raftPort = form.getValues('raft_port').trim();
+    if ((raftPort === '' || raftPort === '7000') && machineHints.suggested_raft_port) {
+      form.setValue('raft_port', machineHints.suggested_raft_port);
+    }
     raftDefaultsApplied.current = true;
   }, [machineHints, form]);
 
