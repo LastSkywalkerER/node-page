@@ -109,6 +109,16 @@ func (a *appliers) applyHostUpsert(cmd Command, _ *hraft.Log) error {
 	}
 	ctx, cancel := a.applierCtx()
 	defer cancel()
+	if a.remoteOrigin(cmd) != "" {
+		// Cross-site MAC collision guard: docker-bridge agents on different
+		// machines derive identical MACs — never merge a foreign machine
+		// into THIS node's own identity row. The remote site's data still
+		// reaches us through its connector rows.
+		if existing, err := a.deps.HostRepo.GetHostByMacAddress(ctx, p.MacAddress); err == nil &&
+			existing.ID == hosts.LocalCollectorHostID {
+			return nil
+		}
+	}
 	_, err := a.deps.HostRepo.UpsertHost(ctx, hosts.HostInfo{
 		OriginCluster:        a.remoteOrigin(cmd),
 		Name:                 p.Name,
@@ -264,7 +274,20 @@ func (a *appliers) applyMetricBatch(cmd Command, _ *hraft.Log) error {
 	ctx, cancel := a.applierCtx()
 	defer cancel()
 
+	origin := a.remoteOrigin(cmd)
 	host, err := a.deps.HostRepo.GetHostByMacAddress(ctx, p.HostMAC)
+	if err == nil && host.ID == hosts.LocalCollectorHostID && origin != "" {
+		// A remote machine whose docker-bridge MAC collides with our own
+		// row — the MAC is not its identity here. Fall through to the
+		// origin-scoped lookup below.
+		host, err = nil, gorm.ErrRecordNotFound
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) && origin != "" {
+		// Remote batches may be keyed by a MAC that never became a row here
+		// (collision deflected at upsert time) — resolve within the sender's
+		// site by name instead.
+		host, err = a.deps.HostRepo.GetHostByOriginAndName(ctx, origin, p.HostName)
+	}
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Host not replicated here yet — its CmdHostUpsert lands earlier in
@@ -317,6 +340,13 @@ func (a *appliers) applyMetricBatch(cmd Command, _ *hraft.Log) error {
 		if json.Unmarshal(p.Docker, &m) == nil {
 			save("docker", p.Docker, func() error { return a.deps.DockerRepo.SaveCurrentMetricAt(ctx, m, host.ID, ts) })
 		}
+	}
+
+	// A host actively streaming metrics is alive: bump its liveness here so
+	// replicated hosts go green without a separate heartbeat command (nothing
+	// else maintains last_seen for them on receiving nodes).
+	if err := a.deps.HostRepo.UpdateLastSeenAndAgentSession(ctx, host.ID, ts, nil); err != nil && a.deps.Logger != nil {
+		a.deps.Logger.Warn("raft: bump last_seen from metric batch", "host_id", host.ID, "error", err)
 	}
 
 	// Push the same snapshot to this node's SSE broker so browsers viewing this

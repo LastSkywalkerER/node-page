@@ -2,6 +2,7 @@ package hosts
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,6 +10,15 @@ import (
 
 	"gorm.io/gorm"
 )
+
+// syntheticMAC derives a stable locally-administered placeholder MAC for a
+// connector row whose real MAC is unknown or already owned by another host
+// row (docker-bridge MACs collide across sites). b2 sets the LAA bit so it
+// can never clash with real hardware.
+func syntheticMAC(parts ...string) string {
+	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
+	return fmt.Sprintf("b2:%02x:%02x:%02x:%02x:%02x", sum[0], sum[1], sum[2], sum[3], sum[4])
+}
 
 // Repository defines the interface for host data operations.
 type Repository interface {
@@ -33,6 +43,10 @@ type Repository interface {
 	UpsertConnectorHost(ctx context.Context, info ConnectorHostInfo) (*Host, error)
 	// GetHostByExternalID resolves a host by its connector-side identity.
 	GetHostByExternalID(ctx context.Context, externalID string) (*Host, error)
+	// GetHostByOriginAndName resolves a replicated host by its origin site and
+	// name — the fallback when MAC identity is ambiguous across sites (docker
+	// bridge containers on different machines derive identical 02:42:… MACs).
+	GetHostByOriginAndName(ctx context.Context, origin, name string) (*Host, error)
 	// GetHostByHardwareUUID resolves a host by its SMBIOS product UUID — the
 	// VM linking key when the agent's registered MAC is absent from the
 	// guest's PVE config (agent behind a Docker bridge).
@@ -330,6 +344,32 @@ func (r *hostRepository) UpsertConnectorHost(ctx context.Context, info Connector
 		return nil, err
 	}
 
+	// Cross-site guard: a replicated (remote-origin) connector row must never
+	// claim THIS node's own collector row. Docker-bridge agents on different
+	// machines derive identical MACs (02:42:… from equal bridge IPs), so a
+	// remote spoke's self-linked guest can resolve to OUR identity row and
+	// attach a foreign hypervisor topology to it. Treat the match as absent;
+	// when our row carries exactly the incoming external_id, that topology
+	// could only have been written by this same collision — shed it.
+	if err == nil && host.ID == LocalCollectorHostID && info.OriginCluster != "" {
+		if host.ExternalID != "" && host.ExternalID == info.ExternalID {
+			if uerr := r.db.WithContext(ctx).Model(&Host{}).
+				Where("id = ?", host.ID).
+				Updates(map[string]interface{}{
+					"host_type":    "",
+					"parent_mac":   "",
+					"external_id":  "",
+					"guest_status": "",
+					"source":       SourceAgent,
+					"updated_at":   now,
+				}).Error; uerr != nil {
+				return nil, uerr
+			}
+		}
+		host = Host{}
+		err = gorm.ErrRecordNotFound
+	}
+
 	if err == nil {
 		merged := MergeSource(host.Source, SourceConnector)
 		if merged != SourceConnector {
@@ -378,9 +418,27 @@ func (r *hostRepository) UpsertConnectorHost(ctx context.Context, info Connector
 	if nerr != nil {
 		return nil, nerr
 	}
+	// mac_address is unique: when the desired MAC is already owned by another
+	// row (cross-site docker-bridge collision deflected above) or absent,
+	// derive a stable locally-administered placeholder — connector rows are
+	// keyed by external_id anyway.
+	mac := info.MacAddress
+	if mac != "" {
+		var taken int64
+		if cerr := r.db.WithContext(ctx).Model(&Host{}).
+			Where("mac_address = ?", mac).Count(&taken).Error; cerr != nil {
+			return nil, cerr
+		}
+		if taken > 0 {
+			mac = ""
+		}
+	}
+	if mac == "" {
+		mac = syntheticMAC(info.OriginCluster, info.ExternalID, info.Name)
+	}
 	host = Host{
 		Name:            name,
-		MacAddress:      info.MacAddress,
+		MacAddress:      mac,
 		IPv4:            info.IPv4,
 		OS:              info.OS,
 		Platform:        info.Platform,
@@ -409,6 +467,20 @@ func (r *hostRepository) GetHostByExternalID(ctx context.Context, externalID str
 	}
 	var host Host
 	err := r.db.WithContext(ctx).Where("external_id = ?", externalID).First(&host).Error
+	if err != nil {
+		return nil, err
+	}
+	return &host, nil
+}
+
+func (r *hostRepository) GetHostByOriginAndName(ctx context.Context, origin, name string) (*Host, error) {
+	if origin == "" || name == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var host Host
+	err := r.db.WithContext(ctx).
+		Where("origin_cluster = ? AND name = ?", origin, name).
+		First(&host).Error
 	if err != nil {
 		return nil, err
 	}

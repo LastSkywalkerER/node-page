@@ -51,6 +51,7 @@ import (
 	platformstream "system-stats/internal/platform/stream"
 	system "system-stats/internal/platform/system"
 	"system-stats/internal/platform/update"
+	appicons "system-stats/internal/platform/appicons"
 	wallpaper "system-stats/internal/platform/wallpaper"
 	"system-stats/internal/webui"
 )
@@ -675,6 +676,12 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		// Dynamic wallpaper (any signed-in user): proxies the Pexels connector
 		// so the API key never reaches the browser.
 		authAPI.GET("/wallpaper", wallpaperHandler.HandleCurrent)
+
+		// Application icons (any signed-in user): server-side resolution
+		// against icon registries (selfh.st index collapsed-name matching)
+		// with an in-memory cache shared by every client.
+		appIconsSvc := appicons.NewService(logger)
+		authAPI.GET("/app-icons/:slug", appIconsSvc.Handle)
 
 		// Raft cluster status (admin) — surfaces leader, peers, indices, RTTs
 		authAPI.GET("/raft/status", middleware.RequireAdmin(), raftHandler.Status)

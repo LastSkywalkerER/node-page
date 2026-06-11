@@ -2,18 +2,6 @@
 // The <AppIcon> component tries them in order via <img onError> until one loads,
 // then falls back to a generic placeholder. No network probing here.
 
-const DASHBOARD_ICONS = 'https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons';
-const SELFHST = 'https://cdn.jsdelivr.net/gh/selfhst/icons';
-const SIMPLE_ICONS = 'https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons';
-
-function normalizeSlug(raw: string): string {
-  return raw
-    .toLowerCase()
-    .replace(/\.(svg|png|webp|ico)$/i, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
 /**
  * Last-resort favicon candidates derived from an application's public URL — used
  * when the image-derived slug matches no icon CDN (e.g. a locally-built app). The
@@ -38,8 +26,10 @@ function faviconCandidates(publicUrl: string | undefined | null): string[] {
 /**
  * Build candidate icon URLs from the resolved slug (or override). Supports:
  * - full URLs / local paths → used as-is
- * - Homepage-style prefixes: `sh-` (selfh.st), `si-` (Simple Icons)
- * - bare slug → dashboard-icons, then selfh.st (svg → webp/png)
+ * - anything else → the backend resolver (`/api/v1/app-icons/:slug`), which
+ *   handles `sh-`/`si-` prefixes, matches collapsed names against the live
+ *   selfh.st icon index ("nginxproxymanager" → "nginx-proxy-manager"), tries
+ *   the CDN registries server-side and caches the bytes for every client.
  *
  * When `publicUrl` is given, the app's favicon is appended as a final fallback,
  * so a self-hosted app with no registry-icon match still shows its own icon.
@@ -54,22 +44,5 @@ export function iconCandidates(raw: string | undefined | null, publicUrl?: strin
     return [v, ...fav];
   }
 
-  if (v.startsWith('sh-')) {
-    const s = normalizeSlug(v.slice(3));
-    return [`${SELFHST}/svg/${s}.svg`, `${SELFHST}/webp/${s}.webp`, `${SELFHST}/png/${s}.png`, ...fav];
-  }
-  if (v.startsWith('si-')) {
-    const s = normalizeSlug(v.slice(3));
-    return [`${SIMPLE_ICONS}/${s}.svg`, ...fav];
-  }
-
-  const s = normalizeSlug(v);
-  if (!s) return fav;
-  return [
-    `${DASHBOARD_ICONS}/svg/${s}.svg`,
-    `${SELFHST}/svg/${s}.svg`,
-    `${DASHBOARD_ICONS}/webp/${s}.webp`,
-    `${SELFHST}/png/${s}.png`,
-    ...fav,
-  ];
+  return [`/api/v1/app-icons/${encodeURIComponent(v)}`, ...fav];
 }
