@@ -9,7 +9,9 @@ import (
 func writeHostNetFixtures(t *testing.T, route, fibTrie string, macs map[string]string) {
 	t.Helper()
 	dir := t.TempDir()
-	procNet := filepath.Join(dir, "proc", "net")
+	// /proc/net is a symlink to /proc/self/net (the reader's netns) — the
+	// host view must be read through a concrete pid, host PID 1.
+	procNet := filepath.Join(dir, "proc", "1", "net")
 	if err := os.MkdirAll(procNet, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -116,6 +118,43 @@ Local:
 	}
 	if eth.mac != "96:00:02:aa:bb:cc" {
 		t.Fatalf("eth0 mac = %q", eth.mac)
+	}
+}
+
+// Host counters come from the pid-qualified net/dev (gopsutil would resolve
+// HOST_PROC/net/dev through the self/net symlink to the container's view).
+func TestParseHostNetDev(t *testing.T) {
+	dir := t.TempDir()
+	procNet := filepath.Join(dir, "proc", "1", "net")
+	if err := os.MkdirAll(procNet, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dev := `Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    lo:  111111     222    0    0    0     0          0         0   111111     222    0    0    0     0       0          0
+  eth0: 2701325   10124    1    2    0     0          0         0 29671388    9345    3    4    0     0       0          0
+`
+	if err := os.WriteFile(filepath.Join(procNet, "dev"), []byte(dev), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOST_PROC", filepath.Join(dir, "proc"))
+
+	stats, err := parseHostNetDev()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats) != 2 {
+		t.Fatalf("got %d stats, want 2", len(stats))
+	}
+	eth := stats[1]
+	if eth.Name != "eth0" {
+		t.Fatalf("name = %q", eth.Name)
+	}
+	if eth.BytesRecv != 2701325 || eth.PacketsRecv != 10124 || eth.Errin != 1 || eth.Dropin != 2 {
+		t.Fatalf("rx = %+v", eth)
+	}
+	if eth.BytesSent != 29671388 || eth.PacketsSent != 9345 || eth.Errout != 3 || eth.Dropout != 4 {
+		t.Fatalf("tx = %+v", eth)
 	}
 }
 

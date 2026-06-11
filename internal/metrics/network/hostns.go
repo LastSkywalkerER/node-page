@@ -1,27 +1,28 @@
 package network
 
-// Reading metrics through host bind-mounts (Docker deployment) splits the
-// network view in two: gopsutil's IOCounters honour HOST_PROC and therefore
-// describe the HOST's interfaces, while interface addresses/MACs come from
-// Go's stdlib — i.e. the CONTAINER's network namespace. Pairing the two by
-// name mislabels host eth0 traffic with the container's 172.x bridge address.
-// When HOST_PROC points at a host mount, read addresses, MACs and the
-// default-route interface from the host's /proc + /sys instead:
+// Reading metrics through host bind-mounts (Docker deployment) is tricky for
+// networking: /proc/net is a SYMLINK to /proc/self/net, so any read of
+// <HOST_PROC>/net/* resolves to the network namespace of the READER — the
+// container — no matter whose procfs is mounted. The host's view lives under
+// a concrete pid instead: <HOST_PROC>/1/net/* is host PID 1's netns (the
+// host's), readable without extra capabilities. When HOST_PROC is set, take
+// everything from there:
 //
-//   - HOST_PROC/net/route     per-interface IPv4 prefixes + default route
-//   - HOST_PROC/net/fib_trie  the host's local (/32 LOCAL) IPv4 addresses
-//   - HOST_SYS/class/net/<i>/address  MAC
-//
-// (Interface IPs live in netlink, which is namespace-bound — these proc
-// files are the only host-netns view a container without host networking
-// gets.)
+//   - HOST_PROC/1/net/dev       per-interface counters (host traffic)
+//   - HOST_PROC/1/net/route     per-interface IPv4 prefixes + default route
+//   - HOST_PROC/1/net/fib_trie  the host's local (/32 LOCAL) IPv4 addresses
+//   - HOST_SYS/class/net/<i>/address  MAC (sysfs binds to the mounter's
+//     netns, i.e. the host's)
 
 import (
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	gopsutilnet "github.com/shirou/gopsutil/v4/net"
 )
 
 type hostIface struct {
@@ -35,22 +36,32 @@ type hostRoute struct {
 	ones  int
 }
 
-// hostNetNS returns per-interface details and the default-route interface of
-// the HOST network namespace. ok is false when HOST_PROC is unset (native
-// install — the in-namespace stdlib view is already the host's) or the proc
-// files can't be parsed.
-func hostNetNS() (details map[string]*hostIface, defaultIface string, ok bool) {
+// hostPid1Net returns <HOST_PROC>/1/net, or "" when metrics are not read
+// through a host mount (native install — the in-namespace view is already
+// the host's).
+func hostPid1Net() string {
 	hostProc := strings.TrimSpace(os.Getenv("HOST_PROC"))
 	if hostProc == "" || hostProc == "/proc" {
+		return ""
+	}
+	return filepath.Join(hostProc, "1", "net")
+}
+
+// hostNetNS returns per-interface details and the default-route interface of
+// the HOST network namespace. ok is false when HOST_PROC is unset or host
+// PID 1's net view can't be parsed.
+func hostNetNS() (details map[string]*hostIface, defaultIface string, ok bool) {
+	netDir := hostPid1Net()
+	if netDir == "" {
 		return nil, "", false
 	}
-	routes, defIface, err := parseHostRoutes(filepath.Join(hostProc, "net", "route"))
+	routes, defIface, err := parseHostRoutes(filepath.Join(netDir, "route"))
 	if err != nil || (len(routes) == 0 && defIface == "") {
 		return nil, "", false
 	}
 
 	details = make(map[string]*hostIface)
-	for _, ip := range parseLocalIPv4s(filepath.Join(hostProc, "net", "fib_trie")) {
+	for _, ip := range parseLocalIPv4s(filepath.Join(netDir, "fib_trie")) {
 		iface := matchRouteIface(routes, ip)
 		if iface == "" {
 			// Point-to-point setups (common on VPSes) carry a /32 address
@@ -80,8 +91,55 @@ func hostNetNS() (details map[string]*hostIface, defaultIface string, ok bool) {
 	return details, defIface, true
 }
 
-// parseHostRoutes reads /proc/net/route (hex little-endian IPv4 columns).
-// Returns the up on-link prefixes and the default route's interface.
+// parseHostNetDev reads host PID 1's /proc/net/dev — gopsutil's IOCounters
+// resolve HOST_PROC/net/dev through the /proc/net → self/net symlink and
+// therefore return the container's counters, so the host's must be read
+// from the pid-qualified path ourselves.
+func parseHostNetDev() ([]gopsutilnet.IOCountersStat, error) {
+	netDir := hostPid1Net()
+	if netDir == "" {
+		return nil, errors.New("not a host-mounted /proc")
+	}
+	data, err := os.ReadFile(filepath.Join(netDir, "dev"))
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(data), "\n")
+	out := make([]gopsutilnet.IOCountersStat, 0, len(lines))
+	for i, ln := range lines {
+		if i < 2 { // two header lines
+			continue
+		}
+		name, rest, found := strings.Cut(ln, ":")
+		if !found {
+			continue
+		}
+		f := strings.Fields(rest)
+		if len(f) < 16 {
+			continue
+		}
+		u := func(idx int) uint64 {
+			v, _ := strconv.ParseUint(f[idx], 10, 64)
+			return v
+		}
+		out = append(out, gopsutilnet.IOCountersStat{
+			Name:        strings.TrimSpace(name),
+			BytesRecv:   u(0),
+			PacketsRecv: u(1),
+			Errin:       u(2),
+			Dropin:      u(3),
+			BytesSent:   u(8),
+			PacketsSent: u(9),
+			Errout:      u(10),
+			Dropout:     u(11),
+		})
+	}
+	return out, nil
+}
+
+// parseHostRoutes reads a pid-qualified /proc/<pid>/net/route (hex
+// little-endian IPv4 columns). Returns the up on-link prefixes and the
+// default route's interface.
 func parseHostRoutes(path string) ([]hostRoute, string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

@@ -24,10 +24,19 @@ func (c *networkCollector) Collect(ctx context.Context) (NetworkMetric, error) {
 		return NetworkMetric{}, err
 	}
 
-	// Docker deployment: counters above describe the HOST's interfaces
-	// (HOST_PROC), so addresses/MAC/primary must come from the host's netns
-	// too — the stdlib below would return the container's bridge address.
+	// Docker deployment: take the WHOLE view (counters + addresses + MAC +
+	// primary) from the host's network namespace via HOST_PROC/1/net — both
+	// gopsutil paths below resolve to the container's netns otherwise.
 	hostIfaces, hostDefault, hostNS := hostNetNS()
+	if hostNS {
+		if hostStats, herr := parseHostNetDev(); herr == nil && len(hostStats) > 0 {
+			netStats = hostStats
+		} else {
+			// Without host counters, host addresses would mislabel container
+			// traffic — fall back to the consistent in-namespace view.
+			hostNS = false
+		}
+	}
 
 	// Determine primary interface by local IP using UDP dial trick
 	primaryIP := ""
