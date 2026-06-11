@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { AlertTriangle, Crown, Link2, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -10,6 +11,19 @@ import { useStartCluster, useJoinCluster } from './useRaft'
 import { useUserStore } from '@/shared/store/user'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/** This node's detected LAN IP — makes the placeholders real, copyable examples. */
+function useLocalIPv4(): string {
+  const { data } = useQuery({
+    queryKey: ['hosts', 'current'],
+    queryFn: async () => {
+      const res = await apiClient.get<{ host: { id: number; ipv4?: string } }>('/hosts/current')
+      return res.data.host
+    },
+    staleTime: 60_000,
+  })
+  return data?.ipv4 ?? ''
+}
 
 function errMsg(e: unknown): string {
   const ax = e as {
@@ -82,6 +96,7 @@ function StartClusterForm() {
   const [advertiseURL, setAdvertiseURL] = useState('')
   const [clusterID, setClusterID] = useState('')
   const start = useStartCluster()
+  const ipv4 = useLocalIPv4()
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -105,24 +120,29 @@ function StartClusterForm() {
     >
       <p className="text-sm font-medium">Start a new cluster</p>
       <p className={fieldHint}>
-        Defaults are derived from this host. Set the advertise address to an IP:port other nodes can
-        reach (only needed when nodes are on different machines).
+        All fields are optional — empty values are auto-detected from this machine. You only need
+        them when other nodes must reach this one via a specific address (VPN, NAT, reverse proxy).
       </p>
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1">
           <Label htmlFor="start-advertise-addr" className="text-xs">
-            Advertise address
+            Advertise address <span className="text-muted-foreground">(optional)</span>
           </Label>
           <Input
             id="start-advertise-addr"
-            placeholder="auto (e.g. 10.0.0.2:7000)"
+            placeholder={`auto — e.g. ${ipv4 || '10.0.0.2'}:7000`}
             value={advertiseAddr}
             onChange={(e) => setAdvertiseAddr(e.target.value)}
           />
+          <p className={fieldHint}>
+            This machine's <span className="font-mono">IP:port</span> for cluster traffic (Raft, port{' '}
+            <span className="font-mono">7000</span>). Other nodes will connect here. Empty = the
+            detected LAN IP{ipv4 ? ` (${ipv4})` : ''}.
+          </p>
         </div>
         <div className="space-y-1">
           <Label htmlFor="start-cluster-id" className="text-xs">
-            Cluster ID
+            Cluster ID <span className="text-muted-foreground">(optional)</span>
           </Label>
           <Input
             id="start-cluster-id"
@@ -130,6 +150,10 @@ function StartClusterForm() {
             value={clusterID}
             onChange={(e) => setClusterID(e.target.value)}
           />
+          <p className={fieldHint}>
+            Just a name for this cluster — shows up in diagnostics and join tokens. The default{' '}
+            <span className="font-mono">local</span> is fine.
+          </p>
         </div>
       </div>
       <div className="space-y-1">
@@ -138,11 +162,14 @@ function StartClusterForm() {
         </Label>
         <Input
           id="start-advertise-url"
-          placeholder="https://node1.example.com"
+          placeholder={`e.g. ${window.location.origin} or http://${ipv4 || '10.0.0.2'}:9090`}
           value={advertiseURL}
           onChange={(e) => setAdvertiseURL(e.target.value)}
         />
-        <p className={fieldHint}>Public base URL peers use to forward writes to this leader.</p>
+        <p className={fieldHint}>
+          This node's web address as OTHER nodes can open it — used to forward writes to the leader
+          and baked into the one-command agent install. Empty = derived from the advertise address.
+        </p>
       </div>
       <Button type="submit" size="sm" disabled={start.isPending}>
         {start.isPending ? 'Starting…' : 'Make this the main node'}
@@ -158,6 +185,7 @@ function JoinClusterForm() {
   const [advertiseURL, setAdvertiseURL] = useState('')
   const [ack, setAck] = useState(false)
   const [joining, setJoining] = useState(false)
+  const ipv4 = useLocalIPv4()
   const aliveRef = useRef(true)
   const join = useJoinCluster()
   const navigate = useNavigate()
@@ -252,16 +280,19 @@ function JoinClusterForm() {
 
       <div className="space-y-1">
         <Label htmlFor="join-peer-url" className="text-xs">
-          Cluster node URL
+          Main node URL
         </Label>
         <Input
           id="join-peer-url"
           required
-          placeholder="https://main-node.example.com"
+          placeholder="e.g. http://10.0.0.2:9090"
           value={peerURL}
           onChange={(e) => setPeerURL(e.target.value)}
         />
-        <p className={fieldHint}>HTTP URL of any node already in the cluster.</p>
+        <p className={fieldHint}>
+          The web address of any node already in the cluster — the same URL you open its dashboard
+          on. Must be reachable from this machine.
+        </p>
       </div>
 
       <div className="space-y-1">
@@ -271,23 +302,32 @@ function JoinClusterForm() {
         <Input
           id="join-token"
           required
-          placeholder="one-shot join token from the leader"
+          placeholder="64-character one-shot token"
           value={token}
           onChange={(e) => setToken(e.target.value)}
         />
+        <p className={fieldHint}>
+          Generated on the main node: Admin → Nodes → Add a node → Generate. One-shot and expires in
+          an hour — make a fresh one if rejected.
+        </p>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1">
           <Label htmlFor="join-advertise-addr" className="text-xs">
-            Advertise address
+            Advertise address <span className="text-muted-foreground">(optional)</span>
           </Label>
           <Input
             id="join-advertise-addr"
-            placeholder="auto (e.g. 10.0.0.3:7000)"
+            placeholder={`auto — e.g. ${ipv4 || '10.0.0.3'}:7000`}
             value={advertiseAddr}
             onChange={(e) => setAdvertiseAddr(e.target.value)}
           />
+          <p className={fieldHint}>
+            THIS machine's <span className="font-mono">IP:port</span> the cluster will use to reach
+            it (Raft, port <span className="font-mono">7000</span>). Empty = the detected LAN IP
+            {ipv4 ? ` (${ipv4})` : ''}.
+          </p>
         </div>
         <div className="space-y-1">
           <Label htmlFor="join-advertise-url" className="text-xs">
@@ -295,10 +335,14 @@ function JoinClusterForm() {
           </Label>
           <Input
             id="join-advertise-url"
-            placeholder="https://node2.example.com"
+            placeholder={`e.g. http://${ipv4 || '10.0.0.3'}:9090`}
             value={advertiseURL}
             onChange={(e) => setAdvertiseURL(e.target.value)}
           />
+          <p className={fieldHint}>
+            THIS node's web address for peers (write forwarding). Empty = derived from the advertise
+            address.
+          </p>
         </div>
       </div>
 
