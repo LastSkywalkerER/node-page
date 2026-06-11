@@ -73,7 +73,8 @@ func (n *Node) Start(ctx context.Context) error {
 	}
 
 	if err := os.MkdirAll(n.cfg.DataDir, 0o755); err != nil {
-		return fmt.Errorf("raft: create data dir: %w", err)
+		cwd, _ := os.Getwd()
+		return fmt.Errorf("raft: create data dir %q (cwd %q): %w", n.cfg.DataDir, cwd, err)
 	}
 
 	logStorePath := filepath.Join(n.cfg.DataDir, "raft-log.bolt")

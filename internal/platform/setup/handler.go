@@ -20,6 +20,7 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
+	appconfig "system-stats/internal/app/config"
 	"system-stats/internal/app/dockerenv"
 	users "system-stats/internal/auth/users"
 	raftcluster "system-stats/internal/cluster/raft"
@@ -879,7 +880,7 @@ func (h *Handler) performRaftJoin(ctx context.Context, req JoinRaftClusterReques
 		}
 	}
 	if req.DataDir == "" {
-		req.DataDir = "./data/raft"
+		req.DataDir = appconfig.DefaultRaftDataDir()
 	}
 
 	// Validate the Raft addresses BEFORE activation so a malformed value
@@ -1101,7 +1102,7 @@ func (h *Handler) AdminStartCluster(c *gin.Context) {
 	}
 	dataDir := strings.TrimSpace(req.DataDir)
 	if dataDir == "" {
-		dataDir = "./data/raft"
+		dataDir = appconfig.DefaultRaftDataDir()
 	}
 	advertiseURL := strings.TrimSpace(req.AdvertiseURL)
 

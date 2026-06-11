@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -174,6 +175,21 @@ func Load() (*Config, error) {
 	return config, nil
 }
 
+// DefaultRaftDataDir resolves the default Raft log/snapshot directory. The
+// historic "./data/raft" depends on the process working directory, which
+// orchestrator-managed deployments (dokploy & co.) don't guarantee — anchor
+// to an absolute path whenever the environment offers one. Native installs
+// keep the relative default (systemd sets WorkingDirectory to the data dir).
+func DefaultRaftDataDir() string {
+	if d := strings.TrimSpace(os.Getenv("NODE_STATS_DATA_DIR")); d != "" {
+		return filepath.Join(d, "raft")
+	}
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return "/app/data/raft" // the compose-mounted app data volume
+	}
+	return "./data/raft"
+}
+
 // loadRaftConfig reads RAFT_* env vars. When RAFT_ENABLED is unset/false, the
 // other fields are still parsed but the layer stays disabled in the DI container.
 func loadRaftConfig() RaftConfig {
@@ -184,7 +200,7 @@ func loadRaftConfig() RaftConfig {
 		NodeID:        strings.TrimSpace(getEnv("RAFT_NODE_ID", "")),
 		BindAddr:      strings.TrimSpace(getEnv("RAFT_BIND_ADDR", ":7000")),
 		AdvertiseAddr: strings.TrimSpace(getEnv("RAFT_ADVERTISE_ADDR", "")),
-		DataDir:       strings.TrimSpace(getEnv("RAFT_DATA_DIR", "./data/raft")),
+		DataDir:       strings.TrimSpace(getEnv("RAFT_DATA_DIR", DefaultRaftDataDir())),
 		AdvertiseURL:  strings.TrimSuffix(strings.TrimSpace(getEnv("RAFT_ADVERTISE_PUBLIC_URL", "")), "/"),
 	}
 	bootstrap := strings.ToLower(getEnv("RAFT_BOOTSTRAP", "false"))

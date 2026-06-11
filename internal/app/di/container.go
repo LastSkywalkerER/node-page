@@ -410,7 +410,7 @@ func (c *Container) ActivateRaft(ctx context.Context, rt raftcluster.RuntimeConf
 		},
 	}
 	if cfg.DataDir == "" {
-		cfg.DataDir = "./data/raft"
+		cfg.DataDir = config.DefaultRaftDataDir()
 	}
 	if cfg.BindAddr == "" {
 		cfg.BindAddr = ":7000"
@@ -579,7 +579,7 @@ func (c *Container) shutdownAndWipeLocked() error {
 
 	dir := prevCfg.DataDir
 	if dir == "" {
-		dir = "./data/raft"
+		dir = config.DefaultRaftDataDir()
 	}
 	if err := wipeDirContents(dir); err != nil {
 		return fmt.Errorf("raft wipe: clear data dir: %w", err)

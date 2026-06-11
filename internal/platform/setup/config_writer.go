@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/joho/godotenv"
+
+	appconfig "system-stats/internal/app/config"
 )
 
 // ConfigWriter handles reading and writing .env configuration files
@@ -146,10 +148,10 @@ func ApplyRaftDefaults(cv *ConfigValues) {
 		cv.RaftNodeID = strings.ReplaceAll(host, " ", "-")
 	}
 	if strings.TrimSpace(cv.RaftBindAddr) == "" {
-		cv.RaftBindAddr = ":7000"
+		cv.RaftBindAddr = ":" + defaultRaftPort()
 	}
 	if strings.TrimSpace(cv.RaftDataDir) == "" {
-		cv.RaftDataDir = "./data/raft"
+		cv.RaftDataDir = appconfig.DefaultRaftDataDir()
 	}
 	// AdvertiseAddr left empty falls back to BindAddr at the Raft layer.
 }

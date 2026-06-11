@@ -1,0 +1,29 @@
+# Linux amd64 for Dokploy / Traefik — PREBUILT IMAGE variant. Same wiring as
+# docker-compose.linux-amd64.yml but pulls ghcr.io instead of building from
+# source: no Docker Hub base-image pulls (avoids the anonymous 429 rate limit
+# on golang/node/alpine) and much faster deploys. GHCR has no anonymous pull
+# limits for public images.
+#   docker compose -f docker-compose.linux-amd64.image.yml --env-file .env up -d
+# Pin a release with NODE_STATS_IMAGE=ghcr.io/lastskywalkerer/node-page:vX.Y.Z
+services:
+  node-stats:
+    platform: linux/amd64
+    image: ${NODE_STATS_IMAGE:-ghcr.io/lastskywalkerer/node-page:latest}
+    # network_mode: host
+    volumes:
+      - ./.env:/app/.env
+      - ./data/docker:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/host:ro
+    pid: host
+    ipc: host
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    environment:
+      - ADDR=:9090
+
+      - HOST_PROC=/host/proc
+      - HOST_SYS=/host/sys
+      - HOST_ETC=/host/etc
+      - HOST_ROOT=/host
