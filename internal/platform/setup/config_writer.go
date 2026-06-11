@@ -132,7 +132,9 @@ func ApplyRaftDefaults(cv *ConfigValues) {
 		return
 	}
 	if strings.TrimSpace(cv.RaftClusterID) == "" {
-		cv.RaftClusterID = "local"
+		// Unique per site — a constant here ("local") makes hub and spokes
+		// collide on the uplink (the receiver rejects its own cluster id).
+		cv.RaftClusterID = defaultClusterID(os.Getenv("NODE_STATS_HOSTNAME"))
 	}
 	if strings.TrimSpace(cv.RaftNodeID) == "" {
 		// Best-effort: use hostname; fall back to "node-1".

@@ -270,5 +270,11 @@ graph LR
 - **UI**: Admin → Nodes → Raft → "Metrics uplink" — pick the mode, on the hub
   generate the shared secret, on each site paste hub URL + secret. The panel
   shows ship health on spokes and the uplinked-sites list on the hub.
+- **`RAFT_CLUSTER_ID` must be unique per site.** It keys the dedupe log and
+  the origin badge, and the hub rejects (`400: sender cluster id … equals
+  this receiver's own`) batches carrying its own id. The wizard generates
+  `<host>-<rand>`; older installs that all defaulted to `local` need the id
+  changed on one side — edit `.env`/`.env.agent` on every node of that site
+  and restart (history re-ships via reconcile).
 - `both` keeps the legacy symmetric pair behaviour (full state convergence
   incl. users/secrets between exactly two clusters).

@@ -1082,7 +1082,7 @@ func (h *Handler) AdminStartCluster(c *gin.Context) {
 	hostHint := DetectMachineHints(ctx)
 	clusterID := strings.TrimSpace(req.ClusterID)
 	if clusterID == "" {
-		clusterID = "local"
+		clusterID = defaultClusterID(hostHint.SuggestedHostname)
 	}
 	nodeID := strings.TrimSpace(req.NodeID)
 	if nodeID == "" {
@@ -1193,6 +1193,22 @@ func defaultNodeID(hostname string) string {
 		return "node-1"
 	}
 	return strings.ReplaceAll(h, " ", "-")
+}
+
+// defaultClusterID generates a per-site unique cluster id. A constant
+// default ("local" historically) breaks the cross-cluster metrics uplink:
+// the hub rejects batches whose sender cluster id equals its own, and the
+// id keys bridge dedupe + the origin badge — every site must differ.
+func defaultClusterID(hostname string) string {
+	slug := defaultNodeID(hostname)
+	if slug == "node-1" {
+		slug = "site"
+	}
+	var b [3]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%s-%d", slug, time.Now().UnixNano()%0xffffff)
+	}
+	return slug + "-" + hex.EncodeToString(b[:])
 }
 
 // probePeerClusterID GETs /api/v1/raft/ping on peerURL and reads the

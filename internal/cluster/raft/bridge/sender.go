@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -137,6 +139,8 @@ func (s *Sender) Run(ctx context.Context) {
 	recTick := time.NewTicker(10 * time.Minute)
 	defer recTick.Stop()
 	var buf []Envelope
+	var lastWarnMsg string
+	var lastWarnAt time.Time
 
 	runReconcile := func() {
 		if s.reconcile != nil && s.svc.IsLeader() {
@@ -158,8 +162,12 @@ func (s *Sender) Run(ctx context.Context) {
 			return
 		}
 		if err := s.shipBatch(ctx, Batch{Entries: buf}); err != nil {
-			if s.logger != nil {
+			// flush runs every few hundred ms — under a persistent failure
+			// repeat the warning only when the message changes or each 30 s.
+			if s.logger != nil && (err.Error() != lastWarnMsg || time.Since(lastWarnAt) > 30*time.Second) {
 				s.logger.Warn("bridge: ship batch failed", "error", err, "entries", len(buf))
+				lastWarnMsg = err.Error()
+				lastWarnAt = time.Now()
 			}
 			s.mu.Lock()
 			s.lastShipErr = err.Error()
@@ -264,6 +272,13 @@ func (s *Sender) shipBatch(ctx context.Context, batch Batch) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
+		// The receiver explains the rejection in the body ("sender cluster
+		// id equals …", "invalid timestamp", …) — surface it, it is the
+		// actionable part.
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		if msg := strings.TrimSpace(string(b)); msg != "" {
+			return fmt.Errorf("peer returned %s: %s", resp.Status, msg)
+		}
 		return fmt.Errorf("peer returned %s", resp.Status)
 	}
 	return nil

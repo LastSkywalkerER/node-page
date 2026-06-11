@@ -136,6 +136,16 @@ export function ConfigFormWidget({ initialValues, runningInDocker, machineHints,
     if ((raftPort === '' || raftPort === '7000') && machineHints.suggested_raft_port) {
       form.setValue('raft_port', machineHints.suggested_raft_port);
     }
+    // Cluster id must be unique per site: the metrics-uplink hub rejects
+    // batches whose sender id equals its own ('local' used to collide).
+    const clusterId = form.getValues('raft_cluster_id').trim();
+    if (clusterId === '' || clusterId === 'local') {
+      const slug = (machineHints.suggested_hostname || 'site').toLowerCase().replace(/\s+/g, '-');
+      const rand = Array.from(crypto.getRandomValues(new Uint8Array(3)), (b) =>
+        b.toString(16).padStart(2, '0')
+      ).join('');
+      form.setValue('raft_cluster_id', `${slug}-${rand}`);
+    }
     raftDefaultsApplied.current = true;
   }, [machineHints, form]);
 

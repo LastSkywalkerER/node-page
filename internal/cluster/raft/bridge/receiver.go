@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -80,8 +81,13 @@ func (r *Receiver) Handle(c *gin.Context) {
 		return
 	}
 	sender := c.GetHeader(SenderClusterHeader)
-	if sender == "" || sender == r.myCluster {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid sender cluster id"})
+	if sender == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing sender cluster id header"})
+		return
+	}
+	if sender == r.myCluster {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf(
+			"sender cluster id %q equals this receiver's own RAFT_CLUSTER_ID — every site needs a unique id; change it on one side (on all of that site's nodes) and restart", sender)})
 		return
 	}
 

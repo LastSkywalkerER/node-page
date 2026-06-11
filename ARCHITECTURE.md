@@ -145,7 +145,7 @@ All metric endpoints accept `?hours=<float>` (default `0.0833` ≈ 5 min) and `?
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RAFT_ENABLED` | `false` | Enable the Raft consensus layer |
-| `RAFT_CLUSTER_ID` | — | Logical cluster identifier shared by all peers |
+| `RAFT_CLUSTER_ID` | — | Logical cluster identifier shared by all peers of one site — but **unique across sites** (the uplink hub rejects batches carrying its own id; the wizard generates `<host>-<rand>`) |
 | `RAFT_NODE_ID` | — | Unique node id within the cluster |
 | `RAFT_BIND_ADDR` | — | Local Raft TCP listen address (e.g. `:7000`) |
 | `RAFT_ADVERTISE_ADDR` | — | Address peers use to reach this node's Raft port |
