@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { Badge } from '@/components/ui/badge'
 import { OSIcon } from '@/shared/components/OSIcon'
 import { getHostCardTitle } from '@/shared/lib/hostDisplay'
+import { useHostGaugesStore } from '@/shared/lib/hostGaugesStore'
 import { cn } from '@/lib/utils'
 import type { Host } from './schemas'
 
@@ -32,10 +33,18 @@ const stateStyles: Record<GuestState, { dot: string; label: string; text: string
   stopped: { dot: 'bg-zinc-400/70', label: 'stopped', text: 'text-muted-foreground' },
 }
 
+/** Gauges older than this are hidden (collector ticks every 5 s, poller every 10 s). */
+const GAUGE_STALE_MS = 30_000
+
 function GuestRow({ guest, compact }: { guest: Host; compact: boolean }) {
   const state = guestState(guest)
   const s = stateStyles[state]
   const title = getHostCardTitle(guest) ?? `#${guest.id}`
+  // Live cpu/ram from the page's single SSE subscription — every host's
+  // snapshot flows through the stream, so guest rows cost no extra requests.
+  const gauge = useHostGaugesStore((st) => st.gauges[guest.id])
+  const gaugeFresh =
+    gauge && Date.now() - gauge.at < GAUGE_STALE_MS && (state === 'online' || state === 'running')
 
   return (
     <Link
@@ -59,6 +68,12 @@ function GuestRow({ guest, compact }: { guest: Host; compact: boolean }) {
       )}
       {!compact && guest.ipv4 && (
         <span className="hidden font-mono text-[10px] text-muted-foreground/80 sm:inline">{guest.ipv4}</span>
+      )}
+      {gaugeFresh && (
+        <span className="flex items-center gap-1.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+          {gauge.cpuPct != null && <span>cpu {gauge.cpuPct.toFixed(0)}%</span>}
+          {gauge.memPct != null && <span>ram {gauge.memPct.toFixed(0)}%</span>}
+        </span>
       )}
       <span className={cn('flex items-center gap-1 font-mono text-[10px]', s.text)}>
         <span className={cn('h-1.5 w-1.5 rounded-full', s.dot)} />

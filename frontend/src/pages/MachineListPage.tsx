@@ -6,6 +6,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { ChartContainer, type ChartConfig } from '@/components/ui/chart'
 import { cn } from '@/lib/utils'
 import { useHosts } from '@/widgets/hosts/useHosts'
+import { useHostGaugesStream } from '@/shared/hooks/useEventSource'
 import { useConnectionStatus } from '@/widgets/connection-status/useConnectionStatus'
 import { useCPU } from '@/widgets/cpu/useCPU'
 import { useMemory } from '@/widgets/memory/useMemory'
@@ -295,6 +296,8 @@ function HostCard({ host, guests = [] }: { host: Host; guests?: Host[] }) {
 export function MachineListPage() {
   const { data: hostsData, isLoading } = useHosts()
   const hosts: Host[] = hostsData?.hosts ?? []
+  // One SSE subscription keeps cpu/ram fresh for every nested guest row.
+  useHostGaugesStream()
 
   // Topology grouping: guests (parent resolved) nest inside their hypervisor's
   // card and leave the top-level grid — the no-duplication rule.

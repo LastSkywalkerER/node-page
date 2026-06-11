@@ -377,10 +377,12 @@ sections above):
 - **No rrddata backfill** — connector-only guests accumulate history from
   connect time onward; guest disk usage is written only when PVE reports it
   (QEMU without guest agent reports 0).
-- **Guest chips don't show per-guest cpu/mem** in the card (would cost N
-  metric queries per card); minimized rows show OS icon, name, type, IP and
-  state, and click through to the full stats page (connector guests have
-  normal chart history there).
+- **Guest chips get live cpu/ram from the SSE stream, not REST** — the stream
+  already broadcasts every host's snapshot (`collecting_host_id` envelopes),
+  so one subscription per page feeds a per-host gauges store
+  (`hostGaugesStore`) that the minimized rows read from; zero extra requests.
+  Values older than 30 s are hidden. Full chart history stays on the guest's
+  stats page.
 - **Metrics for an `agent+connector` host never fall back to the connector**
   when the agent goes silent — the row stays visible with PVE power state,
   but history pauses until the agent returns (avoids mixing two writers under
