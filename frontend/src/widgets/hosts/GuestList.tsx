@@ -1,5 +1,7 @@
 import { Link } from 'react-router-dom'
+import { Boxes } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { OSIcon } from '@/shared/components/OSIcon'
 import { getHostCardTitle } from '@/shared/lib/hostDisplay'
 import { useHostGaugesStore } from '@/shared/lib/hostGaugesStore'
@@ -51,13 +53,14 @@ function GuestRow({ guest, compact }: { guest: Host; compact: boolean }) {
       to={`/machines/${guest.id}/stats`}
       onClick={(e) => e.stopPropagation()}
       className={cn(
-        'flex items-center gap-2 rounded-md px-2 py-1.5 transition-colors',
+        'flex items-center gap-2 rounded-md px-2 transition-colors',
+        compact ? 'py-1.5' : 'py-2.5',
         'hover:bg-muted/40 dark:hover:bg-white/5',
         state === 'stopped' && 'opacity-60'
       )}
     >
-      <OSIcon host={guest} className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="min-w-0 flex-1 truncate text-xs font-medium">{title}</span>
+      <OSIcon host={guest} className={cn('text-muted-foreground', compact ? 'h-3.5 w-3.5' : 'h-4 w-4')} />
+      <span className={cn('min-w-0 flex-1 truncate font-medium', compact ? 'text-xs' : 'text-sm')}>{title}</span>
       {!compact && guest.host_type && (
         <Badge
           variant="secondary"
@@ -86,28 +89,45 @@ function GuestRow({ guest, compact }: { guest: Host; compact: boolean }) {
 
 /**
  * Minimized guest rows nested inside a hypervisor's machine card / stats page.
- * `compact` (card mode) hides the type badge and IP to keep rows one-line.
+ * `compact` (card mode) hides the type badge and IP to keep rows one-line;
+ * the full mode renders the same Card chrome as the metric widgets so the
+ * stats page stays visually uniform.
  */
 export function GuestList({ guests, compact = false, className }: { guests: Host[]; compact?: boolean; className?: string }) {
   if (guests.length === 0) return null
-  return (
-    <div className={className}>
-      <div className="mb-1 flex items-center gap-1.5 text-[9px] font-medium uppercase tracking-wider text-muted-foreground/80">
-        Guests
-        <span className="font-mono tabular-nums">({guests.length})</span>
-      </div>
-      <div
-        className={cn(
-          'rounded-md border border-border/50 bg-muted/15 dark:border-white/8 dark:bg-white/[0.03]',
-          compact && 'max-h-40 overflow-y-auto'
-        )}
-      >
-        <div className="divide-y divide-border/40 dark:divide-white/5">
-          {guests.map((g) => (
-            <GuestRow key={g.id} guest={g} compact={compact} />
-          ))}
+
+  const rows = (
+    <div className="divide-y divide-border/40 dark:divide-white/5">
+      {guests.map((g) => (
+        <GuestRow key={g.id} guest={g} compact={compact} />
+      ))}
+    </div>
+  )
+
+  if (compact) {
+    return (
+      <div className={className}>
+        <div className="mb-1 flex items-center gap-1.5 text-[9px] font-medium uppercase tracking-wider text-muted-foreground/80">
+          Guests
+          <span className="font-mono tabular-nums">({guests.length})</span>
+        </div>
+        <div className="max-h-40 overflow-y-auto rounded-md border border-border/50 bg-muted/15 dark:border-white/8 dark:bg-white/[0.03]">
+          {rows}
         </div>
       </div>
-    </div>
+    )
+  }
+
+  return (
+    <Card className={className}>
+      <CardHeader className="pb-3">
+        <div className="flex items-center gap-2">
+          <Boxes className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <span className="text-sm font-medium text-muted-foreground">Guests</span>
+          <span className="font-mono text-xs tabular-nums text-muted-foreground/70">({guests.length})</span>
+        </div>
+      </CardHeader>
+      <CardContent className="pt-0">{rows}</CardContent>
+    </Card>
   )
 }

@@ -3,7 +3,8 @@ import { z } from 'zod';
 // Network metrics validation schemas
 export const networkInterfaceSchema = z.object({
   name: z.string(),
-  ips: z.array(z.string()).optional().default([]),
+  // Connector-fed hosts ship null here (Go nil slice) — normalize to [].
+  ips: z.array(z.string()).nullish().transform((v) => v ?? []),
   mac: z.string().optional().default(''),
   bytes_sent: z.number(),
   bytes_recv: z.number(),

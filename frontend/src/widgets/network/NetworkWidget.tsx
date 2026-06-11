@@ -96,10 +96,11 @@ export function NetworkWidget({ hostId }: NetworkWidgetProps) {
         <div className="space-y-1 text-xs">
           {selected && (
             <>
-              {selected.ips.length > 0 && (
+              {/* Connector-fed hosts ship `ips: null` (Go nil slice) — guard. */}
+              {(selected.ips ?? []).length > 0 && (
                 <div className="flex justify-between gap-2">
                   <span className="text-muted-foreground shrink-0">IP</span>
-                  <span className="font-mono font-medium text-right truncate">{selected.ips.find((ip) => ip.includes('.')) ?? selected.ips[0]}</span>
+                  <span className="font-mono font-medium text-right truncate">{selected.ips!.find((ip) => ip.includes('.')) ?? selected.ips![0]}</span>
                 </div>
               )}
               <div className="flex justify-between">
