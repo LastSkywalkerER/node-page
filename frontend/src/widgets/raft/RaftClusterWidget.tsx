@@ -42,6 +42,54 @@ function stateColor(state?: string): string {
 }
 
 /**
+ * JoinCommandBlock renders the copy-paste one-liner that installs the Docker
+ * agent on a fresh machine and joins it to THIS cluster (scripts/agent-join.sh:
+ * docker checks → compose up → /setup/join-raft-cluster → snapshot wait).
+ * The join URL prefers the leader's advertised URL; the browser origin is the
+ * fallback — both must be reachable from the new machine.
+ */
+function JoinCommandBlock({ token, advertiseURL }: { token: string; advertiseURL?: string }) {
+  const [copiedCmd, setCopiedCmd] = useState(false)
+  const joinURL = advertiseURL || window.location.origin
+  const command = [
+    `NODE_STATS_JOIN_URL="${joinURL}" \\`,
+    `NODE_STATS_JOIN_KEY="${token}" \\`,
+    `bash -c "$(curl -fsSL https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scripts/agent-join.sh)"`,
+  ].join('\n')
+
+  const onCopyCmd = async () => {
+    await navigator.clipboard.writeText(command)
+    setCopiedCmd(true)
+    window.setTimeout(() => setCopiedCmd(false), 1500)
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <p className="text-xs font-medium text-foreground">Run on the new machine (needs Docker):</p>
+      <div className="relative">
+        <pre className="overflow-x-auto rounded-md border border-border/60 bg-muted/20 p-3 pr-12 font-mono text-[11px] leading-relaxed dark:border-white/10 dark:bg-black/30">
+          {command}
+        </pre>
+        <Button
+          onClick={onCopyCmd}
+          size="icon"
+          variant="ghost"
+          className="absolute right-1.5 top-1.5 h-7 w-7"
+          aria-label="Copy install command"
+        >
+          {copiedCmd ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+        </Button>
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        The script installs the stack, then the node attaches itself as a voter and pulls the
+        cluster snapshot. If <span className="font-mono">{joinURL}</span> isn't reachable from that
+        machine, replace it with an address that is.
+      </p>
+    </div>
+  )
+}
+
+/**
  * RaftClusterWidget shows the local cluster's role + peer list and, when
  * the cross-cluster bridge is configured, the per-URL RTT samples it has
  * collected from the peer cluster. From the admin "Raft" subtab.
@@ -399,10 +447,11 @@ export function RaftClusterWidget() {
       </section>
 
       <section className="space-y-2">
-        <h4 className="text-sm font-display tracking-wide">One-shot join token</h4>
+        <h4 className="text-sm font-display tracking-wide">Add a node</h4>
         <p className="text-xs text-muted-foreground">
-          Generate a token to bring up a fresh node. The new node pastes it into the setup
-          wizard's "Join existing cluster" branch.
+          Generate a one-shot token, then run the command below on the new machine — it installs
+          the Docker agent and joins this cluster in one go. (The token also works in the setup
+          wizard's "Join existing cluster" branch.)
         </p>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <Input
@@ -421,10 +470,13 @@ export function RaftClusterWidget() {
           </div>
         </div>
         {issued ? (
-          <p className="text-xs text-muted-foreground">
-            Expires <time dateTime={issued.expires_at}>{new Date(issued.expires_at).toLocaleString()}</time>.
-            Tokens are one-shot — they're stored hashed; this is the only time the plaintext appears.
-          </p>
+          <>
+            <p className="text-xs text-muted-foreground">
+              Expires <time dateTime={issued.expires_at}>{new Date(issued.expires_at).toLocaleString()}</time>.
+              Tokens are one-shot — they're stored hashed; this is the only time the plaintext appears.
+            </p>
+            <JoinCommandBlock token={issued.token} advertiseURL={st.advertise_url} />
+          </>
         ) : null}
         {st.state !== 'Leader' ? (
           <p className="text-xs text-amber-500">

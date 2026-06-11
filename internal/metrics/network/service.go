@@ -96,6 +96,13 @@ func (s *service) GetLatestByHost(ctx context.Context, hostId uint) (*NetworkMet
 	s.speedCalculator.BeginCalculationBatch()
 	for i := range metric.Interfaces {
 		iface := &metric.Interfaces[i]
+		// Rows written with rates already computed (the agent's collector, or
+		// connector-fed hosts whose counters live hypervisor-side) keep them:
+		// the read-side calculator keys its state by interface NAME only, so
+		// re-deriving here would mix samples of different hosts' "net0"/"eth0".
+		if iface.SpeedKbpsSent != 0 || iface.SpeedKbpsRecv != 0 {
+			continue
+		}
 		speed := s.speedCalculator.CalculateSpeed(
 			iface.Name,
 			iface.BytesSent,

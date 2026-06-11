@@ -406,6 +406,24 @@ sections above):
 - **No rrddata backfill** — connector-only guests accumulate history from
   connect time onward; guest disk usage is written only when PVE reports it
   (QEMU without guest agent reports 0).
+- **Node network comes from `/nodes/{n}/rrddata`** — the only place the PVE
+  API exposes node-level traffic; `netin`/`netout` there are RRD-averaged
+  rates in bytes/s (unlike the cumulative guest counters in
+  `/cluster/resources`), so the freshest complete point maps straight onto
+  the network widget's speed fields. Read-side speed recomputation in the
+  network service now respects rows that already carry rates.
+- **Temperatures cannot come from the connector** — verified against
+  pve-manager sources: no PVE API endpoint exposes lm-sensors/thermal data
+  (`/nodes/{n}/status`, `/hardware`, `/capabilities` have none; the known
+  community "temperature in summary" mods patch Nodes.pm and die on every
+  update). The supported path is installing the agent natively on the PVE
+  host — it merges into the same hypervisor row by MAC and brings full
+  sensors. Disk temperatures ARE reachable via `/nodes/{n}/disks/smart`
+  (ATA attribute 194 / NVMe text blob) and SSD `wearout` + `health` via
+  `/disks/list` — a candidate for a later connector-fed "disk health" panel,
+  needs sensors replication first. Other untapped per-node data:
+  `/nodes/{n}/netstat` (per-guest-NIC counters), `/hardware/pci`
+  (GPU/NIC inventory + IOMMU groups).
 - **Guest chips get live cpu/ram from the SSE stream, not REST** — the stream
   already broadcasts every host's snapshot (`collecting_host_id` envelopes),
   so one subscription per page feeds a per-host gauges store

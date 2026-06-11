@@ -126,15 +126,21 @@ function ConnectForm({ suggestedEndpoint, onDone }: { suggestedEndpoint?: string
             value={endpoint}
             onChange={(e) => setEndpoint(e.target.value)}
           />
+          <p className="text-[11px] text-muted-foreground">
+            The address you open the Proxmox web UI on — same host, port <span className="font-mono">8006</span>.
+          </p>
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="pve-token-id">API token id</Label>
           <Input
             id="pve-token-id"
-            placeholder="user@pam!node-stats"
+            placeholder="root@pam!node-stats"
             value={tokenId}
             onChange={(e) => setTokenId(e.target.value)}
           />
+          <p className="text-[11px] text-muted-foreground">
+            Format <span className="font-mono">user@realm!token-name</span> — copy it from the token list.
+          </p>
         </div>
       </div>
       <div className="space-y-1.5">
@@ -147,9 +153,22 @@ function ConnectForm({ suggestedEndpoint, onDone }: { suggestedEndpoint?: string
           onChange={(e) => setSecret(e.target.value)}
         />
         <p className="text-[11px] text-muted-foreground">
-          Create a read-only token in Proxmox: Datacenter → Permissions → API Tokens, role <span className="font-mono">PVEAuditor</span> on{' '}
-          <span className="font-mono">/</span> (uncheck “Privilege Separation” or grant the role to the token itself).
+          The UUID Proxmox shows <em>once</em> when the token is created. Lost it? Just create a new token.
         </p>
+      </div>
+      <div className="rounded-md border border-border/50 bg-muted/15 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground dark:border-white/8">
+        <span className="font-medium text-foreground">No token yet? Two steps in the Proxmox UI</span> (read-only access):
+        <ol className="ml-4 mt-1 list-decimal space-y-0.5">
+          <li>
+            Datacenter → Permissions → <span className="font-mono">API Tokens</span> → Add: user{' '}
+            <span className="font-mono">root@pam</span>, Token ID <span className="font-mono">node-stats</span> → copy the secret.
+          </li>
+          <li>
+            Permissions → Add → <span className="font-mono">API Token Permission</span>: path <span className="font-mono">/</span>,
+            token <span className="font-mono">root@pam!node-stats</span>, role <span className="font-mono">PVEAuditor</span>.
+            Without this the token authenticates but sees nothing.
+          </li>
+        </ol>
       </div>
       <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
         <Switch checked={skipVerify} onCheckedChange={setSkipVerify} />

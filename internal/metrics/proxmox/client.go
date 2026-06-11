@@ -221,6 +221,25 @@ func (c *Client) NodeNetwork(ctx context.Context, node string) ([]NodeNetIface, 
 	return items, err
 }
 
+// RRDPoint is one sample of /nodes/{node}/rrddata. Unlike the cumulative
+// guest counters in /cluster/resources, the node's netin/netout here are
+// RRD-averaged RATES in bytes/second. Pointers because trailing samples of
+// the window may have null fields.
+type RRDPoint struct {
+	Time   int64    `json:"time"`
+	NetIn  *float64 `json:"netin,omitempty"`
+	NetOut *float64 `json:"netout,omitempty"`
+}
+
+// NodeRRDData returns the node's last-hour metric series (~1-min resolution).
+// The freshest complete point feeds the hypervisor's network widget — the
+// only place the PVE API exposes node-level traffic.
+func (c *Client) NodeRRDData(ctx context.Context, node string) ([]RRDPoint, error) {
+	var items []RRDPoint
+	err := c.get(ctx, "/nodes/"+url.PathEscape(node)+"/rrddata?timeframe=hour", &items)
+	return items, err
+}
+
 // GuestConfig fetches a guest's config (kind is "qemu" or "lxc"). Values are
 // strings like `net0: "virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr0"`.
 func (c *Client) GuestConfig(ctx context.Context, node, kind string, vmid int) (map[string]any, error) {

@@ -339,8 +339,30 @@ func (p *Poller) syncNode(ctx context.Context, client *Client, conn connectors.C
 	if diskM.Free == 0 && diskM.Total >= diskM.Used {
 		diskM.Free = diskM.Total - diskM.Used
 	}
-	p.submitMetrics(ctx, host, cpuM, memM, diskM, nil)
+	p.submitMetrics(ctx, host, cpuM, memM, diskM, p.nodeNetwork(ctx, client, r.Node))
 	return mac
+}
+
+// nodeNetwork synthesizes the hypervisor's network metric from rrddata — the
+// only node-level traffic the PVE API exposes (netin/netout rates in B/s).
+func (p *Poller) nodeNetwork(ctx context.Context, client *Client, node string) *network.NetworkMetric {
+	pts, err := client.NodeRRDData(ctx, node)
+	if err != nil {
+		p.deps.Logger.Debug("proxmox: node rrddata unavailable", "node", node, "error", err)
+		return nil
+	}
+	for i := len(pts) - 1; i >= 0; i-- {
+		if pts[i].NetIn == nil || pts[i].NetOut == nil {
+			continue
+		}
+		return &network.NetworkMetric{Interfaces: []network.NetworkInterface{{
+			Name:          "node",
+			IsPrimary:     true,
+			SpeedKbpsRecv: *pts[i].NetIn * 8 / 1024,
+			SpeedKbpsSent: *pts[i].NetOut * 8 / 1024,
+		}}}
+	}
+	return nil
 }
 
 func (p *Poller) syncGuest(ctx context.Context, client *Client, conn connectors.Connector, prefix string, r Resource, parentMAC string) {
