@@ -171,6 +171,136 @@ pick_ports() {
   RAFT_PORT="$(pick_free_port "$RAFT_PORT" "Raft (NODE_STATS_RAFT_PORT)" "$raft_explicit" "$HTTP_PORT")"
 }
 
+# env_get KEY — value from the stack .env ('' when absent).
+env_get() { sed -n "s/^$1=//p" "$STACK_DIR/.env" 2>/dev/null | head -1; }
+
+# env_set KEY VALUE — update-or-append KEY in the stack .env.
+env_set() {
+  local env="$STACK_DIR/.env"
+  if grep -q "^$1=" "$env" 2>/dev/null; then
+    sed -i.bak "s#^$1=.*#$1=$2#" "$env" && rm -f "$env.bak"
+  else
+    echo "$1=$2" >>"$env"
+  fi
+}
+
+# confirm PROMPT — y/N from the operator's terminal. With `curl | bash` stdin
+# holds the script itself, so ask via /dev/tty. Non-interactive runs answer
+# through NODE_STATS_REPAIR=1 (yes) / 0 (no). Returns 2 when there is no way
+# to ask at all.
+confirm() {
+  case "${NODE_STATS_REPAIR:-}" in
+  1 | y | yes | true) return 0 ;;
+  0 | n | no | false) return 1 ;;
+  esac
+  # -r/-w only check permission bits; without a controlling terminal the
+  # open itself fails (ENXIO), so probe by actually opening it.
+  if (: </dev/tty) 2>/dev/null; then
+    local reply=""
+    printf '%s [y/N] ' "$1" >/dev/tty 2>/dev/null || true
+    IFS= read -r reply </dev/tty 2>/dev/null || true
+    case "$reply" in
+    [Yy] | [Yy][Ee][Ss]) return 0 ;;
+    esac
+    return 1
+  fi
+  return 2
+}
+
+# app_container_state PROJECT — docker state of the app service left by a
+# previous run: running/exited/created/restarting, or '' when none exists.
+app_container_state() {
+  docker ps -a \
+    --filter "label=com.docker.compose.project=$1" \
+    --filter "label=com.docker.compose.service=node-stats" \
+    --format '{{.State}}' 2>/dev/null | head -1
+}
+
+# check_existing_install — a stack dir from an earlier run was found. Verify
+# that deployment actually works before silently reusing its configuration:
+# a previous attempt may have died half-way (classic: .env pinned to a port
+# that another service owns → 'Bind … port is already allocated', containers
+# left created-but-never-started). Healthy → continue as a normal in-place
+# refresh. Broken → explain what is wrong and offer to recreate ONLY the
+# node-stats containers: data, secrets and settings in the stack dir are
+# kept, and clashing ports are re-picked once our own listeners are gone.
+check_existing_install() {
+  { [ -f "$STACK_DIR/.env" ] || [ -f "$STACK_DIR/docker-compose.yml" ]; } || return 0
+
+  local port raft project state http_ok=0 i
+  port="$(env_get NODE_STATS_PORT)"
+  port="${port:-$HTTP_PORT}"
+  raft="$(env_get NODE_STATS_RAFT_PORT)"
+  raft="${raft:-$RAFT_PORT}"
+  project="$(env_get COMPOSE_PROJECT_NAME)"
+  project="${project:-$PROJECT}"
+  state="$(app_container_state "$project")"
+
+  if [ "$state" = running ]; then
+    for i in 1 2 3; do
+      if curl -fsS -m 3 "http://127.0.0.1:${port}/api/v1/health" >/dev/null 2>&1; then
+        http_ok=1
+        break
+      fi
+      [ "$i" -lt 3 ] && sleep 2
+    done
+    if [ "$http_ok" = 1 ]; then
+      green "Existing node-stats install found in ${STACK_DIR} — it is healthy, refreshing it in place."
+      HTTP_PORT="$port"
+      RAFT_PORT="$raft"
+      return 0
+    fi
+  fi
+
+  yellow "node-stats is already (partially) installed in ${STACK_DIR}, but it is not healthy:"
+  if [ "$state" = running ]; then
+    yellow "  - the app container is running, but its API does not answer on :${port}"
+  elif [ -n "$state" ]; then
+    yellow "  - the app container is '${state}' instead of running"
+  else
+    yellow "  - no app container exists (a previous install likely failed half-way)"
+  fi
+  if [ "$state" != running ]; then
+    if port_busy "$raft"; then
+      yellow "  - Raft port ${raft} (pinned in ${STACK_DIR}/.env) is held by another service — the previous start most likely failed with 'port is already allocated'"
+    fi
+    if port_busy "$port"; then
+      yellow "  - HTTP port ${port} (pinned in ${STACK_DIR}/.env) is held by another service"
+    fi
+  fi
+
+  yellow "Reinstalling recreates ONLY the node-stats containers — your data, secrets and settings in ${STACK_DIR} are kept, and clashing ports are re-picked automatically."
+  local rc=0
+  confirm "Reinstall the node-stats containers now?" || rc=$?
+  if [ "$rc" = 2 ]; then
+    die "cannot ask for confirmation (no terminal). Re-run with NODE_STATS_REPAIR=1 to reinstall automatically, or remove ${STACK_DIR} to start fresh."
+  elif [ "$rc" != 0 ]; then
+    die "left as-is. Re-run when ready, or remove ${STACK_DIR} to start completely fresh."
+  fi
+
+  green "Removing the old node-stats containers ..."
+  if [ -f "$STACK_DIR/docker-compose.yml" ]; then
+    compose down --remove-orphans >/dev/null 2>&1 || true
+  fi
+  docker ps -aq --filter "label=com.docker.compose.project=${project}" 2>/dev/null |
+    xargs -r docker rm -f >/dev/null 2>&1 || true
+
+  # Our own listeners are gone now — anything still on these ports is foreign.
+  local http_explicit=0 raft_explicit=0
+  [ -n "${NODE_STATS_PORT:-}" ] && http_explicit=1
+  [ -n "${NODE_STATS_RAFT_PORT:-}" ] && raft_explicit=1
+  [ "$http_explicit" = 1 ] && port="$NODE_STATS_PORT"
+  [ "$raft_explicit" = 1 ] && raft="$NODE_STATS_RAFT_PORT"
+  HTTP_PORT="$(pick_free_port "$port" "HTTP (NODE_STATS_PORT)" "$http_explicit")"
+  if [ "$raft_explicit" = 0 ] && port_busy "$raft" &&
+    grep -q '^RAFT_ENABLED=true' "$STACK_DIR/.env.agent" 2>/dev/null; then
+    die "Raft port ${raft} is busy, but this node already joined a cluster whose peers reach it on that port — free the port (or change it cluster-wide) instead of silently moving it."
+  fi
+  RAFT_PORT="$(pick_free_port "$raft" "Raft (NODE_STATS_RAFT_PORT)" "$raft_explicit" "$HTTP_PORT")"
+  env_set NODE_STATS_PORT "$HTTP_PORT"
+  env_set NODE_STATS_RAFT_PORT "$RAFT_PORT"
+}
+
 prepare_stack_dir() {
   mkdir -p "$STACK_DIR/data/docker"
   # .env.agent MUST be a regular file: it is bind-mounted to /app/.env and the
@@ -253,6 +383,7 @@ cmd_install() {
   detect_platform
   require_docker
   green "Installing node-stats into ${STACK_DIR}"
+  check_existing_install
   pick_ports
   prepare_stack_dir
   green "Pulling ${IMAGE} ..."
@@ -278,7 +409,9 @@ cmd_update() {
   green "Updating node-stats in ${STACK_DIR} ..."
   compose pull
   compose up -d
-  green "Update complete → http://localhost:${HTTP_PORT}"
+  local p
+  p="$(env_get NODE_STATS_PORT)"
+  green "Update complete → http://localhost:${p:-$HTTP_PORT}"
 }
 
 cmd_uninstall() {
