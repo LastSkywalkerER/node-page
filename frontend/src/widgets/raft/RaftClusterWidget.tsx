@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -10,6 +10,7 @@ import {
   useAddRaftPeer,
   useRemoveRaftPeer,
   useSaveRaftBridge,
+  useBridgeSecret,
   useResetRaftConfig,
   useWipeRaftState,
   useFactoryResetRaft,
@@ -117,6 +118,25 @@ export function RaftClusterWidget() {
   const [bridgeAdvertise, setBridgeAdvertise] = useState('')
   // null = untouched → mirror the active mode from status.
   const [modeDraft, setModeDraft] = useState<'push' | 'receive' | 'both' | null>(null)
+
+  // Prefill the (write-only) secret field from the server once, so an admin
+  // returning later can still copy it when enrolling another site.
+  const { data: storedSecret } = useBridgeSecret()
+  const secretPrefilled = useRef(false)
+  useEffect(() => {
+    if (secretPrefilled.current || !storedSecret) return
+    secretPrefilled.current = true
+    if (storedSecret.shared_secret) {
+      setBridgeSecret((cur) => cur || storedSecret.shared_secret)
+    }
+  }, [storedSecret])
+  const [copiedSecret, setCopiedSecret] = useState(false)
+  const onCopySecret = async () => {
+    if (!bridgeSecret.trim()) return
+    await navigator.clipboard.writeText(bridgeSecret.trim())
+    setCopiedSecret(true)
+    window.setTimeout(() => setCopiedSecret(false), 1500)
+  }
 
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>
@@ -573,6 +593,17 @@ export function RaftClusterWidget() {
                 }
                 className="h-9 flex-1 font-mono text-xs"
               />
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={onCopySecret}
+                disabled={!bridgeSecret.trim()}
+                aria-label="Copy secret"
+                title="Copy the secret to paste on the other sites"
+              >
+                {copiedSecret ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+              </Button>
               {bridgeMode === 'receive' && (
                 <Button type="button" size="sm" variant="outline" onClick={onGenerateSecret}>
                   Generate
@@ -603,7 +634,8 @@ export function RaftClusterWidget() {
             On each site's admin panel (Nodes → Raft → Metrics uplink) pick{' '}
             <span className="font-medium">Send to a hub</span> and paste: Hub URL{' '}
             <span className="font-mono">{st.advertise_url || window.location.origin}</span>, secret{' '}
-            <span className="font-mono">{bridgeSecret.slice(0, 8)}…</span> (the value above).
+            <span className="font-mono">{bridgeSecret.slice(0, 8)}…</span> — grab the full
+            value with the copy button next to the field above.
           </div>
         )}
 

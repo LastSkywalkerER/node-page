@@ -78,6 +78,10 @@ type BridgeConfigurator interface {
 	// rebuilds the sender/picker/receiver. AdvertiseURL is optional;
 	// when empty the previously configured advertise URL is kept.
 	SaveBridge(secret string, remoteSeeds []string, advertiseURL, mode string) error
+	// BridgeSecret returns the currently configured shared HMAC secret
+	// ('' when the bridge was never configured) so the admin UI can offer
+	// it for copying when enrolling additional sites.
+	BridgeSecret() string
 }
 
 // WithBridgeConfigurator wires the runtime bridge configurator so the
@@ -683,4 +687,18 @@ func (h *Handler) SaveBridgeConfig(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"saved": true})
+}
+
+// GetBridgeSecret returns the configured cross-cluster HMAC secret so the
+// hub admin can copy it when enrolling a new site — the form field is
+// otherwise write-only and the value is gone after a page reload.
+// Admin-only: the same trust level that sets the secret via POST /raft/bridge.
+//
+// GET /api/v1/raft/bridge/secret
+func (h *Handler) GetBridgeSecret(c *gin.Context) {
+	if h.bridgeCfg == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "bridge configurator not wired"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"shared_secret": h.bridgeCfg.BridgeSecret()})
 }

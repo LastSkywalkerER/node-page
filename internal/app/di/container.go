@@ -728,6 +728,24 @@ func (c *Container) SaveBridge(secret string, remoteSeeds []string, advertiseURL
 	return cw.WriteConfigFile(cv)
 }
 
+// BridgeSecret returns the currently configured uplink HMAC secret so an
+// admin can copy it later when enrolling another site — it is otherwise
+// write-only through the form and unrecoverable after a page reload.
+// Empty when no bridge is configured.
+func (c *Container) BridgeSecret() string {
+	c.activateMu.Lock()
+	if s := strings.TrimSpace(c.raftCfgSnapshot.Bridge.SharedSecret); s != "" {
+		c.activateMu.Unlock()
+		return s
+	}
+	c.activateMu.Unlock()
+	cw := setupcfg.NewConfigWriter()
+	if cv, _ := cw.ReadCurrentConfig(); cv != nil {
+		return strings.TrimSpace(cv.RaftBridgeSharedSecret)
+	}
+	return ""
+}
+
 func (c *Container) GetLogger() *log.Logger {
 	return c.logger
 }
