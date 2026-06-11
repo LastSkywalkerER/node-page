@@ -137,8 +137,8 @@ func (h *Handler) pollClusterSecretsAndSwap() {
 
 // SetupStatusResponse represents the setup status response
 type SetupStatusResponse struct {
-	SetupNeeded     bool         `json:"setup_needed"`
-	RunningInDocker bool         `json:"running_in_docker"`
+	SetupNeeded     bool `json:"setup_needed"`
+	RunningInDocker bool `json:"running_in_docker"`
 	// ManagedExternally is true when an external orchestrator (Dokploy/Traefik)
 	// owns the stack lifecycle, so the wizard hides the managed-Postgres option
 	// and won't trigger a compose recreate.
@@ -769,14 +769,14 @@ type JoinRaftClusterRequest struct {
 
 // JoinRaftCluster is the wizard's "Join existing cluster" branch. It:
 //
-//   1. Refuses if any users already exist locally (would clobber state).
-//   2. Probes the peer's /api/v1/raft/ping to learn its cluster id.
-//   3. Hot-activates the local Raft node (bootstrap=false) so it can
-//      receive snapshot + log from the peer leader.
-//   4. POSTs to the peer's /api/v1/raft/join with this node's id +
-//      advertise address + the one-shot token. The peer adds us as a
-//      voter and the snapshot starts replicating immediately.
-//   5. Writes the Raft config into .env so the node survives a restart.
+//  1. Refuses if any users already exist locally (would clobber state).
+//  2. Probes the peer's /api/v1/raft/ping to learn its cluster id.
+//  3. Hot-activates the local Raft node (bootstrap=false) so it can
+//     receive snapshot + log from the peer leader.
+//  4. POSTs to the peer's /api/v1/raft/join with this node's id +
+//     advertise address + the one-shot token. The peer adds us as a
+//     voter and the snapshot starts replicating immediately.
+//  5. Writes the Raft config into .env so the node survives a restart.
 //
 // As soon as snapshot replication finishes, the local users table fills,
 // /setup/status flips to setup_needed=false, the JWT secrets land in
@@ -1223,11 +1223,11 @@ func probePeerClusterID(ctx context.Context, peerURL string) (string, error) {
 // commit indices + leader / state so the operator sees progress without
 // being authenticated against the admin /raft/status endpoint.
 type RaftProgressResponse struct {
-	Enabled      bool   `json:"enabled"`
-	State        string `json:"state,omitempty"`
-	LeaderID     string `json:"leader_id,omitempty"`
-	AppliedIndex uint64 `json:"applied_index"`
-	CommitIndex  uint64 `json:"commit_index"`
+	Enabled       bool   `json:"enabled"`
+	State         string `json:"state,omitempty"`
+	LeaderID      string `json:"leader_id,omitempty"`
+	AppliedIndex  uint64 `json:"applied_index"`
+	CommitIndex   uint64 `json:"commit_index"`
 	LastIndex     uint64 `json:"last_index"`
 	NodeID        string `json:"node_id,omitempty"`
 	ClusterID     string `json:"cluster_id,omitempty"`
@@ -1248,9 +1248,9 @@ func (h *Handler) RaftProgress(c *gin.Context) {
 	st := h.raftSvc.Status()
 	c.JSON(http.StatusOK, gin.H{
 		"data": RaftProgressResponse{
-			Enabled:      st.Enabled,
-			State:        st.State,
-			LeaderID:     st.LeaderID,
+			Enabled:       st.Enabled,
+			State:         st.State,
+			LeaderID:      st.LeaderID,
 			AppliedIndex:  st.AppliedIndex,
 			CommitIndex:   st.CommitIndex,
 			LastIndex:     st.LastIndex,

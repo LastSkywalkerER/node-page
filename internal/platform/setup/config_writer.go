@@ -31,13 +31,13 @@ func NewConfigWriter() *ConfigWriter {
 
 // ConfigValues represents all configuration values
 type ConfigValues struct {
-	JWTSecret         string `json:"jwt_secret"`
-	RefreshSecret     string `json:"refresh_secret"`
-	Addr              string `json:"addr"`
-	GinMode           string `json:"gin_mode"`
-	Debug             string `json:"debug"`
-	DBType            string `json:"db_type"`
-	DBDSN             string `json:"db_dsn"`
+	JWTSecret     string `json:"jwt_secret"`
+	RefreshSecret string `json:"refresh_secret"`
+	Addr          string `json:"addr"`
+	GinMode       string `json:"gin_mode"`
+	Debug         string `json:"debug"`
+	DBType        string `json:"db_type"`
+	DBDSN         string `json:"db_dsn"`
 	// Structured Postgres connection fields. When DBType=="postgres" and DBHost
 	// is set, AssembleDSN builds the GORM keyword DSN from these (so the wizard
 	// collects + validates components); otherwise the raw DBDSN is used as-is.
