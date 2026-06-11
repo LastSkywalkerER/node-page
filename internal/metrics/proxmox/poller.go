@@ -37,6 +37,9 @@ type PollerDeps struct {
 	Connectors connectors.Repository
 	Cipher     *connectors.Cipher
 	HostRepo   hosts.Repository
+	// Detector supplies this machine's own "I am a Proxmox guest" hint
+	// (incl. the VMID from the lxc cgroup) for the self-link flow.
+	Detector *connectors.Detector
 
 	Raft     *raftcluster.Replicator // nil-safe; Enabled() gates the raft path
 	RaftSvc  raftcluster.Service     // leader check; nil = standalone
@@ -110,7 +113,64 @@ func (p *Poller) Run(ctx context.Context) {
 		case <-p.syncCh:
 		}
 		p.cycle(ctx)
+		// Self-link runs on EVERY node (not leader-gated): only this node
+		// knows its own cgroup-derived VMID, and the claim replicates.
+		p.selfLink(ctx)
 	}
+}
+
+// selfLink claims this node's own guest row. MAC linking fails whenever the
+// agent registered through a NIC that isn't in the guest's PVE config (Docker
+// bridge / random veth — the dokploy-in-LXC case), leaving a connector-owned
+// duplicate next to the agent row. The LXC cgroup leaks our VMID with high
+// confidence, so when exactly one connector-fed guest matches "<kind>/<vmid>",
+// this node attaches that topology to its own collector row and drops the
+// duplicate. Idempotent: a linked row (external_id set) short-circuits.
+func (p *Poller) selfLink(ctx context.Context) {
+	if p.deps.Detector == nil {
+		return
+	}
+	var hint *connectors.DiscoveredHint
+	for _, h := range p.deps.Detector.Detect() {
+		if h.Type == connectors.TypeProxmox && h.VMIDHint > 0 && h.GuestKind != "" {
+			hh := h
+			hint = &hh
+			break
+		}
+	}
+	if hint == nil {
+		return
+	}
+	local, err := p.deps.HostRepo.GetHostByID(ctx, hosts.LocalCollectorHostID)
+	if err != nil || local.ExternalID != "" || local.MacAddress == "" {
+		return
+	}
+	suffix := fmt.Sprintf("/%s/%d", hint.GuestKind, hint.VMIDHint)
+	twins, err := p.deps.HostRepo.FindConnectorOnlyHostsByExternalIDSuffix(ctx, suffix)
+	if err != nil || len(twins) == 0 {
+		return
+	}
+	if len(twins) > 1 {
+		p.deps.Logger.Warn("proxmox: self-link ambiguous — several connectors expose this VMID; skipping",
+			"vmid", hint.VMIDHint, "kind", hint.GuestKind, "matches", len(twins))
+		return
+	}
+	twin := twins[0]
+	p.deps.Logger.Info("proxmox: linking this node to its hypervisor guest",
+		"external_id", twin.ExternalID, "replacing_host_id", twin.ID)
+	// Drop the duplicate first, then attach its topology to our agent row
+	// (UpsertConnectorHost applies a column-limited topology update there).
+	p.removeHost(ctx, &twin)
+	p.upsertHost(ctx, hosts.ConnectorHostInfo{
+		HostInfo: hosts.HostInfo{
+			Name:       local.Name,
+			MacAddress: local.MacAddress,
+		},
+		HostType:    twin.HostType,
+		ParentMAC:   twin.ParentMAC,
+		ExternalID:  twin.ExternalID,
+		GuestStatus: twin.GuestStatus,
+	})
 }
 
 // shouldPoll: the Raft leader (or a standalone node) owns polling so the
@@ -363,18 +423,22 @@ func (p *Poller) syncGuest(ctx context.Context, client *Client, conn connectors.
 // as stale for cleanup.
 func (p *Poller) findExisting(ctx context.Context, externalID string, macs []string) (best, stale *hosts.Host) {
 	var matches []*hosts.Host
+	add := func(h *hosts.Host) {
+		for _, m := range matches {
+			if m.ID == h.ID {
+				return
+			}
+		}
+		matches = append(matches, h)
+	}
+	// The external_id column first: a self-linked agent row carries the guest
+	// identity while its registered MAC is absent from the PVE config.
+	if h, err := p.deps.HostRepo.GetHostByExternalID(ctx, externalID); err == nil {
+		add(h)
+	}
 	for _, key := range append([]string{externalID}, macs...) {
 		if h, err := p.deps.HostRepo.GetHostByMacAddress(ctx, key); err == nil {
-			dup := false
-			for _, m := range matches {
-				if m.ID == h.ID {
-					dup = true
-					break
-				}
-			}
-			if !dup {
-				matches = append(matches, h)
-			}
+			add(h)
 		}
 	}
 	for _, h := range matches {

@@ -379,6 +379,17 @@ sections above):
   `product_uuid` separately). The poller does prefer an agent row over a
   previously-created connector row when both match, and deletes the stale
   connector duplicate.
+- **Self-link by cgroup VMID** — MAC linking fails when the agent registered
+  through a NIC absent from the PVE config (Docker bridge / random veth — the
+  dokploy-in-LXC case). Every node therefore runs a non-leader-gated
+  `selfLink` pass: the LXC cgroup leaks this machine's VMID with high
+  confidence, and when exactly one connector-fed guest matches
+  `<kind>/<vmid>`, the node claims that topology onto its own collector row
+  and deletes the duplicate (ambiguous matches across connectors are skipped
+  with a warning). Guest resolution checks the `external_id` column before
+  MACs so the claim sticks on subsequent polls. VMs don't leak a VMID — a
+  `product_uuid`↔`smbios1` self-link is the follow-up for the same situation
+  on QEMU guests.
 - **No rrddata backfill** — connector-only guests accumulate history from
   connect time onward; guest disk usage is written only when PVE reports it
   (QEMU without guest agent reports 0).

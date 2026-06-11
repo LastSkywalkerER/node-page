@@ -178,11 +178,12 @@ func Run() {
 	// cipher key derives from the (cluster-shared) JWT secret so connector
 	// credentials encrypted on one node decrypt on whichever node leads.
 	connCipher := connectors.NewCipher(cfg.JWTSecret)
+	connDetector := connectors.NewDetector(logger)
 	connectorsSvc := connectors.NewService(
 		logger,
 		container.GetConnectorRepository(),
 		container.GetHostRepository(),
-		connectors.NewDetector(logger),
+		connDetector,
 		connCipher,
 		proxmox.NewProber(),
 		container.GetRaftReplicator(),
@@ -192,6 +193,7 @@ func Run() {
 		Connectors: container.GetConnectorRepository(),
 		Cipher:     connCipher,
 		HostRepo:   container.GetHostRepository(),
+		Detector:   connDetector,
 		Raft:       container.GetRaftReplicator(),
 		RaftSvc:    container.GetRaftService(),
 		CPURepo:    container.GetCPURepository(),

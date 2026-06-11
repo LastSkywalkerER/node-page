@@ -31,6 +31,12 @@ type Repository interface {
 	// hostname. When the MAC matches an agent-maintained row, only topology
 	// fields are attached (the agent keeps owning everything else).
 	UpsertConnectorHost(ctx context.Context, info ConnectorHostInfo) (*Host, error)
+	// GetHostByExternalID resolves a host by its connector-side identity.
+	GetHostByExternalID(ctx context.Context, externalID string) (*Host, error)
+	// FindConnectorOnlyHostsByExternalIDSuffix lists connector-owned rows whose
+	// external_id ends with suffix (e.g. "/lxc/105") — used by the self-link
+	// flow to find this node's own guest row across configured connectors.
+	FindConnectorOnlyHostsByExternalIDSuffix(ctx context.Context, suffix string) ([]Host, error)
 	// UnlinkConnectorHosts detaches every host whose external_id starts with
 	// prefix: agent rows lose their topology fields; connector-only rows are
 	// cascade-deleted when removeHosts is true, otherwise kept (frozen).
@@ -344,6 +350,26 @@ func (r *hostRepository) UpsertConnectorHost(ctx context.Context, info Connector
 		host.LastSeen = now
 	}
 	return &host, r.db.WithContext(ctx).Create(&host).Error
+}
+
+func (r *hostRepository) GetHostByExternalID(ctx context.Context, externalID string) (*Host, error) {
+	if externalID == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var host Host
+	err := r.db.WithContext(ctx).Where("external_id = ?", externalID).First(&host).Error
+	if err != nil {
+		return nil, err
+	}
+	return &host, nil
+}
+
+func (r *hostRepository) FindConnectorOnlyHostsByExternalIDSuffix(ctx context.Context, suffix string) ([]Host, error) {
+	var hosts []Host
+	err := r.db.WithContext(ctx).
+		Where("external_id LIKE ? AND source = ?", "%"+suffix, SourceConnector).
+		Find(&hosts).Error
+	return hosts, err
 }
 
 func (r *hostRepository) UnlinkConnectorHosts(ctx context.Context, prefix string, removeHosts bool) error {
