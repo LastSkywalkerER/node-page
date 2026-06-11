@@ -107,6 +107,70 @@ detect_host_ipv4() {
   printf '%s' "$ip"
 }
 
+# port_busy PORT — true when something already listens on PORT on this host
+# (incl. docker-proxy published ports). ss first, /proc fallback, then a
+# loopback connect probe as the last resort.
+port_busy() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    local listeners
+    if listeners=$(ss -ltnH 2>/dev/null); then
+      printf '%s\n' "$listeners" | awk '{print $4}' | grep -Eq "[:.]${port}\$"
+      return $?
+    fi
+  fi
+  # /proc/net/tcp6 is absent on IPv6-disabled hosts; an unopenable file makes
+  # awk exit 2 even when the END rule matched, so list only readable files.
+  local hex files=""
+  hex=$(printf '%04X' "$port")
+  [ -r /proc/net/tcp ] && files="/proc/net/tcp"
+  [ -r /proc/net/tcp6 ] && files="$files /proc/net/tcp6"
+  if [ -n "$files" ]; then
+    # shellcheck disable=SC2086
+    awk -v hx=":${hex}" '$4 == "0A" && index($2, hx) == length($2) - length(hx) + 1 {found=1} END {exit !found}' $files 2>/dev/null && return 0
+    return 1
+  fi
+  (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null && { exec 3>&- 3<&- || true; return 0; }
+  return 1
+}
+
+# pick_free_port DEFAULT LABEL EXPLICIT [AVOID] — prints a usable port. An
+# explicitly requested port that is busy fails loudly (never silently override
+# the operator); a busy DEFAULT scans upwards for the next free one. AVOID is
+# a port already claimed by this very run (no listener yet, so port_busy
+# can't see it).
+pick_free_port() {
+  local want="$1" label="$2" explicit="$3" avoid="${4:-}" p
+  if [ "$want" != "$avoid" ] && ! port_busy "$want"; then
+    printf '%s' "$want"
+    return
+  fi
+  if [ "$explicit" = "1" ]; then
+    die "${label} port ${want} is already in use on this host — free it or choose another via the env var."
+  fi
+  for p in $(seq $((want + 1)) $((want + 100))); do
+    [ "$p" = "$avoid" ] && continue
+    if ! port_busy "$p"; then
+      yellow "${label} port ${want} is busy — using ${p} instead" >&2
+      printf '%s' "$p"
+      return
+    fi
+  done
+  die "no free ${label} port found in ${want}-$((want + 100))"
+}
+
+# pick_ports mutates HTTP_PORT / RAFT_PORT on a FRESH install only: an
+# existing .env keeps its ports (the stack already owns those listeners, and
+# re-picking would orphan the cluster's advertise addresses).
+pick_ports() {
+  [ -f "$STACK_DIR/.env" ] && return 0
+  local http_explicit=0 raft_explicit=0
+  [ -n "${NODE_STATS_PORT:-}" ] && http_explicit=1
+  [ -n "${NODE_STATS_RAFT_PORT:-}" ] && raft_explicit=1
+  HTTP_PORT="$(pick_free_port "$HTTP_PORT" "HTTP (NODE_STATS_PORT)" "$http_explicit")"
+  RAFT_PORT="$(pick_free_port "$RAFT_PORT" "Raft (NODE_STATS_RAFT_PORT)" "$raft_explicit" "$HTTP_PORT")"
+}
+
 prepare_stack_dir() {
   mkdir -p "$STACK_DIR/data/docker"
   # .env.agent MUST be a regular file: it is bind-mounted to /app/.env and the
@@ -189,6 +253,7 @@ cmd_install() {
   detect_platform
   require_docker
   green "Installing node-stats into ${STACK_DIR}"
+  pick_ports
   prepare_stack_dir
   green "Pulling ${IMAGE} ..."
   if ! docker pull "$IMAGE" >/dev/null 2>&1; then

@@ -68,6 +68,19 @@ if [ "${NODE_STATS_SKIP_INSTALL:-0}" != "1" ]; then
   rm -f "$tmp_install"
 fi
 
+# 1b. The installer may have auto-picked non-default ports when 9090/7000
+# were taken — the stack's .env is the source of truth from here on.
+stack_dir="${NODE_STATS_DIR:-}"
+if [ -z "$stack_dir" ]; then
+  if [ "$(id -u)" = "0" ]; then stack_dir="/opt/node-stats"; else stack_dir="$HOME/.node-stats"; fi
+fi
+if [ -f "${stack_dir}/.env" ]; then
+  env_port="$(sed -n 's/^NODE_STATS_PORT=//p' "${stack_dir}/.env" | head -1)"
+  env_raft="$(sed -n 's/^NODE_STATS_RAFT_PORT=//p' "${stack_dir}/.env" | head -1)"
+  [ -n "$env_port" ] && PORT="$env_port" && API="http://127.0.0.1:${PORT}/api/v1"
+  [ -n "$env_raft" ] && RAFT_PORT="$env_raft"
+fi
+
 # 2. Wait for the app.
 log "Waiting for the app on :${PORT}…"
 status_json=""

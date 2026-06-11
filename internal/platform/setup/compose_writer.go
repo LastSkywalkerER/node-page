@@ -140,6 +140,10 @@ func BuildComposeContent(ds DesiredState) string {
 	// Host outbound IPv4 detected by the installer (the container can't see it
 	// behind a bridge network); empty falls back to the in-container probe.
 	w("      - NODE_STATS_IPV4=${NODE_STATS_IPV4:-}")
+	// The published Raft port (the installer may auto-pick a non-default one
+	// when 7000 is taken). The wizard's bind/advertise defaults follow it so
+	// the in-container listener always matches the host mapping.
+	w("      - NODE_STATS_RAFT_PORT=${NODE_STATS_RAFT_PORT:-7000}")
 	// Optional display hostname — distinguishes nodes that share a host
 	// (e.g. several instances on one Docker VM, whose OS hostname collides).
 	w("      - NODE_STATS_HOSTNAME=${NODE_STATS_HOSTNAME:-}")

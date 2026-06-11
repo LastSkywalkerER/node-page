@@ -869,11 +869,11 @@ func (h *Handler) performRaftJoin(ctx context.Context, req JoinRaftClusterReques
 		req.NodeID = defaultNodeID(hostHint.SuggestedHostname)
 	}
 	if req.BindAddr == "" {
-		req.BindAddr = ":7000"
+		req.BindAddr = ":" + defaultRaftPort()
 	}
 	if req.AdvertiseAddr == "" {
 		if hostHint.SuggestedIPv4 != "" {
-			req.AdvertiseAddr = hostHint.SuggestedIPv4 + ":7000"
+			req.AdvertiseAddr = hostHint.SuggestedIPv4 + ":" + defaultRaftPort()
 		} else {
 			req.AdvertiseAddr = req.BindAddr
 		}
@@ -1089,12 +1089,12 @@ func (h *Handler) AdminStartCluster(c *gin.Context) {
 	}
 	bindAddr := strings.TrimSpace(req.BindAddr)
 	if bindAddr == "" {
-		bindAddr = ":7000"
+		bindAddr = ":" + defaultRaftPort()
 	}
 	advertiseAddr := strings.TrimSpace(req.AdvertiseAddr)
 	if advertiseAddr == "" {
 		if hostHint.SuggestedIPv4 != "" {
-			advertiseAddr = hostHint.SuggestedIPv4 + ":7000"
+			advertiseAddr = hostHint.SuggestedIPv4 + ":" + defaultRaftPort()
 		} else {
 			advertiseAddr = bindAddr
 		}
@@ -1365,7 +1365,7 @@ func (h *Handler) AdvertiseHints(c *gin.Context) {
 
 	out := AdvertiseHintsResponse{IPv4: hints.SuggestedIPv4, Candidates: make([]AdvertiseCandidate, len(candidates))}
 	if hints.SuggestedIPv4 != "" {
-		out.RaftAddr = net.JoinHostPort(hints.SuggestedIPv4, "7000")
+		out.RaftAddr = net.JoinHostPort(hints.SuggestedIPv4, defaultRaftPort())
 	}
 
 	var wg sync.WaitGroup
@@ -1401,6 +1401,17 @@ func (h *Handler) AdvertiseHints(c *gin.Context) {
 	}
 	wg.Wait()
 	c.JSON(http.StatusOK, gin.H{"data": out})
+}
+
+// defaultRaftPort is the Raft port this deployment publishes: the installer
+// writes NODE_STATS_RAFT_PORT into compose (auto-picking a free one when 7000
+// is taken on the host) and the compose passes it into the container, so the
+// wizard's bind/advertise defaults must follow it.
+func defaultRaftPort() string {
+	if p := strings.TrimSpace(os.Getenv("NODE_STATS_RAFT_PORT")); p != "" {
+		return p
+	}
+	return "7000"
 }
 
 // deriveJoinerHTTPURL builds a default http://host:port URL from the
