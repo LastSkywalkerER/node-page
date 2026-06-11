@@ -32,6 +32,11 @@ type Picker struct {
 	// contain a peer cluster's URL before the bridge is up — chicken & egg —
 	// so seeds are probed alongside catalog entries.
 	seeds []string
+	// ownURL is this node's advertised HTTP URL. Never probe or pick it:
+	// after a cluster rename the catalog can still hold our own URL under
+	// the old cluster id, and shipping to ourselves only yields
+	// "bridge receiving is not enabled on this node".
+	ownURL string
 
 	mu       sync.RWMutex
 	measures map[string]*measure // keyed by URL
@@ -48,11 +53,14 @@ type measure struct {
 }
 
 // NewPicker wires the picker. myClusterID is used to filter the catalog
-// (we only probe peer-cluster URLs, never our own).
-func NewPicker(logger *log.Logger, db *gorm.DB, myClusterID string, seeds []string) *Picker {
+// (we only probe peer-cluster URLs, never our own); ownURL is this node's
+// advertised HTTP URL, excluded even when a stale catalog row carries it
+// under a foreign cluster id.
+func NewPicker(logger *log.Logger, db *gorm.DB, myClusterID string, seeds []string, ownURL string) *Picker {
+	own := strings.TrimSuffix(strings.TrimSpace(ownURL), "/")
 	clean := make([]string, 0, len(seeds))
 	for _, s := range seeds {
-		if v := strings.TrimSuffix(strings.TrimSpace(s), "/"); v != "" {
+		if v := strings.TrimSuffix(strings.TrimSpace(s), "/"); v != "" && v != own {
 			clean = append(clean, v)
 		}
 	}
@@ -63,6 +71,7 @@ func NewPicker(logger *log.Logger, db *gorm.DB, myClusterID string, seeds []stri
 		httpClient: &http.Client{Timeout: 3 * time.Second},
 		probeEvery: 30 * time.Second,
 		seeds:      clean,
+		ownURL:     own,
 		measures:   make(map[string]*measure),
 	}
 }
@@ -99,11 +108,26 @@ func (p *Picker) probeOnce(ctx context.Context) {
 		seen[u] = true
 	}
 	for _, e := range entries {
-		if e.ClusterID == p.myCluster || e.URL == "" || seen[e.URL] {
+		e.URL = strings.TrimSuffix(strings.TrimSpace(e.URL), "/")
+		if e.ClusterID == p.myCluster || e.URL == "" || e.URL == p.ownURL || seen[e.URL] {
 			continue
 		}
 		probeList = append(probeList, e)
 	}
+	// Drop measurements for URLs that fell out of the probe list (catalog
+	// cleanup, config change, own/stale entries) — otherwise a frozen
+	// "healthy" sample would keep winning Pick() forever.
+	p.mu.Lock()
+	inList := make(map[string]bool, len(probeList))
+	for _, e := range probeList {
+		inList[e.URL] = true
+	}
+	for url := range p.measures {
+		if !inList[url] {
+			delete(p.measures, url)
+		}
+	}
+	p.mu.Unlock()
 	var wg sync.WaitGroup
 	for _, e := range probeList {
 		entry := e

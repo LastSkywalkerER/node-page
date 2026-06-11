@@ -479,7 +479,19 @@ func (a *appliers) applyPeerNodeAdvertise(cmd Command, _ *hraft.Log) error {
 			"updated_at":   row.UpdatedAt,
 		}).
 		FirstOrCreate(&row)
-	return res.Error
+	if res.Error != nil {
+		return res.Error
+	}
+	// A URL identifies one node endpoint: rows advertising the same URL
+	// under another identity are leftovers from a cluster/node rename and
+	// would haunt the bridge picker (it filters by cluster id, which the
+	// stale row no longer matches) — drop them.
+	if p.URL != "" {
+		a.deps.DB.WithContext(ctx).
+			Where("url = ? AND NOT (cluster_id = ? AND node_id = ?)", p.URL, p.ClusterID, p.NodeID).
+			Delete(&peerNodeAdvertise{})
+	}
+	return nil
 }
 
 func (a *appliers) applyPeerNodeRemove(cmd Command, _ *hraft.Log) error {

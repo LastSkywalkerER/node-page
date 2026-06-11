@@ -460,7 +460,7 @@ func (c *Container) buildBridgeLocked(bridge config.RaftBridgeConfig, clusterID,
 			WithUplinkOnly(mode == config.BridgeModeReceive)
 	}
 	if mode != config.BridgeModeReceive && fsm != nil {
-		c.bridgePicker = raftbridge.NewPicker(c.logger, c.db, clusterID, bridge.RemoteSeeds)
+		c.bridgePicker = raftbridge.NewPicker(c.logger, c.db, clusterID, bridge.RemoteSeeds, c.raftCfgSnapshot.AdvertiseURL)
 		c.bridgeSender = raftbridge.NewSender(c.logger, c.raftSwap, fsm.ApplyEvents(), c.bridgePicker, bridge.SharedSecret, clusterID, nodeID).
 			WithUplinkOnly(mode == config.BridgeModePush)
 		// Reconcile re-publishes ALL local host rows as own-origin entries —
