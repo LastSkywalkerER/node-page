@@ -24,17 +24,27 @@ func (c *networkCollector) Collect(ctx context.Context) (NetworkMetric, error) {
 		return NetworkMetric{}, err
 	}
 
+	// Docker deployment: counters above describe the HOST's interfaces
+	// (HOST_PROC), so addresses/MAC/primary must come from the host's netns
+	// too — the stdlib below would return the container's bridge address.
+	hostIfaces, hostDefault, hostNS := hostNetNS()
+
 	// Determine primary interface by local IP using UDP dial trick
 	primaryIP := ""
-	if conn, dialErr := net.Dial("udp", "8.8.8.8:80"); dialErr == nil {
-		if udpAddr, ok := conn.LocalAddr().(*net.UDPAddr); ok && udpAddr.IP != nil {
-			primaryIP = udpAddr.IP.String()
+	if !hostNS {
+		if conn, dialErr := net.Dial("udp", "8.8.8.8:80"); dialErr == nil {
+			if udpAddr, ok := conn.LocalAddr().(*net.UDPAddr); ok && udpAddr.IP != nil {
+				primaryIP = udpAddr.IP.String()
+			}
+			conn.Close()
 		}
-		conn.Close()
 	}
 
 	// Also fetch interface address info to map names to IPs
-	ifaceDetails, _ := gopsutilnet.InterfacesWithContext(ctx)
+	var ifaceDetails gopsutilnet.InterfaceStatList
+	if !hostNS {
+		ifaceDetails, _ = gopsutilnet.InterfacesWithContext(ctx)
+	}
 
 	interfaces := make([]NetworkInterface, 0, len(netStats))
 	for _, stat := range netStats {
@@ -46,6 +56,15 @@ func (c *networkCollector) Collect(ctx context.Context) (NetworkMetric, error) {
 		isPrimary := false
 		ips := make([]string, 0, 2)
 		mac := ""
+		if hostNS {
+			d := hostIfaces[stat.Name]
+			if d == nil {
+				continue // host iface without IPv4 (veth*, bridges w/o address)
+			}
+			ips = append(ips, d.ips...)
+			mac = d.mac
+			isPrimary = stat.Name == hostDefault
+		}
 		for _, d := range ifaceDetails {
 			if d.Name != stat.Name {
 				continue
