@@ -35,6 +35,12 @@ export interface BridgeSample {
   healthy: boolean
 }
 
+export interface PeerURL {
+  cluster_id: string
+  node_id: string
+  url: string
+}
+
 export interface RaftStatusResponse {
   status: RaftStatus
   bridge_samples?: BridgeSample[]
@@ -44,6 +50,7 @@ export interface RaftStatusResponse {
    *  admin UI to surface low-level fields like last_contact, num_peers,
    *  latest_configuration when the cluster can't elect a leader. */
   raft_stats?: Record<string, string>
+  peer_urls?: PeerURL[]
 }
 
 /**
@@ -291,5 +298,37 @@ export function useProbeVoter() {
       const resp = await apiClient.post<ProbeVoterResult>('/raft/probe-voter', { addr })
       return resp.data
     },
+  })
+}
+
+export interface AdvertiseCandidate {
+  url: string
+  reachable: boolean
+  error?: string
+}
+
+export interface AdvertiseHints {
+  ipv4: string
+  raft_addr: string
+  candidates: AdvertiseCandidate[]
+}
+
+/**
+ * Server-side suggestions for the cluster-sync forms: the detected LAN IP,
+ * the derived Raft advertise address, and advertise-URL candidates TCP-probed
+ * from the node itself (incl. the URL this browser is using right now).
+ */
+export function useAdvertiseHints(enabled = true) {
+  return useQuery<AdvertiseHints>({
+    queryKey: ['advertise-hints'],
+    queryFn: async () => {
+      const { data } = await apiClient.get(
+        `/cluster/advertise-hints?origin=${encodeURIComponent(window.location.origin)}`
+      )
+      return data.data as AdvertiseHints
+    },
+    enabled,
+    staleTime: 60_000,
+    retry: false,
   })
 }

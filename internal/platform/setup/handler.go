@@ -10,8 +10,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -1301,6 +1303,104 @@ func (h *Handler) CheckReachable(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"data": gin.H{"reachable": true, "addr": addr},
 	})
+}
+
+// AdvertiseCandidate is one TCP-probed advertise-URL option.
+type AdvertiseCandidate struct {
+	URL       string `json:"url"`
+	Reachable bool   `json:"reachable"`
+	Error     string `json:"error,omitempty"`
+}
+
+// AdvertiseHintsResponse pre-fills the cluster-sync forms: this machine's
+// detected LAN IP, the derived Raft advertise address, and advertise-URL
+// candidates probed (TCP) from the server's perspective.
+type AdvertiseHintsResponse struct {
+	IPv4       string               `json:"ipv4"`
+	RaftAddr   string               `json:"raft_addr"`
+	Candidates []AdvertiseCandidate `json:"candidates"`
+}
+
+// AdvertiseHints suggests advertise values for the cluster-sync forms.
+// ?origin=<browser origin> adds the URL the operator's browser already uses
+// as a candidate. The Raft port itself is NOT probed — nothing listens on it
+// until the cluster starts; a reachable HTTP candidate on the same IP is the
+// signal that the address is exposed at all.
+//
+// @Summary     Advertise-address suggestions for cluster forms
+// @Tags        cluster
+// @Produce     json
+// @Param       origin query string false "Browser origin to probe as an advertise-URL candidate"
+// @Success     200 {object} map[string]interface{}
+// @Security    BearerAuth
+// @Router      /cluster/advertise-hints [get]
+func (h *Handler) AdvertiseHints(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 8*time.Second)
+	defer cancel()
+	hints := DetectMachineHints(ctx)
+
+	httpPort := "8080"
+	if _, p, err := net.SplitHostPort(h.addr); err == nil && p != "" {
+		httpPort = p
+	}
+
+	var candidates []string
+	if origin := strings.TrimSpace(c.Query("origin")); origin != "" {
+		if u, err := url.Parse(origin); err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
+			candidates = append(candidates, u.Scheme+"://"+u.Host)
+		}
+	}
+	if hints.SuggestedIPv4 != "" {
+		lan := "http://" + net.JoinHostPort(hints.SuggestedIPv4, httpPort)
+		dup := false
+		for _, u := range candidates {
+			if u == lan {
+				dup = true
+			}
+		}
+		if !dup {
+			candidates = append(candidates, lan)
+		}
+	}
+
+	out := AdvertiseHintsResponse{IPv4: hints.SuggestedIPv4, Candidates: make([]AdvertiseCandidate, len(candidates))}
+	if hints.SuggestedIPv4 != "" {
+		out.RaftAddr = net.JoinHostPort(hints.SuggestedIPv4, "7000")
+	}
+
+	var wg sync.WaitGroup
+	for i, raw := range candidates {
+		wg.Add(1)
+		go func(i int, raw string) {
+			defer wg.Done()
+			cand := AdvertiseCandidate{URL: raw}
+			u, err := url.Parse(raw)
+			if err != nil {
+				cand.Error = err.Error()
+				out.Candidates[i] = cand
+				return
+			}
+			port := u.Port()
+			if port == "" {
+				if u.Scheme == "https" {
+					port = "443"
+				} else {
+					port = "80"
+				}
+			}
+			d := net.Dialer{Timeout: 3 * time.Second}
+			conn, derr := d.DialContext(ctx, "tcp", net.JoinHostPort(u.Hostname(), port))
+			if derr != nil {
+				cand.Error = derr.Error()
+			} else {
+				_ = conn.Close()
+				cand.Reachable = true
+			}
+			out.Candidates[i] = cand
+		}(i, raw)
+	}
+	wg.Wait()
+	c.JSON(http.StatusOK, gin.H{"data": out})
 }
 
 // deriveJoinerHTTPURL builds a default http://host:port URL from the

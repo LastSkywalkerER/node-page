@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Trash2, LogOut } from 'lucide-react'
+import { Trash2, LogOut, ExternalLink } from 'lucide-react'
 import { OSIcon } from '@/shared/components/OSIcon'
 import { apiClient } from '@/shared/lib/api'
 import { useHosts, useDeleteHost } from '@/widgets/hosts/useHosts'
@@ -42,6 +42,16 @@ export function NodesTab() {
   // so the admin can read the error and recover.
   const { data: raftStatus } = useRaftStatus(true)
   const raftEnabled = Boolean(raftStatus?.status?.enabled)
+
+  // host → advertised HTTP URL: a cluster voter whose Raft advertise IP
+  // matches the host's IPv4 carries the URL from the peer catalog. Lets the
+  // admin tell same-named machines apart and jump to a node's own dashboard.
+  const hostURL = (ipv4?: string): string | undefined => {
+    if (!ipv4) return undefined
+    const peer = raftStatus?.status?.peers?.find((p) => p.addr?.split(':')[0] === ipv4)
+    if (!peer) return undefined
+    return raftStatus?.peer_urls?.find((u) => u.node_id === peer.id)?.url
+  }
 
   const deleteHost = useDeleteHost()
   const leaveCluster = useLeaveRaftCluster()
@@ -134,9 +144,25 @@ export function NodesTab() {
                               <OSIcon host={host} className="h-4 w-4 shrink-0 text-muted-foreground" />
                               <div className="min-w-0">
                                 <span className="block truncate font-medium">{host.name}</span>
-                                {host.platform && (
-                                  <span className="text-xs text-muted-foreground">{host.platform}</span>
-                                )}
+                                <span className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+                                  {host.platform && <span>{host.platform}</span>}
+                                  {host.ipv4 && <span className="font-mono">{host.ipv4}</span>}
+                                  {(() => {
+                                    const url = isThisNode ? window.location.origin : hostURL(host.ipv4)
+                                    return url ? (
+                                      <a
+                                        href={url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="inline-flex max-w-[260px] items-center gap-0.5 truncate font-mono text-primary/80 hover:text-primary hover:underline"
+                                        title={url}
+                                      >
+                                        <ExternalLink className="h-3 w-3 shrink-0" />
+                                        <span className="truncate">{url.replace(/^https?:\/\//, '')}</span>
+                                      </a>
+                                    ) : null
+                                  })()}
+                                </span>
                               </div>
                             </div>
                             <div className="flex shrink-0 items-center gap-2">

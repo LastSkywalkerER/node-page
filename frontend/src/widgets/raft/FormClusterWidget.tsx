@@ -1,28 +1,67 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { AlertTriangle, Crown, Link2, Loader2 } from 'lucide-react'
+import { AlertTriangle, Check, Crown, Link2, Loader2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { cn } from '@/lib/utils'
 import { apiClient } from '@/shared/lib/api'
-import { useStartCluster, useJoinCluster } from './useRaft'
+import { useStartCluster, useJoinCluster, useAdvertiseHints, type AdvertiseHints } from './useRaft'
 import { useUserStore } from '@/shared/store/user'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-/** This node's detected LAN IP — makes the placeholders real, copyable examples. */
-function useLocalIPv4(): string {
-  const { data } = useQuery({
-    queryKey: ['hosts', 'current'],
-    queryFn: async () => {
-      const res = await apiClient.get<{ host: { id: number; ipv4?: string } }>('/hosts/current')
-      return res.data.host
-    },
-    staleTime: 60_000,
-  })
-  return data?.ipv4 ?? ''
+/** First advertise-URL candidate the server could actually reach. */
+function bestCandidateURL(hints?: AdvertiseHints): string {
+  return hints?.candidates.find((c) => c.reachable)?.url ?? ''
+}
+
+/**
+ * TCP-probe results for the advertise-URL candidates, as clickable chips:
+ * green = the server reached it (click to use), amber = it didn't.
+ */
+function CandidateChips({
+  hints,
+  selected,
+  onPick,
+}: {
+  hints?: AdvertiseHints
+  selected: string
+  onPick: (url: string) => void
+}) {
+  if (!hints || hints.candidates.length === 0) return null
+  return (
+    <div className="space-y-1">
+      <div className="flex flex-wrap gap-1">
+        {hints.candidates.map((c) => (
+          <button
+            key={c.url}
+            type="button"
+            disabled={!c.reachable}
+            onClick={() => onPick(c.url)}
+            title={c.reachable ? 'Reachable from this server — click to use' : `Unreachable: ${c.error ?? ''}`}
+            className={cn(
+              'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] transition-colors',
+              c.reachable
+                ? 'border-emerald-500/40 text-emerald-500 dark:text-emerald-300 hover:bg-emerald-500/10 cursor-pointer'
+                : 'border-amber-500/40 text-amber-500 dark:text-amber-300 cursor-not-allowed opacity-80',
+              c.url === selected && 'ring-1 ring-emerald-400/60 bg-emerald-500/10'
+            )}
+          >
+            {c.reachable ? <Check className="h-2.5 w-2.5" /> : <X className="h-2.5 w-2.5" />}
+            {c.url}
+          </button>
+        ))}
+      </div>
+      {!bestCandidateURL(hints) && (
+        <p className="text-[11px] text-amber-500 dark:text-amber-300">
+          None of the probed URLs is reachable from this server, so nothing was pre-filled — enter
+          an address other nodes can open, or leave empty to derive it from the advertise address.
+        </p>
+      )}
+    </div>
+  )
 }
 
 function errMsg(e: unknown): string {
@@ -92,11 +131,16 @@ export function FormClusterWidget() {
 }
 
 function StartClusterForm() {
-  const [advertiseAddr, setAdvertiseAddr] = useState('')
-  const [advertiseURL, setAdvertiseURL] = useState('')
-  const [clusterID, setClusterID] = useState('')
+  // null = untouched → show the server-derived default as the actual value.
+  const [addrDraft, setAddrDraft] = useState<string | null>(null)
+  const [urlDraft, setUrlDraft] = useState<string | null>(null)
+  const [cidDraft, setCidDraft] = useState<string | null>(null)
   const start = useStartCluster()
-  const ipv4 = useLocalIPv4()
+  const { data: hints } = useAdvertiseHints()
+
+  const advertiseAddr = addrDraft ?? hints?.raft_addr ?? ''
+  const advertiseURL = urlDraft ?? bestCandidateURL(hints)
+  const clusterID = cidDraft ?? 'local'
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -120,38 +164,39 @@ function StartClusterForm() {
     >
       <p className="text-sm font-medium">Start a new cluster</p>
       <p className={fieldHint}>
-        All fields are optional — empty values are auto-detected from this machine. You only need
-        them when other nodes must reach this one via a specific address (VPN, NAT, reverse proxy).
+        Pre-filled with values detected on this machine — usually you just press the button. Change
+        them only when other nodes must reach this one via a different address (VPN, NAT, proxy).
       </p>
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1">
           <Label htmlFor="start-advertise-addr" className="text-xs">
-            Advertise address <span className="text-muted-foreground">(optional)</span>
+            Advertise address
           </Label>
           <Input
             id="start-advertise-addr"
-            placeholder={`auto — e.g. ${ipv4 || '10.0.0.2'}:7000`}
+            placeholder="10.0.0.2:7000"
             value={advertiseAddr}
-            onChange={(e) => setAdvertiseAddr(e.target.value)}
+            onChange={(e) => setAddrDraft(e.target.value)}
           />
           <p className={fieldHint}>
-            This machine's <span className="font-mono">IP:port</span> for cluster traffic (Raft, port{' '}
-            <span className="font-mono">7000</span>). Other nodes will connect here. Empty = the
-            detected LAN IP{ipv4 ? ` (${ipv4})` : ''}.
+            This machine's <span className="font-mono">IP:port</span> for cluster traffic — other
+            nodes connect here. Pre-filled with the detected LAN IP; the Raft port{' '}
+            <span className="font-mono">7000</span> starts listening once the cluster starts, so it
+            can't be probed beforehand.
           </p>
         </div>
         <div className="space-y-1">
           <Label htmlFor="start-cluster-id" className="text-xs">
-            Cluster ID <span className="text-muted-foreground">(optional)</span>
+            Cluster ID
           </Label>
           <Input
             id="start-cluster-id"
             placeholder="local"
             value={clusterID}
-            onChange={(e) => setClusterID(e.target.value)}
+            onChange={(e) => setCidDraft(e.target.value)}
           />
           <p className={fieldHint}>
-            Just a name for this cluster — shows up in diagnostics and join tokens. The default{' '}
+            Just a name for this cluster — shows up in diagnostics and join tokens.{' '}
             <span className="font-mono">local</span> is fine.
           </p>
         </div>
@@ -162,14 +207,16 @@ function StartClusterForm() {
         </Label>
         <Input
           id="start-advertise-url"
-          placeholder={`e.g. ${window.location.origin} or http://${ipv4 || '10.0.0.2'}:9090`}
+          placeholder="left empty — derived from the advertise address"
           value={advertiseURL}
-          onChange={(e) => setAdvertiseURL(e.target.value)}
+          onChange={(e) => setUrlDraft(e.target.value)}
         />
         <p className={fieldHint}>
           This node's web address as OTHER nodes can open it — used to forward writes to the leader
-          and baked into the one-command agent install. Empty = derived from the advertise address.
+          and baked into the one-command agent install. Pre-filled with the first candidate the
+          server could reach:
         </p>
+        <CandidateChips hints={hints} selected={advertiseURL} onPick={(u) => setUrlDraft(u)} />
       </div>
       <Button type="submit" size="sm" disabled={start.isPending}>
         {start.isPending ? 'Starting…' : 'Make this the main node'}
@@ -181,11 +228,13 @@ function StartClusterForm() {
 function JoinClusterForm() {
   const [peerURL, setPeerURL] = useState('')
   const [token, setToken] = useState('')
-  const [advertiseAddr, setAdvertiseAddr] = useState('')
-  const [advertiseURL, setAdvertiseURL] = useState('')
+  const [addrDraft, setAddrDraft] = useState<string | null>(null)
+  const [urlDraft, setUrlDraft] = useState<string | null>(null)
   const [ack, setAck] = useState(false)
   const [joining, setJoining] = useState(false)
-  const ipv4 = useLocalIPv4()
+  const { data: hints } = useAdvertiseHints()
+  const advertiseAddr = addrDraft ?? hints?.raft_addr ?? ''
+  const advertiseURL = urlDraft ?? bestCandidateURL(hints)
   const aliveRef = useRef(true)
   const join = useJoinCluster()
   const navigate = useNavigate()
@@ -315,18 +364,18 @@ function JoinClusterForm() {
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1">
           <Label htmlFor="join-advertise-addr" className="text-xs">
-            Advertise address <span className="text-muted-foreground">(optional)</span>
+            Advertise address
           </Label>
           <Input
             id="join-advertise-addr"
-            placeholder={`auto — e.g. ${ipv4 || '10.0.0.3'}:7000`}
+            placeholder="10.0.0.3:7000"
             value={advertiseAddr}
-            onChange={(e) => setAdvertiseAddr(e.target.value)}
+            onChange={(e) => setAddrDraft(e.target.value)}
           />
           <p className={fieldHint}>
             THIS machine's <span className="font-mono">IP:port</span> the cluster will use to reach
-            it (Raft, port <span className="font-mono">7000</span>). Empty = the detected LAN IP
-            {ipv4 ? ` (${ipv4})` : ''}.
+            it. Pre-filled with the detected LAN IP; the Raft port{' '}
+            <span className="font-mono">7000</span> opens during the join.
           </p>
         </div>
         <div className="space-y-1">
@@ -335,14 +384,15 @@ function JoinClusterForm() {
           </Label>
           <Input
             id="join-advertise-url"
-            placeholder={`e.g. http://${ipv4 || '10.0.0.3'}:9090`}
+            placeholder="left empty — derived from the advertise address"
             value={advertiseURL}
-            onChange={(e) => setAdvertiseURL(e.target.value)}
+            onChange={(e) => setUrlDraft(e.target.value)}
           />
           <p className={fieldHint}>
-            THIS node's web address for peers (write forwarding). Empty = derived from the advertise
-            address.
+            THIS node's web address for peers (write forwarding). Pre-filled with the first
+            candidate the server could reach:
           </p>
+          <CandidateChips hints={hints} selected={advertiseURL} onPick={(u) => setUrlDraft(u)} />
         </div>
       </div>
 

@@ -697,6 +697,9 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		// handler requires an explicit acknowledge_data_loss flag).
 		authAPI.POST("/cluster/start", middleware.RequireAdmin(), setupHandler.AdminStartCluster)
 		authAPI.POST("/cluster/join", middleware.RequireAdmin(), setupHandler.AdminJoinCluster)
+		// Pre-fills the cluster-sync forms: detected LAN IP + TCP-probed
+		// advertise-URL candidates (incl. the browser origin via ?origin=).
+		authAPI.GET("/cluster/advertise-hints", middleware.RequireAdmin(), setupHandler.AdvertiseHints)
 
 		// Auto-update settings (admin). Toggle persists to .env.agent; "now"
 		// applies immediately (docker → controller pull+recreate; native → self-replace).

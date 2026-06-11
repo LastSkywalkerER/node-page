@@ -131,6 +131,19 @@ func (h *Handler) Status(c *gin.Context) {
 		// for diagnostics when the cluster fails to elect.
 		resp["raft_stats"] = stats
 	}
+	// Advertised HTTP URLs from the peer catalog: lets the UI attach a
+	// clickable address to each cluster node (matched to hosts by the IP in
+	// the voter's advertise addr).
+	if h.db != nil {
+		var rows []peerNodeAdvertise
+		if err := h.db.WithContext(c.Request.Context()).Find(&rows).Error; err == nil && len(rows) > 0 {
+			urls := make([]gin.H, 0, len(rows))
+			for _, r := range rows {
+				urls = append(urls, gin.H{"cluster_id": r.ClusterID, "node_id": r.NodeID, "url": r.URL})
+			}
+			resp["peer_urls"] = urls
+		}
+	}
 	c.JSON(http.StatusOK, resp)
 }
 
