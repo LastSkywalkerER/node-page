@@ -75,6 +75,7 @@ func (r *repository) Upsert(ctx context.Context, c *Connector) error {
 			"token_id":        c.TokenID,
 			"secret_enc":      c.SecretEnc,
 			"skip_tls_verify": c.SkipTLSVerify,
+			"config":          c.Config,
 			"enabled":         c.Enabled,
 			"updated_at":      time.Now(),
 		}).Error

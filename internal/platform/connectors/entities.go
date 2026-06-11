@@ -19,7 +19,13 @@ import "time"
 // Connector types.
 const (
 	TypeProxmox = "proxmox"
+	// TypePexels is the dynamic-wallpaper source (api.pexels.com). One per
+	// install, fingerprint PexelsFingerprint; the search query lives in Config.
+	TypePexels = "pexels"
 )
+
+// PexelsFingerprint is the fixed identity of the single Pexels connector.
+const PexelsFingerprint = "pexels"
 
 // Poller status values (local, non-replicated).
 const (
@@ -48,6 +54,10 @@ type Connector struct {
 	// Fingerprint is the connector-side cluster identity (e.g. PVE cluster
 	// name) — the cluster-wide dedup key.
 	Fingerprint string `json:"fingerprint" gorm:"uniqueIndex;not null"`
+
+	// Config carries type-specific non-secret settings as JSON
+	// (Pexels: {"query":"cyberpunk city"}).
+	Config string `json:"config,omitempty"`
 
 	Enabled bool `json:"enabled"`
 

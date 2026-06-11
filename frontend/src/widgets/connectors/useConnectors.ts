@@ -67,6 +67,24 @@ export function useCreateProxmox() {
   });
 }
 
+export function useSavePexels() {
+  const queryClient = useQueryClient();
+  return useMutation<Connector, Error, { api_key: string; query: string }>({
+    mutationFn: async (req) => {
+      try {
+        const { data } = await apiClient.post('/connectors/pexels', req);
+        return data.connector as Connector;
+      } catch (e) {
+        throw apiError(e);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['connectors'] });
+      queryClient.invalidateQueries({ queryKey: ['wallpaper'] });
+    },
+  });
+}
+
 export function useToggleConnector() {
   const queryClient = useQueryClient();
   return useMutation<Connector, Error, { id: number; enabled: boolean }>({

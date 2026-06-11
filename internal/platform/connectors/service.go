@@ -2,6 +2,7 @@ package connectors
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -18,6 +19,11 @@ import (
 // and injected via DI so this package stays free of API-client dependencies.
 type Prober interface {
 	Probe(ctx context.Context, endpoint, tokenID, secret string, skipTLSVerify bool) (*ProbeResult, error)
+}
+
+// PexelsProber validates a Pexels API key (internal/platform/wallpaper).
+type PexelsProber interface {
+	ProbeKey(ctx context.Context, apiKey string) error
 }
 
 // RaftReplicator is the subset of the raft replicator the connectors service
@@ -49,11 +55,20 @@ type ListResult struct {
 // the handler can answer 400 instead of 502.
 var ErrAuthFailed = errors.New("connector authentication failed")
 
+// PexelsRequest creates/updates the dynamic-wallpaper connector. An empty
+// APIKey on update keeps the stored secret (lets the admin change only the
+// query without re-pasting the key).
+type PexelsRequest struct {
+	APIKey string `json:"api_key"`
+	Query  string `json:"query"`
+}
+
 // Service is the admin-facing connector registry.
 type Service interface {
 	List(ctx context.Context) (*ListResult, error)
 	TestProxmox(ctx context.Context, req ConnectRequest) (*Preview, error)
 	CreateProxmox(ctx context.Context, req ConnectRequest) (*Connector, error)
+	SavePexels(ctx context.Context, req PexelsRequest) (*Connector, error)
 	SetEnabled(ctx context.Context, id uint, enabled bool) (*Connector, error)
 	Delete(ctx context.Context, id uint, removeHosts bool) error
 	// TriggerSync pokes the poller for an immediate resync (best-effort).
@@ -69,6 +84,7 @@ type service struct {
 	detector      *Detector
 	cipher        *Cipher
 	proxmoxProber Prober
+	pexelsProber  PexelsProber
 	raft          RaftReplicator
 
 	mu          sync.Mutex
@@ -76,7 +92,7 @@ type service struct {
 }
 
 // NewService wires the connector registry.
-func NewService(logger *log.Logger, repo Repository, hostRepo hosts.Repository, detector *Detector, cipher *Cipher, proxmoxProber Prober, raft RaftReplicator) Service {
+func NewService(logger *log.Logger, repo Repository, hostRepo hosts.Repository, detector *Detector, cipher *Cipher, proxmoxProber Prober, pexelsProber PexelsProber, raft RaftReplicator) Service {
 	return &service{
 		logger:        logger,
 		repo:          repo,
@@ -84,6 +100,7 @@ func NewService(logger *log.Logger, repo Repository, hostRepo hosts.Repository, 
 		detector:      detector,
 		cipher:        cipher,
 		proxmoxProber: proxmoxProber,
+		pexelsProber:  pexelsProber,
 		raft:          raft,
 	}
 }
@@ -172,6 +189,50 @@ func (s *service) CreateProxmox(ctx context.Context, req ConnectRequest) (*Conne
 	}
 	s.TriggerSync()
 	return s.repo.GetByFingerprint(ctx, conn.Fingerprint)
+}
+
+func (s *service) SavePexels(ctx context.Context, req PexelsRequest) (*Connector, error) {
+	query := strings.TrimSpace(req.Query)
+	if query == "" {
+		query = "abstract dark technology"
+	}
+	apiKey := strings.TrimSpace(req.APIKey)
+
+	var secretEnc []byte
+	if apiKey != "" {
+		if err := s.pexelsProber.ProbeKey(ctx, apiKey); err != nil {
+			return nil, err
+		}
+		enc, err := s.cipher.Encrypt(apiKey)
+		if err != nil {
+			return nil, err
+		}
+		secretEnc = enc
+	} else {
+		// Query-only update: keep the stored key.
+		existing, err := s.repo.GetByFingerprint(ctx, PexelsFingerprint)
+		if err != nil {
+			return nil, fmt.Errorf("an API key is required for the first setup")
+		}
+		secretEnc = existing.SecretEnc
+	}
+
+	cfg, err := json.Marshal(map[string]string{"query": query})
+	if err != nil {
+		return nil, err
+	}
+	conn := Connector{
+		Type:        TypePexels,
+		Endpoint:    "https://api.pexels.com",
+		SecretEnc:   secretEnc,
+		Fingerprint: PexelsFingerprint,
+		Config:      string(cfg),
+		Enabled:     true,
+	}
+	if err := s.persistUpsert(ctx, conn); err != nil {
+		return nil, err
+	}
+	return s.repo.GetByFingerprint(ctx, PexelsFingerprint)
 }
 
 func (s *service) SetEnabled(ctx context.Context, id uint, enabled bool) (*Connector, error) {

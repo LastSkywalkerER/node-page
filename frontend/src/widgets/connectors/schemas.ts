@@ -16,6 +16,8 @@ export const ConnectorSchema = z.object({
   token_id: z.string().optional().default(''),
   skip_tls_verify: z.boolean().optional().default(false),
   fingerprint: z.string(),
+  // Type-specific JSON settings (Pexels: {"query":"..."}).
+  config: z.string().optional().default(''),
   enabled: z.boolean().optional().default(false),
   status: z.string().optional().default(''),
   last_sync_at: z.string().optional().default(''),

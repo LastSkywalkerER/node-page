@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
-import { Plug, RefreshCw, Trash2, ShieldAlert } from 'lucide-react'
+import { Plug, RefreshCw, Trash2, ShieldAlert, Image as ImageIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -11,7 +11,8 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/shared/ui/switch'
 import { OSIcon } from '@/shared/components/OSIcon'
 import { cn } from '@/lib/utils'
-import { useConnectors, useTestProxmox, useCreateProxmox, useToggleConnector, useDeleteConnector, useSyncConnector } from './useConnectors'
+import { useConnectors, useTestProxmox, useCreateProxmox, useSavePexels, useToggleConnector, useDeleteConnector, useSyncConnector } from './useConnectors'
+import { useQueryClient } from '@tanstack/react-query'
 import type { Connector, ConnectorPreview, DiscoveredHint } from './schemas'
 
 function fmtSyncTime(iso: string): string {
@@ -286,15 +287,156 @@ function ConnectorRow({ connector }: { connector: Connector }) {
   )
 }
 
+const WALLPAPER_PRESETS = ['cyberpunk city', 'abstract dark', 'deep space', 'server room', 'mountains night', 'minimal architecture']
+
+function parsePexelsQuery(config: string): string {
+  try {
+    const q = (JSON.parse(config) as { query?: string })?.query
+    return typeof q === 'string' ? q : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Dynamic wallpaper connector (Pexels). The API key lives encrypted on the
+ * backend; browsers get photos through GET /wallpaper, rotating every 5 min
+ * and following the dark/light theme (dark mode requests black-toned photos).
+ */
+function WallpaperCard({ connector }: { connector?: Connector }) {
+  const save = useSavePexels()
+  const toggle = useToggleConnector()
+  const del = useDeleteConnector()
+  const queryClient = useQueryClient()
+  const [apiKey, setApiKey] = useState('')
+  // null = untouched → mirror the stored query once the connector loads.
+  const [queryDraft, setQueryDraft] = useState<string | null>(null)
+  const query = queryDraft ?? (connector ? parsePexelsQuery(connector.config) : 'cyberpunk city')
+
+  const onSave = () =>
+    save.mutate(
+      { api_key: apiKey.trim(), query: query.trim() },
+      {
+        onSuccess: () => {
+          setApiKey('')
+          toast.success('Wallpaper connected — the background refreshes within a few seconds')
+        },
+        onError: (e) => toast.error('Save failed: ' + e.message),
+      }
+    )
+
+  const refreshWallpaper = () => queryClient.invalidateQueries({ queryKey: ['wallpaper'] })
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 font-display text-lg tracking-wide">
+          <ImageIcon className="h-4 w-4 text-muted-foreground" /> Wallpaper
+        </CardTitle>
+        <CardDescription>
+          Rotate the dashboard background every 5 minutes with fresh 4K photos from Pexels. Without
+          a key the bundled art is used. Dark theme automatically asks for dark-toned photos.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3 pt-2">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="pexels-key">Pexels API key</Label>
+            <Input
+              id="pexels-key"
+              type="password"
+              placeholder={connector ? '•••••• (stored — leave empty to keep)' : '563492ad6f917…'}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Free at{' '}
+              <a href="https://www.pexels.com/api/" target="_blank" rel="noreferrer" className="underline hover:text-foreground">
+                pexels.com/api
+              </a>{' '}
+              — sign up, the key is shown instantly. It stays on the server, encrypted.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="pexels-query">Theme</Label>
+            <Input
+              id="pexels-query"
+              placeholder="cyberpunk city"
+              value={query}
+              onChange={(e) => setQueryDraft(e.target.value)}
+            />
+            <div className="flex flex-wrap gap-1">
+              {WALLPAPER_PRESETS.map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => setQueryDraft(p)}
+                  className={cn(
+                    'rounded border border-border/60 px-1.5 py-0.5 font-mono text-[10px] transition-colors',
+                    p === query ? 'bg-primary/15 text-primary border-primary/40' : 'text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <Button size="sm" disabled={save.isPending || (!connector && apiKey.trim() === '')} onClick={onSave}>
+            {save.isPending ? 'Checking key…' : connector ? 'Save' : 'Connect'}
+          </Button>
+          {connector && (
+            <>
+              <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+                <Switch
+                  checked={connector.enabled}
+                  disabled={toggle.isPending}
+                  onCheckedChange={(enabled) =>
+                    toggle.mutate(
+                      { id: connector.id, enabled },
+                      { onSuccess: refreshWallpaper, onError: (e) => toast.error('Toggle failed: ' + e.message) }
+                    )
+                  }
+                />
+                {connector.enabled ? 'On' : 'Off'}
+              </label>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 text-muted-foreground/60 hover:bg-destructive/10 hover:text-destructive"
+                disabled={del.isPending}
+                onClick={() => {
+                  if (!window.confirm('Remove the wallpaper connector? The bundled background returns.')) return
+                  del.mutate(
+                    { id: connector.id, removeHosts: false },
+                    { onSuccess: () => { refreshWallpaper(); toast.success('Wallpaper connector removed') } }
+                  )
+                }}
+                title="Remove wallpaper connector"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 export function ConnectorsTab() {
   const { data, isLoading } = useConnectors()
   const [formHint, setFormHint] = useState<DiscoveredHint | null>(null)
   const [formOpen, setFormOpen] = useState(false)
 
   const discovered = data?.discovered ?? []
-  const configured = data?.configured ?? []
+  const configured = (data?.configured ?? []).filter((c) => c.type !== 'pexels')
+  const pexels = (data?.configured ?? []).find((c) => c.type === 'pexels')
 
   return (
+    <div className="space-y-4">
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="font-display text-lg tracking-wide">Connectors</CardTitle>
@@ -357,5 +499,8 @@ export function ConnectorsTab() {
         )}
       </CardContent>
     </Card>
+
+    <WallpaperCard connector={pexels} />
+    </div>
   )
 }

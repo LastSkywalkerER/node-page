@@ -51,6 +51,7 @@ import (
 	platformstream "system-stats/internal/platform/stream"
 	system "system-stats/internal/platform/system"
 	"system-stats/internal/platform/update"
+	wallpaper "system-stats/internal/platform/wallpaper"
 	"system-stats/internal/webui"
 )
 
@@ -179,6 +180,8 @@ func Run() {
 	// credentials encrypted on one node decrypt on whichever node leads.
 	connCipher := connectors.NewCipher(cfg.JWTSecret)
 	connDetector := connectors.NewDetector(logger)
+	// PEXELS_API_BASE overrides the upstream (tests / corporate proxies).
+	pexelsClient := wallpaper.NewClient(os.Getenv("PEXELS_API_BASE"))
 	connectorsSvc := connectors.NewService(
 		logger,
 		container.GetConnectorRepository(),
@@ -186,8 +189,10 @@ func Run() {
 		connDetector,
 		connCipher,
 		proxmox.NewProber(),
+		pexelsClient,
 		container.GetRaftReplicator(),
 	)
+	wallpaperSvc := wallpaper.NewService(logger, container.GetConnectorRepository(), connCipher, pexelsClient)
 	pvePoller := proxmox.NewPoller(proxmox.PollerDeps{
 		Logger:     logger,
 		Connectors: container.GetConnectorRepository(),
@@ -370,7 +375,7 @@ func Run() {
 		go startMetrics()
 	}
 
-	router := setupRouter(container, startTime, logger, cfg, onSetupComplete, connectorsSvc)
+	router := setupRouter(container, startTime, logger, cfg, onSetupComplete, connectorsSvc, wallpaperSvc)
 
 	server := &http.Server{
 		Addr:         cfg.Addr,
@@ -413,7 +418,7 @@ func Run() {
 }
 
 // setupRouter configures the Gin router with all routes, middleware, and handlers.
-func setupRouter(container *di.Container, startTime time.Time, logger *log.Logger, cfg *config.Config, onSetupComplete func(), connectorsSvc connectors.Service) *gin.Engine {
+func setupRouter(container *di.Container, startTime time.Time, logger *log.Logger, cfg *config.Config, onSetupComplete func(), connectorsSvc connectors.Service, wallpaperSvc *wallpaper.Service) *gin.Engine {
 	router := gin.New()
 	// TrustedProxies controls whether X-Forwarded-* headers are honored.
 	// Empty list = trust none (ignore X-Forwarded-For/Host/Proto). Safe default.
@@ -473,6 +478,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	sensorsHandler := sensors.NewHandler(logger, container.GetSensorsService(), container.GetHostService())
 	hostHandler := hosts.NewHandler(logger, container.GetHostService())
 	connectorsHandler := connectors.NewHandler(logger, connectorsSvc)
+	wallpaperHandler := wallpaper.NewHandler(logger, wallpaperSvc)
 	healthHandler := health.NewHandler(logger, container.GetHealthService())
 	authHandler := users.NewAuthHandler(container.GetUserService(), container.GetTokenService(), cfg.CookieSecure)
 	usersHandler := users.NewUsersHandler(container.GetUserService())
@@ -656,9 +662,14 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.GET("/connectors", middleware.RequireAdmin(), connectorsHandler.HandleList)
 		authAPI.POST("/connectors", middleware.RequireAdmin(), connectorsHandler.HandleCreateProxmox)
 		authAPI.POST("/connectors/proxmox/test", middleware.RequireAdmin(), connectorsHandler.HandleTestProxmox)
+		authAPI.POST("/connectors/pexels", middleware.RequireAdmin(), connectorsHandler.HandleSavePexels)
 		authAPI.PATCH("/connectors/:id", middleware.RequireAdmin(), connectorsHandler.HandleUpdate)
 		authAPI.DELETE("/connectors/:id", middleware.RequireAdmin(), connectorsHandler.HandleDelete)
 		authAPI.POST("/connectors/:id/sync", middleware.RequireAdmin(), connectorsHandler.HandleSync)
+
+		// Dynamic wallpaper (any signed-in user): proxies the Pexels connector
+		// so the API key never reaches the browser.
+		authAPI.GET("/wallpaper", wallpaperHandler.HandleCurrent)
 
 		// Raft cluster status (admin) — surfaces leader, peers, indices, RTTs
 		authAPI.GET("/raft/status", middleware.RequireAdmin(), raftHandler.Status)

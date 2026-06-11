@@ -90,6 +90,31 @@ func (h *Handler) HandleCreateProxmox(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"connector": conn})
 }
 
+// HandleSavePexels validates and persists the dynamic-wallpaper connector.
+//
+// @Summary     Save the Pexels wallpaper connector
+// @Description Validates the API key against api.pexels.com, encrypts it and saves the connector (one per install; re-saving updates key/query; empty key keeps the stored one). Admin only.
+// @Tags        connectors
+// @Accept      json
+// @Produce     json
+// @Success     200 {object} map[string]interface{}
+// @Failure     400 {object} map[string]string
+// @Security    BearerAuth
+// @Router      /connectors/pexels [post]
+func (h *Handler) HandleSavePexels(c *gin.Context) {
+	var req PexelsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "invalid request body"})
+		return
+	}
+	conn, err := h.service.SavePexels(c.Request.Context(), req)
+	if err != nil {
+		h.respondProbeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"connector": conn})
+}
+
 // HandleUpdate toggles a connector on/off.
 //
 // @Summary     Enable/disable a connector

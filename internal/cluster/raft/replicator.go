@@ -92,6 +92,7 @@ func (r *Replicator) SubmitConnectorUpsert(ctx context.Context, c connectors.Con
 		SecretEnc:     c.SecretEnc,
 		SkipTLSVerify: c.SkipTLSVerify,
 		Fingerprint:   c.Fingerprint,
+		Config:        c.Config,
 		Enabled:       c.Enabled,
 	}, 5*time.Second)
 	return err

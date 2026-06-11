@@ -167,6 +167,7 @@ func (a *appliers) applyConnectorUpsert(cmd Command, _ *hraft.Log) error {
 		SecretEnc:     p.SecretEnc,
 		SkipTLSVerify: p.SkipTLSVerify,
 		Fingerprint:   p.Fingerprint,
+		Config:        p.Config,
 		Enabled:       p.Enabled,
 	})
 }

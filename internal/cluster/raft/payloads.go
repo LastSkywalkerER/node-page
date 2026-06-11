@@ -50,6 +50,7 @@ type ConnectorUpsertPayload struct {
 	SecretEnc     []byte `json:"secret_enc"`
 	SkipTLSVerify bool   `json:"skip_tls_verify"`
 	Fingerprint   string `json:"fingerprint"`
+	Config        string `json:"config,omitempty"`
 	Enabled       bool   `json:"enabled"`
 }
 

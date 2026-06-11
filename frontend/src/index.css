@@ -201,6 +201,18 @@ html.dark .cyber-bg-photo-light {
   visibility: hidden;
 }
 
+/* Dynamic (Pexels) wallpaper: tuned like the bundled art so the glass UI
+   keeps its contrast in both themes. */
+.cyber-bg-photo-dynamic {
+  opacity: 0.32;
+  mix-blend-mode: multiply;
+}
+
+html.dark .cyber-bg-photo-dynamic {
+  opacity: 0.52;
+  mix-blend-mode: normal;
+}
+
 .cyber-bg-photo-dark {
   opacity: 0;
   visibility: hidden;
