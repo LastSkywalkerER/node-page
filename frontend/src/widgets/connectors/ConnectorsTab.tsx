@@ -296,11 +296,11 @@ export function ConnectorsTab() {
                 }}
               />
             ) : (
-              discovered.length === 0 && (
-                <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setFormOpen(true)}>
-                  <Plug className="h-3.5 w-3.5" /> Connect Proxmox manually
-                </Button>
-              )
+              // Always available: several independent Proxmoxes can be added
+              // side by side; each becomes its own entry in the list below.
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setFormOpen(true)}>
+                <Plug className="h-3.5 w-3.5" /> Add Proxmox connector
+              </Button>
             )}
 
             {configured.length > 0 && (

@@ -250,8 +250,13 @@ matching by UUID (VMs) covers most of these.
 
 ## 7. Connector dedup across instances
 
-Connector identity = **fingerprint** from `/cluster/status` (PVE cluster name, or for
-single nodes the node name + node ID). Unique index on the column.
+Connector identity = **fingerprint** from `/cluster/status`: the PVE cluster name
+(`cluster/<name>`), or for a standalone node the node name **qualified by the
+endpoint host** (`node/<name>@<host:port>`) — every default install is named
+"pve", and several independent Proxmoxes must coexist as separate connectors
+(the Connectors tab is a plain list; "Add Proxmox connector" is always
+available). Re-connecting the *same* fingerprint updates credentials in place.
+Unique index on the column.
 
 - **Several node-stats guests in one Raft cluster:** the connector row replicates;
   configuring it once is enough; the hint disappears everywhere (`configured` match by

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
+	"strings"
 
 	connectors "system-stats/internal/platform/connectors"
 )
@@ -35,6 +37,16 @@ func (p *Prober) Probe(ctx context.Context, endpoint, tokenID, secret string, sk
 		return nil, fmt.Errorf("proxmox: /cluster/status returned no node — token lacks Sys.Audit?")
 	}
 	clusterName := fingerprint
+	// A PVE *cluster* name identifies the whole cluster no matter which node's
+	// endpoint the admin entered, so it stays as-is (re-connecting via another
+	// node updates the same connector). A *standalone* node is named "pve" on
+	// every default install — qualify it with the endpoint host so several
+	// independent Proxmoxes can be added side by side without colliding.
+	if strings.HasPrefix(fingerprint, "node/") {
+		if u, uerr := url.Parse(strings.TrimRight(strings.TrimSpace(endpoint), "/")); uerr == nil && u.Host != "" {
+			fingerprint += "@" + u.Host
+		}
+	}
 	resources, err := client.ClusterResources(ctx)
 	if err != nil {
 		return nil, wrapAuth(err)
