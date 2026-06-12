@@ -244,6 +244,21 @@ func (r *Replicator) BackfillLocalHosts(ctx context.Context, hostRepo hosts.Repo
 			})
 		} else {
 			err = r.SubmitHostUpsert(ctx, info)
+			// Agent rows that gained topology (agent+connector — e.g. a node
+			// self-linked to its own PVE guest) must re-ship it too: the
+			// connector poller publishes topology only when it CHANGES, so a
+			// peer that missed that one event (uplink hub enrolled later, or
+			// entries dropped during an outage) would keep this host detached
+			// from its hypervisor forever.
+			if err == nil && h.ExternalID != "" {
+				err = r.SubmitConnectorHostUpsert(ctx, hosts.ConnectorHostInfo{
+					HostInfo:    info,
+					HostType:    h.HostType,
+					ParentMAC:   h.ParentMAC,
+					ExternalID:  h.ExternalID,
+					GuestStatus: h.GuestStatus,
+				})
+			}
 		}
 		if err != nil {
 			return count, err

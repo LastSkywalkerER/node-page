@@ -103,7 +103,7 @@ export function ApplicationDetailPage() {
     <div className="mx-auto max-w-5xl px-4 py-6">
       {/* Header */}
       <div className="mb-5 flex items-start gap-4">
-        <AppIcon slug={app.icon_slug} publicUrl={app.public_url} name={app.display_name} className="h-12 w-12 shrink-0 rounded-lg" />
+        <AppIcon slug={app.icon_slug} altSlug={app.project} publicUrl={app.public_url} name={app.display_name} className="h-12 w-12 shrink-0 rounded-lg" />
         <div className="min-w-0 flex-1">
           <h1 className="truncate font-display text-2xl font-semibold tracking-wide">{app.display_name}</h1>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">

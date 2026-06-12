@@ -68,6 +68,7 @@ export function ApplicationTile({ app, hostId, hostIPv4 }: ApplicationTileProps)
       <div className="flex items-start gap-3">
         <AppIcon
           slug={app.icon_slug}
+          altSlug={app.project}
           publicUrl={app.public_url}
           name={app.display_name}
           className="h-10 w-10 shrink-0 rounded-md"

@@ -34,15 +34,26 @@ function faviconCandidates(publicUrl: string | undefined | null): string[] {
  * When `publicUrl` is given, the app's favicon is appended as a final fallback,
  * so a self-hosted app with no registry-icon match still shows its own icon.
  */
-export function iconCandidates(raw: string | undefined | null, publicUrl?: string | null): string[] {
+export function iconCandidates(
+  raw: string | undefined | null,
+  publicUrl?: string | null,
+  altSlug?: string | null
+): string[] {
   const v = (raw ?? '').trim();
+  const alt = (altSlug ?? '').trim();
   const fav = faviconCandidates(publicUrl);
+  // Compose project names ("netbird", "crafty") often resolve when the
+  // image-derived slug ("dashboard", "crafty-4") does not — try both.
+  const altCandidates =
+    alt && alt.toLowerCase() !== v.toLowerCase()
+      ? [`/api/v1/app-icons/${encodeURIComponent(alt)}`]
+      : [];
 
-  if (!v) return fav;
+  if (!v) return [...altCandidates, ...fav];
 
   if (v.startsWith('http://') || v.startsWith('https://') || v.startsWith('/')) {
-    return [v, ...fav];
+    return [v, ...altCandidates, ...fav];
   }
 
-  return [`/api/v1/app-icons/${encodeURIComponent(v)}`, ...fav];
+  return [`/api/v1/app-icons/${encodeURIComponent(v)}`, ...altCandidates, ...fav];
 }

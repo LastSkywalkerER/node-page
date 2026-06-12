@@ -559,6 +559,15 @@ func resolveAppIcon(containers []DockerContainer) string {
 			}
 		}
 	}
+	// Dashboard-style icon labels (CasaOS, homepage, ...) carry a ready-to-use
+	// URL - far better than guessing a slug from the image name.
+	for _, c := range containers {
+		if c.Labels != nil {
+			if v := strings.TrimSpace(c.Labels["icon"]); strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
+				return v
+			}
+		}
+	}
 	idx := pickMainContainerIndex(containers)
 	if idx < 0 {
 		return ""

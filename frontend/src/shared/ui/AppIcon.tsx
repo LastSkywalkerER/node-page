@@ -5,6 +5,8 @@ import { cn } from '@/lib/utils';
 
 interface AppIconProps {
   slug?: string | null;
+  /** Alternative slug (e.g. the compose project name) tried after `slug`. */
+  altSlug?: string | null;
   /** App public URL — its favicon is used as a final fallback when no icon matches. */
   publicUrl?: string | null;
   name?: string;
@@ -15,14 +17,14 @@ interface AppIconProps {
  * Renders an application's icon from CDN candidates, cascading through fallbacks
  * on load error and ending at a generic placeholder.
  */
-export function AppIcon({ slug, publicUrl, name, className }: AppIconProps) {
-  const candidates = iconCandidates(slug, publicUrl);
+export function AppIcon({ slug, altSlug, publicUrl, name, className }: AppIconProps) {
+  const candidates = iconCandidates(slug, publicUrl, altSlug);
   const [idx, setIdx] = useState(0);
 
   // Reset the candidate index whenever the icon inputs change.
   useEffect(() => {
     setIdx(0);
-  }, [slug, publicUrl]);
+  }, [slug, altSlug, publicUrl]);
 
   const src = candidates[idx];
 

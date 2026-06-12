@@ -65,8 +65,10 @@ COPY --from=backend-builder /app/server .
 # Expose port
 EXPOSE 8080
 
+# Follow ADDR (compose sets :9090; bare image defaults to :8080) - a fixed
+# port left every containerized deployment permanently "(unhealthy)".
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD wget -qO- http://localhost:8080/api/v1/health || exit 1
+  CMD sh -c 'p="${ADDR:-:8080}"; wget -qO- "http://localhost:${p##*:}/api/v1/health" || exit 1'
 
 # ENTRYPOINT so subcommands compose cleanly: `docker run <img>` → server,
 # `docker run <img> controller` / compose `command: ["controller"]` → the
