@@ -1,0 +1,20 @@
+# Dokploy template config for node-stats: generates every secret at create
+# time and wires the domain, so the app deploys fully configured — the setup
+# wizard only asks for the admin account.
+[variables]
+main_domain = "${domain}"
+db_password = "${password:32}"
+jwt_secret = "${base64:64}"
+refresh_secret = "${base64:64}"
+
+[config]
+env = [
+  "DB_PASSWORD=${db_password}",
+  "JWT_SECRET=${jwt_secret}",
+  "REFRESH_SECRET=${refresh_secret}",
+]
+
+[[config.domains]]
+serviceName = "node-stats"
+port = 9090
+host = "${main_domain}"
