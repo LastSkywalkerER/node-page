@@ -19,3 +19,5 @@ node_modules
 **/__pycache__
 # Claude Code local runtime artifacts
 .claude/
+# TypeScript incremental build state (tsc -b)
+*.tsbuildinfo
