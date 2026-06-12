@@ -1,7 +1,9 @@
 package wallpaper
 
 import (
+	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/gin-gonic/gin"
@@ -37,8 +39,17 @@ func (h *Handler) HandleCurrent(c *gin.Context) {
 		return
 	}
 	if w == nil {
+		// Re-check occasionally: the operator may connect Pexels any minute.
+		c.Header("Cache-Control", "private, max-age=60")
 		c.Status(http.StatusNoContent)
 		return
 	}
+	// The rotation bucket is wall-clock aligned (unix/300): every client may
+	// cache the answer until the next 5-minute boundary — repeated mounts,
+	// extra tabs and the periodic refetch all hit the browser cache instead
+	// of this endpoint (and the image itself comes from the Pexels CDN, the
+	// API key is only spent on the hourly server-side search).
+	untilNextBucket := 300 - time.Now().Unix()%300
+	c.Header("Cache-Control", fmt.Sprintf("private, max-age=%d", untilNextBucket))
 	c.JSON(http.StatusOK, gin.H{"data": w})
 }

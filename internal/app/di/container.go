@@ -106,6 +106,16 @@ type Container struct {
 	postActivate func()
 }
 
+// envDuration reads a Go duration from env with a default.
+func envDuration(key string, def time.Duration) time.Duration {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return def
+}
+
 // SetPostActivateHook registers a callback fired after every successful
 // ActivateRaft call. Safe to call multiple times; the latest hook wins.
 func (c *Container) SetPostActivateHook(fn func()) {
@@ -168,8 +178,10 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 		container.refreshTokenRepository,
 		jwtSecret,
 		refreshSecret,
-		15*time.Minute,
-		720*time.Hour,
+		// Self-hosted dashboard: favour long sessions. Overridable via
+		// AUTH_ACCESS_TTL / AUTH_REFRESH_TTL (Go durations, e.g. "30m", "720h").
+		envDuration("AUTH_ACCESS_TTL", time.Hour),
+		envDuration("AUTH_REFRESH_TTL", 90*24*time.Hour),
 	)
 	container.invRepository = invitations.NewRepository(db)
 	container.invService = invitations.NewService(logger, container.invRepository)

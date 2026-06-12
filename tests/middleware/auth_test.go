@@ -53,6 +53,9 @@ func (m *mockTokenServiceForAuth) ConsumeRefreshToken(_ context.Context, _ strin
 	return true, nil
 }
 func (m *mockTokenServiceForAuth) RevokeAllUserTokens(_ context.Context, _ uint) error { return nil }
+func (m *mockTokenServiceForAuth) AccessTokenTTL() time.Duration  { return 15 * time.Minute }
+func (m *mockTokenServiceForAuth) RefreshTokenTTL() time.Duration { return 720 * time.Hour }
+
 func (m *mockTokenServiceForAuth) SetSecrets(_ string, _ string)                        {}
 
 var _ users.TokenService = (*mockTokenServiceForAuth)(nil)

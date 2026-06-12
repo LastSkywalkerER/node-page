@@ -91,6 +91,9 @@ func (m *mockTokenService) RevokeAllUserTokens(_ context.Context, _ uint) error 
 	m.revokeAllCalled = true
 	return m.revokeAllErr
 }
+func (m *mockTokenService) AccessTokenTTL() time.Duration  { return 15 * time.Minute }
+func (m *mockTokenService) RefreshTokenTTL() time.Duration { return 720 * time.Hour }
+
 func (m *mockTokenService) SetSecrets(_ string, _ string) {}
 
 var _ users.TokenService = (*mockTokenService)(nil)

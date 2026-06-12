@@ -315,6 +315,10 @@ type TokenService interface {
 	// Tokens minted before the swap will fail validation; callers should
 	// only swap when no live sessions are expected (joining flow).
 	SetSecrets(accessSecret, refreshSecret string)
+	// AccessTokenTTL / RefreshTokenTTL expose the configured lifetimes so
+	// cookie Max-Age always matches the tokens instead of hardcoded values.
+	AccessTokenTTL() time.Duration
+	RefreshTokenTTL() time.Duration
 }
 
 type tokenService struct {
@@ -521,6 +525,9 @@ func (s *tokenService) RevokeRefreshToken(ctx context.Context, jti string) error
 
 // ConsumeRefreshToken atomically revokes a refresh token and reports whether this call won the race.
 // Use this in /auth/refresh to ensure exactly one concurrent request can mint new tokens.
+func (s *tokenService) AccessTokenTTL() time.Duration  { return s.accessTTL }
+func (s *tokenService) RefreshTokenTTL() time.Duration { return s.refreshTTL }
+
 func (s *tokenService) ConsumeRefreshToken(ctx context.Context, jti string) (bool, error) {
 	return s.refreshTokenRepo.ConsumeByJTI(ctx, jti)
 }

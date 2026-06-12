@@ -1,6 +1,7 @@
 package users
 
 import (
+	"time"
 	"errors"
 	"net/http"
 
@@ -64,10 +65,18 @@ type UserResponse struct {
 
 func (h *AuthHandler) setAuthCookies(c *gin.Context, accessToken, refreshToken string, expiresIn int64) {
 	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie("access_token", accessToken, int(15*60), "/", "", h.cookieSecure, true)
+	c.SetCookie("access_token", accessToken, int(h.tokenService.AccessTokenTTL().Seconds()), "/", "", h.cookieSecure, true)
 	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie("refresh_token", refreshToken, int(30*24*3600), "/api/v1/auth", "", h.cookieSecure, true)
+	c.SetCookie("refresh_token", refreshToken, int(h.tokenService.RefreshTokenTTL().Seconds()), "/api/v1/auth", "", h.cookieSecure, true)
 }
+
+// refreshGraceWindow tolerates the multi-tab rotation race: cookies are
+// shared browser-wide, every open tab arms its own proactive refresh timer,
+// and they fire within the same second — the losers arrive with the token
+// the winner just rotated. Within this window that's a benign race (the
+// strict single-use 401 used to clear cookies and log out the WHOLE
+// browser); outside it, single-use stays enforced against real replays.
+const refreshGraceWindow = 60 * time.Second
 
 func (h *AuthHandler) clearAuthCookies(c *gin.Context) {
 	c.SetSameSite(http.SameSiteLaxMode)
@@ -241,6 +250,16 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 		return
 	}
 	if !consumed {
+		// Re-read: our pre-consume copy has a stale RevokedAt.
+		if fresh, ferr := h.tokenService.ValidateRefreshToken(c.Request.Context(), refreshToken); ferr == nil &&
+			fresh.RevokedAt != nil && time.Since(*fresh.RevokedAt) <= refreshGraceWindow {
+			tokenPair, gerr := h.tokenService.GenerateTokens(c.Request.Context(), &fresh.User)
+			if gerr == nil {
+				h.setAuthCookies(c, tokenPair.AccessToken, tokenPair.RefreshToken, tokenPair.ExpiresIn)
+				c.JSON(http.StatusOK, gin.H{"data": gin.H{"expires_in": tokenPair.ExpiresIn}})
+				return
+			}
+		}
 		h.clearAuthCookies(c)
 		log.Warn("Refresh token replay or concurrent reuse", "user_id", dbToken.UserID, "jti", dbToken.JTI, "ip", c.ClientIP())
 		_ = c.Error(apperror.Unauthorized("token_already_used", "Refresh token already used"))
