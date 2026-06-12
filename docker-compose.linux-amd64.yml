@@ -1,7 +1,12 @@
-# Linux amd64 for Dokploy / Traefik: do NOT use network_mode: host here — Dokploy injects
+# Linux amd64 for Dokploy / Traefik: do NOT use network_mode: host here - Dokploy injects
 # `networks:` and Traefik labels; host + networks is invalid in Compose.
-# Metrics still use /host, pid: host, ipc: host. Traefik → container:9090 (or file provider to host IP).
+# Metrics still use /host, pid: host, ipc: host. Traefik -> container:9090 (or file provider to host IP).
 #   docker compose -f docker-compose.linux-amd64.yml --env-file .env up -d --build
+#
+# All mutable state (runtime .env with RAFT_*/secrets, SQLite DB, Raft log)
+# lives in the named volume: dokploy re-clones the compose project on every
+# redeploy, so relative bind mounts (./.env, ./data) would be wiped each time
+# and the node would forget its cluster + uplink configuration.
 services:
   node-stats:
     platform: linux/amd64
@@ -10,8 +15,7 @@ services:
       dockerfile: Dockerfile
     # network_mode: host
     volumes:
-      - ./.env:/app/.env
-      - ./data/docker:/app/data
+      - node-stats-data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /:/host:ro
     pid: host
@@ -21,8 +25,13 @@ services:
     restart: unless-stopped
     environment:
       - ADDR=:9090
-      
+      # Keep the runtime .env inside the persistent volume (see header).
+      - NODE_STATS_ENV_FILE=/app/data/.env
+
       - HOST_PROC=/host/proc
       - HOST_SYS=/host/sys
       - HOST_ETC=/host/etc
       - HOST_ROOT=/host
+
+volumes:
+  node-stats-data:

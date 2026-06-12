@@ -103,12 +103,24 @@ type RaftBridgeConfig struct {
 	Mode string // RAFT_BRIDGE_MODE
 }
 
+// EnvFilePath resolves where the runtime .env lives. NODE_STATS_ENV_FILE
+// overrides the default working-dir ./.env — orchestrators that re-clone the
+// compose project on every redeploy (dokploy & co.) wipe a bind-mounted
+// ./.env, so deployments there keep it inside the persistent data volume
+// (e.g. /app/data/.env) instead.
+func EnvFilePath() string {
+	if p := strings.TrimSpace(os.Getenv("NODE_STATS_ENV_FILE")); p != "" {
+		return p
+	}
+	return ".env"
+}
+
 // Load loads application configuration from environment variables.
 // It first attempts to load a .env file if it exists, then reads all configuration
 // from environment variables with appropriate defaults.
 func Load() (*Config, error) {
 	// Load .env file if it exists (ignore error if file doesn't exist)
-	_ = godotenv.Load()
+	_ = godotenv.Load(EnvFilePath())
 	applyHostProcFromBindMount()
 
 	config := &Config{}

@@ -130,6 +130,7 @@ All metric endpoints accept `?hours=<float>` (default `0.0833` ≈ 5 min) and `?
 | `AUTO_UPDATE` | `false` | Check GitHub Releases and apply updates (docker → controller pull+recreate; native → self-replace). Persisted to `.env.agent` by the in-app toggle. |
 | `NODE_STATS_REPO` | `LastSkywalkerER/node-page` | GitHub `owner/name` polled for releases. |
 | `NODE_STATS_DATA_DIR` | `/app/data` | Shared data dir holding `desired-state.json` / `controller-status.json` (app↔controller). |
+| `NODE_STATS_ENV_FILE` | `./.env` | Runtime `.env` location (read + wizard/bridge writes). Dokploy-style orchestrators re-clone the compose project on redeploy, wiping relative bind mounts — their compose variants point this at `/app/data/.env` inside the persistent named volume. |
 | `NODE_STATS_MANAGED_EXTERNALLY` | `false` | When true (or `TRAEFIK_DYNAMIC_DIR` set, or `/etc/dokploy` present), disables controller compose mutation — the orchestrator owns the lifecycle. |
 | `NODE_STATS_APP_PREFIX_GROUPING` | `true` | Applications view fallback: merge apps sharing a common dash/underscore name prefix into one (e.g. Dokploy's `node-stats-app-…`/`-db-…`/`-compose-…` → `node-stats`). Set `false`/`0`/`off` to disable. No-op for distinctly-named projects. |
 

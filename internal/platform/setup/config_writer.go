@@ -18,6 +18,12 @@ type ConfigWriter struct {
 
 // NewConfigWriter creates a new config writer instance
 func NewConfigWriter() *ConfigWriter {
+	// NODE_STATS_ENV_FILE relocates the runtime .env (e.g. into the
+	// persistent data volume on orchestrators that re-clone the compose
+	// project every redeploy) — keep reads and writes on the same file.
+	if p := strings.TrimSpace(os.Getenv("NODE_STATS_ENV_FILE")); p != "" {
+		return &ConfigWriter{envPath: p}
+	}
 	// Get current working directory
 	wd, err := os.Getwd()
 	if err != nil {
@@ -350,6 +356,11 @@ func (cw *ConfigWriter) WriteConfigFile(config *ConfigValues) error {
 	content, err := cw.FormatEnvFile(config)
 	if err != nil {
 		return err
+	}
+	// A relocated env file (NODE_STATS_ENV_FILE) may live in a directory
+	// that doesn't exist yet on the very first boot.
+	if dir := filepath.Dir(cw.envPath); dir != "." && dir != "" {
+		_ = os.MkdirAll(dir, 0o755)
 	}
 	if err := os.WriteFile(cw.envPath, []byte(content), 0600); err != nil {
 		return fmt.Errorf("failed to write .env file: %w", err)
