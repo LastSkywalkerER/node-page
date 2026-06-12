@@ -68,7 +68,9 @@ func NewPicker(logger *log.Logger, db *gorm.DB, myClusterID string, seeds []stri
 		logger:     logger,
 		db:         db,
 		myCluster:  myClusterID,
-		httpClient: &http.Client{Timeout: 3 * time.Second},
+		// Generous: a hub busy applying batches can take seconds to answer
+		// ping; a timeout here used to mark it unhealthy and stall shipping.
+		httpClient: &http.Client{Timeout: 10 * time.Second},
 		probeEvery: 30 * time.Second,
 		seeds:      clean,
 		ownURL:     own,
@@ -236,14 +238,21 @@ func (p *Picker) Snapshot() []Sample {
 // known. peerClusterID restricts the search to a specific peer cluster;
 // pass "" to consider any cluster other than ours.
 func (p *Picker) Pick(peerClusterID string) string {
+	fallback := ""
 	for _, s := range p.Snapshot() {
-		if !s.Healthy {
-			continue
-		}
 		if peerClusterID != "" && s.ClusterID != peerClusterID {
 			continue
 		}
-		return s.URL
+		if s.Healthy {
+			return s.URL
+		}
+		if fallback == "" {
+			fallback = s.URL
+		}
 	}
-	return ""
+	// No healthy sample - try the best-known candidate anyway instead of
+	// stalling the uplink: one flapped probe (busy hub) used to freeze
+	// shipping for a whole probe cycle. The ship attempt itself surfaces
+	// the real error, and the reconcile-on-recovery heals any gap.
+	return fallback
 }

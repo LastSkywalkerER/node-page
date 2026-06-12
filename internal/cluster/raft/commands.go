@@ -52,6 +52,11 @@ const (
 
 	// Bridge bookkeeping
 	CmdBridgeAck CommandType = 60
+	// CmdBridgeEnvelopeBatch wraps N bridge-delivered commands into ONE raft
+	// log entry: the receiver used to submit every envelope separately, i.e.
+	// one fsync'd consensus round per metric tick per host — the dominant
+	// resource cost of a busy hub / two-way pair.
+	CmdBridgeEnvelopeBatch CommandType = 61
 
 	// Bootstrap / join
 	CmdJoinTokenIssue   CommandType = 70

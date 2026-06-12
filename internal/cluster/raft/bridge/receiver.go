@@ -105,7 +105,11 @@ func (r *Receiver) Handle(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	var applied, deduped, skipped int
+	// Filter + dedupe first, then submit the survivors as ONE raft entry:
+	// per-envelope SubmitCommand meant one fsync'd consensus round per
+	// metric tick per host - the dominant resource cost of a busy hub.
+	var deduped, skipped int
+	fresh := make([]raftcluster.BridgeEnvelope, 0, len(batch.Entries))
 	for _, env := range batch.Entries {
 		if r.uplinkOnly && !uplinkTypes[env.Type] {
 			skipped++
@@ -120,27 +124,43 @@ func (r *Receiver) Handle(c *gin.Context) {
 			deduped++
 			continue
 		}
-		cmd := raftcluster.Command{
+		fresh = append(fresh, raftcluster.BridgeEnvelope{
 			Type:            env.Type,
 			OriginClusterID: env.OriginClusterID,
 			OriginNodeID:    env.OriginNodeID,
 			OriginIndex:     env.OriginIndex,
 			Timestamp:       env.Timestamp,
 			Payload:         env.Payload,
+		})
+	}
+	if len(fresh) > 0 {
+		// The wrapper carries the SENDER's cluster id so a 'both'-mode peer
+		// never ships it back (loop prevention sees a foreign origin).
+		cmd := raftcluster.Command{
+			Type:            raftcluster.CmdBridgeEnvelopeBatch,
+			OriginClusterID: sender,
+			Timestamp:       time.Now().UTC(),
 		}
-		if _, err := r.svc.SubmitCommand(ctx, cmd, 5*time.Second); err != nil {
+		payload, err := json.Marshal(raftcluster.BridgeEnvelopeBatchPayload{Entries: fresh})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "encode batch: " + err.Error()})
+			return
+		}
+		cmd.Payload = payload
+		if _, err := r.svc.SubmitCommand(ctx, cmd, 30*time.Second); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "submit: " + err.Error()})
 			return
 		}
-		if err := MarkApplied(ctx, r.db, env.OriginClusterID, env.OriginNodeID, env.OriginIndex); err != nil {
-			if r.logger != nil {
-				r.logger.Warn("bridge: MarkApplied failed", "error", err)
+		for _, env := range fresh {
+			if err := MarkApplied(ctx, r.db, env.OriginClusterID, env.OriginNodeID, env.OriginIndex); err != nil {
+				if r.logger != nil {
+					r.logger.Warn("bridge: MarkApplied failed", "error", err)
+				}
 			}
 		}
-		applied++
 	}
 	r.maybePrune(ctx)
-	c.JSON(http.StatusOK, gin.H{"applied": applied, "deduped": deduped, "skipped": skipped})
+	c.JSON(http.StatusOK, gin.H{"applied": len(fresh), "deduped": deduped, "skipped": skipped})
 }
 
 // maybePrune trims applied_remote_log at most once an hour. The table exists

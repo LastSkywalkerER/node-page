@@ -55,36 +55,81 @@ func RegisterAppliers(fsm *FSM, deps AppliersDeps) {
 	if fsm == nil {
 		return
 	}
-	a := &appliers{deps: deps}
+	a := &appliers{deps: deps, dispatch: map[CommandType]CommandApplier{}}
 
-	fsm.Register(CmdHostUpsert, a.applyHostUpsert)
-	fsm.Register(CmdHostDelete, a.applyHostDelete)
-	fsm.Register(CmdHostLastSeen, a.applyHostLastSeen)
-	fsm.Register(CmdConnectorHostUpsert, a.applyConnectorHostUpsert)
+	// register wires the applier into the FSM and the local dispatch map so
+	// applyBridgeEnvelopeBatch can fan a wrapped batch out to the same
+	// handlers without a second consensus round.
+	register := func(t CommandType, fn CommandApplier) {
+		a.dispatch[t] = fn
+		fsm.Register(t, fn)
+	}
 
-	fsm.Register(CmdConnectorUpsert, a.applyConnectorUpsert)
-	fsm.Register(CmdConnectorDelete, a.applyConnectorDelete)
+	register(CmdHostUpsert, a.applyHostUpsert)
+	register(CmdHostDelete, a.applyHostDelete)
+	register(CmdHostLastSeen, a.applyHostLastSeen)
+	register(CmdConnectorHostUpsert, a.applyConnectorHostUpsert)
 
-	fsm.Register(CmdMetricBatch, a.applyMetricBatch)
+	register(CmdConnectorUpsert, a.applyConnectorUpsert)
+	register(CmdConnectorDelete, a.applyConnectorDelete)
 
-	fsm.Register(CmdUserUpsert, a.applyUserUpsert)
-	fsm.Register(CmdUserDelete, a.applyUserDelete)
-	fsm.Register(CmdRefreshTokenIssue, a.applyRefreshTokenIssue)
-	fsm.Register(CmdRefreshTokenRevoke, a.applyRefreshTokenRevoke)
+	register(CmdMetricBatch, a.applyMetricBatch)
 
-	fsm.Register(CmdAuthSecretSet, a.applyAuthSecretSet)
-	fsm.Register(CmdConfigSet, a.applyConfigSet)
-	fsm.Register(CmdPeerNodeAdvertise, a.applyPeerNodeAdvertise)
-	fsm.Register(CmdPeerNodeRemove, a.applyPeerNodeRemove)
+	register(CmdUserUpsert, a.applyUserUpsert)
+	register(CmdUserDelete, a.applyUserDelete)
+	register(CmdRefreshTokenIssue, a.applyRefreshTokenIssue)
+	register(CmdRefreshTokenRevoke, a.applyRefreshTokenRevoke)
 
-	fsm.Register(CmdJoinTokenIssue, a.applyJoinTokenIssue)
-	fsm.Register(CmdJoinTokenConsume, a.applyJoinTokenConsume)
+	register(CmdAuthSecretSet, a.applyAuthSecretSet)
+	register(CmdConfigSet, a.applyConfigSet)
+	register(CmdPeerNodeAdvertise, a.applyPeerNodeAdvertise)
+	register(CmdPeerNodeRemove, a.applyPeerNodeRemove)
 
-	fsm.Register(CmdBridgeAck, a.applyBridgeAck)
+	register(CmdJoinTokenIssue, a.applyJoinTokenIssue)
+	register(CmdJoinTokenConsume, a.applyJoinTokenConsume)
+
+	register(CmdBridgeAck, a.applyBridgeAck)
+	fsm.Register(CmdBridgeEnvelopeBatch, a.applyBridgeEnvelopeBatch)
 }
 
 type appliers struct {
 	deps AppliersDeps
+	// dispatch mirrors the FSM registration so a wrapped bridge batch can
+	// fan out to the same appliers (deliberately NOT including the batch
+	// applier itself - no recursion).
+	dispatch map[CommandType]CommandApplier
+}
+
+// applyBridgeEnvelopeBatch unwraps a replication batch and applies each
+// inner command via the regular appliers. Per-entry failures are logged and
+// skipped: one bad envelope must not fail the whole consensus entry (it has
+// already been committed to the log).
+func (a *appliers) applyBridgeEnvelopeBatch(cmd Command, _ *hraft.Log) error {
+	var p BridgeEnvelopeBatchPayload
+	if err := DecodeTyped(cmd, &p); err != nil {
+		return err
+	}
+	for _, e := range p.Entries {
+		fn, ok := a.dispatch[e.Type]
+		if !ok {
+			if a.deps.Logger != nil {
+				a.deps.Logger.Warn("raft: bridge batch carries unknown command type", "type", uint16(e.Type))
+			}
+			continue
+		}
+		inner := Command{
+			Type:            e.Type,
+			OriginClusterID: e.OriginClusterID,
+			OriginNodeID:    e.OriginNodeID,
+			OriginIndex:     e.OriginIndex,
+			Timestamp:       e.Timestamp,
+			Payload:         e.Payload,
+		}
+		if err := fn(inner, nil); err != nil && a.deps.Logger != nil {
+			a.deps.Logger.Warn("raft: bridge batch entry failed", "type", uint16(e.Type), "origin_index", e.OriginIndex, "error", err)
+		}
+	}
+	return nil
 }
 
 // applierCtx returns a context flagged as an applier so any future

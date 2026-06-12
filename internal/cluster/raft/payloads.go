@@ -81,6 +81,22 @@ type HostLastSeenPayload struct {
 	IPv4                  string     `json:"ipv4,omitempty"`
 }
 
+// BridgeEnvelope is one remote command inside a CmdBridgeEnvelopeBatch.
+type BridgeEnvelope struct {
+	Type            CommandType     `json:"type"`
+	OriginClusterID string          `json:"origin_cluster_id"`
+	OriginNodeID    string          `json:"origin_node_id"`
+	OriginIndex     uint64          `json:"origin_index"`
+	Timestamp       time.Time       `json:"ts"`
+	Payload         json.RawMessage `json:"payload"`
+}
+
+// BridgeEnvelopeBatchPayload carries a whole replication batch in one log
+// entry (one consensus round + one fsync instead of one per envelope).
+type BridgeEnvelopeBatchPayload struct {
+	Entries []BridgeEnvelope `json:"entries"`
+}
+
 // UserUpsertPayload mirrors the persisted fields of users.User. Used both for
 // initial registration (when Role=ADMIN) and later role updates.
 type UserUpsertPayload struct {
