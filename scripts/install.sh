@@ -344,6 +344,15 @@ EOF
 }
 
 write_compose() {
+  # Once the wizard has applied a topology (managed postgres etc.) the
+  # CONTROLLER owns docker-compose.yml - desired-state.json marks that.
+  # Regenerating the sqlite base here would silently drop the db service
+  # and revert the app to sqlite on every update/repair.
+  if [ -s "$STACK_DIR/docker-compose.yml" ] && [ -f "$STACK_DIR/data/docker/desired-state.json" ]; then
+    yellow "Keeping controller-managed docker-compose.yml (wizard topology applied)"
+    write_compose_override
+    return
+  fi
   # Base compose: generate from the image so it always matches the controller's
   # output; fall back to the committed template if the run fails.
   if ! docker run --rm -e NODE_STATS_IMAGE="$IMAGE" "$IMAGE" gen-compose >"$STACK_DIR/docker-compose.yml" 2>/dev/null ||
@@ -353,7 +362,12 @@ write_compose() {
     [ -s "$STACK_DIR/docker-compose.yml" ] || die "could not obtain a base docker-compose.yml"
   fi
 
-  # OS host-capabilities override (Linux gets pid/ipc host; macOS none).
+  write_compose_override
+}
+
+# OS host-capabilities override (Linux gets pid/ipc host; macOS none) -
+# installer-owned, safe to refresh on every run; the controller never touches it.
+write_compose_override() {
   local src="docker-compose.macos.yml"
   [ "$OS" = linux ] && src="docker-compose.linux.yml"
   local override

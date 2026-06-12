@@ -71,10 +71,19 @@ func (c *controller) loop() {
 		if err != nil {
 			log.Error("controller: read desired-state", "error", err)
 		} else if ds != nil {
-			if h := ds.Hash(); h != c.lastApplied {
+			h := ds.Hash()
+			switch {
+			case h != c.lastApplied:
 				if c.apply(*ds) {
 					c.lastApplied = h
 				}
+			case c.composeDrifted(*ds):
+				// The file no longer matches an ALREADY-APPLIED state - an
+				// installer rerun or a manual edit clobbered it (classic:
+				// reverting a managed-postgres stack to the sqlite base and
+				// silently dropping the db service). Restore reality.
+				log.Warn("controller: docker-compose.yml drifted from the applied desired state - restoring")
+				c.apply(*ds)
 			}
 		}
 		time.Sleep(pollInterval)
@@ -121,6 +130,19 @@ func (c *controller) apply(ds setup.DesiredState) bool {
 	c.writeStatus(setup.ControllerStatus{Generation: ds.Generation, Phase: setup.PhaseApplied,
 		Message: "recreated " + c.appService})
 	return true
+}
+
+// composeDrifted reports whether the on-disk docker-compose.yml differs from
+// what the given desired state generates. Only consulted for a desired state
+// the controller has already applied, so re-applying restores a previously
+// working topology and never springs a half-finished DB switch on the stack.
+func (c *controller) composeDrifted(ds setup.DesiredState) bool {
+	want := setup.BuildComposeContent(ds)
+	got, err := os.ReadFile(filepath.Join(c.stackDir, "docker-compose.yml"))
+	if err != nil {
+		return true
+	}
+	return string(got) != want
 }
 
 // applied-hash persistence so a controller restart doesn't re-apply an already

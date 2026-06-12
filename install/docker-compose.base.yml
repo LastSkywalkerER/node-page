@@ -41,4 +41,6 @@ services:
       - NODE_STATS_DATA_DIR=${NODE_STATS_STACK_HOST_DIR}/data/docker
       - NODE_STATS_APP_SERVICE=node-stats
       - NODE_STATS_PROJECT=${COMPOSE_PROJECT_NAME:-node-stats}
+    healthcheck:
+      disable: true
     restart: unless-stopped

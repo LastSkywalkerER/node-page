@@ -186,6 +186,11 @@ func BuildComposeContent(ds DesiredState) string {
 	// The controller drives `docker compose -p <project>`; it must match the
 	// stack's project so multi-instance hosts don't cross-manage each other.
 	w("      - NODE_STATS_PROJECT=${COMPOSE_PROJECT_NAME:-node-stats}")
+	// The image HEALTHCHECK probes the HTTP API, which the controller
+	// subcommand does not serve - without this every controller shows
+	// a misleading "(unhealthy)" forever.
+	w("    healthcheck:")
+	w("      disable: true")
 	w("    restart: unless-stopped")
 
 	// --- top-level volumes ---------------------------------------------------
