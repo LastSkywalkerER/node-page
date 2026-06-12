@@ -254,7 +254,10 @@ func (s *Sender) shipBatch(ctx context.Context, batch Batch) error {
 	tsNanos := time.Now().UnixNano()
 	sig := Sign(s.secret, tsNanos, body)
 
-	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// Generous: the hub applies every entry through its own Raft log
+	// (fsync per entry) — on modest disks a 200-entry batch takes tens of
+	// seconds, and abandoning it early just re-ships the same work.
+	reqCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url+"/api/v1/raft/bridge/replicate", bytes.NewReader(body))
 	if err != nil {

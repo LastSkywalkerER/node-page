@@ -97,7 +97,12 @@ func (r *Receiver) Handle(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	// Detached from the request context on purpose: on a slow hub a batch
+	// can outlive the sender's HTTP timeout. If the client hangs up mid-way,
+	// entries already submitted into Raft must still be recorded in the
+	// dedupe log — otherwise the re-shipped batch re-applies them forever
+	// (apply work done, MarkApplied "context canceled", repeat).
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	var applied, deduped, skipped int

@@ -37,8 +37,15 @@ import (
 
 var managedTables = []string{
 	"hosts",
-	"users",
-	"refresh_tokens",
+	// NB: the Go entities override gorm's default names — User lives in
+	// "user_accounts", RefreshToken in "user_refresh_tokens". The dump
+	// listed "users"/"refresh_tokens" for a long time: sqlite silently
+	// treated the missing tables as empty (snapshots shipped WITHOUT
+	// accounts/sessions), while Postgres aborts the whole transaction on
+	// the first failed SELECT — no snapshot could ever be taken and the
+	// raft log grew without bound.
+	"user_accounts",
+	"user_refresh_tokens",
 	"cluster_config",
 	"peer_node_advertise",
 	"cluster_join_tokens",
@@ -68,6 +75,14 @@ func (s *SQLiteSnapshotter) Snapshot() (hraft.FSMSnapshot, error) {
 	tables := make(map[string][]map[string]any, len(managedTables))
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		for _, t := range managedTables {
+			// Probe existence BEFORE selecting: inside a Postgres
+			// transaction a single failed statement aborts everything
+			// after it, so the isNoSuchTable tolerance in dumpTable can
+			// never fire safely mid-transaction there.
+			if !tx.Migrator().HasTable(t) {
+				tables[t] = nil
+				continue
+			}
 			rows, err := dumpTable(tx, t)
 			if err != nil {
 				return fmt.Errorf("dump table %s: %w", t, err)
@@ -166,6 +181,9 @@ func (r *SQLiteRestorer) Restore(rc io.ReadCloser) error {
 		// docker_metrics, etc. — but we use raw DELETE so order
 		// flexibility matters less than disabling triggers/FKs would.
 		for _, t := range managedTables {
+			if !tx.Migrator().HasTable(t) {
+				continue
+			}
 			if err := tx.Exec(fmt.Sprintf("DELETE FROM %s", t)).Error; err != nil {
 				return fmt.Errorf("snapshot restore: truncate %s: %w", t, err)
 			}
@@ -174,6 +192,12 @@ func (r *SQLiteRestorer) Restore(rc io.ReadCloser) error {
 			var st snapshotTable
 			if err := dec.Decode(&st); err != nil {
 				return fmt.Errorf("snapshot restore: decode table: %w", err)
+			}
+			// Old snapshots may carry the legacy "users"/"refresh_tokens"
+			// names (or tables this build doesn't know) — skip instead of
+			// aborting the restore transaction on Postgres.
+			if !tx.Migrator().HasTable(st.Name) {
+				continue
 			}
 			if err := insertRows(tx, st.Name, st.Rows); err != nil {
 				return fmt.Errorf("snapshot restore: insert %s: %w", st.Name, err)
