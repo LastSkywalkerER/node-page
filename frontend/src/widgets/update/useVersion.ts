@@ -12,6 +12,7 @@ export interface VersionInfo {
   auto_update?: boolean;
   checked_at?: string;
   managed_externally?: boolean;
+  deploy_webhook_configured?: boolean;
 }
 
 /** Public build/version + update state (GET /version). Polled hourly. */
@@ -63,6 +64,39 @@ export function useUpdateNow() {
     mutationFn: async () => {
       const r = await apiClient.post<{ data: { message: string } }>('/settings/update-now', {});
       return r.data.data;
+    },
+  });
+}
+
+/**
+ * Orchestrator deploy-webhook URL (admin; managed-externally deployments).
+ * Fetched lazily — only while the update popup is open on such a deployment.
+ */
+export function useDeployWebhook(enabled: boolean) {
+  return useQuery<{ url: string }>({
+    queryKey: ['deploy-webhook'],
+    queryFn: async () => {
+      const r = await apiClient.get<{ data: { url: string } }>('/settings/deploy-webhook');
+      return r.data.data;
+    },
+    enabled,
+    staleTime: Infinity,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/** Save (or clear with '') the deploy-webhook URL. Returns the new version state. */
+export function useSetDeployWebhook() {
+  const qc = useQueryClient();
+  return useMutation<VersionInfo, Error, string>({
+    mutationFn: async (url) => {
+      const r = await apiClient.post<{ data: VersionInfo }>('/settings/deploy-webhook', { url });
+      return r.data.data;
+    },
+    onSuccess: (data, url) => {
+      qc.setQueryData(['version'], data);
+      qc.setQueryData(['deploy-webhook'], { url });
     },
   });
 }

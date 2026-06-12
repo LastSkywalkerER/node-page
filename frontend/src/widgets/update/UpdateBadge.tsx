@@ -2,8 +2,16 @@ import { useState } from 'react'
 import { ArrowUpCircle } from 'lucide-react'
 import { Switch } from '@/shared/ui/switch'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
-import { useVersion, useSetAutoUpdate, useUpdateNow, useRefreshVersion } from './useVersion'
+import {
+  useVersion,
+  useSetAutoUpdate,
+  useUpdateNow,
+  useRefreshVersion,
+  useDeployWebhook,
+  useSetDeployWebhook,
+} from './useVersion'
 
 /**
  * Admin-only header control: surfaces the build version, an "update available"
@@ -17,9 +25,17 @@ export function UpdateBadge() {
   const refresh = useRefreshVersion()
   const [open, setOpen] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
+  // Orchestrator deploy webhook (managed-externally only). null = untouched →
+  // show the server-side value; a string = the operator's in-progress edit.
+  const webhook = useDeployWebhook(open && !!v?.managed_externally)
+  const saveWebhook = useSetDeployWebhook()
+  const [webhookDraft, setWebhookDraft] = useState<string | null>(null)
 
   if (!v) return null
   const hasUpdate = !!v.update_available
+  const canApply = !v.managed_externally || !!v.deploy_webhook_configured
+  const savedWebhookUrl = webhook.data?.url ?? ''
+  const webhookValue = webhookDraft ?? savedWebhookUrl
 
   return (
     <div className="relative">
@@ -57,7 +73,7 @@ export function UpdateBadge() {
               )}
             </div>
 
-            {hasUpdate && !v.managed_externally && (
+            {hasUpdate && canApply && (
               <Button
                 size="sm"
                 className="w-full"
@@ -76,6 +92,45 @@ export function UpdateBadge() {
               </Button>
             )}
 
+            {v.managed_externally && (
+              <div className="space-y-1">
+                <label htmlFor="deploy-webhook" className="text-xs">
+                  Deploy webhook URL
+                </label>
+                <div className="flex items-center gap-1">
+                  <Input
+                    id="deploy-webhook"
+                    placeholder="https://dokploy…/api/deploy/compose/…"
+                    value={webhookValue}
+                    onChange={(e) => setWebhookDraft(e.target.value)}
+                    className="h-7 text-xs"
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 px-2"
+                    disabled={
+                      saveWebhook.isPending ||
+                      webhookDraft === null ||
+                      webhookDraft.trim() === savedWebhookUrl
+                    }
+                    onClick={async () => {
+                      setMsg(null)
+                      try {
+                        await saveWebhook.mutateAsync(webhookValue.trim())
+                        setWebhookDraft(null)
+                        setMsg('Webhook saved.')
+                      } catch (e) {
+                        setMsg(e instanceof Error ? e.message : 'save failed')
+                      }
+                    }}
+                  >
+                    Save
+                  </Button>
+                </div>
+              </div>
+            )}
+
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs">Auto-update</span>
               <Switch
@@ -88,7 +143,9 @@ export function UpdateBadge() {
 
             <p className="text-[0.65rem] leading-relaxed text-muted-foreground">
               {v.managed_externally
-                ? 'Managed by an external orchestrator (e.g. dokploy): update by redeploying / rebuilding there.'
+                ? v.deploy_webhook_configured
+                  ? 'Managed externally: updates trigger the orchestrator’s deploy webhook (pulls the latest image and redeploys).'
+                  : 'Managed by an external orchestrator (e.g. dokploy): paste its deploy-webhook URL (Deployments tab) to update from here.'
                 : v.deployment === 'native'
                   ? 'Native install: runs `node-stats update` to self-replace the binary.'
                   : 'Docker: pulls the new image and recreates the stack via the controller.'}

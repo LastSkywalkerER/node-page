@@ -10,9 +10,12 @@ package update
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	neturl "net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -54,6 +57,11 @@ type Info struct {
 	// ManagedExternally is true when an orchestrator (dokploy, …) owns the
 	// container lifecycle — in-app "update now" can't apply; redeploy there.
 	ManagedExternally bool `json:"managed_externally,omitempty"`
+	// DeployWebhookConfigured: a managed-externally deployment has the
+	// orchestrator's deploy-webhook URL on file, so in-app updates work by
+	// triggering it. The URL itself carries a deploy token and is only
+	// readable through the admin settings endpoint, never here.
+	DeployWebhookConfigured bool `json:"deploy_webhook_configured,omitempty"`
 }
 
 // PersistFn persists the auto-update toggle (to .env.agent). May be nil.
@@ -65,17 +73,25 @@ type DBStateFn func() (dbType, dbDSN string)
 
 // Service holds cached release state and the update plumbing.
 type Service struct {
-	repo    string
-	dataDir string
-	persist PersistFn
-	dbState DBStateFn
-	client  *http.Client
+	repo           string
+	dataDir        string
+	persist        PersistFn
+	dbState        DBStateFn
+	persistWebhook func(url string) error
+	client         *http.Client
 
 	mu              sync.RWMutex
 	latest          string
 	latestPublished time.Time
 	checkedAt       time.Time
 	autoUpdate      bool
+	webhookURL      string
+	// lastWebhookTag is the release tag the deploy webhook was last triggered
+	// for. A webhook redeploy can be a no-op (the image tag may lag the GitHub
+	// release), so the auto-update loop must not re-fire the orchestrator for
+	// the same release every check cycle. Persisted in dataDir because a
+	// successful trigger replaces this very container.
+	lastWebhookTag string
 }
 
 // NewService constructs the update service. repo empty → DefaultRepo.
@@ -83,7 +99,7 @@ func NewService(repo, dataDir string, autoUpdate bool, persist PersistFn, dbStat
 	if strings.TrimSpace(repo) == "" {
 		repo = DefaultRepo
 	}
-	return &Service{
+	s := &Service{
 		repo:       repo,
 		dataDir:    dataDir,
 		persist:    persist,
@@ -91,6 +107,47 @@ func NewService(repo, dataDir string, autoUpdate bool, persist PersistFn, dbStat
 		client:     &http.Client{Timeout: 15 * time.Second},
 		autoUpdate: autoUpdate,
 	}
+	s.loadWebhookState()
+	return s
+}
+
+// WithDeployWebhook seeds the orchestrator deploy-webhook URL (from env /
+// .env) and the persist function applied when an admin changes it at runtime.
+func (s *Service) WithDeployWebhook(url string, persist func(string) error) *Service {
+	s.mu.Lock()
+	s.webhookURL = strings.TrimSpace(url)
+	s.mu.Unlock()
+	s.persistWebhook = persist
+	return s
+}
+
+// DeployWebhookURL returns the configured orchestrator deploy-webhook URL
+// (admin settings endpoint only — it embeds a deploy token).
+func (s *Service) DeployWebhookURL() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.webhookURL
+}
+
+// SetDeployWebhook validates, persists and applies the orchestrator
+// deploy-webhook URL. An empty string clears it.
+func (s *Service) SetDeployWebhook(rawURL string) error {
+	u := strings.TrimSpace(rawURL)
+	if u != "" {
+		parsed, err := neturl.Parse(u)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return fmt.Errorf("invalid webhook URL — expected the full http(s) deploy URL from the orchestrator")
+		}
+	}
+	if s.persistWebhook != nil {
+		if err := s.persistWebhook(u); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	s.webhookURL = u
+	s.mu.Unlock()
+	return nil
 }
 
 // Status returns the current build identity merged with cached update state.
@@ -98,16 +155,18 @@ func (s *Service) Status() Info {
 	v := version.Get()
 	s.mu.RLock()
 	latest, published, checkedAt, auto := s.latest, s.latestPublished, s.checkedAt, s.autoUpdate
+	webhookSet := s.webhookURL != ""
 	s.mu.RUnlock()
 	info := Info{
-		Current:           v.Current,
-		Commit:            v.Commit,
-		BuiltAt:           v.BuiltAt,
-		Deployment:        v.Deployment,
-		Channel:           "stable",
-		Latest:            latest,
-		AutoUpdate:        auto,
-		ManagedExternally: setup.ManagedExternally(),
+		Current:                 v.Current,
+		Commit:                  v.Commit,
+		BuiltAt:                 v.BuiltAt,
+		Deployment:              v.Deployment,
+		Channel:                 "stable",
+		Latest:                  latest,
+		AutoUpdate:              auto,
+		ManagedExternally:       setup.ManagedExternally(),
+		DeployWebhookConfigured: webhookSet,
 	}
 	if !checkedAt.IsZero() {
 		info.CheckedAt = checkedAt.UTC().Format(time.RFC3339)
@@ -192,13 +251,36 @@ func (s *Service) SetAutoUpdate(ctx context.Context, enabled bool) error {
 	}
 	if enabled {
 		_ = s.Check(ctx)
-		if s.Status().UpdateAvailable {
-			if _, err := s.UpdateNow(ctx); err != nil {
-				log.Error("update: auto-update apply failed", "error", err)
-			}
-		}
+		s.autoApply(ctx)
 	}
 	return nil
+}
+
+// autoApply runs one unattended update attempt (auto-update toggle on).
+// Managed-externally deployments update through the orchestrator's deploy
+// webhook; since that redeploy can be a no-op (image tag lagging the GitHub
+// release), the same release tag is never re-triggered — only a NEW latest
+// fires the webhook again. Manual "update now" has no such guard.
+func (s *Service) autoApply(ctx context.Context) {
+	st := s.Status()
+	if !st.UpdateAvailable {
+		return
+	}
+	if st.ManagedExternally {
+		s.mu.RLock()
+		webhook, last := s.webhookURL, s.lastWebhookTag
+		s.mu.RUnlock()
+		if webhook == "" {
+			log.Debug("update: auto-update skipped — managed externally and no deploy webhook configured")
+			return
+		}
+		if st.Latest == "" || st.Latest == last {
+			return
+		}
+	}
+	if _, err := s.UpdateNow(ctx); err != nil {
+		log.Error("update: auto-update apply failed", "error", err)
+	}
 }
 
 // Check polls the latest GitHub release tag and caches it.
@@ -246,10 +328,8 @@ func (s *Service) Start(ctx context.Context) {
 			}
 			if err := s.Check(ctx); err != nil {
 				log.Debug("update: check failed", "error", err)
-			} else if s.AutoUpdate() && s.Status().UpdateAvailable {
-				if _, err := s.UpdateNow(ctx); err != nil {
-					log.Error("update: auto-update failed", "error", err)
-				}
+			} else if s.AutoUpdate() {
+				s.autoApply(ctx)
 			}
 			t.Reset(checkInterval)
 		}
@@ -260,10 +340,15 @@ func (s *Service) Start(ctx context.Context) {
 // recreates the app, preserving the current DB topology.
 func (s *Service) updateDocker() (string, error) {
 	// When an external orchestrator (dokploy, portainer, …) owns the lifecycle
-	// there is no controller to apply the desired-state — point the operator at
-	// the right tool instead of silently writing a file nothing reads.
+	// there is no controller to apply the desired-state. With its deploy
+	// webhook on file we can still update — the orchestrator pulls the latest
+	// image and redeploys; otherwise point the operator at the right tool
+	// instead of silently writing a file nothing reads.
 	if setup.ManagedExternally() {
-		return "", fmt.Errorf("this deployment is managed by an external orchestrator — trigger a redeploy/rebuild there to update")
+		if url := s.DeployWebhookURL(); url != "" {
+			return s.triggerDeployWebhook(url)
+		}
+		return "", fmt.Errorf("this deployment is managed by an external orchestrator — redeploy there, or paste its deploy-webhook URL (dokploy: Deployments tab) into the update settings so node-stats can trigger it")
 	}
 	ds, _ := setup.ReadDesiredState(s.dataDir)
 	if ds == nil {
@@ -284,6 +369,86 @@ func (s *Service) updateDocker() (string, error) {
 		return "", fmt.Errorf("failed to request update from the controller: %w", err)
 	}
 	return "Pulling the latest image and recreating the stack — this can take a moment.", nil
+}
+
+// webhookStateFile remembers (in dataDir, which survives the redeploy) the
+// release tag the deploy webhook was last triggered for. See lastWebhookTag.
+const webhookStateFile = "webhook-update.json"
+
+// triggerDeployWebhook asks the orchestrator to redeploy the stack; with
+// pull_policy: always (the dokploy compose default here) that pulls the
+// newest image. POST first — that's what git providers send to these URLs —
+// and fall back to GET when the route only accepts that. The URL embeds a
+// deploy token, so it must never reach logs or error strings unredacted.
+func (s *Service) triggerDeployWebhook(url string) (string, error) {
+	do := func(method string) (*http.Response, error) {
+		req, err := http.NewRequest(method, url, nil)
+		if err != nil {
+			return nil, err
+		}
+		return s.client.Do(req)
+	}
+	resp, err := do(http.MethodPost)
+	if err == nil && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed) {
+		resp.Body.Close()
+		resp, err = do(http.MethodGet)
+	}
+	if err != nil {
+		return "", fmt.Errorf("deploy webhook call failed: %w", redactURLInError(err, url))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return "", fmt.Errorf("deploy webhook returned %s — re-copy the URL from the orchestrator's Deployments tab", resp.Status)
+	}
+	s.rememberWebhookTrigger()
+	log.Info("update: orchestrator deploy webhook triggered", "host", redactURL(url))
+	return "Triggered the orchestrator's deploy webhook — it will pull the latest image and redeploy shortly.", nil
+}
+
+func (s *Service) rememberWebhookTrigger() {
+	tag := s.Status().Latest
+	s.mu.Lock()
+	s.lastWebhookTag = tag
+	s.mu.Unlock()
+	if s.dataDir == "" || tag == "" {
+		return
+	}
+	b, _ := json.Marshal(map[string]string{
+		"last_triggered_tag": tag,
+		"at":                 time.Now().UTC().Format(time.RFC3339),
+	})
+	if err := os.WriteFile(filepath.Join(s.dataDir, webhookStateFile), b, 0o644); err != nil {
+		log.Debug("update: persist webhook state failed", "error", err)
+	}
+}
+
+func (s *Service) loadWebhookState() {
+	if s.dataDir == "" {
+		return
+	}
+	b, err := os.ReadFile(filepath.Join(s.dataDir, webhookStateFile))
+	if err != nil {
+		return
+	}
+	var st struct {
+		LastTriggeredTag string `json:"last_triggered_tag"`
+	}
+	if json.Unmarshal(b, &st) == nil {
+		s.lastWebhookTag = st.LastTriggeredTag
+	}
+}
+
+// redactURLInError strips the token-bearing webhook URL out of transport
+// errors (url.Error embeds the full URL in its message).
+func redactURLInError(err error, rawURL string) error {
+	return errors.New(strings.ReplaceAll(err.Error(), rawURL, redactURL(rawURL)))
+}
+
+func redactURL(raw string) string {
+	if u, err := neturl.Parse(raw); err == nil && u.Host != "" {
+		return u.Scheme + "://" + u.Host + "/…"
+	}
+	return "<webhook-url>"
 }
 
 // ---- GitHub release model ----

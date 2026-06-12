@@ -67,6 +67,9 @@ type ConfigValues struct {
 	// AutoUpdate ("true"/"false"): when on, the app checks GitHub Releases and
 	// applies updates (docker → controller pull+recreate; native → self-replace).
 	AutoUpdate string `json:"auto_update"`
+	// DeployWebhookURL: orchestrator (dokploy, …) deploy-webhook URL for
+	// managed-externally deployments — "update now"/auto-update trigger it.
+	DeployWebhookURL string `json:"deploy_webhook_url"`
 	// DockerHostMetricsCompat adds HOST_* and NODE_HOST_ALIAS for bind-mounted host root at /host.
 	DockerHostMetricsCompat bool `json:"docker_host_metrics_compat"`
 	// NodeStatsHostname optional; written as NODE_STATS_HOSTNAME when non-empty.
@@ -108,6 +111,7 @@ func (cw *ConfigWriter) ReadCurrentConfig() (*ConfigValues, error) {
 		PrometheusAuth:         getEnv("PROMETHEUS_AUTH", "false"),
 		PrometheusToken:        os.Getenv("PROMETHEUS_TOKEN"),
 		AutoUpdate:             getEnv("AUTO_UPDATE", "false"),
+		DeployWebhookURL:       os.Getenv("NODE_STATS_DEPLOY_WEBHOOK_URL"),
 		NodeStatsHostname:      os.Getenv("NODE_STATS_HOSTNAME"),
 		NodeStatsIPv4:          os.Getenv("NODE_STATS_IPV4"),
 		RaftEnabled:            os.Getenv("RAFT_ENABLED"),
@@ -289,6 +293,12 @@ func buildEnvFileContent(config *ConfigValues) string {
 		lines = append(lines, "")
 		lines = append(lines, "# Auto-update: check GitHub Releases and apply (docker → controller pull+recreate)")
 		lines = append(lines, "AUTO_UPDATE=true")
+	}
+
+	if v := strings.TrimSpace(config.DeployWebhookURL); v != "" {
+		lines = append(lines, "")
+		lines = append(lines, "# Orchestrator deploy webhook (dokploy: Deployments tab) — update-now/auto-update trigger it")
+		lines = append(lines, fmt.Sprintf("NODE_STATS_DEPLOY_WEBHOOK_URL=%s", escapeValue(v)))
 	}
 
 	if config.DockerHostMetricsCompat {

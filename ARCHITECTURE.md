@@ -93,7 +93,9 @@ GET    /hosts/current
 POST   /hosts/register
 GET    /stream              # SSE
 POST   /settings/auto-update   # admin; toggle auto-update (persists AUTO_UPDATE to .env.agent)
-POST   /settings/update-now    # admin; apply latest now (docker → controller; native → self-replace)
+POST   /settings/update-now    # admin; apply latest now (docker → controller; native → self-replace; managed-externally → deploy webhook)
+GET    /settings/deploy-webhook  # admin; read the orchestrator deploy-webhook URL (token-bearing — never exposed via /version)
+POST   /settings/deploy-webhook  # admin; save/clear it (persists NODE_STATS_DEPLOY_WEBHOOK_URL)
 GET    /connectors             # admin; environment-detection hints + configured connectors
 POST   /connectors             # admin; connect Proxmox (validates token, encrypts secret, replicates)
 POST   /connectors/proxmox/test  # admin; pre-flight creds → preview (nodes/guests/matched hosts)
@@ -132,6 +134,7 @@ All metric endpoints accept `?hours=<float>` (default `0.0833` ≈ 5 min) and `?
 | `NODE_STATS_DATA_DIR` | `/app/data` | Shared data dir holding `desired-state.json` / `controller-status.json` (app↔controller). |
 | `NODE_STATS_ENV_FILE` | `./.env` | Runtime `.env` location (read + wizard/bridge writes). Dokploy-style orchestrators re-clone the compose project on redeploy, wiping relative bind mounts — their compose variants point this at `/app/data/.env` inside the persistent named volume. |
 | `NODE_STATS_MANAGED_EXTERNALLY` | `false` | When true (or `TRAEFIK_DYNAMIC_DIR` set, or `/etc/dokploy` present), disables controller compose mutation — the orchestrator owns the lifecycle. |
+| `NODE_STATS_DEPLOY_WEBHOOK_URL` | — | Orchestrator deploy-webhook URL (dokploy: Deployments tab). On managed-externally deployments "update now"/auto-update trigger it (POST, GET fallback) so the orchestrator pulls the latest image and redeploys. Settable from the update popup (admin); same-tag auto-retriggers are suppressed via `webhook-update.json` in the data dir. |
 | `NODE_STATS_APP_PREFIX_GROUPING` | `true` | Applications view fallback: merge apps sharing a common dash/underscore name prefix into one (e.g. Dokploy's `node-stats-app-…`/`-db-…`/`-compose-…` → `node-stats`). Set `false`/`0`/`off` to disable. No-op for distinctly-named projects. |
 
 **Controller sidecar** (Docker only; same image run as `node-stats controller`). Owns the docker socket and applies the compose stack the app requests:
@@ -176,7 +179,7 @@ The setup-wizard "Join an existing cluster" flow writes the resolved `RAFT_*` va
 
 - **DB choice is first-run-only** (no sqlite↔postgres migration). A DB-engine switch in the wizard returns `restart_pending` and **defers admin creation**: the controller recreates the app on the new (empty) DB, then the frontend re-submits `/setup/complete` so the admin lands on the new DB (two-phase). When `ManagedExternally()` is true the controller is disabled and the wizard tells the operator to edit compose manually.
 
-**Auto-update** (`internal/platform/update`). Polls GitHub Releases (cached, 6 h), semver-compares against the build version (non-semver dev/main builds never claim an update), and exposes state via `GET /version`. The admin toggle persists `AUTO_UPDATE` to `.env.agent`; "update now" / the auto loop apply the latest — **docker** bumps `desired-state.json` with `pull_before_apply` (controller pulls + recreates), **native** downloads the matching release asset, verifies it against `SHA256SUMS`, and self-replaces the binary (`node-stats update`).
+**Auto-update** (`internal/platform/update`). Polls GitHub Releases (cached, 6 h), semver-compares against the build version (non-semver dev/main builds never claim an update), and exposes state via `GET /version`. The admin toggle persists `AUTO_UPDATE` to `.env.agent`; "update now" / the auto loop apply the latest — **docker** bumps `desired-state.json` with `pull_before_apply` (controller pulls + recreates), **native** downloads the matching release asset, verifies it against `SHA256SUMS`, and self-replaces the binary (`node-stats update`). **Managed-externally** deployments (dokploy, …) update through the orchestrator's own deploy webhook when `NODE_STATS_DEPLOY_WEBHOOK_URL` is configured (admin update popup → "Deploy webhook URL"); the auto loop never re-fires the webhook for the same release tag.
 
 ---
 

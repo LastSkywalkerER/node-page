@@ -507,9 +507,28 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 			} else {
 				cv.AutoUpdate = "false"
 			}
-			return configWriter.WriteConfigFile(cv)
+			if err := configWriter.WriteConfigFile(cv); err != nil {
+				return err
+			}
+			// Keep the process env in sync: ReadCurrentConfig merges from
+			// os.Getenv (godotenv.Load never overrides set vars), so a later
+			// .env rewrite would otherwise resurrect the boot-time value.
+			return os.Setenv("AUTO_UPDATE", cv.AutoUpdate)
 		},
 		func() (string, string) { return string(cfg.Database.Type), cfg.Database.DSN },
+	).WithDeployWebhook(
+		os.Getenv("NODE_STATS_DEPLOY_WEBHOOK_URL"),
+		func(url string) error {
+			cv, err := configWriter.ReadCurrentConfig()
+			if err != nil {
+				return err
+			}
+			cv.DeployWebhookURL = url
+			if err := configWriter.WriteConfigFile(cv); err != nil {
+				return err
+			}
+			return os.Setenv("NODE_STATS_DEPLOY_WEBHOOK_URL", url)
+		},
 	)
 	updateSvc.Start(context.Background())
 
@@ -740,6 +759,27 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 				return
 			}
 			c.JSON(http.StatusOK, gin.H{"data": gin.H{"message": msg}})
+		})
+		// Orchestrator deploy-webhook (admin): lets a managed-externally
+		// deployment (dokploy, …) update itself — update-now/auto-update POST
+		// the orchestrator's own deploy URL instead of asking the controller.
+		// The URL embeds a deploy token, hence admin-only and absent from /version.
+		authAPI.GET("/settings/deploy-webhook", middleware.RequireAdmin(), func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"data": gin.H{"url": updateSvc.DeployWebhookURL()}})
+		})
+		authAPI.POST("/settings/deploy-webhook", middleware.RequireAdmin(), func(c *gin.Context) {
+			var body struct {
+				URL string `json:"url"`
+			}
+			if err := c.ShouldBindJSON(&body); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "Invalid request data"})
+				return
+			}
+			if err := updateSvc.SetDeployWebhook(body.URL); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"data": updateSvc.Status()})
 		})
 	}
 
