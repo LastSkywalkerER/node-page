@@ -11,6 +11,8 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/shirou/gopsutil/v4/host"
 	gopsutilnet "github.com/shirou/gopsutil/v4/net"
+
+	hostnet "system-stats/internal/platform/hostnet"
 )
 
 // HostCollector implements the HostCollector interface.
@@ -202,6 +204,15 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (HostInfo, error) {
 	if macAddress == "" {
 		c.logger.Error("No valid MAC address found")
 		return HostInfo{}, net.InvalidAddrError("no valid MAC address found")
+	}
+
+	// The interface walk above ran in the CONTAINER's netns — its IPv4 is the
+	// docker bridge address (172.x), useless for reaching this machine. When
+	// the host's /proc is mounted, prefer the host's default-route IPv4.
+	// (MAC selection above intentionally stays container-based: it is this
+	// row's cluster identity and must not change on upgrades.)
+	if hostIP := hostnet.HostPrimaryIPv4(); hostIP != "" {
+		ipv4 = hostIP
 	}
 
 	if v := strings.TrimSpace(os.Getenv("NODE_STATS_IPV4")); v != "" {

@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/shirou/gopsutil/v4/host"
+
+	hostnet "system-stats/internal/platform/hostnet"
 )
 
 // MachineHints are best-effort values for the setup wizard (no MAC / DB required).
@@ -35,6 +37,10 @@ func DetectMachineHints(ctx context.Context) MachineHints {
 	// outbound-interface IP on the host and passes it in — inside a bridge
 	// network the in-container probe below only sees the container's docker IP).
 	if ip := strings.TrimSpace(os.Getenv("NODE_STATS_IPV4")); ip != "" {
+		out.SuggestedIPv4 = ip
+	} else if ip := hostnet.HostPrimaryIPv4(); ip != "" {
+		// Host's default-route IPv4 via HOST_PROC/1/net - the in-container
+		// probe below only sees the docker bridge address (172.x).
 		out.SuggestedIPv4 = ip
 	} else if ip := primaryIPv4Hint(ctx); ip != "" {
 		out.SuggestedIPv4 = ip

@@ -694,6 +694,8 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.POST("/raft/bridge", middleware.RequireAdmin(), raftHandler.SaveBridgeConfig)
 		// Read back the configured uplink secret (for enrolling more sites)
 		authAPI.GET("/raft/bridge/secret", middleware.RequireAdmin(), raftHandler.GetBridgeSecret)
+		// Read back the full uplink configuration (form prefill)
+		authAPI.GET("/raft/bridge", middleware.RequireAdmin(), raftHandler.GetBridgeConfig)
 		// Wipe RAFT_* from .env so the next restart boots Raft-disabled
 		authAPI.POST("/raft/reset", middleware.RequireAdmin(), raftHandler.ResetConfig)
 		// Wipe Raft on-disk state + re-bootstrap as fresh single voter

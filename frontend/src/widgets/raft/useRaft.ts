@@ -247,21 +247,28 @@ export function useSaveRaftBridge() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['raft', 'status'] })
-      queryClient.invalidateQueries({ queryKey: ['raft', 'bridge-secret'] })
+      queryClient.invalidateQueries({ queryKey: ['raft', 'bridge-config'] })
     },
   })
 }
 
+export interface BridgeSettings {
+  mode: string
+  shared_secret: string
+  remote_seeds: string[]
+  advertise_url: string
+}
+
 /**
- * Reads back the configured uplink HMAC secret (admin-only) so it can be
- * prefilled and copied when enrolling more sites — the form field alone is
- * write-only and the value is gone after a page reload.
+ * Reads back the saved uplink configuration (admin-only) so the form
+ * prefills current values — re-applying a blank form used to wipe the hub
+ * URL and stall the uplink, and the secret was unrecoverable after reload.
  */
-export function useBridgeSecret(enabled = true) {
-  return useQuery<{ shared_secret: string }>({
-    queryKey: ['raft', 'bridge-secret'],
+export function useBridgeSettings(enabled = true) {
+  return useQuery<BridgeSettings>({
+    queryKey: ['raft', 'bridge-config'],
     queryFn: async () => {
-      const resp = await apiClient.get<{ shared_secret: string }>('/raft/bridge/secret')
+      const resp = await apiClient.get<BridgeSettings>('/raft/bridge')
       return resp.data
     },
     enabled,

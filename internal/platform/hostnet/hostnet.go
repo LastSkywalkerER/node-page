@@ -1,4 +1,4 @@
-package network
+package hostnet
 
 // Reading metrics through host bind-mounts (Docker deployment) is tricky for
 // networking: /proc/net is a SYMLINK to /proc/self/net, so any read of
@@ -25,15 +25,30 @@ import (
 	gopsutilnet "github.com/shirou/gopsutil/v4/net"
 )
 
-type hostIface struct {
-	ips []string
-	mac string
+type HostIface struct {
+	IPs []string
+	MAC string
 }
 
 type hostRoute struct {
 	iface string
 	ipnet *net.IPNet
 	ones  int
+}
+
+// HostPrimaryIPv4 returns the IPv4 of the HOST's default-route interface
+// when metrics are read through a host bind-mount (HOST_PROC set) — the
+// in-container UDP-dial probe only ever sees the docker bridge address
+// (172.x). Returns "" natively or when the host view is unavailable.
+func HostPrimaryIPv4() string {
+	details, def, ok := HostNetNS()
+	if !ok || def == "" {
+		return ""
+	}
+	if d := details[def]; d != nil && len(d.IPs) > 0 {
+		return d.IPs[0]
+	}
+	return ""
 }
 
 // hostPid1Net returns <HOST_PROC>/1/net, or "" when metrics are not read
@@ -47,10 +62,10 @@ func hostPid1Net() string {
 	return filepath.Join(hostProc, "1", "net")
 }
 
-// hostNetNS returns per-interface details and the default-route interface of
+// HostNetNS returns per-interface details and the default-route interface of
 // the HOST network namespace. ok is false when HOST_PROC is unset or host
 // PID 1's net view can't be parsed.
-func hostNetNS() (details map[string]*hostIface, defaultIface string, ok bool) {
+func HostNetNS() (details map[string]*HostIface, defaultIface string, ok bool) {
 	netDir := hostPid1Net()
 	if netDir == "" {
 		return nil, "", false
@@ -60,7 +75,7 @@ func hostNetNS() (details map[string]*hostIface, defaultIface string, ok bool) {
 		return nil, "", false
 	}
 
-	details = make(map[string]*hostIface)
+	details = make(map[string]*HostIface)
 	for _, ip := range parseLocalIPv4s(filepath.Join(netDir, "fib_trie")) {
 		iface := matchRouteIface(routes, ip)
 		if iface == "" {
@@ -73,10 +88,10 @@ func hostNetNS() (details map[string]*hostIface, defaultIface string, ok bool) {
 		}
 		d := details[iface]
 		if d == nil {
-			d = &hostIface{}
+			d = &HostIface{}
 			details[iface] = d
 		}
-		d.ips = append(d.ips, ip.String())
+		d.IPs = append(d.IPs, ip.String())
 	}
 
 	hostSys := strings.TrimSpace(os.Getenv("HOST_SYS"))
@@ -85,17 +100,17 @@ func hostNetNS() (details map[string]*hostIface, defaultIface string, ok bool) {
 	}
 	for name, d := range details {
 		if b, err := os.ReadFile(filepath.Join(hostSys, "class", "net", name, "address")); err == nil {
-			d.mac = strings.TrimSpace(string(b))
+			d.MAC = strings.TrimSpace(string(b))
 		}
 	}
 	return details, defIface, true
 }
 
-// parseHostNetDev reads host PID 1's /proc/net/dev — gopsutil's IOCounters
+// ParseHostNetDev reads host PID 1's /proc/net/dev — gopsutil's IOCounters
 // resolve HOST_PROC/net/dev through the /proc/net → self/net symlink and
 // therefore return the container's counters, so the host's must be read
 // from the pid-qualified path ourselves.
-func parseHostNetDev() ([]gopsutilnet.IOCountersStat, error) {
+func ParseHostNetDev() ([]gopsutilnet.IOCountersStat, error) {
 	netDir := hostPid1Net()
 	if netDir == "" {
 		return nil, errors.New("not a host-mounted /proc")

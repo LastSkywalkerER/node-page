@@ -1,4 +1,4 @@
-package network
+package hostnet
 
 import (
 	"os"
@@ -62,22 +62,22 @@ Local:
 		"docker0": "02:42:11:22:33:44",
 	})
 
-	details, def, ok := hostNetNS()
+	details, def, ok := HostNetNS()
 	if !ok {
-		t.Fatal("hostNetNS not ok")
+		t.Fatal("HostNetNS not ok")
 	}
 	if def != "eth0" {
 		t.Fatalf("default iface = %q, want eth0", def)
 	}
 	eth := details["eth0"]
-	if eth == nil || len(eth.ips) != 1 || eth.ips[0] != "192.168.1.10" {
+	if eth == nil || len(eth.IPs) != 1 || eth.IPs[0] != "192.168.1.10" {
 		t.Fatalf("eth0 = %+v, want 192.168.1.10", eth)
 	}
-	if eth.mac != "aa:bb:cc:dd:ee:ff" {
-		t.Fatalf("eth0 mac = %q", eth.mac)
+	if eth.MAC != "aa:bb:cc:dd:ee:ff" {
+		t.Fatalf("eth0 mac = %q", eth.MAC)
 	}
 	d0 := details["docker0"]
-	if d0 == nil || len(d0.ips) != 1 || d0.ips[0] != "172.17.0.1" {
+	if d0 == nil || len(d0.IPs) != 1 || d0.IPs[0] != "172.17.0.1" {
 		t.Fatalf("docker0 = %+v, want 172.17.0.1", d0)
 	}
 	if _, hasLo := details["lo"]; hasLo {
@@ -105,19 +105,19 @@ Local:
 `
 	writeHostNetFixtures(t, route, fib, map[string]string{"eth0": "96:00:02:aa:bb:cc"})
 
-	details, def, ok := hostNetNS()
+	details, def, ok := HostNetNS()
 	if !ok {
-		t.Fatal("hostNetNS not ok")
+		t.Fatal("HostNetNS not ok")
 	}
 	if def != "eth0" {
 		t.Fatalf("default iface = %q, want eth0", def)
 	}
 	eth := details["eth0"]
-	if eth == nil || len(eth.ips) != 1 || eth.ips[0] != "65.21.152.83" {
+	if eth == nil || len(eth.IPs) != 1 || eth.IPs[0] != "65.21.152.83" {
 		t.Fatalf("eth0 = %+v, want 65.21.152.83", eth)
 	}
-	if eth.mac != "96:00:02:aa:bb:cc" {
-		t.Fatalf("eth0 mac = %q", eth.mac)
+	if eth.MAC != "96:00:02:aa:bb:cc" {
+		t.Fatalf("eth0 mac = %q", eth.MAC)
 	}
 }
 
@@ -139,7 +139,7 @@ func TestParseHostNetDev(t *testing.T) {
 	}
 	t.Setenv("HOST_PROC", filepath.Join(dir, "proc"))
 
-	stats, err := parseHostNetDev()
+	stats, err := ParseHostNetDev()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,11 +161,11 @@ func TestParseHostNetDev(t *testing.T) {
 // Native install (no HOST_PROC) keeps the stdlib in-namespace path.
 func TestHostNetNSDisabledNatively(t *testing.T) {
 	t.Setenv("HOST_PROC", "")
-	if _, _, ok := hostNetNS(); ok {
-		t.Fatal("hostNetNS must be disabled when HOST_PROC is unset")
+	if _, _, ok := HostNetNS(); ok {
+		t.Fatal("HostNetNS must be disabled when HOST_PROC is unset")
 	}
 	t.Setenv("HOST_PROC", "/proc")
-	if _, _, ok := hostNetNS(); ok {
-		t.Fatal("hostNetNS must be disabled when HOST_PROC is /proc itself")
+	if _, _, ok := HostNetNS(); ok {
+		t.Fatal("HostNetNS must be disabled when HOST_PROC is /proc itself")
 	}
 }

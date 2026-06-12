@@ -82,6 +82,9 @@ type BridgeConfigurator interface {
 	// ('' when the bridge was never configured) so the admin UI can offer
 	// it for copying when enrolling additional sites.
 	BridgeSecret() string
+	// BridgeSettings returns the full saved uplink configuration so the
+	// admin form prefills instead of starting blank.
+	BridgeSettings() (mode, secret string, seeds []string, advertiseURL string)
 }
 
 // WithBridgeConfigurator wires the runtime bridge configurator so the
@@ -682,7 +685,19 @@ func (h *Handler) SaveBridgeConfig(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := h.bridgeCfg.SaveBridge(req.SharedSecret, req.RemoteSeeds, req.AdvertiseURL, req.Mode); err != nil {
+	seeds := make([]string, 0, len(req.RemoteSeeds))
+	for _, sd := range req.RemoteSeeds {
+		if v := strings.TrimSpace(sd); v != "" {
+			seeds = append(seeds, v)
+		}
+	}
+	// Push / two-way modes ship to the seeds: applying without a hub URL
+	// would silently stall the uplink ("no healthy peer URL").
+	if mode := strings.ToLower(strings.TrimSpace(req.Mode)); mode != "receive" && len(seeds) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "hub URL is required in this mode — the sender ships to the remote seed URLs"})
+		return
+	}
+	if err := h.bridgeCfg.SaveBridge(req.SharedSecret, seeds, req.AdvertiseURL, req.Mode); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -701,4 +716,27 @@ func (h *Handler) GetBridgeSecret(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"shared_secret": h.bridgeCfg.BridgeSecret()})
+}
+
+// GetBridgeConfig returns the saved uplink configuration (mode, secret,
+// seeds, advertise URL) so the admin form prefills current values — an
+// empty form that gets re-applied would otherwise wipe the hub URL.
+// Admin-only.
+//
+// GET /api/v1/raft/bridge
+func (h *Handler) GetBridgeConfig(c *gin.Context) {
+	if h.bridgeCfg == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "bridge configurator not wired"})
+		return
+	}
+	mode, secret, seeds, advertiseURL := h.bridgeCfg.BridgeSettings()
+	if seeds == nil {
+		seeds = []string{}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"mode":          mode,
+		"shared_secret": secret,
+		"remote_seeds":  seeds,
+		"advertise_url": advertiseURL,
+	})
 }

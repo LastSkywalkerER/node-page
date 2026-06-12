@@ -10,7 +10,7 @@ import {
   useAddRaftPeer,
   useRemoveRaftPeer,
   useSaveRaftBridge,
-  useBridgeSecret,
+  useBridgeSettings,
   useResetRaftConfig,
   useWipeRaftState,
   useFactoryResetRaft,
@@ -119,17 +119,24 @@ export function RaftClusterWidget() {
   // null = untouched → mirror the active mode from status.
   const [modeDraft, setModeDraft] = useState<'push' | 'receive' | 'both' | null>(null)
 
-  // Prefill the (write-only) secret field from the server once, so an admin
-  // returning later can still copy it when enrolling another site.
-  const { data: storedSecret } = useBridgeSecret()
-  const secretPrefilled = useRef(false)
+  // Prefill the form from the saved configuration once: the secret is
+  // otherwise unrecoverable after a reload, and an empty Hub URL that gets
+  // re-applied would wipe the seeds and stall the uplink.
+  const { data: savedBridge } = useBridgeSettings()
+  const bridgePrefilled = useRef(false)
   useEffect(() => {
-    if (secretPrefilled.current || !storedSecret) return
-    secretPrefilled.current = true
-    if (storedSecret.shared_secret) {
-      setBridgeSecret((cur) => cur || storedSecret.shared_secret)
+    if (bridgePrefilled.current || !savedBridge) return
+    bridgePrefilled.current = true
+    if (savedBridge.shared_secret) {
+      setBridgeSecret((cur) => cur || savedBridge.shared_secret)
     }
-  }, [storedSecret])
+    if (savedBridge.remote_seeds?.length) {
+      setBridgeSeeds((cur) => cur || savedBridge.remote_seeds.join(','))
+    }
+    if (savedBridge.advertise_url) {
+      setBridgeAdvertise((cur) => cur || savedBridge.advertise_url)
+    }
+  }, [savedBridge])
   const [copiedSecret, setCopiedSecret] = useState(false)
   const onCopySecret = async () => {
     if (!bridgeSecret.trim()) return

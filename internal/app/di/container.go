@@ -728,6 +728,38 @@ func (c *Container) SaveBridge(secret string, remoteSeeds []string, advertiseURL
 	return cw.WriteConfigFile(cv)
 }
 
+// BridgeSettings returns the currently configured uplink parameters so the
+// admin form can prefill instead of starting blank — re-applying a blank
+// form used to wipe the hub URL (remote seeds) and stall the uplink.
+func (c *Container) BridgeSettings() (mode, secret string, seeds []string, advertiseURL string) {
+	c.activateMu.Lock()
+	b := c.raftCfgSnapshot.Bridge
+	advertiseURL = c.raftCfgSnapshot.AdvertiseURL
+	c.activateMu.Unlock()
+	if b.SharedSecret == "" || len(b.RemoteSeeds) == 0 || b.Mode == "" || advertiseURL == "" {
+		cw := setupcfg.NewConfigWriter()
+		if cv, _ := cw.ReadCurrentConfig(); cv != nil {
+			if b.SharedSecret == "" {
+				b.SharedSecret = strings.TrimSpace(cv.RaftBridgeSharedSecret)
+			}
+			if len(b.RemoteSeeds) == 0 {
+				for _, s := range strings.Split(cv.RaftBridgeRemoteSeeds, ",") {
+					if v := strings.TrimSpace(s); v != "" {
+						b.RemoteSeeds = append(b.RemoteSeeds, v)
+					}
+				}
+			}
+			if b.Mode == "" {
+				b.Mode = cv.RaftBridgeMode
+			}
+			if advertiseURL == "" {
+				advertiseURL = strings.TrimSpace(cv.RaftAdvertisePublicURL)
+			}
+		}
+	}
+	return config.NormalizeBridgeMode(b.Mode), b.SharedSecret, b.RemoteSeeds, advertiseURL
+}
+
 // BridgeSecret returns the currently configured uplink HMAC secret so an
 // admin can copy it later when enrolling another site — it is otherwise
 // write-only through the form and unrecoverable after a page reload.
