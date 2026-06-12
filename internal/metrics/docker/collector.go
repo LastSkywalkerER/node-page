@@ -1178,7 +1178,12 @@ func (c *dockerMetricsCollector) convertMounts(mounts []container.MountPoint) []
 // getContainerResourceStats gets container resource usage statistics
 func (c *dockerMetricsCollector) getContainerResourceStats(ctx context.Context, cli *client.Client, containerID string, cpuLimit float64) DockerStats {
 
-	stats, err := cli.ContainerStats(ctx, containerID, false)
+	// One-shot stats: the default (non-stream) variant makes the daemon
+	// prime PreCPUStats with a second sample ~1s later - at ~1.2s per call
+	// a host with 60+ containers blows the whole collection budget and the
+	// tail of the container list starves. CPU percentages come from our own
+	// inter-cycle cache, so the priming sample is pure waste.
+	stats, err := cli.ContainerStatsOneShot(ctx, containerID)
 	if err != nil {
 		return DockerStats{} // Return empty statistics on error
 	}
@@ -1229,7 +1234,7 @@ func (c *dockerMetricsCollector) getContainerResourceStats(ctx context.Context, 
 	cpuPercent := c.calculateCPUPercentWithCache(containerID, &containerStats)
 
 	// Calculate CPU usage percentage relative to container limit
-	cpuPercentOfLimit := c.calculateCPUPercentOfLimit(&containerStats, cpuLimit)
+	cpuPercentOfLimit := c.percentOfLimit(cpuPercent, cpuLimit)
 
 	return DockerStats{
 		CPUPercent:        cpuPercent,
@@ -1296,50 +1301,20 @@ func (c *dockerMetricsCollector) calculateCPUPercentWithCache(containerID string
 	return 0.0
 }
 
-// calculateCPUPercentOfLimit calculates CPU usage percentage relative to container limit
-// If limit is not set, calculates relative to total system CPU cores
-func (c *dockerMetricsCollector) calculateCPUPercentOfLimit(stats *container.StatsResponse, cpuLimit float64) float64 {
-	// If limit is not set, use system core count as "allocated to Docker daemon"
+// percentOfLimit converts the host-relative CPU percentage (from the
+// inter-cycle cache) into a percentage of the container's CPU limit -
+// system core count when no limit is set. PreCPUStats-free, so it works
+// with one-shot stats.
+func (c *dockerMetricsCollector) percentOfLimit(hostPercent, cpuLimit float64) float64 {
 	actualLimit := cpuLimit
-	if cpuLimit <= 0 {
+	if actualLimit <= 0 {
 		actualLimit = float64(runtime.NumCPU())
-		c.logger.Debug("CPU limit not set, using system CPU cores as limit", "system_cores", actualLimit)
 	}
-
-	c.logger.Debug("Calculating CPU percent of limit", "actual_limit", actualLimit, "pre_total_usage", stats.PreCPUStats.CPUUsage.TotalUsage, "current_total_usage", stats.CPUStats.CPUUsage.TotalUsage)
-
-	// Check if previous data exists
-	if stats.PreCPUStats.CPUUsage.TotalUsage == 0 {
-		// No previous data, return 0
-		c.logger.Debug("No previous CPU stats, returning 0")
-		return 0.0
+	if actualLimit <= 0 {
+		return 0
 	}
-
-	// Calculate time difference between measurements
-	timeDelta := stats.Read.Sub(stats.PreRead).Seconds()
-
-	if timeDelta <= 0 {
-		c.logger.Debug("Invalid time delta, returning 0", "time_delta", timeDelta)
-		return 0.0
-	}
-
-	// Calculate container CPU usage difference
-	cpuDelta := float64(stats.CPUStats.CPUUsage.TotalUsage) - float64(stats.PreCPUStats.CPUUsage.TotalUsage)
-
-	// Calculate average CPU usage in nanoseconds per second
-	cpuUsagePerSecond := cpuDelta / timeDelta
-
-	// Convert to seconds (1 CPU core = 1000000000 nanoseconds per second)
-	cpuUsageCores := cpuUsagePerSecond / 1000000000.0
-
-	// Calculate percentage of limit
-	result := (cpuUsageCores / actualLimit) * 100.0
-	c.logger.Debug("CPU percent of limit calculated", "cpu_usage_cores", cpuUsageCores, "actual_limit", actualLimit, "result", result)
-
-	return result
+	return hostPercent * float64(runtime.NumCPU()) / actualLimit
 }
-
-// parseContainerCreatedTime parses container creation time from string and returns string
 func (c *dockerMetricsCollector) parseContainerCreatedTime(createdStr string) string {
 	// Check for empty string
 	if createdStr == "" {
