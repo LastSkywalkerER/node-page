@@ -231,6 +231,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 
 	results := make(chan containerResult, len(containers))
 	var runningCount int32 = 0
+	var degradedCount int32 = 0
 
 	// Function for parallel processing of one container.
 	// Bounded by procCtx (which carries a 5s per-container deadline) so a hung Docker
@@ -242,13 +243,20 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 			}
 		}()
 
+		// Inspect adds only marginal fields (health/finished-at/cpu-limit,
+		// precise created, config image) on top of the list summary. On a
+		// slow daemon (wedged dokploy VMs) inspects time out wholesale -
+		// degrade to summary-only details instead of dropping the container,
+		// or the Applications view goes empty exactly when the operator
+		// needs it.
 		containerJSON, err := c.client.ContainerInspect(procCtx, containerInfo.ID)
-		if err != nil {
-			results <- containerResult{err: fmt.Errorf("failed to inspect container %s: %v", containerInfo.ID, err)}
-			return
+		inspected := err == nil
+		if !inspected {
+			atomic.AddInt32(&degradedCount, 1)
+			c.logger.Debug("Container inspect failed - serving summary-only details", "container_id", containerInfo.ID, "error", err)
 		}
 
-		if c.logger.GetLevel() <= log.DebugLevel {
+		if inspected && c.logger.GetLevel() <= log.DebugLevel {
 			containerJSONBytes, _ := json.Marshal(containerJSON)
 			c.logger.Debug("Container JSON details", "container_id", containerInfo.ID, "json", string(containerJSONBytes))
 		}
@@ -261,15 +269,21 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 			name = "unknown"
 		}
 
+		// Labels: the list summary carries the same compose labels; the
+		// inspect Config wins only because it is marginally fresher.
+		labels := containerInfo.Labels
+		if inspected && containerJSON.Config != nil {
+			labels = containerJSON.Config.Labels
+		}
+
 		// Extract stack name from compose labels first
-		stackName := c.extractStackName(containerJSON.Config.Labels)
+		stackName := c.extractStackName(labels)
 		if stackName == "" {
 			stackName = ExtractStackNameFromContainerName(name)
 		}
 
 		// Resolve the application grouping key + service from labels (used by the
 		// Applications view; the per-node Containers stacks above are unchanged).
-		labels := containerJSON.Config.Labels
 		project, service, _ := resolveProject(labels, name)
 
 		// Convert ports (with nil protection)
@@ -280,8 +294,11 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 			ports = make([]DockerPort, 0)
 		}
 
-		// Get CPU limit from container configuration
-		cpuLimit := c.getCPULimit(containerJSON)
+		// Get CPU limit from container configuration (inspect-only data)
+		var cpuLimit float64
+		if inspected {
+			cpuLimit = c.getCPULimit(containerJSON)
+		}
 
 		// Get real statistics for running containers
 		var containerStats DockerStats
@@ -303,8 +320,12 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 			containerID = containerID[:12]
 		}
 
-		finishedAt := c.parseContainerFinishedTime(containerJSON.State.FinishedAt)
-		c.logger.Debug("Container finished time", "container_id", containerID, "finished_at_raw", containerJSON.State.FinishedAt, "finished_at_parsed", finishedAt)
+		finishedAt := ""
+		created := time.Unix(containerInfo.Created, 0).UTC().Format(time.RFC3339)
+		if inspected {
+			finishedAt = c.parseContainerFinishedTime(containerJSON.State.FinishedAt)
+			created = c.parseContainerCreatedTime(containerJSON.Created)
+		}
 
 		// Disk sizes: fresh from the daemon on slow cycles, cached otherwise.
 		szRw, szRootFs := c.cachedContainerSize(containerInfo.ID)
@@ -313,7 +334,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 		// cache is keyed by, so digest-pinned / tag-less swarm images resolve too
 		// (the container-list "Image" can be a bare digest / short hex ID).
 		imageID := containerInfo.ImageID
-		if imageID == "" {
+		if imageID == "" && inspected {
 			imageID = containerJSON.Image
 		}
 
@@ -324,7 +345,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 		// source than the summary Image for swarm/dokploy; kept in-memory only to
 		// seed the update check.
 		configImage := ""
-		if containerJSON.Config != nil {
+		if inspected && containerJSON.Config != nil {
 			configImage = containerJSON.Config.Image
 		}
 
@@ -347,7 +368,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 			Status:             containerInfo.Status,
 			Ports:              ports,
 			Stats:              containerStats,
-			Created:            c.parseContainerCreatedTime(containerJSON.Created),
+			Created:            created,
 			FinishedAt:         finishedAt,
 			Project:            project,
 			Service:            service,
@@ -356,7 +377,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 			ComposeWorkingDir:  labels["com.docker.compose.project.working_dir"],
 			SizeRw:             szRw,
 			SizeRootFs:         szRootFs,
-			Mounts:             c.convertMounts(containerJSON.Mounts),
+			Mounts:             c.convertMounts(mountsOf(inspected, containerJSON, containerInfo)),
 			ImageID:            imageID,
 			UpdateAvailable:    upd.available,
 			UpdateChecked:      upd.checked,
@@ -422,6 +443,12 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 		if result.isRunning {
 			stack.RunningContainers++
 		}
+	}
+
+	if n := atomic.LoadInt32(&degradedCount); n > 0 {
+		// One line per cycle instead of a per-container flood.
+		c.logger.Warn("docker: container inspects timed out - served summary-only details",
+			"degraded", n, "total", len(containers))
 	}
 
 	// Merge stacks with common prefixes (e.g., myapp-web, myapp-api -> myapp)
@@ -1114,6 +1141,15 @@ func (c *dockerMetricsCollector) refreshVolumeSizes() {
 
 // convertMounts maps Docker mount points to our DockerMount structure, annotating
 // named volumes with their cached on-disk size.
+// mountsOf prefers the inspect mounts and falls back to the list summary's
+// when the inspect was skipped (degraded mode on a slow daemon).
+func mountsOf(inspected bool, cj container.InspectResponse, ci container.Summary) []container.MountPoint {
+	if inspected {
+		return cj.Mounts
+	}
+	return ci.Mounts
+}
+
 func (c *dockerMetricsCollector) convertMounts(mounts []container.MountPoint) []DockerMount {
 	out := make([]DockerMount, 0, len(mounts))
 	// refreshVolumeSizes replaces the map wholesale, so a snapshot reference is

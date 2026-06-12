@@ -109,40 +109,55 @@ func (s *service) CollectAllCurrent(ctx context.Context) (map[string]interface{}
 		switch result.name {
 		case "cpu":
 			if result.err != nil {
+				// Best-effort snapshot: one slow/broken module (classic: a
+				// wedged docker daemon) must not suppress the whole SSE /
+				// replication batch - the other modules still ship.
 				s.logger.Error("Failed to collect current CPU metrics", "error", result.err)
-				return nil, result.err
+				continue
 			}
 			cpuMetric = result.metric
 			s.logger.Debug("Current CPU metrics collected")
 
 		case "memory":
 			if result.err != nil {
+				// Best-effort snapshot: one slow/broken module (classic: a
+				// wedged docker daemon) must not suppress the whole SSE /
+				// replication batch - the other modules still ship.
 				s.logger.Error("Failed to collect current memory metrics", "error", result.err)
-				return nil, result.err
+				continue
 			}
 			memoryMetric = result.metric
 			s.logger.Debug("Current memory metrics collected")
 
 		case "disk":
 			if result.err != nil {
+				// Best-effort snapshot: one slow/broken module (classic: a
+				// wedged docker daemon) must not suppress the whole SSE /
+				// replication batch - the other modules still ship.
 				s.logger.Error("Failed to collect current disk metrics", "error", result.err)
-				return nil, result.err
+				continue
 			}
 			diskMetric = result.metric
 			s.logger.Debug("Current disk metrics collected")
 
 		case "network":
 			if result.err != nil {
+				// Best-effort snapshot: one slow/broken module (classic: a
+				// wedged docker daemon) must not suppress the whole SSE /
+				// replication batch - the other modules still ship.
 				s.logger.Error("Failed to collect current network metrics", "error", result.err)
-				return nil, result.err
+				continue
 			}
 			networkMetric = result.metric
 			s.logger.Debug("Current network metrics collected")
 
 		case "docker":
 			if result.err != nil {
+				// Best-effort snapshot: one slow/broken module (classic: a
+				// wedged docker daemon) must not suppress the whole SSE /
+				// replication batch - the other modules still ship.
 				s.logger.Error("Failed to collect current docker metrics", "error", result.err)
-				return nil, result.err
+				continue
 			}
 			dockerMetric = result.metric
 			s.logger.Debug("Current docker metrics collected")
@@ -159,13 +174,24 @@ func (s *service) CollectAllCurrent(ctx context.Context) (map[string]interface{}
 	}
 
 	s.logger.Debug("Current metrics collected successfully")
-	return map[string]interface{}{
-		"timestamp":    time.Now(),
-		"cpu":          cpuMetric,
-		"memory":       memoryMetric,
-		"disk":         diskMetric,
-		"network":      networkMetric,
-		"docker":       dockerMetric,
-		"applications": applications,
-	}, nil
+	// Omit failed modules instead of sending JSON nulls - the SSE consumers
+	// merge per-key and a null would clobber a widget's last good state.
+	out := map[string]interface{}{"timestamp": time.Now()}
+	if cpuMetric != nil {
+		out["cpu"] = cpuMetric
+	}
+	if memoryMetric != nil {
+		out["memory"] = memoryMetric
+	}
+	if diskMetric != nil {
+		out["disk"] = diskMetric
+	}
+	if networkMetric != nil {
+		out["network"] = networkMetric
+	}
+	if dockerMetric != nil {
+		out["docker"] = dockerMetric
+		out["applications"] = applications
+	}
+	return out, nil
 }
