@@ -1,23 +1,36 @@
-# Linux amd64 for Dokploy / Traefik: do NOT use network_mode: host here - Dokploy injects
-# `networks:` and Traefik labels; host + networks is invalid in Compose.
-# Metrics still use /host, pid: host, ipc: host. Traefik -> container:9090 (or file provider to host IP).
-#   docker compose -f docker-compose.linux-amd64.yml --env-file .env up -d --build
+# Dokploy / Traefik deployment - BUILD FROM SOURCE variant. Prefer
+# docker-compose.linux-amd64.image.yml (prebuilt ghcr.io image, no Docker Hub
+# base-image pulls -> no anonymous 429 rate limit, much faster deploys).
 #
-# All mutable state (runtime .env with RAFT_*/secrets, SQLite DB, Raft log)
-# lives in the named volume: dokploy re-clones the compose project on every
-# redeploy, so relative bind mounts (./.env, ./data) would be wiped each time
-# and the node would forget its cluster + uplink configuration.
+# How this plays with dokploy:
+#   - Domain: add it in the dokploy UI (app -> Domains): host
+#     node-stats-compose.blockchain-core-group.com, service "node-stats",
+#     container port 9090, HTTPS on. Dokploy's Traefik reaches the container
+#     over the shared dokploy-network - no host port is published.
+#   - Updates: redeploy in dokploy (pulls :latest). There is NO controller
+#     sidecar here - dokploy owns the lifecycle (NODE_STATS_MANAGED_EXTERNALLY).
+#   - State: EVERYTHING mutable (runtime .env with RAFT_*/secrets, SQLite DB,
+#     Raft log) lives in the named volume - dokploy re-clones the compose
+#     project on every redeploy, so relative bind mounts would be wiped.
 services:
   node-stats:
     platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile
-    # network_mode: host
+    networks:
+      - dokploy-network
+    # Uncomment to let OTHER machines join this node's Raft cluster (the
+    # uplink to a hub is outbound-only and needs no open port):
+    # ports:
+    #   - "7000:7000"
     volumes:
       - node-stats-data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /:/host:ro
+      # Lets the Applications view derive public URLs from dokploy's Traefik
+      # file-provider config (optional but nice):
+      - /etc/dokploy/traefik/dynamic:/etc/dokploy/traefik/dynamic:ro
     pid: host
     ipc: host
     extra_hosts:
@@ -27,11 +40,18 @@ services:
       - ADDR=:9090
       # Keep the runtime .env inside the persistent volume (see header).
       - NODE_STATS_ENV_FILE=/app/data/.env
+      # Dokploy owns the stack lifecycle - disables the wizard's controller
+      # flows (managed-postgres provisioning, in-app "update now").
+      - NODE_STATS_MANAGED_EXTERNALLY=true
 
       - HOST_PROC=/host/proc
       - HOST_SYS=/host/sys
       - HOST_ETC=/host/etc
       - HOST_ROOT=/host
+
+networks:
+  dokploy-network:
+    external: true
 
 volumes:
   node-stats-data:

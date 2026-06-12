@@ -268,6 +268,18 @@ func loadDatabaseConfig() (*DatabaseConfig, error) {
 
 	// For SQLite: use DSN as file path
 	config.DSN = getEnv("DB_DSN", "stats.db")
+	// In a container a RELATIVE sqlite path lands in /app - OUTSIDE the
+	// persistent data volume - and the database silently dies with the
+	// container (dokploy-style redeploys recreate it every time). Anchor
+	// relative paths into the data dir; native installs keep them relative
+	// (systemd pins the working directory).
+	if config.Type == DatabaseTypeSQLite && !filepath.IsAbs(config.DSN) {
+		if d := strings.TrimSpace(os.Getenv("NODE_STATS_DATA_DIR")); d != "" {
+			config.DSN = filepath.Join(d, config.DSN)
+		} else if _, err := os.Stat("/.dockerenv"); err == nil {
+			config.DSN = filepath.Join("/app/data", config.DSN)
+		}
+	}
 	return config, nil
 }
 

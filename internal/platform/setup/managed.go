@@ -2,6 +2,7 @@ package setup
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -24,6 +25,13 @@ func ManagedExternally() bool {
 	}
 	if fi, err := os.Stat("/etc/dokploy"); err == nil && fi.IsDir() {
 		return true
+	}
+	// Inside a container the host's /etc/dokploy is only visible through the
+	// HOST_ROOT bind mount.
+	if root := strings.TrimSpace(os.Getenv("HOST_ROOT")); root != "" {
+		if fi, err := os.Stat(filepath.Join(root, "etc", "dokploy")); err == nil && fi.IsDir() {
+			return true
+		}
 	}
 	return false
 }
