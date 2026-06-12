@@ -6,6 +6,9 @@
 services:
   node-stats:
     image: ghcr.io/lastskywalkerer/node-page:latest
+    # Re-pull :latest on every (re)deploy - plain `up -d` would keep the
+    # stale local tag and the Deploy button would be a no-op update-wise.
+    pull_policy: always
     volumes:
       - node-stats-data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock:ro

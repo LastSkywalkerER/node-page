@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"system-stats/internal/app/dbutil"
 )
@@ -55,7 +56,11 @@ func (r *cpuRepository) SaveCurrentMetricAt(ctx context.Context, metric CPUMetri
 		LoadAvg15:   metric.LoadAvg15,
 		Temperature: metric.Temperature,
 	}
-	return r.db.WithContext(ctx).Create(&historicalMetric).Error
+	// Raft log replay re-applies entries after a restart: the same
+	// (host_id, timestamp) row must be a no-op, not a pkey violation.
+	return r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&historicalMetric).Error
 }
 
 func (r *cpuRepository) GetLatestMetric(ctx context.Context) (CPUMetric, error) {

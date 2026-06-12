@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"system-stats/internal/app/dbutil"
 )
@@ -49,11 +50,13 @@ func (r *dockerRepository) SaveCurrentMetricAt(ctx context.Context, metric Docke
 
 	// Save metric and containers in transaction
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&historicalMetric).Error; err != nil {
+		// Raft log replay re-applies entries after a restart: the same
+		// (host_id, timestamp) row must be a no-op, not a pkey violation.
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&historicalMetric).Error; err != nil {
 			return err
 		}
 		if len(containerEntities) > 0 {
-			if err := tx.Create(&containerEntities).Error; err != nil {
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&containerEntities).Error; err != nil {
 				return err
 			}
 		}

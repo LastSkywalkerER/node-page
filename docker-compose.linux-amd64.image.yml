@@ -17,6 +17,9 @@ services:
   node-stats:
     platform: linux/amd64
     image: ${NODE_STATS_IMAGE:-ghcr.io/lastskywalkerer/node-page:latest}
+    # Re-pull :latest on every (re)deploy - plain `up -d` would keep the
+    # stale local tag and the Deploy button would be a no-op update-wise.
+    pull_policy: always
     networks:
       - dokploy-network
     # Uncomment to let OTHER machines join this node's Raft cluster (the
