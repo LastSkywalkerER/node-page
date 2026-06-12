@@ -51,6 +51,8 @@ type dockerMetricsCollector struct {
 	// values on the fast (every-tick) collection cycles.
 	containerSizeCache map[string]containerSize
 	lastSizeAt         time.Time
+	// containerSizeRefreshing guards the single background sized list.
+	containerSizeRefreshing bool
 
 	// Named-volume on-disk sizes (daemon walks the volume dir, so also slow):
 	// refreshed in the background on the sizeRefreshInterval cadence and looked
@@ -114,7 +116,7 @@ type containerSize struct {
 }
 
 // sizeRefreshInterval bounds how often the (slow) Size:true container list runs.
-const sizeRefreshInterval = 60 * time.Second
+const sizeRefreshInterval = 5 * time.Minute
 
 // cpuStatsCache stores CPU statistics for percentage calculation.
 // This structure holds previous CPU usage data needed to compute CPU percentages.
@@ -199,28 +201,24 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 		}, nil
 	}
 
-	// Computing container sizes makes the daemon walk layer dirs, which is slow.
-	// Only request sizes on the slow cadence (sizeRefreshInterval); other cycles
-	// reuse cached sizes so the 5s CPU/mem/net cycle stays fast and fresh.
-	c.cacheMutex.RLock()
-	withSize := c.lastSizeAt.IsZero() || time.Since(c.lastSizeAt) >= sizeRefreshInterval
-	c.cacheMutex.RUnlock()
-
-	containers, err := c.client.ContainerList(ctx, container.ListOptions{All: true, Size: withSize})
+	// Computing container sizes makes the daemon walk layer dirs — on a busy
+	// host a sized list can outlive the whole collection budget, and an INLINE
+	// attempt that times out would retry (and time out) every cycle, starving
+	// docker metrics entirely. The hot path always lists WITHOUT sizes; a
+	// background refresh with its own generous deadline fills the size cache
+	// on the slow cadence and the cycle serves cached values meanwhile.
+	containers, err := c.client.ContainerList(ctx, container.ListOptions{All: true, Size: false})
 	if err != nil {
 		return DockerMetric{
 			DockerAvailable: true,
 			Error:           fmt.Sprintf("Failed to list containers: %v", err),
 		}, nil
 	}
-	if withSize {
-		c.cacheMutex.Lock()
-		c.lastSizeAt = time.Now()
-		c.cacheMutex.Unlock()
-		// Refresh named-volume sizes on the slow cadence in the BACKGROUND — the
-		// daemon's volume df can be slow on large volumes and must never stall the
-		// collection cycle. convertMounts serves the last cached values meanwhile.
-		c.maybeRefreshVolumeSizes()
+	c.cacheMutex.RLock()
+	sizesStale := c.lastSizeAt.IsZero() || time.Since(c.lastSizeAt) >= sizeRefreshInterval
+	c.cacheMutex.RUnlock()
+	if sizesStale {
+		c.maybeRefreshContainerSizes()
 	}
 
 	// Structure for parallel container processing results
@@ -309,7 +307,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 		c.logger.Debug("Container finished time", "container_id", containerID, "finished_at_raw", containerJSON.State.FinishedAt, "finished_at_parsed", finishedAt)
 
 		// Disk sizes: fresh from the daemon on slow cycles, cached otherwise.
-		szRw, szRootFs := c.resolveContainerSize(containerInfo.ID, withSize, containerInfo.SizeRw, containerInfo.SizeRootFs)
+		szRw, szRootFs := c.cachedContainerSize(containerInfo.ID)
 
 		// Content-addressable image ID (sha256:...) — the canonical key the update
 		// cache is keyed by, so digest-pinned / tag-less swarm images resolve too
@@ -1026,17 +1024,50 @@ func imageTag(ref string) string {
 // resolveContainerSize returns the container's writable/total sizes: when
 // withSize is set it stores the freshly-reported values in the cache; otherwise
 // it serves the last cached values (so fast cycles don't recompute sizes).
-func (c *dockerMetricsCollector) resolveContainerSize(id string, withSize bool, rw, rootFs int64) (int64, int64) {
-	if withSize {
-		c.cacheMutex.Lock()
-		c.containerSizeCache[id] = containerSize{rw: rw, rootFs: rootFs}
-		c.cacheMutex.Unlock()
-		return rw, rootFs
-	}
+func (c *dockerMetricsCollector) cachedContainerSize(id string) (int64, int64) {
 	c.cacheMutex.RLock()
 	e := c.containerSizeCache[id]
 	c.cacheMutex.RUnlock()
 	return e.rw, e.rootFs
+}
+
+// maybeRefreshContainerSizes launches the slow Size:true container list in
+// the background unless one is already running. Never blocks the metric cycle.
+func (c *dockerMetricsCollector) maybeRefreshContainerSizes() {
+	c.cacheMutex.Lock()
+	if c.containerSizeRefreshing || c.client == nil {
+		c.cacheMutex.Unlock()
+		return
+	}
+	c.containerSizeRefreshing = true
+	c.cacheMutex.Unlock()
+	go c.refreshContainerSizes()
+}
+
+// refreshContainerSizes runs the sized container list with its own deadline,
+// detached from the collection cycle. Best-effort: on error the previous
+// cache is kept and lastSizeAt stays unset so the next cycle re-triggers.
+func (c *dockerMetricsCollector) refreshContainerSizes() {
+	defer func() {
+		c.cacheMutex.Lock()
+		c.containerSizeRefreshing = false
+		c.cacheMutex.Unlock()
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	containers, err := c.client.ContainerList(ctx, container.ListOptions{All: true, Size: true})
+	if err != nil {
+		c.logger.Debug("docker: background container-size refresh failed", "error", err)
+		return
+	}
+	c.cacheMutex.Lock()
+	for _, ci := range containers {
+		c.containerSizeCache[ci.ID] = containerSize{rw: ci.SizeRw, rootFs: ci.SizeRootFs}
+	}
+	c.lastSizeAt = time.Now()
+	c.cacheMutex.Unlock()
+	// Named-volume sizes ride the same slow cadence.
+	c.maybeRefreshVolumeSizes()
 }
 
 // maybeRefreshVolumeSizes launches a background named-volume disk-usage refresh
