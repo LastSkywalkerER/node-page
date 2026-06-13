@@ -622,28 +622,88 @@ func (r *hostRepository) UpdateHostLabelsFromAgentPush(ctx context.Context, host
 		Updates(updates).Error
 }
 
+// cascadeDeleteChunkSize bounds each DELETE statement during a host cascade so
+// no single statement scans/locks a giant table at once. A host that has run
+// for ~20h accumulates ~355K docker_container_entities rows; deleting them in
+// one statement on the 2-CPU/4GB hub stalled the DB (and, under Raft, the
+// applier deadline). Chunked deletes keep each statement short and let the
+// loop yield between rounds.
+const cascadeDeleteChunkSize = 5000
+
+// DeleteHostCascade removes a host row and all metrics scoped to that host_id.
+//
+// It is deliberately NOT wrapped in a single transaction: a host with hundreds
+// of thousands of rows would build one enormous transaction (huge WAL / dead
+// tuples) and, on Raft, blow the applier deadline. Instead each table is
+// drained in bounded chunks, every chunk its own autocommitted statement, so
+// progress is durable and incremental. Raw SQL is used to avoid an import
+// cycle with the metrics packages. `timestamp` is quoted because it is a
+// reserved word on Postgres.
 func (r *hostRepository) DeleteHostCascade(ctx context.Context, hostID uint) error {
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Metrics tables (raw SQL to avoid an import cycle with the metrics
-		// packages). Statement errors MUST be checked: one failed statement
-		// aborts the transaction, and ignoring it lets the final commit fail with
-		// the opaque "commit unexpectedly resulted in rollback". Child docker rows
-		// live in docker_container_entities (GORM's default name for
-		// DockerContainerEntity), deleted before their parent docker_metrics.
-		stmts := []string{
-			"DELETE FROM cpu_metrics WHERE host_id = ?",
-			"DELETE FROM memory_metrics WHERE host_id = ?",
-			"DELETE FROM disk_metrics WHERE host_id = ?",
-			"DELETE FROM network_metrics WHERE host_id = ?",
-			"DELETE FROM docker_container_entities WHERE metric_timestamp IN (SELECT timestamp FROM docker_metrics WHERE host_id = ?)",
-			"DELETE FROM docker_metrics WHERE host_id = ?",
-			"DELETE FROM hosts WHERE id = ?",
-		}
-		for _, q := range stmts {
-			if err := tx.Exec(q, hostID).Error; err != nil {
-				return fmt.Errorf("cascade delete host %d (%q): %w", hostID, q, err)
+	pg := r.db.Dialector.Name() == "postgres"
+
+	// chunkDelete runs `query` (a DELETE bounded to cascadeDeleteChunkSize rows)
+	// repeatedly until it stops affecting rows. Each iteration is its own
+	// statement so no single giant transaction forms.
+	chunkDelete := func(query string, args ...interface{}) error {
+		for {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			res := r.db.WithContext(ctx).Exec(query, args...)
+			if res.Error != nil {
+				return fmt.Errorf("cascade delete host %d (%q): %w", hostID, query, res.Error)
+			}
+			if res.RowsAffected == 0 {
+				return nil
 			}
 		}
-		return nil
-	})
+	}
+
+	rowKey := "rowid"
+	if pg {
+		rowKey = "ctid"
+	}
+
+	// 1) Child docker rows (docker_container_entities) first, keyed off the
+	// parent docker_metrics timestamps for this host. docker_container_entities
+	// has no host_id column, so it's scoped by metric_timestamp — the new
+	// idx_docker_container_metric_ts index covers that lookup (the FK and its
+	// implicit index were dropped). The chunk is bounded by the container
+	// table's OWN physical row identity (rowid/ctid): bounding on the parent
+	// timestamps instead would re-select the same first N timestamps every
+	// round (docker_metrics isn't trimmed until step 2) and the loop would stop
+	// after one chunk with rows still left.
+	containerQuery := fmt.Sprintf(
+		"DELETE FROM docker_container_entities WHERE %[1]s IN "+
+			"(SELECT %[1]s FROM docker_container_entities WHERE metric_timestamp IN "+
+			`(SELECT "timestamp" FROM docker_metrics WHERE host_id = ?) LIMIT %[2]d)`,
+		rowKey, cascadeDeleteChunkSize)
+	if err := chunkDelete(containerQuery, hostID); err != nil {
+		return err
+	}
+
+	// 2) Each metric table in chunks, keyed by host_id, bounded by a LIMITed
+	// subselect on the table's own physical row identity (rowid on SQLite, ctid
+	// on Postgres) — the same portable shape used by the retention service.
+	for _, table := range []string{
+		"docker_metrics",
+		"cpu_metrics",
+		"memory_metrics",
+		"disk_metrics",
+		"network_metrics",
+	} {
+		q := fmt.Sprintf(
+			"DELETE FROM %[1]s WHERE %[2]s IN (SELECT %[2]s FROM %[1]s WHERE host_id = ? LIMIT %[3]d)",
+			table, rowKey, cascadeDeleteChunkSize)
+		if err := chunkDelete(q, hostID); err != nil {
+			return err
+		}
+	}
+
+	// 3) Finally the host row itself.
+	if err := r.db.WithContext(ctx).Exec("DELETE FROM hosts WHERE id = ?", hostID).Error; err != nil {
+		return fmt.Errorf("cascade delete host %d (hosts row): %w", hostID, err)
+	}
+	return nil
 }

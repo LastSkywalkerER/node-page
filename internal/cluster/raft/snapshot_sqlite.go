@@ -2,14 +2,28 @@ package raft
 
 import (
 	"compress/gzip"
+	"database/sql/driver"
 	"encoding/gob"
 	"fmt"
 	"io"
 	"sort"
+	"time"
 
 	hraft "github.com/hashicorp/raft"
 	"gorm.io/gorm"
 )
+
+func init() {
+	// Rows are dumped as map[string]any, and both drivers scan timestamp
+	// columns into concrete time.Time values (pgx for timestamptz, glebarez
+	// for sqlite datetime). gob refuses to encode an unregistered concrete
+	// type behind an interface — without this registration Persist failed
+	// with "gob: type not registered for interface: time.Time" on every
+	// attempt, so no snapshot ever succeeded and the raft log grew without
+	// bound. Registering here covers BOTH the encode (Persist) and decode
+	// (Restore) paths.
+	gob.Register(time.Time{})
+}
 
 // SQLiteSnapshotter / SQLiteRestorer dump every Raft-managed table out of
 // the local SQLite database into a Raft FSM snapshot, and re-import them on
@@ -121,6 +135,10 @@ func (s *sqliteSnapshot) Persist(sink hraft.SnapshotSink) error {
 	}
 	for _, name := range keys {
 		rows := s.tables[name]
+		// Normalise driver-specific value types into gob-encodable ones
+		// BEFORE sorting, so the sort keys (and therefore the bytes) do
+		// not depend on which dialect produced the dump.
+		normalizeRows(rows)
 		// Sort each table by its full row signature so determinism does
 		// not depend on the storage engine's iteration order.
 		sortRows(rows)
@@ -244,6 +262,43 @@ func insertRows(tx *gorm.DB, table string, rows []map[string]any) error {
 		}
 	}
 	return nil
+}
+
+// normalizeRows rewrites driver-specific concrete value types in dumped rows
+// into gob-encodable ones before Persist encodes them. gob pre-registers the
+// numeric/string/bool/[]byte primitives the sql drivers emit; time.Time is
+// registered in init above but is converted to UTC here so the encoded bytes
+// do not depend on the scanning session's time zone (Postgres returns
+// timestamptz in the session zone). Anything else is defensively stringified
+// so an exotic driver type can never abort a snapshot again.
+func normalizeRows(rows []map[string]any) {
+	for _, row := range rows {
+		for k, v := range row {
+			row[k] = normalizeValue(v)
+		}
+	}
+}
+
+func normalizeValue(v any) any {
+	switch t := v.(type) {
+	case nil, bool, string, []byte,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64:
+		return v
+	case time.Time:
+		return t.UTC()
+	case driver.Valuer:
+		// GORM's map scan already unwraps Valuers, but guard anyway.
+		if dv, err := t.Value(); err == nil {
+			if _, again := dv.(driver.Valuer); !again {
+				return normalizeValue(dv)
+			}
+		}
+		return fmt.Sprintf("%v", v)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 func isNoSuchTable(err error) bool {

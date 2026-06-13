@@ -64,6 +64,26 @@ func (s *Service) CleanupBatch(ctx context.Context, batchSize int) (int64, error
 			s.logger.Debug("Retention batch", "table", table, "deleted", res.RowsAffected)
 		}
 	}
+
+	// docker_container_entities is the heaviest history table (hundreds of
+	// thousands of rows / hundreds of MB) and was previously uncovered by
+	// retention. It has no host_id column, so it is keyed off metric_timestamp
+	// (now indexed) with the same batch shape as the metric tables above.
+	if ctx.Err() == nil {
+		const containerTable = "docker_container_entities"
+		cq := "DELETE FROM " + containerTable + " WHERE rowid IN (SELECT rowid FROM " + containerTable + " WHERE metric_timestamp < ? LIMIT ?)"
+		if s.db.Dialector.Name() == "postgres" {
+			cq = "DELETE FROM " + containerTable + " WHERE ctid IN (SELECT ctid FROM " + containerTable + " WHERE metric_timestamp < ? LIMIT ?)"
+		}
+		res := s.db.WithContext(ctx).Exec(cq, cutoff, batchSize)
+		if res.Error != nil {
+			s.logger.Error("Retention batch failed", "table", containerTable, "error", res.Error)
+		} else if res.RowsAffected > 0 {
+			totalDeleted += res.RowsAffected
+			s.logger.Debug("Retention batch", "table", containerTable, "deleted", res.RowsAffected)
+		}
+	}
+
 	return totalDeleted, nil
 }
 

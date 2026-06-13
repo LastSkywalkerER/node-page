@@ -132,11 +132,27 @@ func (a *appliers) applyBridgeEnvelopeBatch(cmd Command, _ *hraft.Log) error {
 	return nil
 }
 
+// defaultApplierBudget is the per-apply deadline so a wedged DB cannot stall
+// the Raft log forever. A few commands (host cascade delete) override it.
+const defaultApplierBudget = 10 * time.Second
+
+// hostCascadeDeleteBudget is the (much larger) deadline for applyHostDelete.
+// Deleting a host can purge hundreds of thousands of docker_container_entities
+// rows; even chunked, that legitimately takes far longer than a metric write,
+// and the default 10s deadline would cancel it mid-cascade on every replica.
+const hostCascadeDeleteBudget = 120 * time.Second
+
 // applierCtx returns a context flagged as an applier so any future
-// WriteGate plumbing recognises the call site as legitimate, plus a short
-// deadline so a wedged DB cannot stall the Raft log forever.
+// WriteGate plumbing recognises the call site as legitimate, plus the default
+// deadline.
 func (a *appliers) applierCtx() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(WithApplier(context.Background()), 10*time.Second)
+	return a.applierCtxWithBudget(defaultApplierBudget)
+}
+
+// applierCtxWithBudget is applierCtx with an explicit deadline for the rare
+// long-running appliers.
+func (a *appliers) applierCtxWithBudget(d time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(WithApplier(context.Background()), d)
 }
 
 // remoteOrigin returns the foreign cluster id, or "" for local commands.
@@ -268,7 +284,9 @@ func (a *appliers) applyHostDelete(cmd Command, _ *hraft.Log) error {
 	if p.HostMAC == "" {
 		return nil
 	}
-	ctx, cancel := a.applierCtx()
+	// A host cascade can purge hundreds of thousands of rows — give it a far
+	// larger budget than a normal applier write.
+	ctx, cancel := a.applierCtxWithBudget(hostCascadeDeleteBudget)
 	defer cancel()
 	host, err := a.deps.HostRepo.GetHostByMacAddress(ctx, p.HostMAC)
 	if err != nil {

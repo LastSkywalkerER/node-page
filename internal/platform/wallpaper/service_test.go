@@ -135,6 +135,72 @@ func TestCurrentDisabledConnector(t *testing.T) {
 	}
 }
 
+// A fresh upstream failure with no cached set is cached for failureTTL: the
+// first call returns the raw error, subsequent calls short-circuit with
+// ErrCachedFailure WITHOUT hitting upstream again (no 502 storm).
+func TestCurrentCachesFailureAndStopsUpstreamCalls(t *testing.T) {
+	var hits atomic.Int64
+	svc, _ := newTestService(t, func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}, []connectors.Connector{pexelsRow(t, "x", true)})
+
+	base := time.Now()
+	svc.now = func() time.Time { return base }
+	if _, err := svc.Current(context.Background(), "dark"); err == nil {
+		t.Fatal("first call should return the upstream error")
+	}
+	after := hits.Load()
+	if after == 0 {
+		t.Fatal("first call should reach upstream")
+	}
+	// Within failureTTL: short-circuited, upstream untouched.
+	svc.now = func() time.Time { return base.Add(5 * time.Minute) }
+	if _, err := svc.Current(context.Background(), "dark"); err != ErrCachedFailure {
+		t.Fatalf("expected ErrCachedFailure, got %v", err)
+	}
+	if hits.Load() != after {
+		t.Fatalf("cached failure must not hit upstream (%d -> %d)", after, hits.Load())
+	}
+	// After failureTTL expires the upstream is retried.
+	svc.now = func() time.Time { return base.Add(failureTTL + time.Minute) }
+	if _, err := svc.Current(context.Background(), "dark"); err == ErrCachedFailure {
+		t.Fatal("expired failure must retry upstream, not short-circuit")
+	}
+	if hits.Load() == after {
+		t.Fatal("expired failure should reach upstream again")
+	}
+}
+
+// A bad decryption key (changed JWT secret) is cached too: it won't fix itself
+// per request, so the second call short-circuits without re-attempting decrypt.
+func TestCurrentCachesDecryptFailure(t *testing.T) {
+	// Encrypt the key under a DIFFERENT secret than the service's cipher so
+	// Decrypt fails with "message authentication failed".
+	enc, err := connectors.NewCipher("other-secret").Encrypt("good-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := json.Marshal(map[string]string{"query": "x"})
+	row := connectors.Connector{
+		ID: 1, Type: connectors.TypePexels, Fingerprint: connectors.PexelsFingerprint,
+		SecretEnc: enc, Config: string(cfg), Enabled: true,
+	}
+	svc, _ := newTestService(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("upstream must not be reached when decrypt fails")
+	}, []connectors.Connector{row})
+
+	base := time.Now()
+	svc.now = func() time.Time { return base }
+	if _, err := svc.Current(context.Background(), "dark"); err == nil {
+		t.Fatal("decrypt failure should error")
+	}
+	svc.now = func() time.Time { return base.Add(time.Minute) }
+	if _, err := svc.Current(context.Background(), "dark"); err != ErrCachedFailure {
+		t.Fatalf("expected ErrCachedFailure on cached decrypt failure, got %v", err)
+	}
+}
+
 func TestCurrentServesStaleOnUpstreamError(t *testing.T) {
 	var failing atomic.Bool
 	svc, _ := newTestService(t, func(w http.ResponseWriter, r *http.Request) {

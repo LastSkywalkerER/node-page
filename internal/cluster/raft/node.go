@@ -149,8 +149,12 @@ func (n *Node) Start(ctx context.Context) error {
 
 	rcfg := hraft.DefaultConfig()
 	rcfg.LocalID = hraft.ServerID(n.cfg.NodeID)
-	rcfg.SnapshotInterval = 60 * time.Second
-	rcfg.SnapshotThreshold = 10000
+	// Snapshot rarely: each snapshot dumps every managed table (incl. metric
+	// history) under one transaction, which is expensive on small hosts. The
+	// raft log is compact relative to a full DB dump, so favouring fewer,
+	// larger compactions keeps steady-state load low.
+	rcfg.SnapshotInterval = 15 * time.Minute
+	rcfg.SnapshotThreshold = 100000
 
 	r, err := hraft.NewRaft(rcfg, n.fsm, logStore, stableStore, snaps, transport)
 	if err != nil {

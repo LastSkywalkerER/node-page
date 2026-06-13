@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/log"
 )
@@ -101,6 +102,50 @@ func TestRemoveHost_LocalCascadeWhenStandalone(t *testing.T) {
 	}
 	if len(repo.cascadedIDs) != 1 || repo.cascadedIDs[0] != 7 {
 		t.Fatalf("expected local cascade of id=7, got %v", repo.cascadedIDs)
+	}
+}
+
+func TestShouldSubmitUpsert_ThrottlesUnchangedRecords(t *testing.T) {
+	s := newTestService(&fakeRepo{}, nil)
+	info := HostInfo{Name: "node-a", MacAddress: "aa:bb:cc:dd:ee:ff", IPv4: "10.0.0.5"}
+	base := time.Now()
+
+	// First-ever submission always goes through.
+	if !s.shouldSubmitUpsert(info, base) {
+		t.Fatalf("first submission must be sent")
+	}
+	// Same record, a tick later (well under the heartbeat) → skip.
+	if s.shouldSubmitUpsert(info, base.Add(5*time.Second)) {
+		t.Fatalf("unchanged record within heartbeat window must be throttled")
+	}
+	// Still within window → still skip.
+	if s.shouldSubmitUpsert(info, base.Add(hostUpsertHeartbeat-time.Millisecond)) {
+		t.Fatalf("unchanged record just before heartbeat must still be throttled")
+	}
+	// Heartbeat elapsed → liveness refresh is sent even though nothing changed.
+	if !s.shouldSubmitUpsert(info, base.Add(hostUpsertHeartbeat)) {
+		t.Fatalf("unchanged record must be re-sent once the heartbeat elapses")
+	}
+}
+
+func TestShouldSubmitUpsert_SendsOnRecordChange(t *testing.T) {
+	s := newTestService(&fakeRepo{}, nil)
+	info := HostInfo{Name: "node-a", MacAddress: "aa:bb:cc:dd:ee:ff", IPv4: "10.0.0.5"}
+	base := time.Now()
+
+	if !s.shouldSubmitUpsert(info, base) {
+		t.Fatalf("first submission must be sent")
+	}
+	// A field change inside the heartbeat window must still be submitted
+	// immediately (peers need the new IP without waiting out the throttle).
+	changed := info
+	changed.IPv4 = "10.0.0.6"
+	if !s.shouldSubmitUpsert(changed, base.Add(time.Second)) {
+		t.Fatalf("changed record must be sent regardless of the heartbeat window")
+	}
+	// The changed record is now the baseline → an immediate repeat is throttled.
+	if s.shouldSubmitUpsert(changed, base.Add(2*time.Second)) {
+		t.Fatalf("repeat of the changed record within the window must be throttled")
 	}
 }
 

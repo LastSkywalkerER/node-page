@@ -32,15 +32,99 @@ func quietLogger() gormlogger.Interface {
 }
 
 // Initialize creates a new database connection based on the provided configuration.
+//
+// For Postgres it retries transient connection failures (e.g. the DB container
+// is still starting and not yet accepting connections) with a bounded
+// exponential backoff: up to 24 attempts, 1s,2s,...capped at 10s (~3-4 min
+// total). Configuration/credential errors (bad DSN, auth failure) are not
+// transient and fail fast. SQLite is a local file and never retries.
 func Initialize(dbConfig config.DatabaseConfig) (*gorm.DB, error) {
 	switch dbConfig.Type {
 	case config.DatabaseTypeSQLite:
 		return initSQLite(dbConfig)
 	case config.DatabaseTypePostgres:
-		return initPostgres(dbConfig)
+		return initPostgresWithRetry(dbConfig)
 	default:
 		return nil, fmt.Errorf("unsupported database type: %s (supported: sqlite, postgres)", dbConfig.Type)
 	}
+}
+
+const (
+	dbConnectMaxAttempts = 24
+	dbConnectMaxBackoff  = 10 * time.Second
+)
+
+// isTransientDBError reports whether a Postgres connection error is worth
+// retrying. We treat "server not yet accepting connections" / connection
+// refused / network timeouts as transient (the DB is still coming up), but
+// authentication and bad-config errors as fatal so we don't loop on a
+// misconfiguration. The pgx driver does not expose stable typed errors here
+// without importing it directly, so we match on the (stable) message text.
+func isTransientDBError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	// Fatal: credentials / database / config problems — never retry these.
+	for _, fatal := range []string{
+		"password authentication failed",
+		"authentication failed",
+		"role \"",
+		"does not exist",
+		"invalid dsn",
+		"cannot parse",
+		"ssl is not enabled",
+		"no pg_hba.conf entry",
+	} {
+		if strings.Contains(msg, fatal) {
+			return false
+		}
+	}
+	// Transient: server still starting / unreachable.
+	for _, transient := range []string{
+		"not yet accepting connections",
+		"the database system is starting up",
+		"connection refused",
+		"connection reset",
+		"no such host",
+		"i/o timeout",
+		"timeout",
+		"dial tcp",
+		"econnrefused",
+		"server closed the connection",
+		"network is unreachable",
+		"no route to host",
+	} {
+		if strings.Contains(msg, transient) {
+			return true
+		}
+	}
+	return false
+}
+
+func initPostgresWithRetry(dbConfig config.DatabaseConfig) (*gorm.DB, error) {
+	var lastErr error
+	backoff := time.Second
+	for attempt := 1; attempt <= dbConnectMaxAttempts; attempt++ {
+		db, err := initPostgres(dbConfig)
+		if err == nil {
+			return db, nil
+		}
+		lastErr = err
+		if !isTransientDBError(err) || attempt == dbConnectMaxAttempts {
+			return nil, err
+		}
+		log.Printf("[WARN] database: connection attempt %d/%d failed (%v); retrying in %s",
+			attempt, dbConnectMaxAttempts, err, backoff)
+		time.Sleep(backoff)
+		if backoff < dbConnectMaxBackoff {
+			backoff *= 2
+			if backoff > dbConnectMaxBackoff {
+				backoff = dbConnectMaxBackoff
+			}
+		}
+	}
+	return nil, lastErr
 }
 
 func initSQLite(dbConfig config.DatabaseConfig) (*gorm.DB, error) {

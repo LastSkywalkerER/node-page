@@ -2,14 +2,29 @@ package hosts
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/log"
 )
+
+// hostUpsertHeartbeat is how often a UNCHANGED local host record is still
+// pushed through Raft just to refresh last_seen, so peers keep us online with
+// a comfortable margin below HostOfflineThreshold. Computed as
+// max(15s, HostOfflineThreshold/3): with a 45s threshold that's 15s, leaving
+// ~3 heartbeats of slack before a peer would flip us offline. The collector
+// ticks every ~5s, so most ticks now skip the consensus round entirely.
+var hostUpsertHeartbeat = func() time.Duration {
+	if d := HostOfflineThreshold / 3; d > 15*time.Second {
+		return d
+	}
+	return 15 * time.Second
+}()
 
 // ErrCannotRemoveLocalHost is returned when a caller tries to remove this
 // node's own collector row (id=1). Use the Raft "leave cluster" flow instead.
@@ -45,6 +60,17 @@ type service struct {
 	collector      *HostCollector
 	hostRepository Repository
 	raft           RaftReplicator
+
+	// upsertMu guards the throttling state for the periodic Raft host upsert.
+	upsertMu sync.Mutex
+	// lastUpsertHash is the fingerprint of the last HostInfo submitted through
+	// Raft, EXCLUDING last_seen — so an unchanged record doesn't trigger a
+	// consensus round every 5s metrics tick.
+	lastUpsertHash [sha256.Size]byte
+	// lastUpsertSubmit is when we last submitted (changed record or heartbeat).
+	lastUpsertSubmit time.Time
+	// haveUpserted records whether any submission has happened yet.
+	haveUpserted bool
 }
 
 // NewService creates a new hosts service.
@@ -97,7 +123,14 @@ func (s *service) RegisterOrUpdateCurrentHost(ctx context.Context) (*Host, error
 	// after the bridge ships entries, the peer cluster) sees us in
 	// /api/v1/hosts. Best-effort: a failure here does not block the
 	// local id=1 collector row from being written.
-	if s.raft != nil && s.raft.Enabled() {
+	//
+	// Throttled: this runs on every ~5s metrics tick, but a CmdHostUpsert is a
+	// full consensus round. We only submit when the host record actually
+	// changed (hostname/IP/topology/etc.) OR enough time has elapsed that peers
+	// would soon flip us offline — see shouldSubmitUpsert. This keeps Raft log
+	// growth proportional to real change, not wall-clock, while still keeping
+	// every node green with a comfortable margin.
+	if s.raft != nil && s.raft.Enabled() && s.shouldSubmitUpsert(hostInfo, time.Now()) {
 		if rerr := s.raft.SubmitHostUpsert(ctx, hostInfo); rerr != nil {
 			s.logger.Warn("Raft host upsert failed", "error", rerr)
 		}
@@ -105,6 +138,56 @@ func (s *service) RegisterOrUpdateCurrentHost(ctx context.Context) (*Host, error
 
 	s.logger.Debug("Local host registered/updated", "host_id", host.ID, "name", host.Name, "mac", host.MacAddress)
 	return host, nil
+}
+
+// hostInfoFingerprint hashes every identity/topology field of a HostInfo.
+// HostInfo carries no last_seen (the repository stamps that), so the whole
+// struct IS "the record excluding last_seen": a stable fingerprint changes
+// only when something a peer cares about (hostname, IP, kernel, boot time, …)
+// actually changes.
+func hostInfoFingerprint(info HostInfo) [sha256.Size]byte {
+	// A field separator that can't appear in the values keeps distinct field
+	// boundaries unambiguous (so "ab"+"c" != "a"+"bc").
+	s := strings.Join([]string{
+		info.OriginCluster,
+		info.Name,
+		info.MacAddress,
+		info.IPv4,
+		info.OS,
+		info.Platform,
+		info.PlatformFamily,
+		info.PlatformVersion,
+		info.KernelVersion,
+		info.VirtualizationSystem,
+		info.VirtualizationRole,
+		info.HostID,
+		info.HardwareUUID,
+		fmt.Sprintf("%d", info.BootTime),
+	}, "\x00")
+	return sha256.Sum256([]byte(s))
+}
+
+// shouldSubmitUpsert reports whether the periodic local-host registration
+// should issue a Raft CmdHostUpsert this tick, and records the decision. It
+// submits when the record changed since the last submission, or when at least
+// hostUpsertHeartbeat has elapsed (a liveness refresh so peers keep us online).
+// Mutex-protected because the collection loop and any concurrent register call
+// can both reach here.
+func (s *service) shouldSubmitUpsert(info HostInfo, now time.Time) bool {
+	fp := hostInfoFingerprint(info)
+
+	s.upsertMu.Lock()
+	defer s.upsertMu.Unlock()
+
+	changed := !s.haveUpserted || fp != s.lastUpsertHash
+	elapsed := now.Sub(s.lastUpsertSubmit) >= hostUpsertHeartbeat
+	if !changed && !elapsed {
+		return false
+	}
+	s.lastUpsertHash = fp
+	s.lastUpsertSubmit = now
+	s.haveUpserted = true
+	return true
 }
 
 func (s *service) GetHostByID(ctx context.Context, id uint) (*Host, error) {

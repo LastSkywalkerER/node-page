@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -92,6 +93,45 @@ func TestFSM_GarbledPayloadDoesNotPanic(t *testing.T) {
 	}
 	if got := fsm.AppliedIndex(); got != 42 {
 		t.Fatalf("AppliedIndex must advance even on decode error; got %d", got)
+	}
+}
+
+func TestFSM_PoisonEntryGuard(t *testing.T) {
+	t.Parallel()
+	fsm := NewFSM(newTestLogger(t))
+
+	wantErr := errors.New("deterministic boom")
+	calls := 0
+	fsm.Register(CmdHostUpsert, func(Command, *hraft.Log) error {
+		calls++
+		return wantErr
+	})
+
+	data, err := json.Marshal(Command{Type: CmdHostUpsert, Timestamp: time.Now(), Payload: []byte(`{}`)})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// The same index is replayed (snapshot/restore, leader handoff). The first
+	// maxApplierRetries failures surface the error; once it has failed MORE than
+	// maxApplierRetries times the FSM treats it as applied (nil) so it can't
+	// wedge the pipeline.
+	for i := 1; i <= maxApplierRetries; i++ {
+		res := fsm.Apply(&hraft.Log{Index: 100, Data: data})
+		if res == nil {
+			t.Fatalf("apply #%d: expected the applier error to surface, got nil", i)
+		}
+	}
+	res := fsm.Apply(&hraft.Log{Index: 100, Data: data})
+	if res != nil {
+		t.Fatalf("after exceeding maxApplierRetries the poison entry must be treated as applied (nil), got %v", res)
+	}
+	// A DIFFERENT index keeps its own independent failure budget.
+	if res := fsm.Apply(&hraft.Log{Index: 101, Data: data}); res == nil {
+		t.Fatal("a different index must not inherit the poisoned index's fail count")
+	}
+	if calls == 0 {
+		t.Fatal("applier was never invoked")
 	}
 }
 

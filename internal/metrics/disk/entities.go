@@ -5,12 +5,12 @@ import (
 )
 
 type DiskMetric struct {
-	Total        uint64         `json:"total"`
-	Used         uint64         `json:"used"`
-	Free         uint64         `json:"free"`
-	UsagePercent float64        `json:"usage_percent"`
+	Total        uint64          `json:"total"`
+	Used         uint64          `json:"used"`
+	Free         uint64          `json:"free"`
+	UsagePercent float64         `json:"usage_percent"`
 	Partitions   []PartitionStat `json:"partitions" gorm:"-"`
-	Mounts       []UsageStat    `json:"mounts" gorm:"-"`
+	Mounts       []UsageStat     `json:"mounts" gorm:"-"`
 	IOCounters   []IOCounterStat `json:"io_counters" gorm:"-"`
 }
 
@@ -55,7 +55,7 @@ type IOCounterStat struct {
 }
 
 type HistoricalDiskMetric struct {
-	HostID       *uint     `json:"host_id" gorm:"default:null;index;index:idx_disk_host_ts"`
+	HostID       *uint     `json:"host_id" gorm:"primaryKey;default:null;index;index:idx_disk_host_ts"`
 	Timestamp    time.Time `json:"timestamp" gorm:"primaryKey;index;index:idx_disk_host_ts"`
 	UsagePercent float64   `json:"usage_percent" gorm:"column:usage_percent"`
 	UsedBytes    uint64    `json:"used_bytes" gorm:"column:used_bytes"`

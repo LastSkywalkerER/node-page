@@ -35,7 +35,7 @@ func (c CPUMetric) GetTimestamp() time.Time { return time.Now() }
 func (c CPUMetric) GetType() string         { return "cpu" }
 
 type HistoricalCPUMetric struct {
-	HostID      *uint     `json:"host_id" gorm:"default:null;index;index:idx_cpu_host_ts"`
+	HostID      *uint     `json:"host_id" gorm:"primaryKey;default:null;index;index:idx_cpu_host_ts"`
 	Timestamp   time.Time `json:"timestamp" gorm:"primaryKey;index;index:idx_cpu_host_ts"`
 	Usage       float64   `json:"usage" gorm:"column:usage"`
 	Cores       int       `json:"cores" gorm:"column:cores"`

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // AppliedRemoteLog records every (origin_cluster_id, origin_index) tuple
@@ -46,14 +47,50 @@ func HasApplied(ctx context.Context, db *gorm.DB, origin string, index uint64) (
 	return count > 0, nil
 }
 
+// AppliedIndexSet returns the subset of indexes (scoped to origin) that have
+// already been applied locally, as a set keyed by origin_index. The receiver
+// uses this to dedupe a whole batch with ONE query instead of a per-entry
+// SELECT count(*) — the dominant DB cost when a busy hub absorbs a metric
+// batch per host every few seconds. An empty indexes slice is a no-op.
+func AppliedIndexSet(ctx context.Context, db *gorm.DB, origin string, indexes []uint64) (map[uint64]struct{}, error) {
+	set := make(map[uint64]struct{}, len(indexes))
+	if len(indexes) == 0 {
+		return set, nil
+	}
+	var rows []uint64
+	err := db.WithContext(ctx).
+		Model(&AppliedRemoteLog{}).
+		Where("origin_cluster_id = ? AND origin_index IN ?", origin, indexes).
+		Pluck("origin_index", &rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, idx := range rows {
+		set[idx] = struct{}{}
+	}
+	return set, nil
+}
+
 // MarkApplied inserts a dedupe row. Idempotent: a duplicate insert from a
-// retried delivery is swallowed silently.
+// retried delivery is swallowed silently via INSERT ... ON CONFLICT DO NOTHING
+// (works on both SQLite and Postgres), so concurrent redelivery can't race a
+// SELECT-then-INSERT into a duplicate-primary-key error.
 func MarkApplied(ctx context.Context, db *gorm.DB, origin, originNodeID string, index uint64) error {
-	row := AppliedRemoteLog{OriginClusterID: origin, OriginIndex: index, OriginNodeID: originNodeID}
-	// FirstOrCreate handles "already exists" without an error.
+	return MarkAppliedBatch(ctx, db, []AppliedRemoteLog{
+		{OriginClusterID: origin, OriginIndex: index, OriginNodeID: originNodeID},
+	})
+}
+
+// MarkAppliedBatch records many dedupe rows in one INSERT ... ON CONFLICT DO
+// NOTHING. Idempotent and safe under concurrent redelivery. An empty slice is
+// a no-op.
+func MarkAppliedBatch(ctx context.Context, db *gorm.DB, rows []AppliedRemoteLog) error {
+	if len(rows) == 0 {
+		return nil
+	}
 	return db.WithContext(ctx).
-		Where("origin_cluster_id = ? AND origin_index = ?", origin, index).
-		FirstOrCreate(&row).Error
+		Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&rows).Error
 }
 
 // LastAppliedIndex returns the highest origin_index applied from origin.

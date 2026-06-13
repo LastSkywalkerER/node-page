@@ -27,21 +27,24 @@ import (
 const pollInterval = 2 * time.Second
 
 type controller struct {
-	stackDir    string // compose project dir (identity-mounted host path)
-	dataDir     string // shared data volume holding desired/status json
-	project     string // compose -p project name
-	appService  string
-	lastApplied string // hash of the last successfully applied desired state
+	stackDir          string // compose project dir (identity-mounted host path)
+	dataDir           string // shared data volume holding desired/status json
+	project           string // compose -p project name
+	appService        string
+	controllerService string // compose service name of this controller sidecar
+	lastApplied       string // hash of the last successfully applied desired state
+	selfUpdated       bool   // guards the controller self-update to once per apply
 }
 
 // Run is the controller subcommand entrypoint (cmd/server: `node-stats controller`).
 // It blocks forever, polling the desired-state descriptor and applying changes.
 func Run() {
 	c := &controller{
-		stackDir:   envOr("NODE_STATS_STACK_DIR", "/app/stack"),
-		dataDir:    envOr("NODE_STATS_DATA_DIR", "/app/data"),
-		project:    envOr("NODE_STATS_PROJECT", "node-stats"),
-		appService: envOr("NODE_STATS_APP_SERVICE", "node-stats"),
+		stackDir:          envOr("NODE_STATS_STACK_DIR", "/app/stack"),
+		dataDir:           envOr("NODE_STATS_DATA_DIR", "/app/data"),
+		project:           envOr("NODE_STATS_PROJECT", "node-stats"),
+		appService:        envOr("NODE_STATS_APP_SERVICE", "node-stats"),
+		controllerService: envOr("NODE_STATS_CONTROLLER_SERVICE", "node-stats-controller"),
 	}
 	c.lastApplied = readAppliedHash(c.dataDir)
 	log.Info("controller: starting", "stack_dir", c.stackDir, "data_dir", c.dataDir, "project", c.project)
@@ -96,6 +99,7 @@ func (c *controller) apply(ds setup.DesiredState) bool {
 	log.Info("controller: applying desired state", "generation", ds.Generation, "db_mode", ds.DBMode)
 	c.writeStatus(setup.ControllerStatus{Generation: ds.Generation, Phase: setup.PhaseApplying,
 		Message: "regenerating compose and recreating " + c.appService})
+	c.selfUpdated = false // fresh apply — allow at most one self-update below
 
 	compose := setup.BuildComposeContent(ds)
 	if err := writeFileAtomic(filepath.Join(c.stackDir, "docker-compose.yml"), []byte(compose)); err != nil {
@@ -109,6 +113,17 @@ func (c *controller) apply(ds setup.DesiredState) bool {
 		if out, err := c.compose("up", "-d", "--wait", "db"); err != nil {
 			return c.fail(ds, "start db: "+out, err)
 		}
+	} else {
+		// Switching off managed Postgres: tear down the orphaned db so its
+		// container/healthcheck don't linger (--remove-orphans below also catches
+		// it, but an explicit stop+rm is clearer and survives `db` still being
+		// referenced by a stale override). Best-effort — ignore no-such-service.
+		if out, err := c.compose("stop", "db"); err != nil {
+			log.Debug("controller: stop db (ignored)", "out", out, "error", err)
+		}
+		if out, err := c.compose("rm", "-f", "db"); err != nil {
+			log.Debug("controller: rm db (ignored)", "out", out, "error", err)
+		}
 	}
 
 	if ds.PullBeforeApply {
@@ -120,8 +135,9 @@ func (c *controller) apply(ds setup.DesiredState) bool {
 	// Recreate ONLY the app: --no-deps keeps the controller (and db) untouched;
 	// --force-recreate restarts the app even when its compose stanza is unchanged
 	// so it re-reads the bind-mounted .env.agent (DB_DSN lives there, invisible
-	// to compose's change detection).
-	if out, err := c.compose("up", "-d", "--no-deps", "--force-recreate", c.appService); err != nil {
+	// to compose's change detection). --remove-orphans drops services no longer
+	// in the generated compose (e.g. the db after a switch away from managed PG).
+	if out, err := c.compose("up", "-d", "--no-deps", "--force-recreate", "--remove-orphans", c.appService); err != nil {
 		return c.fail(ds, "recreate "+c.appService+": "+out, err)
 	}
 
@@ -129,7 +145,75 @@ func (c *controller) apply(ds setup.DesiredState) bool {
 	writeAppliedHash(c.dataDir, ds.Hash())
 	c.writeStatus(setup.ControllerStatus{Generation: ds.Generation, Phase: setup.PhaseApplied,
 		Message: "recreated " + c.appService})
+
+	if ds.PullBeforeApply {
+		// Reclaim the now-dangling old image layers the pull replaced. Dangling-only
+		// (no `-a`), so it never removes images still referenced by a service.
+		if out, err := c.dockerCLI("image", "prune", "-f"); err != nil {
+			log.Debug("controller: image prune (ignored)", "out", out, "error", err)
+		} else {
+			log.Info("controller: pruned dangling images")
+		}
+	}
+
+	// Controller self-update: the recreate above may have moved the app to a new
+	// image; this controller is still running the previous one. Recreate ourselves
+	// so the whole stack ends up on the same image. The docker daemon completes the
+	// recreate after this process dies mid-command; the persisted .applied-hash
+	// above stops the new controller from re-applying and looping.
+	c.selfUpdateIfStale(ds)
 	return true
+}
+
+// selfUpdateIfStale recreates this controller when the app service now runs a
+// different image than the controller's current process. Runs at most once per
+// apply (guarded by c.selfUpdated). Best-effort: any inspection error is logged
+// and skipped rather than risking a recreate loop.
+func (c *controller) selfUpdateIfStale(ds setup.DesiredState) {
+	if c.selfUpdated {
+		return
+	}
+	appImg, err := c.serviceImageID(c.appService)
+	if err != nil || appImg == "" {
+		log.Debug("controller: self-update skipped — app image id unavailable", "error", err)
+		return
+	}
+	selfImg, err := c.serviceImageID(c.controllerService)
+	if err != nil || selfImg == "" {
+		log.Debug("controller: self-update skipped — controller image id unavailable", "error", err)
+		return
+	}
+	if appImg == selfImg {
+		return
+	}
+	c.selfUpdated = true
+	log.Info("controller: self-update — recreating controller onto the app's new image",
+		"app_image", appImg, "controller_image", selfImg)
+	c.writeStatus(setup.ControllerStatus{Generation: ds.Generation, Phase: setup.PhaseApplied,
+		Message: "recreating controller onto the new image"})
+	// This recreate kills the current process mid-command; the daemon finishes it.
+	if out, err := c.compose("up", "-d", "--no-deps", c.controllerService); err != nil {
+		log.Error("controller: self-update recreate failed", "out", out, "error", err)
+	}
+}
+
+// serviceImageID resolves the docker image ID a running compose service uses, by
+// asking compose for the container id and inspecting it. Returns "" with no error
+// when the service has no running container.
+func (c *controller) serviceImageID(service string) (string, error) {
+	cid, err := c.compose("ps", "-q", service)
+	if err != nil {
+		return "", err
+	}
+	cid = firstLine(cid)
+	if cid == "" {
+		return "", nil
+	}
+	out, err := c.dockerCLI("inspect", "--format", "{{.Image}}", cid)
+	if err != nil {
+		return "", err
+	}
+	return firstLine(out), nil
 }
 
 // composeDrifted reports whether the on-disk docker-compose.yml differs from
@@ -181,6 +265,17 @@ func (c *controller) compose(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+// dockerCLI runs a plain `docker ...` command (not `docker compose`) and returns
+// combined output plus any error — used for image prune and inspect.
+func (c *controller) dockerCLI(args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd.Dir = c.stackDir
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
 // checkCompose verifies the docker compose plugin is present in the image.
 func (c *controller) checkCompose() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -201,6 +296,17 @@ func (c *controller) idle() {
 	for {
 		time.Sleep(time.Hour)
 	}
+}
+
+// firstLine returns the first non-empty line of s, trimmed. `compose ps -q` can
+// emit several ids (or a trailing newline); we only want one container id.
+func firstLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 func envOr(key, def string) string {

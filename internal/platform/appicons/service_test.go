@@ -94,3 +94,14 @@ func TestMissIsCachedNegatively(t *testing.T) {
 		t.Fatal("negative result was not cached")
 	}
 }
+
+// A cancelled caller context must not abort the shared resolution: the icon is
+// still resolved (under its own budget) and cached for the next caller.
+func TestCancelledCallerStillResolves(t *testing.T) {
+	svc, _ := setup(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled before the call
+	if _, _, ok := svc.Get(ctx, "netbird"); !ok {
+		t.Fatal("expected a hit even with a cancelled caller context")
+	}
+}

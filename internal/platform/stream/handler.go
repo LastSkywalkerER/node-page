@@ -81,6 +81,10 @@ func (h *Handler) keepaliveLoop(c *gin.Context) {
 			c.Writer.Flush()
 		case <-c.Request.Context().Done():
 			return
+		case <-h.broker.Done():
+			// Broker shut down (graceful shutdown) — exit so the handler
+			// returns and the connection can drain.
+			return
 		}
 	}
 }

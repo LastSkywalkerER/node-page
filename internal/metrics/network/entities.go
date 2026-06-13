@@ -29,7 +29,7 @@ type NetworkInterface struct {
 }
 
 type HistoricalNetworkMetric struct {
-	HostID     *uint              `json:"host_id" gorm:"default:null;index;index:idx_net_host_ts"`
+	HostID     *uint              `json:"host_id" gorm:"primaryKey;default:null;index;index:idx_net_host_ts"`
 	Timestamp  time.Time          `json:"timestamp" gorm:"primaryKey;index;index:idx_net_host_ts"`
 	Interfaces []NetworkInterface `json:"interfaces" gorm:"serializer:json"`
 }

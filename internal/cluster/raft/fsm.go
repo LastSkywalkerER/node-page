@@ -46,7 +46,19 @@ type FSM struct {
 	// here as an ApplyEvent; a slow consumer is allowed to drop oldest
 	// (the bridge falls back to snapshot replay on extended drops).
 	applyEvents chan ApplyEvent
+
+	// failCounts tracks how many times a given log index's applier has
+	// returned an error within this process lifetime — poison-entry guard
+	// (see Apply). Guarded by its own mutex to stay off the appliers RWLock
+	// hot path.
+	failMu     sync.Mutex
+	failCounts map[uint64]int
 }
+
+// maxApplierRetries bounds how many times the SAME log index may fail to apply
+// within this process lifetime before the FSM gives up and treats it as
+// applied. See the poison-entry comment in Apply.
+const maxApplierRetries = 3
 
 // ApplyEvent is the per-apply notification published to FSM.ApplyEvents.
 // It carries the decoded Command envelope plus the Raft log index so the
@@ -78,6 +90,7 @@ func NewFSM(logger *log.Logger) *FSM {
 		snapshotter: noopSnapshotter{},
 		restorer:    noopRestorer{},
 		applyEvents: make(chan ApplyEvent, 1024),
+		failCounts:  make(map[uint64]int),
 	}
 }
 
@@ -143,6 +156,26 @@ func (f *FSM) Apply(rlog *hraft.Log) any {
 		// layer we only log and return.
 		f.logger.Warn("raft FSM: applier returned error",
 			"index", rlog.Index, "type", uint16(cmd.Type), "err", err)
+
+		// Poison-entry guard. hashicorp/raft re-applies the same log index on
+		// the next snapshot/restore or leader handoff. We once hit a poison
+		// entry that failed deterministically on every replay and wedged the
+		// apply pipeline (the prod incident where the log grew to ~793MB with
+		// zero snapshots: snapshotting was impossible while an entry kept
+		// failing, so the log could never be truncated). Scoped narrowly to
+		// applier ERRORS — not panics (those stay fatal so a corrupt node
+		// re-syncs from a snapshot): if the SAME index has failed more than
+		// maxApplierRetries times this process lifetime, log loudly and treat
+		// it as applied (return nil) so it can never block the pipeline again.
+		f.failMu.Lock()
+		f.failCounts[rlog.Index]++
+		fails := f.failCounts[rlog.Index]
+		f.failMu.Unlock()
+		if fails > maxApplierRetries {
+			f.logger.Warn("raft FSM: log index repeatedly failed to apply; treating as applied to avoid wedging the pipeline (poison entry)",
+				"index", rlog.Index, "type", uint16(cmd.Type), "fails", fails, "err", err)
+			err = nil
+		}
 	}
 
 	// Publish apply event for the cross-cluster bridge. Non-blocking: if

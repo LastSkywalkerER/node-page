@@ -33,6 +33,16 @@ func Migrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate historical metrics: %w", err)
 	}
 
+	// Upgrade the metric tables from a timestamp-only PK to a composite
+	// (host_id, timestamp) PK and drop the unusable docker_metrics FK. Runs
+	// AFTER AutoMigrate (so columns/tables exist) and is idempotent on both
+	// SQLite and Postgres. AutoMigrate itself never changes an existing PK, so
+	// this hand-written step performs the structural rebuild on upgraded DBs;
+	// fresh DBs already get the composite PK from AutoMigrate and this is a no-op.
+	if err := migrateMetricCompositePKs(db); err != nil {
+		return fmt.Errorf("failed to migrate metric composite primary keys: %w", err)
+	}
+
 	err = db.AutoMigrate(&users.User{})
 	if err != nil {
 		return fmt.Errorf("failed to migrate users: %w", err)

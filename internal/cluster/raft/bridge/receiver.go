@@ -108,19 +108,35 @@ func (r *Receiver) Handle(c *gin.Context) {
 	// Filter + dedupe first, then submit the survivors as ONE raft entry:
 	// per-envelope SubmitCommand meant one fsync'd consensus round per
 	// metric tick per host - the dominant resource cost of a busy hub.
+	//
+	// Dedupe with ONE query for the whole batch: a sender retry re-ships the
+	// same indexes, so a per-entry SELECT count(*) was N queries per batch.
+	// Indexes are scoped per origin cluster; build the lookup set per cluster.
 	var deduped, skipped int
+	indexesByOrigin := make(map[string][]uint64, 1)
+	for _, env := range batch.Entries {
+		if r.uplinkOnly && !uplinkTypes[env.Type] {
+			continue
+		}
+		indexesByOrigin[env.OriginClusterID] = append(indexesByOrigin[env.OriginClusterID], env.OriginIndex)
+	}
+	appliedByOrigin := make(map[string]map[uint64]struct{}, len(indexesByOrigin))
+	for origin, indexes := range indexesByOrigin {
+		set, err := AppliedIndexSet(ctx, r.db, origin, indexes)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "dedupe check: " + err.Error()})
+			return
+		}
+		appliedByOrigin[origin] = set
+	}
+
 	fresh := make([]raftcluster.BridgeEnvelope, 0, len(batch.Entries))
 	for _, env := range batch.Entries {
 		if r.uplinkOnly && !uplinkTypes[env.Type] {
 			skipped++
 			continue
 		}
-		seen, err := HasApplied(ctx, r.db, env.OriginClusterID, env.OriginIndex)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "dedupe check: " + err.Error()})
-			return
-		}
-		if seen {
+		if _, seen := appliedByOrigin[env.OriginClusterID][env.OriginIndex]; seen {
 			deduped++
 			continue
 		}
@@ -147,16 +163,31 @@ func (r *Receiver) Handle(c *gin.Context) {
 			return
 		}
 		cmd.Payload = payload
+		// All fresh entries apply atomically as ONE raft entry: either the
+		// whole submit lands or none does. A submit failure is a genuine
+		// new-entry failure (none recorded as applied), so it must 500 so the
+		// sender retries — but only fresh entries reach here, never duplicates.
 		if _, err := r.svc.SubmitCommand(ctx, cmd, 30*time.Second); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "submit: " + err.Error()})
 			return
 		}
+		// Record the whole batch in one INSERT ... ON CONFLICT DO NOTHING.
+		// The entries DID apply; failing to record them means a redelivery
+		// re-applies the same work forever, so surface it as a 500 to retry.
+		marks := make([]AppliedRemoteLog, 0, len(fresh))
 		for _, env := range fresh {
-			if err := MarkApplied(ctx, r.db, env.OriginClusterID, env.OriginNodeID, env.OriginIndex); err != nil {
-				if r.logger != nil {
-					r.logger.Warn("bridge: MarkApplied failed", "error", err)
-				}
+			marks = append(marks, AppliedRemoteLog{
+				OriginClusterID: env.OriginClusterID,
+				OriginNodeID:    env.OriginNodeID,
+				OriginIndex:     env.OriginIndex,
+			})
+		}
+		if err := MarkAppliedBatch(ctx, r.db, marks); err != nil {
+			if r.logger != nil {
+				r.logger.Warn("bridge: MarkApplied failed", "error", err)
 			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "mark applied: " + err.Error()})
+			return
 		}
 	}
 	r.maybePrune(ctx)

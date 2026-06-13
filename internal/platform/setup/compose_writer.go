@@ -147,6 +147,14 @@ func BuildComposeContent(ds DesiredState) string {
 	// Optional display hostname — distinguishes nodes that share a host
 	// (e.g. several instances on one Docker VM, whose OS hostname collides).
 	w("      - NODE_STATS_HOSTNAME=${NODE_STATS_HOSTNAME:-}")
+	// Cap the Go heap below the container mem_limit so the runtime GC's harder
+	// instead of letting the OOM killer reap the app (the hub VPS is 2 CPU/4GB).
+	// Runtime-overridable, so a desired-state / installer env wins over the default.
+	w("      - GOMEMLIMIT=${GOMEMLIMIT:-768MiB}")
+	w("    mem_limit: 1g")
+	// Give the app time to flush/checkpoint and shut down cleanly on recreate.
+	w("    stop_grace_period: 30s")
+	writeLogging(w)
 	w("    restart: unless-stopped")
 
 	// --- managed postgres (optional) -----------------------------------------
@@ -157,6 +165,12 @@ func BuildComposeContent(ds DesiredState) string {
 		w("  db:")
 		w("    image: postgres:16-alpine")
 		w("    restart: unless-stopped")
+		// Tuned for the small hub VPS (2 CPU/4GB): bound memory and shared_buffers,
+		// keep connections modest. shm_size lifts Postgres's parallel-query/sort
+		// shared-memory ceiling above the 64MB Docker default.
+		w("    mem_limit: 768m")
+		w("    shm_size: 256mb")
+		w("    command: postgres -c shared_buffers=192MB -c max_connections=30 -c checkpoint_completion_target=0.9")
 		w("    environment:")
 		w("      - POSTGRES_DB=" + name)
 		w("      - POSTGRES_USER=" + user)
@@ -168,6 +182,7 @@ func BuildComposeContent(ds DesiredState) string {
 		w("      interval: 5s")
 		w("      timeout: 3s")
 		w("      retries: 10")
+		writeLogging(w)
 	}
 
 	// --- controller sidecar --------------------------------------------------
@@ -191,6 +206,7 @@ func BuildComposeContent(ds DesiredState) string {
 	// a misleading "(unhealthy)" forever.
 	w("    healthcheck:")
 	w("      disable: true")
+	writeLogging(w)
 	w("    restart: unless-stopped")
 
 	// --- top-level volumes ---------------------------------------------------
@@ -200,6 +216,17 @@ func BuildComposeContent(ds DesiredState) string {
 	}
 
 	return b.String()
+}
+
+// writeLogging emits a json-file logging stanza (indented for a service block)
+// that caps container logs so the small hub VPS doesn't fill its disk with
+// unbounded log files. 10MB × 3 files = 30MB per service.
+func writeLogging(w func(string)) {
+	w("    logging:")
+	w("      driver: json-file")
+	w("      options:")
+	w(`        max-size: "10m"`)
+	w(`        max-file: "3"`)
 }
 
 // orDefault returns v trimmed, or def when empty.

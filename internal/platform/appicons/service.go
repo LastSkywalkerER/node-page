@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
+	"golang.org/x/sync/singleflight"
 )
 
 // CDN bases — package vars so tests can point them at httptest servers.
@@ -33,11 +34,18 @@ var (
 )
 
 const (
-	hitTTL      = 24 * time.Hour
-	missTTL     = time.Hour
-	indexTTL    = 24 * time.Hour
-	maxEntries  = 2048
-	maxIconSize = 1 << 20 // 1 MiB per icon is plenty
+	hitTTL = 24 * time.Hour
+	// missTTL: a name that resolves to nothing rarely starts resolving later —
+	// cache the miss for a full day so a wall of unknown app names doesn't
+	// re-run the (up to) 6-fetch resolution every hour.
+	missTTL  = 24 * time.Hour
+	indexTTL = 24 * time.Hour
+	// resolveBudget bounds the TOTAL time spent resolving one name across all
+	// sequential candidate fetches (each candidate still has its own 6s cap),
+	// so a string of slow/unreachable CDNs can't pin a request for ~36s.
+	resolveBudget = 8 * time.Second
+	maxEntries    = 2048
+	maxIconSize   = 1 << 20 // 1 MiB per icon is plenty
 )
 
 type entry struct {
@@ -50,6 +58,10 @@ type entry struct {
 type Service struct {
 	logger *log.Logger
 	httpc  *http.Client
+	// sf collapses concurrent resolutions of the same name into one: a fresh
+	// dashboard with N tiles for the same app used to fire N identical
+	// 6-fetch resolutions in parallel — now they share one.
+	sf singleflight.Group
 
 	mu       sync.Mutex
 	cache    map[string]entry
@@ -94,23 +106,34 @@ func (s *Service) Get(ctx context.Context, raw string) (data []byte, ctype strin
 	}
 	s.mu.Unlock()
 
-	data, ctype, ok = s.resolve(ctx, key)
-	ttl := hitTTL
-	if !ok {
-		ttl = missTTL
-	}
-	s.mu.Lock()
-	if len(s.cache) >= maxEntries {
-		for k := range s.cache {
-			delete(s.cache, k)
-			if len(s.cache) < maxEntries/2 {
-				break
+	// Collapse concurrent resolutions of the same name into one external pass;
+	// every caller shares the single result. The budget context is owned by the
+	// flight leader, so a cancelled follower can't abort the shared work.
+	v, _, _ := s.sf.Do(key, func() (interface{}, error) {
+		// Cap the TOTAL resolution time regardless of how many candidates the
+		// fallback chain produces (each candidate fetch also has its own 6s cap).
+		budgetCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), resolveBudget)
+		defer cancel()
+		rd, rc, rok := s.resolve(budgetCtx, key)
+		ttl := hitTTL
+		if !rok {
+			ttl = missTTL
+		}
+		s.mu.Lock()
+		if len(s.cache) >= maxEntries {
+			for k := range s.cache {
+				delete(s.cache, k)
+				if len(s.cache) < maxEntries/2 {
+					break
+				}
 			}
 		}
-	}
-	s.cache[key] = entry{data: data, ctype: ctype, ok: ok, exp: time.Now().Add(ttl)}
-	s.mu.Unlock()
-	return data, ctype, ok
+		s.cache[key] = entry{data: rd, ctype: rc, ok: rok, exp: time.Now().Add(ttl)}
+		s.mu.Unlock()
+		return entry{data: rd, ctype: rc, ok: rok}, nil
+	})
+	res := v.(entry)
+	return res.data, res.ctype, res.ok
 }
 
 func (s *Service) resolve(ctx context.Context, key string) ([]byte, string, bool) {

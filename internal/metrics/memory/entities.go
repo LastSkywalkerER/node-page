@@ -24,7 +24,7 @@ func (m MemoryMetric) GetTimestamp() time.Time { return time.Now() }
 func (m MemoryMetric) GetType() string         { return "memory" }
 
 type HistoricalMemoryMetric struct {
-	HostID       *uint     `json:"host_id" gorm:"default:null;index;index:idx_mem_host_ts"`
+	HostID       *uint     `json:"host_id" gorm:"primaryKey;default:null;index;index:idx_mem_host_ts"`
 	Timestamp    time.Time `json:"timestamp" gorm:"primaryKey;index;index:idx_mem_host_ts"`
 	UsagePercent float64   `json:"usage_percent" gorm:"column:usage_percent"`
 	UsedBytes    uint64    `json:"used_bytes" gorm:"column:used_bytes"`

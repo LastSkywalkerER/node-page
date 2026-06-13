@@ -77,11 +77,17 @@ switch ($Command) {
     Require-Docker
     Invoke-Compose pull
     Invoke-Compose up -d
+    # Reclaim the dangling old image layers the pull replaced (best-effort).
+    docker image prune -f | Out-Null
     Write-Host "Update complete -> http://localhost:$Port" -ForegroundColor Green
   }
   'uninstall' {
-    Invoke-Compose down
-    if ($Purge) { Remove-Item -Recurse -Force (Join-Path $StackDir 'data') -ErrorAction SilentlyContinue }
+    if ($Purge) {
+      Invoke-Compose down --remove-orphans -v
+      Remove-Item -Recurse -Force (Join-Path $StackDir 'data') -ErrorAction SilentlyContinue
+    } else {
+      Invoke-Compose down --remove-orphans
+    }
   }
   default { Write-Host "usage: install.ps1 [install|update|uninstall [-Purge]]" }
 }

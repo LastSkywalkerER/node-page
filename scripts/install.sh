@@ -423,6 +423,10 @@ cmd_update() {
   green "Updating node-stats in ${STACK_DIR} ..."
   compose pull
   compose up -d
+  # Reclaim the dangling old image layers the pull replaced (dangling-only — never
+  # touches images still in use). Best-effort: don't fail the update on prune errors.
+  green "Pruning dangling images ..."
+  docker image prune -f >/dev/null 2>&1 || yellow "image prune skipped (non-fatal)"
   local p
   p="$(env_get NODE_STATS_PORT)"
   green "Update complete → http://localhost:${p:-$HTTP_PORT}"
@@ -431,11 +435,14 @@ cmd_update() {
 cmd_uninstall() {
   [ -f "$STACK_DIR/docker-compose.yml" ] || die "no stack at ${STACK_DIR}"
   green "Stopping node-stats ..."
-  compose down || true
   if [ "${1:-}" = "--purge" ]; then
+    # --remove-orphans drops services dropped from compose (e.g. an old db);
+    # -v deletes the named volumes (managed pgdata) along with the data dir.
+    compose down --remove-orphans -v || true
     yellow "Purging data at ${STACK_DIR}/data ..."
     rm -rf "${STACK_DIR}/data"
   else
+    compose down --remove-orphans || true
     yellow "Data kept at ${STACK_DIR}/data (use 'uninstall --purge' to delete)."
   fi
 }

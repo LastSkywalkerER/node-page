@@ -21,11 +21,20 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    mem_limit: 1g
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     depends_on:
       db:
         condition: service_healthy
     environment:
       - ADDR=:9090
+      # Cap the Go heap below mem_limit so the GC works rather than the OOM killer.
+      - GOMEMLIMIT=${GOMEMLIMIT:-768MiB}
       # Runtime .env (wizard-written cluster config) lives in the volume.
       - NODE_STATS_ENV_FILE=/app/data/.env
       # Dokploy owns the lifecycle: no controller sidecar, updates = Redeploy.
@@ -44,6 +53,11 @@ services:
 
   db:
     image: postgres:16-alpine
+    # Tuned for a small hub VPS (2 CPU/4GB): bounded memory/shared_buffers,
+    # modest connection cap; shm_size lifts the 64MB Docker default.
+    mem_limit: 768m
+    shm_size: 256mb
+    command: postgres -c shared_buffers=192MB -c max_connections=30 -c checkpoint_completion_target=0.9
     environment:
       - POSTGRES_DB=node_stats
       - POSTGRES_USER=node_stats
@@ -56,6 +70,11 @@ services:
       timeout: 3s
       retries: 10
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   node-stats-data:

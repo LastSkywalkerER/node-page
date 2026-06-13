@@ -1,6 +1,7 @@
 package wallpaper
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -34,8 +35,16 @@ func NewHandler(logger *log.Logger, service *Service) *Handler {
 func (h *Handler) HandleCurrent(c *gin.Context) {
 	w, err := h.service.Current(c.Request.Context(), c.DefaultQuery("mode", "dark"))
 	if err != nil {
-		h.logger.Warn("wallpaper: request failed", "error", err)
-		c.JSON(http.StatusBadGateway, gin.H{"code": "wallpaper_unavailable", "error": err.Error()})
+		// A decrypt failure (bad key) or down upstream is not actionable per
+		// request: a 502 per page load was a storm. The service caches the
+		// failure for 10 min; tell the browser to fall back to its bundled art
+		// and not re-ask for 10 min either. Only log fresh failures, not the
+		// cheap cached-failure short-circuit.
+		if !errors.Is(err, ErrCachedFailure) {
+			h.logger.Warn("wallpaper: request failed, serving fallback", "error", err)
+		}
+		c.Header("Cache-Control", "private, max-age=600")
+		c.Status(http.StatusNoContent)
 		return
 	}
 	if w == nil {

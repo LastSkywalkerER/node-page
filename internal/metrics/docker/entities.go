@@ -174,8 +174,11 @@ type DockerContainerEntity struct {
 	// ID is the unique Docker container identifier (primary key)
 	ID string `gorm:"primaryKey"`
 
-	// MetricTimestamp references the timestamp of the parent DockerMetric
-	MetricTimestamp time.Time `gorm:"primaryKey;column:metric_timestamp"`
+	// MetricTimestamp references the timestamp of the parent DockerMetric.
+	// Indexed so the Preload("Containers") join and retention's
+	// metric_timestamp-cutoff delete have a covering index (the table has no
+	// FK index since the FK constraint was dropped).
+	MetricTimestamp time.Time `gorm:"primaryKey;column:metric_timestamp;index:idx_docker_container_metric_ts"`
 
 	// Name is the human-readable container name
 	Name string `gorm:"column:name"`
@@ -441,12 +444,20 @@ func (c DockerContainer) ToDockerContainerEntity(metricTimestamp time.Time) (Doc
 
 // HistoricalDockerMetric represents a historical Docker daemon metric stored in the database.
 type HistoricalDockerMetric struct {
-	HostID            *uint                   `json:"host_id" gorm:"default:null;index;index:idx_docker_host_ts"`
-	Timestamp         time.Time               `json:"timestamp" gorm:"primaryKey;index;index:idx_docker_host_ts"`
-	TotalContainers   int                     `json:"total_containers" gorm:"column:total_containers"`
-	RunningContainers int                     `json:"running_containers" gorm:"column:running_containers"`
-	DockerAvailable   bool                    `json:"docker_available" gorm:"column:docker_available"`
-	Containers        []DockerContainerEntity `gorm:"foreignKey:MetricTimestamp"`
+	HostID            *uint     `json:"host_id" gorm:"primaryKey;default:null;index;index:idx_docker_host_ts"`
+	Timestamp         time.Time `json:"timestamp" gorm:"primaryKey;index;index:idx_docker_host_ts"`
+	TotalContainers   int       `json:"total_containers" gorm:"column:total_containers"`
+	RunningContainers int       `json:"running_containers" gorm:"column:running_containers"`
+	DockerAvailable   bool      `json:"docker_available" gorm:"column:docker_available"`
+	// Containers is a Go-side association preloaded by MetricTimestamp. The
+	// DB-level foreign-key constraint is intentionally suppressed
+	// (constraint:- — GORM's ParseConstraint returns nil for a literal dash):
+	// the parent metric tables now have a composite PK, so the old
+	// single-column FK on metric_timestamp is both unusable and unindexed (it
+	// grew docker_container_entities to 500MB+ with no covering index). The
+	// migration drops fk_docker_metrics_containers; AutoMigrate must never
+	// recreate it.
+	Containers []DockerContainerEntity `gorm:"foreignKey:MetricTimestamp;references:Timestamp;constraint:-"`
 }
 
 func (h HistoricalDockerMetric) GetTimestamp() time.Time { return h.Timestamp }

@@ -1,13 +1,19 @@
 package middleware
 
 import (
+	"net/http"
 	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/gin-gonic/gin"
 )
 
-// LoggingMiddleware adds request logging using custom logger
+// LoggingMiddleware adds request logging using custom logger.
+//
+// Successful (2xx/3xx) GET requests — the bulk of the traffic: SSE, metric
+// polls, static assets — log at Debug so they don't drown the Info stream.
+// Non-GET requests and any >=400 response stay at Info so they remain visible
+// at the default level; >=500 logs at Error.
 func LoggingMiddleware(logger *log.Logger) gin.HandlerFunc {
 	return gin.HandlerFunc(func(c *gin.Context) {
 		start := time.Now()
@@ -16,8 +22,19 @@ func LoggingMiddleware(logger *log.Logger) gin.HandlerFunc {
 		// Get response status
 		status := c.Writer.Status()
 
-		// Log request with detailed information
-		logger.Info("HTTP Request",
+		level := log.InfoLevel
+		switch {
+		case status >= 500:
+			level = log.ErrorLevel
+		case status >= 400:
+			// Client/server errors stay visible at Info.
+			level = log.InfoLevel
+		case c.Request.Method == http.MethodGet:
+			// Successful read traffic is noise at Info.
+			level = log.DebugLevel
+		}
+
+		logger.Log(level, "HTTP Request",
 			"method", c.Request.Method,
 			"path", c.Request.RequestURI,
 			"status", status,

@@ -2,8 +2,10 @@ package hosts
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -191,6 +193,146 @@ func TestUpsertConnectorHostHealsDecoratedLocalRow(t *testing.T) {
 	}
 	if local.Source != SourceAgent {
 		t.Fatalf("source not reverted: %q", local.Source)
+	}
+}
+
+// metricRow mirrors the (host_id, timestamp) composite-PK shape of every
+// metric table the cascade drains. Defined inline to avoid importing the
+// metrics packages (they import this one — that would be an import cycle).
+type metricRow struct {
+	HostID    *uint     `gorm:"primaryKey;column:host_id"`
+	Timestamp time.Time `gorm:"primaryKey;column:timestamp"`
+}
+
+type cascadeCPU metricRow
+type cascadeMem metricRow
+type cascadeDisk metricRow
+type cascadeNet metricRow
+type cascadeDocker metricRow
+
+func (cascadeCPU) TableName() string    { return "cpu_metrics" }
+func (cascadeMem) TableName() string    { return "memory_metrics" }
+func (cascadeDisk) TableName() string   { return "disk_metrics" }
+func (cascadeNet) TableName() string    { return "network_metrics" }
+func (cascadeDocker) TableName() string { return "docker_metrics" }
+
+// cascadeContainer mirrors docker_container_entities' relevant columns
+// (id + metric_timestamp composite PK), keyed off the parent docker_metrics
+// timestamp the same way the production entity is.
+type cascadeContainer struct {
+	ID              string    `gorm:"primaryKey;column:id"`
+	MetricTimestamp time.Time `gorm:"primaryKey;column:metric_timestamp"`
+}
+
+func (cascadeContainer) TableName() string { return "docker_container_entities" }
+
+// TestDeleteHostCascadeChunked verifies the chunked cascade deletes every
+// metric row (including docker_container_entities resolved via docker_metrics
+// timestamps) for the target host across more than one chunk, and leaves
+// another host's rows and the hosts table entry for that other host intact.
+func TestDeleteHostCascadeChunked(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&Host{}, &cascadeCPU{}, &cascadeMem{}, &cascadeDisk{},
+		&cascadeNet{}, &cascadeDocker{}, &cascadeContainer{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	var target uint = 10
+	var other uint = 11
+	if err := db.Create(&Host{ID: target, Name: "target", MacAddress: "aa:00:00:00:00:10"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&Host{ID: other, Name: "other", MacAddress: "aa:00:00:00:00:11"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// More than one chunk's worth of docker rows so the chunked
+	// docker_container_entities delete must loop more than once.
+	const rows = cascadeDeleteChunkSize + 250
+	// Each host writes at its own wall-clock instants (no overlap), as the live
+	// collectors do — the container table is keyed by metric_timestamp only.
+	seed := func(hostID uint, n int, base time.Time) {
+		hid := hostID
+		for i := 0; i < n; i++ {
+			ts := base.Add(time.Duration(i) * time.Second)
+			if err := db.Create(&cascadeCPU{HostID: &hid, Timestamp: ts}).Error; err != nil {
+				t.Fatalf("seed cpu: %v", err)
+			}
+			if err := db.Create(&cascadeDocker{HostID: &hid, Timestamp: ts}).Error; err != nil {
+				t.Fatalf("seed docker: %v", err)
+			}
+			if err := db.Create(&cascadeContainer{
+				ID:              fmt.Sprintf("h%d-c%d", hostID, i),
+				MetricTimestamp: ts,
+			}).Error; err != nil {
+				t.Fatalf("seed container: %v", err)
+			}
+		}
+		// One row in each remaining metric table to prove they're drained too.
+		hid2 := hostID
+		ts := base.Add(24 * time.Hour)
+		_ = db.Create(&cascadeMem{HostID: &hid2, Timestamp: ts}).Error
+		_ = db.Create(&cascadeDisk{HostID: &hid2, Timestamp: ts}).Error
+		_ = db.Create(&cascadeNet{HostID: &hid2, Timestamp: ts}).Error
+	}
+	targetBase := time.Now().Truncate(time.Second)
+	otherBase := targetBase.Add(365 * 24 * time.Hour) // disjoint instants
+	seed(target, rows, targetBase)
+	seed(other, 5, otherBase)
+
+	if err := repo.DeleteHostCascade(ctx, target); err != nil {
+		t.Fatalf("cascade: %v", err)
+	}
+
+	count := func(model interface{}, where string, args ...interface{}) int64 {
+		var c int64
+		q := db.Model(model)
+		if where != "" {
+			q = q.Where(where, args...)
+		}
+		if err := q.Count(&c).Error; err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		return c
+	}
+
+	if c := count(&cascadeCPU{}, "host_id = ?", target); c != 0 {
+		t.Errorf("target cpu rows left: %d", c)
+	}
+	if c := count(&cascadeDocker{}, "host_id = ?", target); c != 0 {
+		t.Errorf("target docker rows left: %d", c)
+	}
+	if c := count(&cascadeMem{}, "host_id = ?", target); c != 0 {
+		t.Errorf("target memory rows left: %d", c)
+	}
+	if c := count(&cascadeDisk{}, "host_id = ?", target); c != 0 {
+		t.Errorf("target disk rows left: %d", c)
+	}
+	if c := count(&cascadeNet{}, "host_id = ?", target); c != 0 {
+		t.Errorf("target network rows left: %d", c)
+	}
+	// The target's docker containers are gone (chunked, multi-round delete).
+	if c := count(&cascadeContainer{}, "id LIKE ?", "h10-%"); c != 0 {
+		t.Errorf("target container rows left: %d", c)
+	}
+	// The hosts row for the target is gone…
+	if c := count(&Host{}, "id = ?", target); c != 0 {
+		t.Errorf("target host row left: %d", c)
+	}
+	// …but the OTHER host and all its rows survive untouched.
+	if c := count(&Host{}, "id = ?", other); c != 1 {
+		t.Errorf("other host row missing: %d", c)
+	}
+	if c := count(&cascadeCPU{}, "host_id = ?", other); c != 5 {
+		t.Errorf("other cpu rows = %d, want 5", c)
+	}
+	if c := count(&cascadeContainer{}, "id LIKE ?", "h11-%"); c != 5 {
+		t.Errorf("other container rows = %d, want 5", c)
 	}
 }
 

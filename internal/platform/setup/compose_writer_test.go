@@ -17,6 +17,13 @@ func TestBuildComposeContent_SQLite(t *testing.T) {
 		"${NODE_STATS_STACK_HOST_DIR}:${NODE_STATS_STACK_HOST_DIR}",
 		"DB_TYPE=sqlite",
 		"DB_DSN=/app/data/stats.db",
+		// Resource/logging guards (hub VPS is 2 CPU/4GB).
+		"GOMEMLIMIT=${GOMEMLIMIT:-768MiB}",
+		"mem_limit: 1g",
+		"stop_grace_period: 30s",
+		"driver: json-file",
+		`max-size: "10m"`,
+		`max-file: "3"`,
 	})
 	mustNotContain(t, out, []string{
 		"  db:", // no postgres service for sqlite
@@ -43,6 +50,10 @@ func TestBuildComposeContent_PostgresManaged(t *testing.T) {
 		"condition: service_healthy",
 		"pg_isready -U node_stats -d node_stats",
 		"volumes:\n  pgdata:",
+		// Managed-db resource tuning for the small hub VPS.
+		"mem_limit: 768m",
+		"shm_size: 256mb",
+		"command: postgres -c shared_buffers=192MB -c max_connections=30 -c checkpoint_completion_target=0.9",
 	})
 }
 

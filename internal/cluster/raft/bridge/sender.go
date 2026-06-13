@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
@@ -70,6 +71,15 @@ type Sender struct {
 	failing      bool
 }
 
+const (
+	// backoffBase is the first backoff after a ship failure; it doubles each
+	// consecutive failure (1s, 2s, 4s …) up to backoffMax. Jitter (±25%) is
+	// applied so multiple spokes recovering after a hub blip don't synchronise
+	// their retries into a thundering herd against a 2-CPU/4GB VPS.
+	backoffBase = 1 * time.Second
+	backoffMax  = 60 * time.Second
+)
+
 // uplinkTypes is the allowlist shipped in "push" mode: host registry,
 // topology and metrics — nothing identity- or config-bearing.
 var uplinkTypes = map[raftcluster.CommandType]bool{
@@ -78,6 +88,45 @@ var uplinkTypes = map[raftcluster.CommandType]bool{
 	raftcluster.CmdHostDelete:          true,
 	raftcluster.CmdHostLastSeen:        true,
 	raftcluster.CmdMetricBatch:         true,
+}
+
+// crossClusterDeny lists command types that must NEVER cross the HTTPS bridge
+// in ANY mode (push or both). Connector rows carry secret_enc encrypted under a
+// key derived from the LOCAL cluster's JWT secret (connectors.NewCipher); the
+// peer cluster keeps an independent identity/secret and could neither decrypt
+// the ciphertext nor should it ever receive another cluster's credentials. The
+// in-cluster Raft replication of these commands is untouched — this only gates
+// what the bridge sender ships off-cluster.
+var crossClusterDeny = map[raftcluster.CommandType]bool{
+	raftcluster.CmdConnectorUpsert: true,
+	raftcluster.CmdConnectorDelete: true,
+}
+
+// shouldShip decides whether a locally-applied command is exported over the
+// cross-cluster bridge. It encodes, in order: don't echo peer-origin entries
+// back; drop bridge bookkeeping; NEVER export connector secrets in any mode;
+// and in uplink ("push") mode restrict to the host/metric allowlist.
+func (s *Sender) shouldShip(cmd raftcluster.Command) bool {
+	// Skip entries that originated in a peer cluster — those are the ones we
+	// just received over the bridge, never ship back.
+	if cmd.OriginClusterID != "" && cmd.OriginClusterID != s.myCluster {
+		return false
+	}
+	// Skip bridge bookkeeping entries; the peer doesn't need them.
+	if cmd.Type == raftcluster.CmdBridgeAck {
+		return false
+	}
+	// Never ship connector secrets across the cluster boundary — they are
+	// encrypted under this cluster's key and belong to no other cluster
+	// (applies in every mode, push and both).
+	if crossClusterDeny[cmd.Type] {
+		return false
+	}
+	// Uplink mode exports hosts/metrics only — never identity state.
+	if s.uplinkOnly && !uplinkTypes[cmd.Type] {
+		return false
+	}
+	return true
 }
 
 // NewSender wires the sender.
@@ -92,7 +141,12 @@ func NewSender(logger *log.Logger, svc raftcluster.Service, events <-chan raftcl
 		myNode:     myNodeID,
 		flushEvery: 250 * time.Millisecond,
 		flushSize:  50,
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		// No client-level Timeout: a ship is a large batch the hub applies
+		// through its own Raft log (fsync per entry) and can legitimately take
+		// tens of seconds. shipBatch governs the deadline with a per-request 90s
+		// context — a 10s client cap here would abort mid-flight (it fires
+		// whichever is sooner) and re-ship the same work forever.
+		httpClient: &http.Client{},
 	}
 }
 
@@ -141,10 +195,32 @@ func (s *Sender) Run(ctx context.Context) {
 	var buf []Envelope
 	var lastWarnMsg string
 	var lastWarnAt time.Time
+	// Exponential backoff on consecutive ship failures: while backing off the
+	// loop keeps ACCEPTING/buffering entries (the drop-oldest cap still
+	// applies) but does not attempt a ship until backoffUntil passes. Reset to
+	// zero on the first success.
+	var backoff time.Duration
+	var backoffUntil time.Time
+	var droppedTotal uint64
 
 	runReconcile := func() {
 		if s.reconcile != nil && s.svc.IsLeader() {
 			go s.reconcile(ctx)
+		}
+	}
+
+	// capBuffer enforces the drop-oldest bound. It returns how many entries it
+	// dropped so the caller can account for the previously-silent loss.
+	capBuffer := func() {
+		max := s.flushSize * 4
+		if len(buf) > max {
+			drop := len(buf) - max
+			buf = buf[drop:]
+			droppedTotal += uint64(drop)
+			if s.logger != nil {
+				s.logger.Warn("bridge: dropped oldest buffered entries (cap reached)",
+					"dropped", drop, "dropped_total", droppedTotal, "cap", max)
+			}
 		}
 	}
 
@@ -161,11 +237,19 @@ func (s *Sender) Run(ctx context.Context) {
 			buf = buf[:0]
 			return
 		}
+		// Backing off after a failure: do not ship yet, but keep the buffer
+		// (it is still being filled by the event case) bounded.
+		if time.Now().Before(backoffUntil) {
+			capBuffer()
+			return
+		}
 		if err := s.shipBatch(ctx, Batch{Entries: buf}); err != nil {
+			backoff = nextBackoff(backoff)
+			backoffUntil = time.Now().Add(backoff)
 			// flush runs every few hundred ms — under a persistent failure
 			// repeat the warning only when the message changes or each 30 s.
 			if s.logger != nil && (err.Error() != lastWarnMsg || time.Since(lastWarnAt) > 30*time.Second) {
-				s.logger.Warn("bridge: ship batch failed", "error", err, "entries", len(buf))
+				s.logger.Warn("bridge: ship batch failed", "error", err, "entries", len(buf), "backoff", backoff.Round(time.Millisecond))
 				lastWarnMsg = err.Error()
 				lastWarnAt = time.Now()
 			}
@@ -173,13 +257,13 @@ func (s *Sender) Run(ctx context.Context) {
 			s.lastShipErr = err.Error()
 			s.failing = true
 			s.mu.Unlock()
-			// Keep the buffer so the next tick retries. Cap so we don't
-			// grow unbounded under sustained failure — drop oldest.
-			if len(buf) > s.flushSize*4 {
-				buf = buf[len(buf)-s.flushSize*4:]
-			}
+			// Keep the buffer so the next eligible tick retries. Cap so we
+			// don't grow unbounded under sustained failure — drop oldest.
+			capBuffer()
 			return
 		}
+		backoff = 0
+		backoffUntil = time.Time{}
 		s.mu.Lock()
 		s.lastShipAt = time.Now()
 		s.lastShipErr = ""
@@ -208,17 +292,7 @@ func (s *Sender) Run(ctx context.Context) {
 		case <-recTick.C:
 			runReconcile()
 		case ev := <-s.events:
-			// Skip entries that originated in a peer cluster — those are
-			// the ones we just received over the bridge, never ship back.
-			if ev.Cmd.OriginClusterID != "" && ev.Cmd.OriginClusterID != s.myCluster {
-				continue
-			}
-			// Skip bridge bookkeeping entries; the peer doesn't need them.
-			if ev.Cmd.Type == raftcluster.CmdBridgeAck {
-				continue
-			}
-			// Uplink mode exports hosts/metrics only — never identity state.
-			if s.uplinkOnly && !uplinkTypes[ev.Cmd.Type] {
+			if !s.shouldShip(ev.Cmd) {
 				continue
 			}
 			env := Envelope{
@@ -292,4 +366,24 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// nextBackoff doubles the current backoff (starting at backoffBase) capped at
+// backoffMax, then applies ±25% jitter. A zero/negative current value seeds
+// the first step at backoffBase.
+func nextBackoff(current time.Duration) time.Duration {
+	next := current * 2
+	if current <= 0 {
+		next = backoffBase
+	}
+	if next > backoffMax {
+		next = backoffMax
+	}
+	// ±25% jitter so concurrent spokes don't retry in lock-step.
+	jitter := time.Duration((rand.Float64() - 0.5) * 0.5 * float64(next))
+	d := next + jitter
+	if d < 0 {
+		d = next
+	}
+	return d
 }

@@ -22,8 +22,8 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
-	ginSwagger "github.com/swaggo/gin-swagger"
 	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
 	"gorm.io/gorm"
 
 	_ "system-stats/docs"
@@ -44,6 +44,7 @@ import (
 	network "system-stats/internal/metrics/network"
 	proxmox "system-stats/internal/metrics/proxmox"
 	sensors "system-stats/internal/metrics/sensors"
+	appicons "system-stats/internal/platform/appicons"
 	connectors "system-stats/internal/platform/connectors"
 	health "system-stats/internal/platform/health"
 	history "system-stats/internal/platform/history"
@@ -51,7 +52,6 @@ import (
 	platformstream "system-stats/internal/platform/stream"
 	system "system-stats/internal/platform/system"
 	"system-stats/internal/platform/update"
-	appicons "system-stats/internal/platform/appicons"
 	wallpaper "system-stats/internal/platform/wallpaper"
 	"system-stats/internal/webui"
 )
@@ -72,7 +72,9 @@ func Run() {
 	}
 
 	logger := log.NewWithOptions(os.Stderr, log.Options{
-		ReportCaller:    true,
+		// ReportCaller (file:line per line) is useful when debugging but adds
+		// a runtime.Caller cost and noise on every log — only when DEBUG is on.
+		ReportCaller:    cfg.Debug,
 		ReportTimestamp: true,
 		Prefix:          "system-stats",
 	})
@@ -240,9 +242,15 @@ func Run() {
 			return
 		}
 		var s struct {
-			CPU    struct{ UsagePercent float64 `json:"usage_percent"` } `json:"cpu"`
-			Memory struct{ UsagePercent float64 `json:"usage_percent"` } `json:"memory"`
-			Docker struct{ RunningContainers int `json:"running_containers"` } `json:"docker"`
+			CPU struct {
+				UsagePercent float64 `json:"usage_percent"`
+			} `json:"cpu"`
+			Memory struct {
+				UsagePercent float64 `json:"usage_percent"`
+			} `json:"memory"`
+			Docker struct {
+				RunningContainers int `json:"running_containers"`
+			} `json:"docker"`
 		}
 		if err := json.Unmarshal(data, &s); err == nil {
 			logger.Info("Metrics collected",
@@ -409,7 +417,15 @@ func Run() {
 	appCancel()
 	middleware.StopRateLimiterCleanup()
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Unblock all SSE clients (live + keepalive loops) so they don't hold the
+	// server open, and stop accepting new keep-alive connections, before the
+	// graceful drain.
+	broker.CloseAll()
+	server.SetKeepAlivesEnabled(false)
+
+	// 8s drain so the worst case still fits Docker's default 10s stop grace
+	// period (SIGTERM → SIGKILL) and we exit cleanly instead of being killed.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("Server forced to shutdown", "error", err)

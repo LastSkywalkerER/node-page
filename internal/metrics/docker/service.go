@@ -3,9 +3,20 @@ package docker
 import (
 	"context"
 	"errors"
+	"sync"
+	"time"
 
 	"github.com/charmbracelet/log"
 )
+
+// collectCacheTTL coalesces the two Collect calls the 5s metrics tick makes —
+// CollectAndSave (persist + replicate) and CollectAllCurrent (live/SSE payload)
+// — into ONE daemon scrape. The Docker scrape is the heavy part (one inspect +
+// stats per container, ~62 on a busy host); doing it twice per tick doubled
+// daemon load for identical data. A TTL well under the tick interval means each
+// tick still gets a fresh scrape, while the second call within the tick reuses
+// the first's result.
+const collectCacheTTL = 2 * time.Second
 
 // Service defines the Docker metrics service interface.
 type Service interface {
@@ -39,6 +50,13 @@ type service struct {
 	logger           *log.Logger
 	collector        DockerMetricsCollector
 	dockerRepository DockerRepository
+
+	// collectCache holds the most recent successful scrape so the two Collect
+	// calls per metrics tick (save + live payload) share one daemon scrape.
+	collectMu       sync.Mutex
+	collectCached   DockerMetric
+	collectCachedAt time.Time
+	now             func() time.Time
 }
 
 // NewService creates a new Docker metrics service.
@@ -47,10 +65,30 @@ func NewService(logger *log.Logger, collector DockerMetricsCollector, repo Docke
 		logger:           logger,
 		collector:        collector,
 		dockerRepository: repo,
+		now:              time.Now,
 	}
 }
 
+func (s *service) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
 func (s *service) Collect(ctx context.Context) (DockerMetric, error) {
+	// Reuse a very recent scrape so save + live payload in the same tick don't
+	// each hit the daemon. Sub-tick TTL keeps every tick fresh.
+	now := s.clock()
+	s.collectMu.Lock()
+	if !s.collectCachedAt.IsZero() && now.Sub(s.collectCachedAt) < collectCacheTTL {
+		cached := s.collectCached
+		s.collectMu.Unlock()
+		s.logger.Debug("Reusing cached Docker metrics", "age_ms", now.Sub(s.collectCachedAt).Milliseconds())
+		return cached, nil
+	}
+	s.collectMu.Unlock()
+
 	s.logger.Debug("Collecting Docker metrics")
 	metrics, err := s.collector.CollectDockerMetrics(ctx)
 	if err != nil {
@@ -58,6 +96,11 @@ func (s *service) Collect(ctx context.Context) (DockerMetric, error) {
 		return DockerMetric{}, err
 	}
 	s.logger.Debug("Docker metrics collected", "stacks_count", len(metrics.Stacks), "total_containers", metrics.TotalContainers)
+
+	s.collectMu.Lock()
+	s.collectCached = metrics
+	s.collectCachedAt = now
+	s.collectMu.Unlock()
 	return metrics, nil
 }
 
