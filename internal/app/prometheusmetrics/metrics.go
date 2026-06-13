@@ -68,14 +68,25 @@ func (m *Metrics) Handler() http.Handler {
 // Requests to /metrics and /swagger are excluded to avoid self-referential noise.
 func (m *Metrics) GinMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		path := c.Request.URL.Path
-		if strings.HasPrefix(path, "/api/v1/metrics") || strings.HasPrefix(path, "/swagger") {
+		if raw := c.Request.URL.Path; strings.HasPrefix(raw, "/api/v1/metrics") || strings.HasPrefix(raw, "/swagger") {
 			c.Next()
 			return
 		}
 
 		start := time.Now()
 		c.Next()
+
+		// Label on the ROUTE TEMPLATE (e.g. /api/v1/hosts/:id), NOT the concrete
+		// request path. A Prometheus *Vec permanently retains one child series per
+		// distinct label tuple with no eviction, so labeling by raw path — where
+		// :id / :slug / :project churn (every host id, every app-icon slug the
+		// frontend requests) — grows the registry without bound and is a real
+		// memory leak. c.FullPath collapses concrete paths into their pattern;
+		// unmatched routes (empty template) bucket under a single label.
+		path := c.FullPath()
+		if path == "" {
+			path = "unmatched"
+		}
 
 		m.httpRequestsTotal.WithLabelValues(
 			c.Request.Method,
