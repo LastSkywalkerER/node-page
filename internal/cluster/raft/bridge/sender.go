@@ -202,6 +202,11 @@ func (s *Sender) Run(ctx context.Context) {
 	var backoff time.Duration
 	var backoffUntil time.Time
 	var droppedTotal uint64
+	// Drop-warning dedup: capBuffer fires every few hundred ms under a sustained
+	// flood, so accumulate the count dropped since the last log and emit a single
+	// WARN at most once per 30 s. droppedSinceWarn never resets droppedTotal.
+	var droppedSinceWarn uint64
+	var lastDropWarnAt time.Time
 
 	runReconcile := func() {
 		if s.reconcile != nil && s.svc.IsLeader() {
@@ -209,17 +214,22 @@ func (s *Sender) Run(ctx context.Context) {
 		}
 	}
 
-	// capBuffer enforces the drop-oldest bound. It returns how many entries it
-	// dropped so the caller can account for the previously-silent loss.
+	// capBuffer enforces the drop-oldest bound. Dropped entries are accounted in
+	// droppedTotal (running, never reset) and rate-limited into a single WARN at
+	// most once per 30 s reporting both the running total and the count dropped
+	// since the previous log line.
 	capBuffer := func() {
 		max := s.flushSize * 4
 		if len(buf) > max {
 			drop := len(buf) - max
 			buf = buf[drop:]
 			droppedTotal += uint64(drop)
-			if s.logger != nil {
+			droppedSinceWarn += uint64(drop)
+			if s.logger != nil && time.Since(lastDropWarnAt) > 30*time.Second {
 				s.logger.Warn("bridge: dropped oldest buffered entries (cap reached)",
-					"dropped", drop, "dropped_total", droppedTotal, "cap", max)
+					"dropped_since_last_log", droppedSinceWarn, "dropped_total", droppedTotal, "cap", max)
+				droppedSinceWarn = 0
+				lastDropWarnAt = time.Now()
 			}
 		}
 	}

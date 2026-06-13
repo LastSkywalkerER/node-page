@@ -97,3 +97,82 @@ func TestSQLiteSnapshot_TimeColumnsRoundTrip(t *testing.T) {
 		t.Fatalf("restored LastSeen=%v, want %v", got.LastSeen, lastSeen)
 	}
 }
+
+// High-churn metric history must stay OUT of the FSM snapshot: it is
+// replicated continuously via CmdMetricBatch and lives in each node's own
+// DB. Including it made Snapshot() materialise hundreds of MB into RAM on
+// the FSM goroutine, blocking applies and spiking memory (the prod
+// incident). This guards against re-adding any of those tables.
+func TestManagedTables_ExcludeMetricHistory(t *testing.T) {
+	t.Parallel()
+
+	excluded := []string{
+		"cpu_metrics",
+		"memory_metrics",
+		"disk_metrics",
+		"network_metrics",
+		"docker_metrics",
+		"docker_container_entities",
+	}
+	for _, table := range managedTables {
+		for _, bad := range excluded {
+			if table == bad {
+				t.Errorf("metric table %q must not be in managedTables (snapshot set)", bad)
+			}
+		}
+	}
+
+	// And the small identity/config tables must remain covered.
+	wantPresent := []string{
+		"hosts",
+		"user_accounts",
+		"user_refresh_tokens",
+		"cluster_config",
+		"peer_node_advertise",
+		"cluster_join_tokens",
+		"connectors",
+	}
+	present := make(map[string]bool, len(managedTables))
+	for _, t := range managedTables {
+		present[t] = true
+	}
+	for _, want := range wantPresent {
+		if !present[want] {
+			t.Errorf("config table %q missing from managedTables (snapshot set)", want)
+		}
+	}
+}
+
+// A new snapshot taken on a DB that still has metric tables must NOT carry
+// them — Snapshot() only dumps managedTables, so the metric history is
+// never materialised into the snapshot stream.
+func TestSQLiteSnapshot_OmitsMetricTables(t *testing.T) {
+	t.Parallel()
+
+	db := newSnapshotTestDB(t)
+	// Create a metric-like table and seed it; it must be ignored by Snapshot.
+	if err := db.Exec("CREATE TABLE cpu_metrics (id INTEGER PRIMARY KEY, usage REAL)").Error; err != nil {
+		t.Fatalf("create cpu_metrics: %v", err)
+	}
+	if err := db.Exec("INSERT INTO cpu_metrics (id, usage) VALUES (1, 42.5)").Error; err != nil {
+		t.Fatalf("seed cpu_metrics: %v", err)
+	}
+	if err := db.Create(&snapshotTestHost{ID: 1, Name: "hub", LastSeen: time.Now().UTC()}).Error; err != nil {
+		t.Fatalf("seed host: %v", err)
+	}
+
+	snap, err := NewSQLiteSnapshotter(db).Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	s, ok := snap.(*sqliteSnapshot)
+	if !ok {
+		t.Fatalf("snapshot is %T, want *sqliteSnapshot", snap)
+	}
+	if _, present := s.tables["cpu_metrics"]; present {
+		t.Fatal("cpu_metrics must not be present in the snapshot table set")
+	}
+	if _, present := s.tables["hosts"]; !present {
+		t.Fatal("hosts must be present in the snapshot table set")
+	}
+}

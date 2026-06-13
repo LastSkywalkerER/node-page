@@ -34,8 +34,26 @@ type Receiver struct {
 	// the hub silently drops everything outside the host/metric allowlist.
 	uplinkOnly bool
 
+	// sem bounds concurrent SUBMIT-bearing replicate handling. A flood of
+	// senders (many spokes, each retrying) otherwise piles onto the apply
+	// pipeline while the FSM is jammed snapshotting, each handler blocking for
+	// the apply timeout. When the slots are full the handler returns 503 at
+	// once (sender retries with its backoff) instead of queueing more work.
+	// Duplicate-only batches short-circuit to 200 BEFORE acquiring a slot.
+	sem chan struct{}
+
 	lastPruneUnix int64 // atomic; applied_remote_log GC bookkeeping
 }
+
+const (
+	// replicateConcurrency caps in-flight submit-bearing replicate handlers.
+	replicateConcurrency = 2
+	// replicateApplyTimeout is the SHORT enqueue timeout used when submitting
+	// fresh entries to Raft. When the FSM is busy (e.g. snapshotting) the apply
+	// enqueue times out fast and the handler returns a retryable 503 rather than
+	// blocking for tens of seconds and amplifying the sender's retry storm.
+	replicateApplyTimeout = 5 * time.Second
+)
 
 // WithUplinkOnly restricts accepted commands to the host/metric allowlist.
 func (r *Receiver) WithUplinkOnly(v bool) *Receiver {
@@ -51,6 +69,7 @@ func NewReceiver(logger *log.Logger, svc raftcluster.Service, db *gorm.DB, secre
 		db:        db,
 		secret:    secret,
 		myCluster: myClusterID,
+		sem:       make(chan struct{}, replicateConcurrency),
 	}
 }
 
@@ -150,6 +169,20 @@ func (r *Receiver) Handle(c *gin.Context) {
 		})
 	}
 	if len(fresh) > 0 {
+		// Back-pressure: only submit-bearing batches contend for a slot, and
+		// duplicate-only batches already returned above without reaching here.
+		// A full semaphore means the apply pipeline is saturated (FSM jammed):
+		// return 503 immediately so the sender retries with its backoff instead
+		// of piling another blocked handler onto the queue. No entries applied,
+		// so 503 is safe — nothing is marked applied.
+		select {
+		case r.sem <- struct{}{}:
+			defer func() { <-r.sem }()
+		default:
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "replicate busy; retry"})
+			return
+		}
+
 		// The wrapper carries the SENDER's cluster id so a 'both'-mode peer
 		// never ships it back (loop prevention sees a foreign origin).
 		cmd := raftcluster.Command{
@@ -164,11 +197,13 @@ func (r *Receiver) Handle(c *gin.Context) {
 		}
 		cmd.Payload = payload
 		// All fresh entries apply atomically as ONE raft entry: either the
-		// whole submit lands or none does. A submit failure is a genuine
-		// new-entry failure (none recorded as applied), so it must 500 so the
-		// sender retries — but only fresh entries reach here, never duplicates.
-		if _, err := r.svc.SubmitCommand(ctx, cmd, 30*time.Second); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "submit: " + err.Error()})
+		// whole submit lands or none does. Use a SHORT apply enqueue timeout: if
+		// the FSM is busy the enqueue times out fast and we return a RETRYABLE
+		// 503 (none recorded as applied) rather than blocking tens of seconds
+		// and amplifying the sender's retry storm. Only fresh entries reach
+		// here, never duplicates, so re-delivery is harmless.
+		if _, err := r.svc.SubmitCommand(ctx, cmd, replicateApplyTimeout); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "submit: " + err.Error()})
 			return
 		}
 		// Record the whole batch in one INSERT ... ON CONFLICT DO NOTHING.

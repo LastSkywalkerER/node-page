@@ -31,23 +31,29 @@ func init() {
 // rows-as-map[string]any} pairs, written in a stable order so the bytes
 // are deterministic across replicas at the same applied index.
 //
-// Tables managed by Raft (and therefore covered by the snapshot):
+// Only small identity/config/cluster tables are snapshotted:
 //
 //   - hosts                       (cluster host registry)
-//   - users                       (replicated user accounts)
-//   - refresh_tokens              (cluster-wide sessions)
+//   - user_accounts               (replicated user accounts)
+//   - user_refresh_tokens         (cluster-wide sessions)
 //   - cluster_config              (jwt_secret, refresh_secret, bridge cursors, …)
 //   - peer_node_advertise         (URL catalog)
 //   - cluster_join_tokens         (one-shot bootstrap tokens)
-//   - cpu_metrics                 (replicated metric history)
-//   - memory_metrics
-//   - disk_metrics
-//   - network_metrics
-//   - docker_metrics
-//   - docker_container_entities
+//   - connectors                  (replicated external-source registry; secrets encrypted)
 //
-// Other tables (local-only artefacts like the Raft log itself) are not
-// included.
+// High-churn metric history (cpu/memory/disk/network/docker_metrics and
+// docker_container_entities) is DELIBERATELY EXCLUDED from the snapshot.
+// Those tables are replicated continuously via CmdMetricBatch and already
+// live in every node's own DB; folding them into the snapshot made
+// Snapshot() materialise hundreds of MB of history into RAM (as
+// map[string][]map[string]any) ON the FSM goroutine — which blocks all
+// applies while it dumps, spiking memory and causing "raft: apply: timed
+// out enqueuing operation" bursts (the prod incident). A node joining via
+// snapshot simply starts with empty metric history and fills forward from
+// CmdMetricBatch, which is acceptable.
+//
+// Other tables (local-only artefacts like the Raft log itself, or per-node
+// bridge dedup bookkeeping like applied_remote_log) are not included.
 
 var managedTables = []string{
 	"hosts",
@@ -63,13 +69,14 @@ var managedTables = []string{
 	"cluster_config",
 	"peer_node_advertise",
 	"cluster_join_tokens",
-	"cpu_metrics",
-	"memory_metrics",
-	"disk_metrics",
-	"network_metrics",
-	"docker_metrics",
-	// GORM's default table name for DockerContainerEntity (NOT "docker_containers").
-	"docker_container_entities",
+	// Connector rows replicate via Raft (CmdConnectorUpsert/Delete) with the
+	// token secret AES-GCM-encrypted, so a snapshot-joining node inherits
+	// configured integrations. Small and low-churn — safe to snapshot.
+	"connectors",
+	// NB: cpu/memory/disk/network/docker_metrics and docker_container_entities
+	// are intentionally NOT listed here — see the type doc above. They are
+	// high-churn metric history replicated via CmdMetricBatch; including them
+	// blew up Snapshot()'s RAM use and blocked the FSM goroutine.
 }
 
 // SQLiteSnapshotter implements Snapshotter for the GORM-backed DB.
@@ -195,10 +202,15 @@ func (r *SQLiteRestorer) Restore(rc io.ReadCloser) error {
 	}
 
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		// Wipe in reverse FK order — docker_container_entities FKs onto
-		// docker_metrics, etc. — but we use raw DELETE so order
-		// flexibility matters less than disabling triggers/FKs would.
-		for _, t := range managedTables {
+		// Wipe exactly the tables this snapshot stream carries (header.Tables)
+		// — NOT the static managedTables set. New snapshots only contain the
+		// small config tables, so we must not touch metric history here (it's
+		// owned by CmdMetricBatch). An OLD snapshot still carries the metric
+		// tables, and truncating each one before its insert keeps that restore
+		// conflict-free (insertRows does a plain Create with no OnConflict).
+		// We use raw DELETE so FK order does not matter as much as disabling
+		// triggers/FKs would.
+		for _, t := range header.Tables {
 			if !tx.Migrator().HasTable(t) {
 				continue
 			}

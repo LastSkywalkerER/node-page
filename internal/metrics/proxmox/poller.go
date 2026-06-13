@@ -2,6 +2,7 @@ package proxmox
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -27,6 +28,12 @@ const (
 	// identityTTL bounds the per-guest config / per-node network calls that
 	// resolve MACs — topology changes slowly.
 	identityTTL = 5 * time.Minute
+	// hostUpsertHeartbeat is how often an UNCHANGED guest/node host row is still
+	// pushed through Raft just to refresh last_seen so peers keep it online.
+	// Proxmox guests change slowly, so we use a comfortable 60s — well below
+	// HostOfflineThreshold — instead of firing a consensus round on every ~10s
+	// poll. Mirrors internal/cluster/hosts.shouldSubmitUpsert.
+	hostUpsertHeartbeat = 60 * time.Second
 )
 
 // PollerDeps bundles everything the Proxmox poller needs. When Raft is active
@@ -63,6 +70,18 @@ type Poller struct {
 	nodeIdent map[string]cachedNodeIdentity // key: connectorID/nodeName
 	guestCfg  map[string]cachedGuestConfig  // key: connectorID/node/kind/vmid
 	netPrev   map[string]netSample          // key: externalID
+
+	// upsertMu guards the per-host throttling state for replicated host upserts.
+	upsertMu sync.Mutex
+	// upsertState fingerprints the last host-upsert submitted through Raft for
+	// each host (keyed by external_id), so an unchanged guest/node doesn't fire
+	// a consensus round on every ~10s poll. See shouldSubmitHostUpsert.
+	upsertState map[string]hostUpsertState
+}
+
+type hostUpsertState struct {
+	hash       [sha256.Size]byte
+	lastSubmit time.Time
 }
 
 type cachedNodeIdentity struct {
@@ -85,11 +104,12 @@ type netSample struct {
 // NewPoller creates the Proxmox poller.
 func NewPoller(deps PollerDeps) *Poller {
 	return &Poller{
-		deps:      deps,
-		syncCh:    make(chan struct{}, 1),
-		nodeIdent: map[string]cachedNodeIdentity{},
-		guestCfg:  map[string]cachedGuestConfig{},
-		netPrev:   map[string]netSample{},
+		deps:        deps,
+		syncCh:      make(chan struct{}, 1),
+		nodeIdent:   map[string]cachedNodeIdentity{},
+		guestCfg:    map[string]cachedGuestConfig{},
+		netPrev:     map[string]netSample{},
+		upsertState: map[string]hostUpsertState{},
 	}
 }
 
@@ -625,11 +645,20 @@ func (p *Poller) guestIdentity(ctx context.Context, client *Client, connID uint,
 
 // upsertHost routes the host write through Raft (replicated) or directly.
 // Returns the local row (resolved post-apply) or nil on failure.
+//
+// The Raft path is THROTTLED per host (see shouldSubmitHostUpsert): a guest/node
+// whose identity, topology and status haven't changed and was submitted within
+// the last hostUpsertHeartbeat is skipped — no consensus round — while the row
+// is still resolved and returned so metrics keep flowing and last_seen stays
+// fresh via the periodic heartbeat. Status transitions (guest_status) are part
+// of the fingerprint, so a stop/start replicates on the very next poll.
 func (p *Poller) upsertHost(ctx context.Context, info hosts.ConnectorHostInfo) *hosts.Host {
 	if p.deps.Raft != nil && p.deps.Raft.Enabled() {
-		if err := p.deps.Raft.SubmitConnectorHostUpsert(ctx, info); err != nil {
-			p.deps.Logger.Warn("proxmox: replicate host upsert", "host", info.Name, "error", err)
-			return nil
+		if p.shouldSubmitHostUpsert(info, time.Now()) {
+			if err := p.deps.Raft.SubmitConnectorHostUpsert(ctx, info); err != nil {
+				p.deps.Logger.Warn("proxmox: replicate host upsert", "host", info.Name, "error", err)
+				return nil
+			}
 		}
 	} else {
 		if _, err := p.deps.HostRepo.UpsertConnectorHost(ctx, info); err != nil {
@@ -645,6 +674,57 @@ func (p *Poller) upsertHost(ctx context.Context, info hosts.ConnectorHostInfo) *
 		return nil
 	}
 	return host
+}
+
+// connectorHostFingerprint hashes every identity/topology/status field of a
+// ConnectorHostInfo — everything a peer cares about, excluding last_seen (which
+// the applier stamps). guest_status is included so an online↔stopped transition
+// changes the fingerprint and replicates on the next poll. Mirrors
+// internal/cluster/hosts.hostInfoFingerprint.
+func connectorHostFingerprint(info hosts.ConnectorHostInfo) [sha256.Size]byte {
+	// A NUL field separator keeps distinct field boundaries unambiguous.
+	s := strings.Join([]string{
+		info.Name,
+		info.MacAddress,
+		info.IPv4,
+		info.OS,
+		info.Platform,
+		info.PlatformFamily,
+		info.PlatformVersion,
+		info.KernelVersion,
+		fmt.Sprintf("%d", info.BootTime),
+		info.HostType,
+		info.ParentMAC,
+		info.ExternalID,
+		info.GuestStatus,
+	}, "\x00")
+	return sha256.Sum256([]byte(s))
+}
+
+// shouldSubmitHostUpsert reports whether the replicated host upsert for this
+// guest/node should issue a Raft consensus round now, and records the decision.
+// It submits when the record changed since the last submission for this host,
+// or when at least hostUpsertHeartbeat has elapsed (a liveness refresh so peers
+// keep the guest online). Keyed by external_id (cluster-stable per guest/node);
+// falls back to MAC when a row carries no external id. Mutex-protected.
+func (p *Poller) shouldSubmitHostUpsert(info hosts.ConnectorHostInfo, now time.Time) bool {
+	key := info.ExternalID
+	if key == "" {
+		key = info.MacAddress
+	}
+	fp := connectorHostFingerprint(info)
+
+	p.upsertMu.Lock()
+	defer p.upsertMu.Unlock()
+
+	prev, seen := p.upsertState[key]
+	changed := !seen || fp != prev.hash
+	elapsed := now.Sub(prev.lastSubmit) >= hostUpsertHeartbeat
+	if seen && !changed && !elapsed {
+		return false
+	}
+	p.upsertState[key] = hostUpsertState{hash: fp, lastSubmit: now}
+	return true
 }
 
 // submitMetrics replicates a metric batch (Raft) or saves + publishes locally.

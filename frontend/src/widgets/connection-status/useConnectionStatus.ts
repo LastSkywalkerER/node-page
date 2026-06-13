@@ -55,8 +55,10 @@ export function useConnectionStatus(hostId?: number) {
         show_uptime: showUptime,
       };
     },
-    staleTime: 5000,
-    refetchInterval: 5000,
+    // Online/offline doesn't need 5s granularity; a 20s poll is plenty and
+    // keeps the machine list from hammering /health per host every 5s.
+    staleTime: 20_000,
+    refetchInterval: 20_000,
     retry: 3,
     retryDelay: 1000,
     enabled: true,

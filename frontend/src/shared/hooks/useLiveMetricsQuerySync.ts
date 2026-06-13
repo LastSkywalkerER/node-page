@@ -144,6 +144,33 @@ function syncApplications(qc: QueryClient, hostId: number, apps: unknown[] | und
 }
 
 /**
+ * Merges one raw SSE envelope's cpu/memory/disk/network snapshots into the
+ * per-host metric query caches (keyed by `collecting_host_id`). Used by the
+ * machine-list stream so every listed host's live cards stay fresh from the
+ * single open SSE connection, without REST polling each host every 5s.
+ */
+export function applyEnvelopeToMetricCaches(
+  qc: QueryClient,
+  data: Record<string, unknown> & { collecting_host_id?: number; timestamp?: unknown }
+) {
+  const cid = Number(data.collecting_host_id);
+  if (!Number.isFinite(cid) || cid <= 0) return;
+
+  let streamTs: string | undefined;
+  const tsRaw = data.timestamp;
+  if (typeof tsRaw === 'string' && tsRaw.length > 0) {
+    streamTs = tsRaw;
+  } else if (typeof tsRaw === 'number' && Number.isFinite(tsRaw)) {
+    streamTs = new Date(tsRaw).toISOString();
+  }
+
+  mergeLatestIntoQuery(qc, 'cpu-metrics', cid, data.cpu as Record<string, unknown> | undefined, streamTs, buildCpuHistoryPoint);
+  mergeLatestIntoQuery(qc, 'memory-metrics', cid, data.memory as Record<string, unknown> | undefined, streamTs, buildMemoryHistoryPoint);
+  mergeLatestIntoQuery(qc, 'disk-metrics', cid, data.disk as Record<string, unknown> | undefined, streamTs, buildDiskHistoryPoint);
+  mergeLatestIntoQuery(qc, 'network-metrics', cid, data.network as Record<string, unknown> | undefined, streamTs, buildNetworkHistoryPoint);
+}
+
+/**
  * Pushes SSE live snapshots from metricsStore into React Query caches so widgets
  * keep using useCPU/useMemory/... without polling, and chart `history` grows from the stream.
  */

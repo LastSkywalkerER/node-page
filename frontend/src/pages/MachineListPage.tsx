@@ -20,7 +20,11 @@ import { OSIcon } from '@/shared/components/OSIcon'
 import { getHostCardTitle } from '@/shared/lib/hostDisplay'
 import { AllApplicationsSection } from '@/widgets/applications/AllApplicationsSection'
 
-const LIVE = { mode: 'poll' } as const
+// While the SSE stream is connected the cards update live from the per-host
+// metric caches (one REST load on mount), so no interval polling. If SSE drops,
+// fall back to a slow 30s poll — machine list metrics don't need 5s granularity.
+const SSE_LIVE = { mode: 'snapshot' } as const
+const SSE_FALLBACK = { mode: 'poll', pollMs: 30_000 } as const
 
 function fmtLatency(ms: number | null): string {
   if (ms == null || ms < 0) return '--'
@@ -113,11 +117,12 @@ function MetricTile({
   )
 }
 
-function HostMetrics({ hostId }: { hostId: number }) {
-  const { data: cpu } = useCPU(hostId, LIVE)
-  const { data: mem } = useMemory(hostId, LIVE)
-  const { data: disk } = useDisk(hostId, LIVE)
-  const { data: net } = useNetwork(hostId, LIVE)
+function HostMetrics({ hostId, live }: { hostId: number; live: boolean }) {
+  const opts = live ? SSE_LIVE : SSE_FALLBACK
+  const { data: cpu } = useCPU(hostId, opts)
+  const { data: mem } = useMemory(hostId, opts)
+  const { data: disk } = useDisk(hostId, opts)
+  const { data: net } = useNetwork(hostId, opts)
 
   const cpuPct = cpu?.latest?.usage_percent ?? null
   const memPct = mem?.latest?.usage_percent ?? null
@@ -188,7 +193,7 @@ function MetaCell({ label, value, mono = true }: { label: string; value: string;
   )
 }
 
-function HostCard({ host, guests = [] }: { host: Host; guests?: Host[] }) {
+function HostCard({ host, guests = [], live }: { host: Host; guests?: Host[]; live: boolean }) {
   const { isConnected, latency, uptime, showUptime, isLoading: connLoading } = useConnectionStatus(host.id)
   const cardTitle = getHostCardTitle(host)
 
@@ -255,7 +260,7 @@ function HostCard({ host, guests = [] }: { host: Host; guests?: Host[] }) {
             </div>
 
             {/* Live metrics */}
-            <HostMetrics hostId={host.id} />
+            <HostMetrics hostId={host.id} live={live} />
 
             {/* Compact metadata */}
             <div className="mt-2.5 grid grid-cols-2 gap-x-3 gap-y-1.5">
@@ -305,8 +310,9 @@ function HostCard({ host, guests = [] }: { host: Host; guests?: Host[] }) {
 export function MachineListPage() {
   const { data: hostsData, isLoading } = useHosts()
   const hosts: Host[] = hostsData?.hosts ?? []
-  // One SSE subscription keeps cpu/ram fresh for every nested guest row.
-  useHostGaugesStream()
+  // One SSE subscription feeds every host's gauges AND metric caches; cards
+  // update live from it. Only when SSE is down do cards fall back to a slow poll.
+  const { connected: sseConnected } = useHostGaugesStream()
 
   // Topology grouping: guests (parent resolved) nest inside their hypervisor's
   // card and leave the top-level grid — the no-duplication rule.
@@ -362,7 +368,7 @@ export function MachineListPage() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {topLevel.map((host) => (
-              <HostCard key={host.id} host={host} guests={guestsByParent.get(host.id) ?? []} />
+              <HostCard key={host.id} host={host} guests={guestsByParent.get(host.id) ?? []} live={sseConnected} />
             ))}
           </div>
         )}

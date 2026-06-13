@@ -1,6 +1,8 @@
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { resetLiveMetrics, useMetricsStore } from '../lib/metricsStore';
 import { recordGaugeFromEnvelope } from '../lib/hostGaugesStore';
+import { applyEnvelopeToMetricCaches } from './useLiveMetricsQuerySync';
 
 export function useMetricsStream(hostId?: number | null) {
   const url = hostId ? `/api/v1/stream?host_id=${hostId}` : '/api/v1/stream';
@@ -54,23 +56,47 @@ export function useMetricsStream(hostId?: number | null) {
 }
 
 /**
- * Gauges-only stream subscription for pages without a metrics stream of their
- * own (the machine list): one EventSource feeding the per-host cpu/ram gauges
- * store. Pages that already mount useMetricsStream get this for free.
+ * All-hosts stream subscription for the machine list: one EventSource that feeds
+ * BOTH the per-host cpu/ram gauges store (nested guest rows) AND every host's
+ * cpu/memory/disk/network metric query caches (keyed by `collecting_host_id`),
+ * so the live cards update from SSE instead of polling each host every 5s.
+ *
+ * Returns whether the stream is currently connected — the list page keeps a slow
+ * fallback poll only while SSE is down (or for hosts the stream never carries).
  */
-export function useHostGaugesStream() {
+export function useHostGaugesStream(): { connected: boolean } {
+  const qc = useQueryClient();
+  const [connected, setConnected] = useState(false);
+  // Avoid re-subscribing on every render; the query client is stable per app.
+  const qcRef = useRef(qc);
+  qcRef.current = qc;
+
   useEffect(() => {
     const es = new EventSource('/api/v1/stream', { withCredentials: true });
     es.addEventListener('metrics', (e: MessageEvent) => {
       try {
-        recordGaugeFromEnvelope(JSON.parse(e.data) as Record<string, unknown>);
+        const data = JSON.parse(e.data) as Record<string, unknown> & {
+          collecting_host_id?: number;
+          timestamp?: unknown;
+        };
+        recordGaugeFromEnvelope(data);
+        applyEnvelopeToMetricCaches(qcRef.current, data);
+        setConnected(true);
       } catch {
         // ignore malformed messages
       }
     });
+    es.onopen = () => setConnected(true);
     es.onerror = () => {
-      // browser reconnects automatically via EventSource spec
+      // browser reconnects automatically via EventSource spec; treat as down so
+      // the list page falls back to a slow poll until messages resume.
+      setConnected(false);
     };
-    return () => es.close();
+    return () => {
+      es.close();
+      setConnected(false);
+    };
   }, []);
+
+  return { connected };
 }
