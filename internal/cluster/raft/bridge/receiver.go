@@ -229,17 +229,22 @@ func (r *Receiver) Handle(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"applied": len(fresh), "deduped": deduped, "skipped": skipped})
 }
 
-// maybePrune trims applied_remote_log at most once an hour. The table exists
-// to dedupe sender RETRIES (a window of seconds) — without GC a hub absorbing
-// one metric batch per host every 5s would grow it by ~17k rows/host/day
-// forever. 48h of history is orders of magnitude more than retries need.
+// maybePrune trims applied_remote_log every few minutes. The table exists only
+// to dedupe sender RETRIES (a window of seconds), and every bridge-replicated
+// command is idempotent (metric/host upserts are OnConflict no-ops), so a
+// double-apply that slips past the window is harmless. A SHORT retention also
+// self-heals the one nasty failure mode of an index-based dedup: if a sender's
+// Raft log is reset (a raft-dir wipe → indices restart at 1), its fresh low
+// indices would otherwise collide with this table's stale high-water entries
+// and get dropped as "already applied" until they aged out — 48h of silent
+// uplink loss. At 15min retention that window shrinks to minutes.
 func (r *Receiver) maybePrune(ctx context.Context) {
 	now := time.Now().Unix()
 	last := atomic.LoadInt64(&r.lastPruneUnix)
-	if now-last < 3600 || !atomic.CompareAndSwapInt64(&r.lastPruneUnix, last, now) {
+	if now-last < 300 || !atomic.CompareAndSwapInt64(&r.lastPruneUnix, last, now) {
 		return
 	}
-	cutoff := time.Now().Add(-48 * time.Hour)
+	cutoff := time.Now().Add(-15 * time.Minute)
 	if err := r.db.WithContext(ctx).
 		Where("applied_at < ?", cutoff).
 		Delete(&AppliedRemoteLog{}).Error; err != nil && r.logger != nil {

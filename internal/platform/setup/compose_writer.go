@@ -195,6 +195,12 @@ func BuildComposeContent(ds DesiredState) string {
 	// docker CLI's relative bind-mount sources resolve to real host paths.
 	w("      - ${NODE_STATS_STACK_HOST_DIR}:${NODE_STATS_STACK_HOST_DIR}")
 	w("    environment:")
+	// The controller only polls desired-state.json and shells out to `docker
+	// compose`; its own Go heap is tiny. Without a soft memory limit the Go
+	// runtime parks freed pages and the sidecar's RSS drifts well above the
+	// app's (observed ~2x). A tight GOMEMLIMIT makes the GC return memory
+	// promptly — it's a soft target, so a busy compose run can still exceed it.
+	w("      - GOMEMLIMIT=128MiB")
 	w("      - NODE_STATS_STACK_DIR=${NODE_STATS_STACK_HOST_DIR}")
 	w("      - NODE_STATS_DATA_DIR=${NODE_STATS_STACK_HOST_DIR}/data/docker")
 	w("      - NODE_STATS_APP_SERVICE=node-stats")

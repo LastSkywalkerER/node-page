@@ -19,6 +19,9 @@ func TestBuildComposeContent_SQLite(t *testing.T) {
 		"DB_DSN=/app/data/stats.db",
 		// Resource/logging guards (hub VPS is 2 CPU/4GB).
 		"GOMEMLIMIT=${GOMEMLIMIT:-768MiB}",
+		// The controller sidecar gets its own tight soft limit so it doesn't
+		// out-RSS the app (Go parks freed pages without one).
+		"GOMEMLIMIT=128MiB",
 		"mem_limit: 1g",
 		"stop_grace_period: 30s",
 		"driver: json-file",
