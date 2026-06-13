@@ -13,6 +13,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -196,9 +197,31 @@ func (c *controller) selfUpdateIfStale(ds setup.DesiredState) {
 		"app_image", appImg, "controller_image", selfImg)
 	c.writeStatus(setup.ControllerStatus{Generation: ds.Generation, Phase: setup.PhaseApplied,
 		Message: "recreating controller onto the new image"})
-	// This recreate kills the current process mid-command; the daemon finishes it.
-	if out, err := c.compose("up", "-d", "--no-deps", c.controllerService); err != nil {
-		log.Error("controller: self-update recreate failed", "out", out, "error", err)
+
+	// A container cannot `docker compose up` ITSELF: the moment compose stops the
+	// old controller to recreate it, the command running INSIDE that container is
+	// killed before it can start the replacement — leaving NO controller (and a
+	// half-created stray). Instead spawn a DETACHED sibling container (on the new
+	// image, with the docker socket + the identity-mounted stack dir) that waits a
+	// beat and then recreates the controller from OUTSIDE. It survives this
+	// controller's death and self-removes when done. Best-effort: if the spawn
+	// fails, this controller simply keeps running (no self-update) rather than
+	// killing itself.
+	helperName := c.controllerService + "-selfupdate"
+	_, _ = c.dockerCLI("rm", "-f", helperName) // clear a prior helper if any
+	recreate := fmt.Sprintf(
+		"sleep 3; docker compose -p %s --project-directory %s up -d --no-deps --force-recreate %s",
+		c.project, c.stackDir, c.controllerService)
+	helper := []string{
+		"run", "-d", "--rm", "--name", helperName,
+		"-v", "/var/run/docker.sock:/var/run/docker.sock",
+		"-v", c.stackDir + ":" + c.stackDir,
+		"-w", c.stackDir,
+		"--entrypoint", "sh",
+		appImg, "-c", recreate,
+	}
+	if out, err := c.dockerCLI(helper...); err != nil {
+		log.Error("controller: self-update helper spawn failed", "out", out, "error", err)
 	}
 }
 

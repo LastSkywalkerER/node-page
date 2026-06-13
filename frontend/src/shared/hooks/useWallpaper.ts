@@ -31,10 +31,37 @@ export function useDarkClass(): boolean {
   return dark
 }
 
+// Last-shown wallpaper is cached per theme so a returning visit (or a theme
+// toggle) paints the Pexels photo IMMEDIATELY — the photo URL is stable and
+// almost certainly still in the browser's HTTP cache — instead of flashing the
+// bundled art for a beat while the /wallpaper fetch + image preload run.
+const WP_CACHE = 'np:wallpaper:'
+
+function readWallpaperCache(mode: string): WallpaperData | null {
+  try {
+    const raw = localStorage.getItem(WP_CACHE + mode)
+    if (!raw) return null
+    const v = JSON.parse(raw)
+    return v && typeof v.url === 'string' ? (v as WallpaperData) : null
+  } catch {
+    return null
+  }
+}
+
+function writeWallpaperCache(mode: string, data: WallpaperData | null) {
+  try {
+    if (data) localStorage.setItem(WP_CACHE + mode, JSON.stringify(data))
+    else localStorage.removeItem(WP_CACHE + mode)
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
 /**
- * Returns the wallpaper to show right now, already preloaded (the swap waits
- * for the image bytes so the backdrop never flashes empty). Null = keep the
- * bundled static background.
+ * Returns the wallpaper to show right now. Seeded synchronously from the
+ * per-theme localStorage cache so the Pexels photo appears with no
+ * bundled-art flash; the fresh fetch then preloads and swaps in the current
+ * rotation. Null = no wallpaper (not configured / not signed in) → bundled art.
  */
 export function useLoadedWallpaper(): WallpaperData | null {
   const isAuthenticated = useUserStore((s) => s.isAuthenticated)
@@ -55,24 +82,45 @@ export function useLoadedWallpaper(): WallpaperData | null {
     retry: false,
   })
 
-  const [shown, setShown] = useState<WallpaperData | null>(null)
+  const [shown, setShown] = useState<WallpaperData | null>(() =>
+    isAuthenticated ? readWallpaperCache(mode) : null
+  )
+
+  // Re-seed instantly from the cache on theme flip / sign-in, so toggling never
+  // momentarily drops back to the bundled art for an already-seen wallpaper.
+  useEffect(() => {
+    if (isAuthenticated) {
+      const cached = readWallpaperCache(mode)
+      if (cached) setShown(cached)
+    } else {
+      setShown(null)
+    }
+  }, [mode, isAuthenticated])
+
   const url = data?.url ?? null
   useEffect(() => {
-    if (!isAuthenticated || !url || !data) {
+    if (!isAuthenticated) return // logout handled by the seed effect above
+    if (data === null) {
+      // Query resolved with NO connector — clear the photo and the stale cache.
       setShown(null)
+      writeWallpaperCache(mode, null)
       return
     }
+    if (!data || !url) return // still loading — keep whatever is shown (cached)
     let cancelled = false
     const img = new Image()
     img.onload = () => {
-      if (!cancelled) setShown(data)
+      if (!cancelled) {
+        setShown(data)
+        writeWallpaperCache(mode, data)
+      }
     }
     img.src = url
     return () => {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url, isAuthenticated])
+  }, [url, data, isAuthenticated, mode])
 
   return shown
 }
