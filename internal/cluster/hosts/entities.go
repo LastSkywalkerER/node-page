@@ -46,8 +46,14 @@ type Host struct {
 	// ID is the unique identifier for the host
 	ID uint `json:"id" gorm:"primaryKey;autoIncrement"`
 
-	// Name is the hostname of the machine
-	Name string `json:"name" gorm:"uniqueIndex;not null"`
+	// Name is the hostname of the machine. It is a DISPLAY LABEL only and is
+	// NOT unique: a Proxmox connector guest or a cross-cluster-bridged host can
+	// legitimately share a name with the local agent host of the same name
+	// until they are merged by stable identity (mac_address / external_id). A
+	// unique(name) turned that transient state into a Postgres "duplicate key"
+	// hot-loop on the periodic UPDATE hosts SET name=... — keep it indexed for
+	// lookups, but not unique. Real identity keys are MacAddress and ExternalID.
+	Name string `json:"name" gorm:"index;not null"`
 
 	// MacAddress is the MAC address of the primary network interface
 	MacAddress string `json:"mac_address" gorm:"uniqueIndex;not null"`

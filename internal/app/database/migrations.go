@@ -43,6 +43,17 @@ func Migrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate metric composite primary keys: %w", err)
 	}
 
+	// Downgrade the legacy UNIQUE idx_hosts_name to a plain (non-unique) index.
+	// hosts.name is a display label, not an identity key — connector guests and
+	// cross-cluster-bridged hosts can transiently share a name with an agent
+	// host until merged by mac_address/external_id, and the unique index turned
+	// that into a Postgres "duplicate key" hot-loop on the periodic name UPDATE.
+	// AutoMigrate never downgrades an existing unique index on its own, so this
+	// explicit step must run after the hosts AutoMigrate to fix upgraded DBs.
+	if err := relaxHostsNameUniqueIndex(db); err != nil {
+		return fmt.Errorf("failed to relax hosts.name unique index: %w", err)
+	}
+
 	err = db.AutoMigrate(&users.User{})
 	if err != nil {
 		return fmt.Errorf("failed to migrate users: %w", err)
