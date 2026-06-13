@@ -241,6 +241,9 @@ func (p *Poller) syncConnector(ctx context.Context, conn connectors.Connector) {
 		p.setStatus(ctx, conn.ID, connectors.StatusUnreachable, err.Error())
 		return
 	}
+	// A client is built per cycle; release its idle connections at the end so
+	// the discarded transport doesn't leak parked keep-alive goroutines.
+	defer client.Close()
 	resources, err := client.ClusterResources(ctx)
 	if err != nil {
 		if _, ok := err.(*AuthError); ok {
@@ -254,11 +257,20 @@ func (p *Poller) syncConnector(ctx context.Context, conn connectors.Connector) {
 	prefix := connectors.ExternalIDPrefix(conn.Type, conn.Fingerprint)
 	nodeMACs := map[string]string{}
 
+	// Live key sets for this cycle, used to evict stale cache entries below.
+	// liveConnKeys holds nodeIdent (connID/node) + guestCfg (connID/node/kind/vmid)
+	// keys; liveExternalIDs holds the node/guest external_ids that key netPrev and
+	// upsertState. They mirror the exact formats used at the map-write sites.
+	liveConnKeys := make(map[string]struct{}, len(resources))
+	liveExternalIDs := make(map[string]struct{}, len(resources))
+
 	// Hypervisor nodes first so guests can reference their parent MAC.
 	for _, r := range resources {
 		if r.Type != "node" {
 			continue
 		}
+		liveConnKeys[fmt.Sprintf("%d/%s", conn.ID, r.Node)] = struct{}{}
+		liveExternalIDs[prefix+r.Node] = struct{}{}
 		mac := p.syncNode(ctx, client, conn, prefix, r)
 		if mac != "" {
 			nodeMACs[r.Node] = mac
@@ -268,10 +280,62 @@ func (p *Poller) syncConnector(ctx context.Context, conn connectors.Connector) {
 		if (r.Type != "qemu" && r.Type != "lxc") || r.Template == 1 {
 			continue
 		}
+		liveConnKeys[fmt.Sprintf("%d/%s/%s/%d", conn.ID, r.Node, r.Type, r.VMID)] = struct{}{}
+		liveExternalIDs[fmt.Sprintf("%s%s/%s/%d", prefix, r.Node, r.Type, r.VMID)] = struct{}{}
 		p.syncGuest(ctx, client, conn, prefix, r, nodeMACs[r.Node])
 	}
 
+	// Prune cache entries for nodes/guests that no longer exist on this connector
+	// (destroyed/recreated VMIDs, migrations) so the per-guest maps stay bounded
+	// to the live topology instead of growing for the process lifetime. Only runs
+	// after a SUCCESSFUL resource fetch (a failed fetch returns early above), so a
+	// transient outage never wipes still-valid state.
+	p.evictStale(conn.ID, prefix, liveConnKeys, liveExternalIDs)
+
 	_ = p.deps.Connectors.UpdateLocalStatus(ctx, conn.ID, connectors.StatusOK, "", time.Now())
+}
+
+// evictStale removes cached identity/network/upsert state for one connector's
+// nodes/guests that are not in the live set for the current cycle. Keys are
+// scoped to this connector (connID/ prefix for the mu-guarded maps, external_id
+// prefix for the upsert map) so a connector's sweep never touches another's
+// entries. Mirrors the docker collector's per-cycle eviction.
+func (p *Poller) evictStale(connID uint, prefix string, liveConnKeys, liveExternalIDs map[string]struct{}) {
+	connPrefix := fmt.Sprintf("%d/", connID)
+
+	p.mu.Lock()
+	for k := range p.nodeIdent {
+		if strings.HasPrefix(k, connPrefix) {
+			if _, ok := liveConnKeys[k]; !ok {
+				delete(p.nodeIdent, k)
+			}
+		}
+	}
+	for k := range p.guestCfg {
+		if strings.HasPrefix(k, connPrefix) {
+			if _, ok := liveConnKeys[k]; !ok {
+				delete(p.guestCfg, k)
+			}
+		}
+	}
+	for k := range p.netPrev {
+		if strings.HasPrefix(k, prefix) {
+			if _, ok := liveExternalIDs[k]; !ok {
+				delete(p.netPrev, k)
+			}
+		}
+	}
+	p.mu.Unlock()
+
+	p.upsertMu.Lock()
+	for k := range p.upsertState {
+		if strings.HasPrefix(k, prefix) {
+			if _, ok := liveExternalIDs[k]; !ok {
+				delete(p.upsertState, k)
+			}
+		}
+	}
+	p.upsertMu.Unlock()
 }
 
 func (p *Poller) setStatus(ctx context.Context, id uint, status, msg string) {

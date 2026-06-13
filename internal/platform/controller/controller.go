@@ -21,6 +21,7 @@ import (
 
 	"github.com/charmbracelet/log"
 
+	"system-stats/internal/platform/runtimetune"
 	"system-stats/internal/platform/setup"
 )
 
@@ -48,6 +49,10 @@ func Run() {
 	}
 	c.lastApplied = readAppliedHash(c.dataDir)
 	log.Info("controller: starting", "stack_dir", c.stackDir, "data_dir", c.dataDir, "project", c.project)
+
+	// Return freed heap to the OS on a slow cadence so the sidecar's RSS stays
+	// near its (tiny) live heap instead of parking freed pages. Process-lifetime.
+	runtimetune.StartPeriodicRelease(context.Background(), 2*time.Minute)
 
 	if setup.ManagedExternally() {
 		log.Warn("controller: deployment is managed externally (Dokploy/Traefik) — compose mutation disabled")

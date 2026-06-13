@@ -48,6 +48,7 @@ import (
 	connectors "system-stats/internal/platform/connectors"
 	health "system-stats/internal/platform/health"
 	history "system-stats/internal/platform/history"
+	"system-stats/internal/platform/runtimetune"
 	setup "system-stats/internal/platform/setup"
 	platformstream "system-stats/internal/platform/stream"
 	system "system-stats/internal/platform/system"
@@ -177,6 +178,11 @@ func Run() {
 	// picker / sender immediately if Raft was activated at boot time
 	// (i.e. RAFT_ENABLED=true in env).
 	container.SetAppContext(appCtx)
+
+	// Periodically hand freed heap memory back to the OS so the process RSS
+	// tracks the live heap instead of drifting up to the GOMEMLIMIT high-water
+	// mark (Go's MADV_FREE scavenge otherwise leaves freed pages mapped).
+	runtimetune.StartPeriodicRelease(appCtx, 2*time.Minute)
 
 	// Connectors: external data-source registry + the Proxmox poller. The
 	// cipher key derives from the (cluster-shared) JWT secret so connector

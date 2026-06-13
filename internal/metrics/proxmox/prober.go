@@ -24,6 +24,7 @@ func (p *Prober) Probe(ctx context.Context, endpoint, tokenID, secret string, sk
 	if err != nil {
 		return nil, err
 	}
+	defer client.Close()
 	version, err := client.Version(ctx)
 	if err != nil {
 		return nil, wrapAuth(err, tokenID)

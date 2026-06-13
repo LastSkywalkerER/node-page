@@ -208,7 +208,18 @@ export function ApplicationDetailPage() {
               ) : (
                 <div className="space-y-3">
                   {containers.map((c) => {
-                    const vols = (c.mounts ?? []).filter((m) => m.type !== 'tmpfs' && m.source);
+                    // Docker returns mounts in an unstable order between polls, so
+                    // sort deterministically by name, then host path, then mount
+                    // path — otherwise the rows visibly jump on every refresh.
+                    const vols = (c.mounts ?? [])
+                      .filter((m) => m.type !== 'tmpfs' && m.source)
+                      .slice()
+                      .sort(
+                        (a, b) =>
+                          (a.name || '').localeCompare(b.name || '') ||
+                          (a.source || '').localeCompare(b.source || '') ||
+                          (a.destination || '').localeCompare(b.destination || ''),
+                      );
                     if (vols.length === 0) return null;
                     return (
                       <div key={c.id}>

@@ -36,6 +36,13 @@ func NewClient(endpoint, tokenID, secret string, skipTLSVerify bool) (*Client, e
 		Proxy:               http.ProxyFromEnvironment,
 		DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
 		TLSHandshakeTimeout: 5 * time.Second,
+		// Bound idle keep-alive connections. The poller builds a client every
+		// ~10s cycle; without an idle timeout, idle connections (and their
+		// parked reader goroutines) from discarded transports never expire and
+		// leak for the process lifetime. Callers should also defer Close().
+		MaxIdleConns:        8,
+		MaxIdleConnsPerHost: 4,
+		IdleConnTimeout:     30 * time.Second,
 	}
 	if skipTLSVerify {
 		// PVE ships a self-signed certificate by default; the admin opts in
@@ -48,6 +55,16 @@ func NewClient(endpoint, tokenID, secret string, skipTLSVerify bool) (*Client, e
 		secret:  secret,
 		http:    &http.Client{Timeout: 15 * time.Second, Transport: transport},
 	}, nil
+}
+
+// Close releases the idle keep-alive connections held by this client's
+// transport. The poller creates a client per poll cycle and discards it, so it
+// must Close() each one — otherwise the transports' idle connections and their
+// parked goroutines accumulate for the process lifetime.
+func (c *Client) Close() {
+	if c != nil && c.http != nil {
+		c.http.CloseIdleConnections()
+	}
 }
 
 // AuthError marks a 401/403 from the PVE API.
