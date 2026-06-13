@@ -171,14 +171,25 @@ type DockerMount struct {
 // DockerContainerEntity represents a Docker container stored in the database.
 // This entity is used for database storage with foreign key relationship to DockerMetric.
 type DockerContainerEntity struct {
-	// ID is the unique Docker container identifier (primary key)
+	// ID is the Docker container identifier. Together with HostID it forms the
+	// composite primary key: this table holds CURRENT STATE — one upserted row
+	// per (host, container) — not an append-per-tick history. Only the latest
+	// snapshot is ever read, so keeping one row per live container (instead of
+	// N×ticks/day forever) is what bounds the table (its unbounded growth was the
+	// worst DB-RAM/disk hog). HostID is part of the PK (not id alone) so two
+	// hosts that legitimately share a container id — e.g. VMs cloned from a
+	// golden image — keep distinct rows instead of overwriting each other.
 	ID string `gorm:"primaryKey"`
 
-	// MetricTimestamp references the timestamp of the parent DockerMetric.
-	// Indexed so the Preload("Containers") join and retention's
-	// metric_timestamp-cutoff delete have a covering index (the table has no
-	// FK index since the FK constraint was dropped).
-	MetricTimestamp time.Time `gorm:"primaryKey;column:metric_timestamp;index:idx_docker_container_metric_ts"`
+	// HostID scopes the container to its host (a replicating node stores many
+	// hosts' containers here) and is the second PK column. Separately indexed so
+	// the host-scoped latest-snapshot read, write-time prune, and cascade-delete
+	// (all WHERE host_id = ?) hit an index without host_id leading the PK.
+	HostID *uint `gorm:"primaryKey;column:host_id;index"`
+
+	// MetricTimestamp is when this row was last written (the collection tick that
+	// last observed the container). No longer part of the primary key.
+	MetricTimestamp time.Time `gorm:"column:metric_timestamp"`
 
 	// Name is the human-readable container name
 	Name string `gorm:"column:name"`
@@ -384,9 +395,9 @@ func (e DockerContainerEntity) ToDockerContainer() (DockerContainer, error) {
 	}, nil
 }
 
-// ToDockerContainerEntity converts a DockerContainer to a DockerContainerEntity.
-// This method is used for database storage preparation.
-func (c DockerContainer) ToDockerContainerEntity(metricTimestamp time.Time) (DockerContainerEntity, error) {
+// ToDockerContainerEntity converts a DockerContainer to a DockerContainerEntity
+// scoped to hostId. metricTimestamp records when the row was last observed.
+func (c DockerContainer) ToDockerContainerEntity(hostId uint, metricTimestamp time.Time) (DockerContainerEntity, error) {
 	portsJSON, err := json.Marshal(c.Ports)
 	if err != nil {
 		portsJSON = []byte("[]") // Default to empty array on error
@@ -404,6 +415,7 @@ func (c DockerContainer) ToDockerContainerEntity(metricTimestamp time.Time) (Doc
 
 	return DockerContainerEntity{
 		ID:                 c.ID,
+		HostID:             &hostId,
 		MetricTimestamp:    metricTimestamp,
 		Name:               c.Name,
 		Image:              c.Image,
@@ -449,15 +461,12 @@ type HistoricalDockerMetric struct {
 	TotalContainers   int       `json:"total_containers" gorm:"column:total_containers"`
 	RunningContainers int       `json:"running_containers" gorm:"column:running_containers"`
 	DockerAvailable   bool      `json:"docker_available" gorm:"column:docker_available"`
-	// Containers is a Go-side association preloaded by MetricTimestamp. The
-	// DB-level foreign-key constraint is intentionally suppressed
-	// (constraint:- — GORM's ParseConstraint returns nil for a literal dash):
-	// the parent metric tables now have a composite PK, so the old
-	// single-column FK on metric_timestamp is both unusable and unindexed (it
-	// grew docker_container_entities to 500MB+ with no covering index). The
-	// migration drops fk_docker_metrics_containers; AutoMigrate must never
-	// recreate it.
-	Containers []DockerContainerEntity `gorm:"foreignKey:MetricTimestamp;references:Timestamp;constraint:-"`
+	// Containers is populated manually by the latest-snapshot reads (scoped by
+	// host_id) — NOT a GORM association. Container rows are current-state, keyed
+	// by id (+ host_id), with no time relationship to any single counter row, so
+	// there is nothing to Preload. `gorm:"-"` keeps AutoMigrate from ever
+	// recreating the old metric_timestamp FK that grew this table to 500MB+.
+	Containers []DockerContainerEntity `gorm:"-"`
 }
 
 func (h HistoricalDockerMetric) GetTimestamp() time.Time { return h.Timestamp }

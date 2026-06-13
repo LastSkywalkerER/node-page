@@ -36,27 +36,52 @@ func (r *dockerRepository) SaveCurrentMetricAt(ctx context.Context, metric Docke
 		DockerAvailable:   metric.DockerAvailable,
 	}
 
-	// Convert containers from all stacks to entities
+	// Convert containers from all stacks to current-state entities.
 	var containerEntities []DockerContainerEntity
+	currentIDs := make([]string, 0, 16)
 	for _, stack := range metric.Stacks {
 		for _, container := range stack.Containers {
-			entity, err := container.ToDockerContainerEntity(timestamp)
+			entity, err := container.ToDockerContainerEntity(hostId, timestamp)
 			if err != nil {
 				return err
 			}
 			containerEntities = append(containerEntities, entity)
+			currentIDs = append(currentIDs, entity.ID)
 		}
 	}
 
 	// Save metric and containers in transaction
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Raft log replay re-applies entries after a restart: the same
-		// (host_id, timestamp) row must be a no-op, not a pkey violation.
+		// The counter row is a per-tick time series (PK host_id, timestamp) kept
+		// for the historical container-count chart. Raft-log replay re-applies
+		// entries after a restart, so the same (host_id, timestamp) row must be a
+		// no-op, not a pkey violation.
 		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&historicalMetric).Error; err != nil {
 			return err
 		}
+		// Container rows are CURRENT STATE: one row per (host_id, id), upserted in
+		// place. This keeps the table bounded to the live container count instead
+		// of appending N rows every tick forever. The conflict target is the full
+		// composite PK so a container id shared across hosts (cloned VMs) does not
+		// clobber another host's row.
 		if len(containerEntities) > 0 {
-			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&containerEntities).Error; err != nil {
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "id"}, {Name: "host_id"}},
+				UpdateAll: true,
+			}).Create(&containerEntities).Error; err != nil {
+				return err
+			}
+		}
+		// Prune containers that no longer exist on this host. Only when Docker is
+		// actually available do we have an authoritative current set — a transient
+		// daemon outage must not wipe the last-known list. With Docker available
+		// and zero containers, the NOT-IN guard is skipped so the host is cleared.
+		if metric.DockerAvailable {
+			del := tx.Where("host_id = ?", hostId)
+			if len(currentIDs) > 0 {
+				del = del.Where("id NOT IN ?", currentIDs)
+			}
+			if err := del.Delete(&DockerContainerEntity{}).Error; err != nil {
 				return err
 			}
 		}
@@ -64,27 +89,40 @@ func (r *dockerRepository) SaveCurrentMetricAt(ctx context.Context, metric Docke
 	})
 }
 
+// containersForHost loads the current container set for a host and groups it by
+// stack, the shape buildMetricFromHistorical expects.
+func (r *dockerRepository) containersForHost(ctx context.Context, hostId uint) (map[string][]DockerContainer, error) {
+	var entities []DockerContainerEntity
+	if err := r.db.WithContext(ctx).Where("host_id = ?", hostId).Find(&entities).Error; err != nil {
+		return nil, err
+	}
+	containerMap := make(map[string][]DockerContainer)
+	for _, entity := range entities {
+		container, err := entity.ToDockerContainer()
+		if err != nil {
+			return nil, err
+		}
+		stackName := ExtractStackNameFromContainerName(container.Name)
+		containerMap[stackName] = append(containerMap[stackName], container)
+	}
+	return containerMap, nil
+}
+
 func (r *dockerRepository) GetLatestMetric(ctx context.Context) (DockerMetric, error) {
 	var metric HistoricalDockerMetric
-
 	err := r.db.WithContext(ctx).
-		Preload("Containers").
 		Order("timestamp DESC").
 		First(&metric).Error
-
 	if err != nil {
 		return DockerMetric{}, err
 	}
 
 	containerMap := make(map[string][]DockerContainer)
-	for _, entity := range metric.Containers {
-		container, err := entity.ToDockerContainer()
+	if metric.HostID != nil {
+		containerMap, err = r.containersForHost(ctx, *metric.HostID)
 		if err != nil {
 			return DockerMetric{}, err
 		}
-
-		stackName := ExtractStackNameFromContainerName(container.Name)
-		containerMap[stackName] = append(containerMap[stackName], container)
 	}
 
 	result, err := buildMetricFromHistorical(metric, containerMap)
@@ -97,7 +135,6 @@ func (r *dockerRepository) GetLatestMetric(ctx context.Context) (DockerMetric, e
 func (r *dockerRepository) GetLatestMetricByHost(ctx context.Context, hostId uint) (*DockerMetric, error) {
 	var metric HistoricalDockerMetric
 	err := r.db.WithContext(ctx).
-		Preload("Containers").
 		Where("host_id = ?", hostId).
 		Order("timestamp DESC").
 		First(&metric).Error
@@ -107,14 +144,9 @@ func (r *dockerRepository) GetLatestMetricByHost(ctx context.Context, hostId uin
 		}
 		return nil, err
 	}
-	containerMap := make(map[string][]DockerContainer)
-	for _, entity := range metric.Containers {
-		container, err := entity.ToDockerContainer()
-		if err != nil {
-			return nil, err
-		}
-		stackName := ExtractStackNameFromContainerName(container.Name)
-		containerMap[stackName] = append(containerMap[stackName], container)
+	containerMap, err := r.containersForHost(ctx, hostId)
+	if err != nil {
+		return nil, err
 	}
 
 	result, err := buildMetricFromHistorical(metric, containerMap)

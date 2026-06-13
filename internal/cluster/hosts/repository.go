@@ -741,19 +741,12 @@ func (r *hostRepository) DeleteHostCascade(ctx context.Context, hostID uint) err
 		rowKey = "ctid"
 	}
 
-	// 1) Child docker rows (docker_container_entities) first, keyed off the
-	// parent docker_metrics timestamps for this host. docker_container_entities
-	// has no host_id column, so it's scoped by metric_timestamp — the new
-	// idx_docker_container_metric_ts index covers that lookup (the FK and its
-	// implicit index were dropped). The chunk is bounded by the container
-	// table's OWN physical row identity (rowid/ctid): bounding on the parent
-	// timestamps instead would re-select the same first N timestamps every
-	// round (docker_metrics isn't trimmed until step 2) and the loop would stop
-	// after one chunk with rows still left.
+	// 1) Child docker rows (docker_container_entities) first, scoped directly by
+	// the host_id column (current-state table: one row per live container). The
+	// chunk is bounded by the table's OWN physical row identity (rowid/ctid).
 	containerQuery := fmt.Sprintf(
 		"DELETE FROM docker_container_entities WHERE %[1]s IN "+
-			"(SELECT %[1]s FROM docker_container_entities WHERE metric_timestamp IN "+
-			`(SELECT "timestamp" FROM docker_metrics WHERE host_id = ?) LIMIT %[2]d)`,
+			"(SELECT %[1]s FROM docker_container_entities WHERE host_id = ? LIMIT %[2]d)",
 		rowKey, cascadeDeleteChunkSize)
 	if err := chunkDelete(containerQuery, hostID); err != nil {
 		return err

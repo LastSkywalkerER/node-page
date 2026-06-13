@@ -20,6 +20,14 @@ import (
 
 // Migrate performs automatic schema migration for all database entities.
 func Migrate(db *gorm.DB) error {
+	// Drop the legacy docker_container_entities table (append-per-tick time
+	// series) BEFORE AutoMigrate so it is recreated in the current-state shape
+	// (one upserted row per container, with a host_id column). Idempotent no-op
+	// once migrated. See dropLegacyDockerContainerEntities.
+	if err := dropLegacyDockerContainerEntities(db); err != nil {
+		return fmt.Errorf("failed to drop legacy docker_container_entities: %w", err)
+	}
+
 	err := db.AutoMigrate(
 		&cpu.HistoricalCPUMetric{},
 		&memory.HistoricalMemoryMetric{},

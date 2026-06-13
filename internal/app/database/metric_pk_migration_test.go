@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	cpu "system-stats/internal/metrics/cpu"
+	docker "system-stats/internal/metrics/docker"
 )
 
 func openMem(t *testing.T) *gorm.DB {
@@ -188,12 +189,19 @@ func TestMigrateOldSchemaRebuild(t *testing.T) {
 		t.Fatalf("row 2 host_id: expected backfilled 1, got %v", cpuRows[1].HostID)
 	}
 
+	// docker_container_entities is now a current-state table: the legacy
+	// (id, metric_timestamp) table is DROPPED and recreated empty in the new
+	// shape (its rows are ephemeral, rebuilt on the next collection tick). So the
+	// seeded row is gone, and the rebuilt table carries a host_id column.
 	var containerCount int64
 	if err := db.Table("docker_container_entities").Count(&containerCount).Error; err != nil {
 		t.Fatalf("count containers: %v", err)
 	}
-	if containerCount != 1 {
-		t.Fatalf("expected 1 container row preserved, got %d", containerCount)
+	if containerCount != 0 {
+		t.Fatalf("expected legacy container rows dropped (current-state rebuild), got %d", containerCount)
+	}
+	if !db.Migrator().HasColumn(&docker.DockerContainerEntity{}, "host_id") {
+		t.Fatalf("rebuilt docker_container_entities should have a host_id column")
 	}
 
 	// Idempotent: a second migration over the now-rebuilt schema is a no-op.

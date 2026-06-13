@@ -482,12 +482,13 @@ func (cascadeDisk) TableName() string   { return "disk_metrics" }
 func (cascadeNet) TableName() string    { return "network_metrics" }
 func (cascadeDocker) TableName() string { return "docker_metrics" }
 
-// cascadeContainer mirrors docker_container_entities' relevant columns
-// (id + metric_timestamp composite PK), keyed off the parent docker_metrics
-// timestamp the same way the production entity is.
+// cascadeContainer mirrors docker_container_entities' relevant columns: the
+// current-state shape (id PK + a host_id column), which the cascade delete
+// scopes directly by host_id.
 type cascadeContainer struct {
 	ID              string    `gorm:"primaryKey;column:id"`
-	MetricTimestamp time.Time `gorm:"primaryKey;column:metric_timestamp"`
+	HostID          *uint     `gorm:"primaryKey;column:host_id;index"`
+	MetricTimestamp time.Time `gorm:"column:metric_timestamp"`
 }
 
 func (cascadeContainer) TableName() string { return "docker_container_entities" }
@@ -534,6 +535,7 @@ func TestDeleteHostCascadeChunked(t *testing.T) {
 			}
 			if err := db.Create(&cascadeContainer{
 				ID:              fmt.Sprintf("h%d-c%d", hostID, i),
+				HostID:          &hid,
 				MetricTimestamp: ts,
 			}).Error; err != nil {
 				t.Fatalf("seed container: %v", err)

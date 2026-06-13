@@ -149,12 +149,21 @@ func (n *Node) Start(ctx context.Context) error {
 
 	rcfg := hraft.DefaultConfig()
 	rcfg.LocalID = hraft.ServerID(n.cfg.NodeID)
-	// Snapshot rarely: each snapshot dumps every managed table (incl. metric
-	// history) under one transaction, which is expensive on small hosts. The
-	// raft log is compact relative to a full DB dump, so favouring fewer,
-	// larger compactions keeps steady-state load low.
-	rcfg.SnapshotInterval = 15 * time.Minute
-	rcfg.SnapshotThreshold = 100000
+	// Snapshot OFTEN so the BoltDB raft log is truncated frequently and a
+	// restart never replays a huge accumulated metric backlog through the
+	// single FSM goroutine (the "raft: apply: timed out enqueuing operation"
+	// storm that wedged the node for minutes). Snapshots now EXCLUDE the metric
+	// history tables (see snapshot_sqlite.go managedTables), so a snapshot is
+	// cheap — it no longer dumps the bulk of the DB under one transaction — and
+	// frequent compaction is the cheaper trade-off. Every CmdMetricBatch is
+	// still appended to the durable log between snapshots, so keeping the
+	// threshold low bounds how many of those entries can pile up.
+	rcfg.SnapshotInterval = 90 * time.Second
+	rcfg.SnapshotThreshold = 4096
+	// Keep only a small tail of log entries after each snapshot. A large
+	// trailing window is what lets the metric-batch entries accumulate (and get
+	// replayed on restart); a tight bound keeps the on-disk log small.
+	rcfg.TrailingLogs = 8192
 
 	r, err := hraft.NewRaft(rcfg, n.fsm, logStore, stableStore, snaps, transport)
 	if err != nil {
