@@ -202,15 +202,28 @@ func (r *SQLiteRestorer) Restore(rc io.ReadCloser) error {
 	}
 
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		// SQLite: defer FK checks to commit so the wipe/reinsert can't trip a
+		// constraint mid-restore regardless of table order. (Best-effort; harmless
+		// when foreign_keys is already off.)
+		if name := tx.Dialector.Name(); name == "sqlite" || name == "sqlite3" {
+			_ = tx.Exec("PRAGMA defer_foreign_keys = ON").Error
+		}
 		// Wipe exactly the tables this snapshot stream carries (header.Tables)
 		// — NOT the static managedTables set. New snapshots only contain the
 		// small config tables, so we must not touch metric history here (it's
 		// owned by CmdMetricBatch). An OLD snapshot still carries the metric
 		// tables, and truncating each one before its insert keeps that restore
 		// conflict-free (insertRows does a plain Create with no OnConflict).
-		// We use raw DELETE so FK order does not matter as much as disabling
-		// triggers/FKs would.
-		for _, t := range header.Tables {
+		//
+		// Delete BACK-TO-FRONT: managedTables (and the dump order) lists parents
+		// before children (user_accounts before user_refresh_tokens), so a
+		// front-to-back DELETE removes a parent while its FK child still
+		// references it and Postgres rejects it with 23503 — which aborted the
+		// whole snapshot restore and left Raft unable to activate. Deleting in
+		// reverse removes FK children first; the inserts below stay forward
+		// (parent-first), so both phases are FK-safe.
+		for i := len(header.Tables) - 1; i >= 0; i-- {
+			t := header.Tables[i]
 			if !tx.Migrator().HasTable(t) {
 				continue
 			}

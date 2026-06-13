@@ -98,6 +98,79 @@ func TestSQLiteSnapshot_TimeColumnsRoundTrip(t *testing.T) {
 	}
 }
 
+// snapAccount / snapRefreshToken model the user_accounts ← user_refresh_tokens
+// foreign key. Deleting a parent while a child references it raises FK 23503 on
+// Postgres (and an FK error on SQLite with foreign_keys ON).
+type snapAccount struct {
+	ID       uint `gorm:"primaryKey"`
+	Username string
+}
+
+func (snapAccount) TableName() string { return "user_accounts" }
+
+type snapRefreshToken struct {
+	ID      uint `gorm:"primaryKey"`
+	UserID  uint
+	Account snapAccount `gorm:"foreignKey:UserID;references:ID;constraint:OnDelete:RESTRICT"`
+}
+
+func (snapRefreshToken) TableName() string { return "user_refresh_tokens" }
+
+// TestSQLiteRestore_ForeignKeyWipeOrder is the regression for the snapshot
+// restore that left Raft unable to activate: the restore wiped user_accounts
+// before user_refresh_tokens, but the refresh-token FK references it, so the
+// parent DELETE was rejected (FK violation) and the whole restore aborted. The
+// fix deletes back-to-front (children first). This restores into a destination
+// that ALREADY holds FK-linked rows, with FK enforcement ON, so a wrong order
+// fails the test.
+func TestSQLiteRestore_ForeignKeyWipeOrder(t *testing.T) {
+	open := func() *gorm.DB {
+		db, err := gorm.Open(sqlite.Open("file::memory:?_pragma=foreign_keys(on)"), &gorm.Config{Logger: logger.Discard})
+		if err != nil {
+			t.Fatalf("open sqlite: %v", err)
+		}
+		if err := db.AutoMigrate(&snapshotTestHost{}, &snapAccount{}, &snapRefreshToken{}); err != nil {
+			t.Fatalf("migrate: %v", err)
+		}
+		return db
+	}
+
+	src := open()
+	src.Create(&snapAccount{ID: 1, Username: "admin"})
+	src.Create(&snapRefreshToken{ID: 10, UserID: 1})
+
+	snap, err := NewSQLiteSnapshotter(src).Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	sink := &memorySink{}
+	if err := snap.Persist(sink); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+
+	// Destination already has DIFFERENT FK-linked rows, so the restore must wipe
+	// a parent that a child still references.
+	dst := open()
+	dst.Create(&snapAccount{ID: 2, Username: "stale"})
+	dst.Create(&snapRefreshToken{ID: 20, UserID: 2})
+
+	rc := io.NopCloser(bytes.NewReader(sink.Bytes()))
+	if err := NewSQLiteRestorer(dst).Restore(rc); err != nil {
+		t.Fatalf("Restore must not fail on the FK wipe order: %v", err)
+	}
+
+	var accounts []snapAccount
+	dst.Find(&accounts)
+	if len(accounts) != 1 || accounts[0].ID != 1 || accounts[0].Username != "admin" {
+		t.Fatalf("restored accounts = %+v, want only {1 admin}", accounts)
+	}
+	var tokens []snapRefreshToken
+	dst.Find(&tokens)
+	if len(tokens) != 1 || tokens[0].ID != 10 || tokens[0].UserID != 1 {
+		t.Fatalf("restored tokens = %+v, want only {10 ->1}", tokens)
+	}
+}
+
 // High-churn metric history must stay OUT of the FSM snapshot: it is
 // replicated continuously via CmdMetricBatch and lives in each node's own
 // DB. Including it made Snapshot() materialise hundreds of MB into RAM on
