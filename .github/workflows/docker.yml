@@ -43,7 +43,11 @@ jobs:
         tags: |
           type=ref,event=branch
           type=ref,event=pr
-          # Semver tags on v* pushes: vX.Y.Z and X.Y (alongside latest on main).
+          # Semver tags on v* pushes: vX.Y.Z and X.Y. The semver build also
+          # stamps version.Version = X.Y.Z (vs "main" for branch builds), so a
+          # released image reports a clean version and the in-app updater can
+          # semver-compare future releases (managed-externally deploys then fire
+          # the orchestrator deploy webhook).
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
           # Branch builds: <branch>-<sha>. {{branch}} is empty on BOTH tag pushes
@@ -52,7 +56,10 @@ jobs:
           # covered by the semver tags above; PRs get a pr-prefixed sha tag below.
           type=sha,prefix={{branch}}-,enable=${{ startsWith(github.ref, 'refs/heads/') }}
           type=sha,prefix=pr-${{ github.event.number }}-,enable=${{ github.event_name == 'pull_request' }}
-          type=raw,value=latest,enable={{is_default_branch}}
+          # :latest follows BOTH main (dev) and v* tags (release). A release
+          # build runs after its main build, so cutting vX.Y.Z makes :latest the
+          # clean-versioned release image that dokploy/valheim pull + redeploy.
+          type=raw,value=latest,enable=${{ github.event_name == 'push' }}
 
     - name: Build metadata
       id: buildmeta
