@@ -280,6 +280,14 @@ func (c *Container) activateLocked(ctx context.Context, cfg config.RaftConfig) (
 	c.raftFSM = act.FSM
 	c.raftCfgSnapshot = cfg
 
+	// Tell the host repository which cluster id is OURS so its connector
+	// cross-site guard only deflects rows from a genuinely DIFFERENT cluster.
+	// Without this, this node's own Proxmox connector polling THIS machine
+	// (the local agent is also a guest of its own local PVE) would be treated
+	// as a remote collision, shedding id=1's topology and spawning a duplicate
+	// row whose MAC then collides on the unique index every cycle.
+	c.hostRepository.SetLocalClusterID(cfg.ClusterID)
+
 	// Backfill any users present in the local SQLite but not yet in the
 	// replicated Raft log. Critical when this node was the wizard's
 	// "Start new cluster" leader: the user was just created via

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -18,6 +19,24 @@ import (
 func syntheticMAC(parts ...string) string {
 	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return fmt.Sprintf("b2:%02x:%02x:%02x:%02x:%02x", sum[0], sum[1], sum[2], sum[3], sum[4])
+}
+
+// macOwnedByOther reports whether mac is non-empty and already held by a row
+// OTHER than selfID. mac_address is uniquely indexed, so writing a taken MAC
+// onto a different row hard-errors (Postgres 23505 / SQLite UNIQUE). Update
+// paths consult this before assigning a MAC so a transient duplicate row can
+// never make the upsert fail or hot-loop. Pass selfID = 0 on a CREATE.
+func (r *hostRepository) macOwnedByOther(ctx context.Context, mac string, selfID uint) (bool, error) {
+	if mac == "" {
+		return false, nil
+	}
+	var count int64
+	if err := r.db.WithContext(ctx).Model(&Host{}).
+		Where("mac_address = ? AND id != ?", mac, selfID).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 // Repository defines the interface for host data operations.
@@ -63,15 +82,51 @@ type Repository interface {
 	// prefix: agent rows lose their topology fields; connector-only rows are
 	// cascade-deleted when removeHosts is true, otherwise kept (frozen).
 	UnlinkConnectorHosts(ctx context.Context, prefix string, removeHosts bool) error
+	// SetLocalClusterID records THIS node's own Raft cluster id so the
+	// cross-site guard in UpsertConnectorHost can tell a genuinely remote
+	// origin apart from a locally-originated row that merely carries the
+	// local cluster tag. Called from Raft activation (boot or wizard); the
+	// empty string (standalone) leaves the guard keyed purely on a non-empty
+	// origin, as before.
+	SetLocalClusterID(id string)
 }
 
 type hostRepository struct {
 	db *gorm.DB
+
+	// clusterMu guards localClusterID, which is set asynchronously when Raft
+	// activates (the repository is constructed before the cluster id is known,
+	// and the id can change when a node joins/leaves a cluster at runtime).
+	clusterMu      sync.RWMutex
+	localClusterID string
 }
 
 // NewRepository creates a new host repository.
 func NewRepository(db *gorm.DB) Repository {
 	return &hostRepository{db: db}
+}
+
+// SetLocalClusterID records this node's own cluster id (see interface doc).
+func (r *hostRepository) SetLocalClusterID(id string) {
+	r.clusterMu.Lock()
+	r.localClusterID = id
+	r.clusterMu.Unlock()
+}
+
+// isRemoteOrigin reports whether origin identifies a DIFFERENT cluster than
+// this node's own — i.e. the row genuinely arrived over the cross-cluster
+// bridge. A locally-originated row whose origin tag equals our own cluster id
+// (or is empty) is NOT remote. When the local cluster id is unknown
+// (standalone, or before activation), any non-empty origin is treated as
+// remote, preserving the pre-cluster-id behaviour.
+func (r *hostRepository) isRemoteOrigin(origin string) bool {
+	if origin == "" {
+		return false
+	}
+	r.clusterMu.RLock()
+	local := r.localClusterID
+	r.clusterMu.RUnlock()
+	return local == "" || origin != local
 }
 
 // reclaimDuplicateLocalRows removes legacy host rows that share this machine's
@@ -205,7 +260,17 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 	if err == nil {
 		// Found by Name → update fields and timestamps
 		now := time.Now()
-		hostByName.MacAddress = hostInfo.MacAddress
+		// Defensive MAC deflection: this is the same machine (corroborated by
+		// machine-id/UUID above) re-registering with a changed MAC. Normally we
+		// adopt the new MAC, but if some OTHER row transiently holds it (e.g. a
+		// not-yet-reconciled connector self-guest), writing it here would hit the
+		// unique index (23505) and hot-loop. Keep the existing MAC in that case;
+		// the next cycle converges once the duplicate is cleaned up.
+		if taken, terr := r.macOwnedByOther(ctx, hostInfo.MacAddress, hostByName.ID); terr != nil {
+			return nil, terr
+		} else if !taken {
+			hostByName.MacAddress = hostInfo.MacAddress
+		}
 		hostByName.IPv4 = hostInfo.IPv4
 		hostByName.OS = hostInfo.OS
 		hostByName.Platform = hostInfo.Platform
@@ -344,14 +409,21 @@ func (r *hostRepository) UpsertConnectorHost(ctx context.Context, info Connector
 		return nil, err
 	}
 
-	// Cross-site guard: a replicated (remote-origin) connector row must never
+	// Cross-site guard: a replicated row from a DIFFERENT cluster must never
 	// claim THIS node's own collector row. Docker-bridge agents on different
 	// machines derive identical MACs (02:42:… from equal bridge IPs), so a
 	// remote spoke's self-linked guest can resolve to OUR identity row and
 	// attach a foreign hypervisor topology to it. Treat the match as absent;
 	// when our row carries exactly the incoming external_id, that topology
 	// could only have been written by this same collision — shed it.
-	if err == nil && host.ID == LocalCollectorHostID && info.OriginCluster != "" {
+	//
+	// The guard keys on a GENUINELY REMOTE origin (a foreign cluster id), not
+	// merely on a non-empty origin: this node's OWN Proxmox connector polling
+	// this very machine (the local agent is also a guest of its own local PVE)
+	// produces a connector row tagged with the LOCAL cluster id. That self-
+	// guest must converge onto id=1, not be shed and duplicated — so it must
+	// not trip this guard. See TestUpsertConnectorHostSelfGuestLocalCluster.
+	if err == nil && host.ID == LocalCollectorHostID && r.isRemoteOrigin(info.OriginCluster) {
 		if host.ExternalID != "" && host.ExternalID == info.ExternalID {
 			if uerr := r.db.WithContext(ctx).Model(&Host{}).
 				Where("id = ?", host.ID).
@@ -399,7 +471,16 @@ func (r *hostRepository) UpsertConnectorHost(ctx context.Context, info Connector
 		host.GuestStatus = info.GuestStatus
 		host.OriginCluster = info.OriginCluster
 		host.Name = name
-		host.MacAddress = info.MacAddress
+		// Defensive MAC deflection (mirrors the CREATE branch): mac_address is
+		// unique, so writing a MAC already owned by a DIFFERENT row would
+		// hard-error (23505) and hot-loop the upsert. If the incoming MAC is
+		// taken by another row, keep this row's existing MAC rather than the
+		// colliding one — connector rows are keyed by external_id anyway.
+		if taken, terr := r.macOwnedByOther(ctx, info.MacAddress, host.ID); terr != nil {
+			return nil, terr
+		} else if !taken {
+			host.MacAddress = info.MacAddress
+		}
 		host.IPv4 = info.IPv4
 		host.OS = info.OS
 		host.Platform = info.Platform
@@ -423,15 +504,10 @@ func (r *hostRepository) UpsertConnectorHost(ctx context.Context, info Connector
 	// derive a stable locally-administered placeholder — connector rows are
 	// keyed by external_id anyway.
 	mac := info.MacAddress
-	if mac != "" {
-		var taken int64
-		if cerr := r.db.WithContext(ctx).Model(&Host{}).
-			Where("mac_address = ?", mac).Count(&taken).Error; cerr != nil {
-			return nil, cerr
-		}
-		if taken > 0 {
-			mac = ""
-		}
+	if taken, cerr := r.macOwnedByOther(ctx, mac, 0); cerr != nil {
+		return nil, cerr
+	} else if taken {
+		mac = ""
 	}
 	if mac == "" {
 		mac = syntheticMAC(info.OriginCluster, info.ExternalID, info.Name)
