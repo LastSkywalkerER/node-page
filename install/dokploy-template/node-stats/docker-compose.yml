@@ -55,9 +55,13 @@ services:
     image: postgres:16-alpine
     # Tuned for a small hub VPS (2 CPU/4GB): bounded memory/shared_buffers,
     # modest connection cap; shm_size lifts the 64MB Docker default.
+    # PG flags mirror the controller-generated compose: env-overridable (set
+    # NODE_STATS_PG_SHARED_BUFFERS / NODE_STATS_PG_MAX_CONNECTIONS in the dokploy
+    # env to raise them on a bigger box) and wal_compression on to shrink WAL
+    # volume — the workload is high-churn metric writes.
     mem_limit: 768m
     shm_size: 256mb
-    command: postgres -c shared_buffers=192MB -c max_connections=30 -c checkpoint_completion_target=0.9
+    command: postgres -c shared_buffers=${NODE_STATS_PG_SHARED_BUFFERS:-128MB} -c max_connections=${NODE_STATS_PG_MAX_CONNECTIONS:-16} -c wal_compression=on -c checkpoint_completion_target=0.9
     environment:
       - POSTGRES_DB=node_stats
       - POSTGRES_USER=node_stats
