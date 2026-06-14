@@ -2,7 +2,6 @@ package raft
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -55,7 +54,7 @@ func RegisterAppliers(fsm *FSM, deps AppliersDeps) {
 	if fsm == nil {
 		return
 	}
-	a := &appliers{deps: deps, dispatch: map[CommandType]CommandApplier{}}
+	a := &appliers{deps: deps, dispatch: map[CommandType]CommandApplier{}, metricSink: NewMetricSink(deps)}
 
 	// register wires the applier into the FSM and the local dispatch map so
 	// applyBridgeEnvelopeBatch can fan a wrapped batch out to the same
@@ -98,6 +97,9 @@ type appliers struct {
 	// fan out to the same appliers (deliberately NOT including the batch
 	// applier itself - no recursion).
 	dispatch map[CommandType]CommandApplier
+	// metricSink shares the metric-persist core with the best-effort metric
+	// stream; the legacy CmdMetricBatch applier just delegates to it.
+	metricSink *MetricSink
 }
 
 // applyBridgeEnvelopeBatch unwraps a replication batch and applies each
@@ -323,12 +325,11 @@ func (a *appliers) applyHostLastSeen(cmd Command, _ *hraft.Log) error {
 	return nil
 }
 
-// applyMetricBatch persists a replicated host's metrics. The host is resolved
-// by MAC to the LOCAL row id (which differs per node). On the origin node that
-// row is the local collector (id=1), whose metrics the collector already wrote
-// directly — so we skip it to avoid duplicates; every other node stores the
-// batch under its own id for that host. Per-module saves are best-effort: a
-// decode or write hiccup on one metric is logged, never fatal to consensus.
+// applyMetricBatch persists a replicated host's metrics. Metrics no longer flow
+// through the durable Raft log in normal operation (they ride the best-effort
+// metric stream instead — see MetricSink); this applier is retained only so a
+// replayed legacy CmdMetricBatch entry from an old log still applies. It shares
+// the exact persist core with the live stream via MetricSink.
 func (a *appliers) applyMetricBatch(cmd Command, _ *hraft.Log) error {
 	var p MetricBatchPayload
 	if err := DecodeTyped(cmd, &p); err != nil {
@@ -336,106 +337,7 @@ func (a *appliers) applyMetricBatch(cmd Command, _ *hraft.Log) error {
 	}
 	ctx, cancel := a.applierCtx()
 	defer cancel()
-
-	origin := a.remoteOrigin(cmd)
-	host, err := a.deps.HostRepo.GetHostByMacAddress(ctx, p.HostMAC)
-	if err == nil && host.ID == hosts.LocalCollectorHostID && origin != "" {
-		// A remote machine whose docker-bridge MAC collides with our own
-		// row — the MAC is not its identity here. Fall through to the
-		// origin-scoped lookup below.
-		host, err = nil, gorm.ErrRecordNotFound
-	}
-	if errors.Is(err, gorm.ErrRecordNotFound) && origin != "" {
-		// Remote batches may be keyed by a MAC that never became a row here
-		// (collision deflected at upsert time) — resolve within the sender's
-		// site by name instead.
-		host, err = a.deps.HostRepo.GetHostByOriginAndName(ctx, origin, p.HostName)
-	}
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// Host not replicated here yet — its CmdHostUpsert lands earlier in
-			// log order, so this is only a transient first-cycle race.
-			return nil
-		}
-		return err
-	}
-	if host.ID == hosts.LocalCollectorHostID {
-		// Our own machine — the local collector already saved these directly.
-		return nil
-	}
-	ts := p.Timestamp
-
-	save := func(module string, raw json.RawMessage, fn func() error) {
-		if len(raw) == 0 {
-			return
-		}
-		if err := fn(); err != nil && a.deps.Logger != nil {
-			a.deps.Logger.Warn("raft: apply metric batch", "module", module, "host_id", host.ID, "error", err)
-		}
-	}
-
-	if len(p.CPU) > 0 {
-		var m cpu.CPUMetric
-		if json.Unmarshal(p.CPU, &m) == nil {
-			save("cpu", p.CPU, func() error { return a.deps.CPURepo.SaveCurrentMetricAt(ctx, m, host.ID, ts) })
-		}
-	}
-	if len(p.Memory) > 0 {
-		var m memory.MemoryMetric
-		if json.Unmarshal(p.Memory, &m) == nil {
-			save("memory", p.Memory, func() error { return a.deps.MemoryRepo.SaveCurrentMetricAt(ctx, m, host.ID, ts) })
-		}
-	}
-	if len(p.Disk) > 0 {
-		var m disk.DiskMetric
-		if json.Unmarshal(p.Disk, &m) == nil {
-			save("disk", p.Disk, func() error { return a.deps.DiskRepo.SaveCurrentMetricAt(ctx, m, host.ID, ts) })
-		}
-	}
-	if len(p.Network) > 0 {
-		var m network.NetworkMetric
-		if json.Unmarshal(p.Network, &m) == nil {
-			save("network", p.Network, func() error { return a.deps.NetworkRepo.SaveCurrentMetricAt(ctx, m, host.ID, ts) })
-		}
-	}
-	if len(p.Docker) > 0 {
-		var m docker.DockerMetric
-		if json.Unmarshal(p.Docker, &m) == nil {
-			save("docker", p.Docker, func() error { return a.deps.DockerRepo.SaveCurrentMetricAt(ctx, m, host.ID, ts) })
-		}
-	}
-
-	// A host actively streaming metrics is alive: bump its liveness here so
-	// replicated hosts go green without a separate heartbeat command (nothing
-	// else maintains last_seen for them on receiving nodes).
-	if err := a.deps.HostRepo.UpdateLastSeenAndAgentSession(ctx, host.ID, ts, nil); err != nil && a.deps.Logger != nil {
-		a.deps.Logger.Warn("raft: bump last_seen from metric batch", "host_id", host.ID, "error", err)
-	}
-
-	// Push the same snapshot to this node's SSE broker so browsers viewing this
-	// (remote) host on this node update live — uniform SSE for every host.
-	if a.deps.Publish != nil {
-		env := map[string]any{"collecting_host_id": host.ID, "timestamp": ts}
-		if len(p.CPU) > 0 {
-			env["cpu"] = p.CPU
-		}
-		if len(p.Memory) > 0 {
-			env["memory"] = p.Memory
-		}
-		if len(p.Disk) > 0 {
-			env["disk"] = p.Disk
-		}
-		if len(p.Network) > 0 {
-			env["network"] = p.Network
-		}
-		if len(p.Docker) > 0 {
-			env["docker"] = p.Docker
-		}
-		if b, err := json.Marshal(env); err == nil {
-			a.deps.Publish(b)
-		}
-	}
-	return nil
+	return a.metricSink.Ingest(ctx, p, a.remoteOrigin(cmd))
 }
 
 func (a *appliers) applyUserUpsert(cmd Command, _ *hraft.Log) error {

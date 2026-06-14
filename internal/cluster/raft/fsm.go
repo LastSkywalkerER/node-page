@@ -60,6 +60,12 @@ type FSM struct {
 // applied. See the poison-entry comment in Apply.
 const maxApplierRetries = 3
 
+// maxFailCountsEntries bounds the poison-entry counter map so transient one-off
+// apply failures can't accumulate a dead entry per index forever. Far above any
+// plausible number of concurrently-retrying indexes; hitting it means something
+// is badly wrong and a reset is harmless (see Apply).
+const maxFailCountsEntries = 4096
+
 // ApplyEvent is the per-apply notification published to FSM.ApplyEvents.
 // It carries the decoded Command envelope plus the Raft log index so the
 // bridge sender can ship the entry verbatim to the peer cluster.
@@ -170,6 +176,20 @@ func (f *FSM) Apply(rlog *hraft.Log) any {
 		f.failMu.Lock()
 		f.failCounts[rlog.Index]++
 		fails := f.failCounts[rlog.Index]
+		switch {
+		case fails > maxApplierRetries:
+			// Given up: it is treated as applied below and never retried, so its
+			// counter is dead weight — drop it.
+			delete(f.failCounts, rlog.Index)
+		case len(f.failCounts) > maxFailCountsEntries:
+			// Bound the map. It only needs to track indexes ACTIVELY failing in
+			// their brief 1..maxApplierRetries retry window; a transient one-off
+			// failure on an index that never re-applies would otherwise leave a
+			// dead entry forever (slow unbounded growth). Clearing resets counts —
+			// rare, and a genuinely poisoning index simply re-trips the guard after
+			// a few more retries.
+			f.failCounts = map[uint64]int{rlog.Index: fails}
+		}
 		f.failMu.Unlock()
 		if fails > maxApplierRetries {
 			f.logger.Warn("raft FSM: log index repeatedly failed to apply; treating as applied to avoid wedging the pipeline (poison entry)",

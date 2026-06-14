@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
+	"github.com/hashicorp/go-hclog"
 	hraft "github.com/hashicorp/raft"
 	raftboltdb "github.com/hashicorp/raft-boltdb/v2"
+	raftwal "github.com/hashicorp/raft-wal"
 	"gorm.io/gorm"
 
 	"system-stats/internal/app/config"
@@ -77,7 +79,7 @@ func (n *Node) Start(ctx context.Context) error {
 		return fmt.Errorf("raft: create data dir %q (cwd %q): %w", n.cfg.DataDir, cwd, err)
 	}
 
-	logStorePath := filepath.Join(n.cfg.DataDir, "raft-log.bolt")
+	logStoreDir := filepath.Join(n.cfg.DataDir, "raft-log-wal")
 	stableStorePath := filepath.Join(n.cfg.DataDir, "raft-stable.bolt")
 	snapshotsPath := filepath.Join(n.cfg.DataDir, "snapshots")
 
@@ -109,12 +111,34 @@ func (n *Node) Start(ctx context.Context) error {
 		}
 	}()
 
-	lst, err := raftboltdb.New(raftboltdb.Options{Path: logStorePath})
-	if err != nil {
-		return fmt.Errorf("raft: open log store: %w", err)
+	// Log store: raft-wal (append-only segment files), NOT raft-boltdb. BoltDB
+	// mmap's its whole single file and never shrinks it, so the metric-batch log
+	// ratcheted RSS up in power-of-2 steps overnight and never released it
+	// (file-backed mmap, invisible to GC/GOMEMLIMIT/FreeOSMemory). raft-wal reads
+	// via pread (no mmap of log data) and rotates+deletes old segment files, so
+	// the on-disk + resident footprint tracks the live trailing window and
+	// actually recedes when load drops. The data dir must be a fresh directory.
+	if err := os.MkdirAll(logStoreDir, 0o755); err != nil {
+		return fmt.Errorf("raft: create log store dir %q: %w", logStoreDir, err)
 	}
-	logStore = lst
-	n.logStore = lst
+	walLog, err := raftwal.Open(logStoreDir,
+		// raft-wal preallocates each segment file to the segment size on disk
+		// (not mmap'd — reads are pread, so it costs disk, not RSS). The default
+		// is 64 MiB; since metrics no longer flow through the log, our log carries
+		// only low-rate control-plane commands (host upserts, config), so a much
+		// smaller segment keeps the on-disk footprint tidy while still dwarfing
+		// any single entry. Old segments are rotated out and deleted.
+		raftwal.WithSegmentSize(16*1024*1024),
+		raftwal.WithLogger(hclog.New(&hclog.LoggerOptions{
+			Name:   "raft-wal",
+			Level:  hclog.Warn,
+			Output: os.Stderr,
+		})))
+	if err != nil {
+		return fmt.Errorf("raft: open WAL log store: %w", err)
+	}
+	logStore = walLog
+	n.logStore = walLog
 
 	sst, err := raftboltdb.New(raftboltdb.Options{Path: stableStorePath})
 	if err != nil {

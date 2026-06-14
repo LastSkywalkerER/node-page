@@ -48,7 +48,7 @@ func TestShouldShipBothModeShipsConfigButNotSecrets(t *testing.T) {
 		t.Fatal("bridge bookkeeping must not ship")
 	}
 	// Peer-origin entries are never echoed back.
-	if s.shouldShip(raftcluster.Command{Type: raftcluster.CmdMetricBatch, OriginClusterID: "cluster-b"}) {
+	if s.shouldShip(raftcluster.Command{Type: raftcluster.CmdHostUpsert, OriginClusterID: "cluster-b"}) {
 		t.Fatal("peer-origin entries must not be re-shipped")
 	}
 }

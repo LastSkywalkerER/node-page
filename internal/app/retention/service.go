@@ -2,10 +2,13 @@ package retention
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
+
+	users "system-stats/internal/auth/users"
 )
 
 func timeNowMinusDays(days int) time.Time {
@@ -24,15 +27,47 @@ var MetricTables = []string{
 const DefaultBatchSize = 500
 
 // Service deletes metric rows older than RetentionDays in incremental batches,
-// driven by the periodic metrics collection hook (no internal ticker).
+// driven by the periodic metrics collection hook (no internal ticker). It also
+// prunes expired/long-revoked refresh tokens on a slow cadence.
 type Service struct {
 	db            *gorm.DB
 	logger        *log.Logger
 	retentionDays int
+
+	// tokenRepo prunes refresh tokens (nilable). Guarded throttle so the cleanup
+	// runs at most once per tokenCleanupInterval even though the driving hook
+	// fires every few seconds.
+	tokenRepo        users.RefreshTokenRepository
+	tokenMu          sync.Mutex
+	lastTokenCleanup time.Time
 }
 
-func NewService(db *gorm.DB, logger *log.Logger, retentionDays int) *Service {
-	return &Service{db: db, logger: logger, retentionDays: retentionDays}
+// tokenCleanupInterval bounds how often refresh-token pruning runs — it needn't
+// run every metrics tick.
+const tokenCleanupInterval = 10 * time.Minute
+
+func NewService(db *gorm.DB, logger *log.Logger, retentionDays int, tokenRepo users.RefreshTokenRepository) *Service {
+	return &Service{db: db, logger: logger, retentionDays: retentionDays, tokenRepo: tokenRepo}
+}
+
+// CleanupExpiredTokens prunes expired/long-revoked refresh tokens, throttled to
+// tokenCleanupInterval. No-op when no token repo is wired. Called from the same
+// metrics-collection hook that drives CleanupBatch.
+func (s *Service) CleanupExpiredTokens(ctx context.Context) {
+	if s.tokenRepo == nil {
+		return
+	}
+	s.tokenMu.Lock()
+	if !s.lastTokenCleanup.IsZero() && time.Since(s.lastTokenCleanup) < tokenCleanupInterval {
+		s.tokenMu.Unlock()
+		return
+	}
+	s.lastTokenCleanup = time.Now()
+	s.tokenMu.Unlock()
+
+	if err := s.tokenRepo.DeleteExpired(ctx); err != nil && ctx.Err() == nil {
+		s.logger.Warn("refresh-token retention cleanup failed", "error", err)
+	}
 }
 
 // CleanupBatch deletes up to batchSize old rows from each metric table.

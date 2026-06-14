@@ -167,9 +167,25 @@ func (r *refreshTokenRepository) RevokeAllByUserID(ctx context.Context, userID u
 		Update("revoked_at", now).Error
 }
 
-// DeleteExpired deletes expired refresh tokens
+// refreshRevokeRetention is how long a revoked refresh token row is kept before
+// it is hard-deleted. It must comfortably exceed refreshGraceWindow (the brief
+// window where a just-revoked token is still honored for the multi-tab rotation
+// race); after that the row is useless — a missing JTI is rejected exactly like
+// a revoked one, so deleting it opens no replay hole.
+const refreshRevokeRetention = time.Hour
+
+// DeleteExpired hard-deletes refresh tokens that can never be used again: those
+// past their expiry, AND those revoked longer than refreshRevokeRetention ago.
+// The second clause is what actually bounds the table — every refresh rotates
+// the token (revoking the old one), so without it revoked-but-unexpired rows
+// would accumulate for the full refresh TTL (default 90 days). Idempotent; safe
+// to call periodically.
 func (r *refreshTokenRepository) DeleteExpired(ctx context.Context) error {
-	return r.db.WithContext(ctx).
-		Where("expires_at < ?", time.Now()).
+	now := time.Now()
+	// Unscoped(): RefreshToken has a gorm.DeletedAt, so a plain Delete would only
+	// SOFT-delete (set deleted_at) and leave the row — exactly the bloat we are
+	// trying to reclaim. Hard-delete so the rows actually leave the table.
+	return r.db.WithContext(ctx).Unscoped().
+		Where("expires_at < ? OR (revoked_at IS NOT NULL AND revoked_at < ?)", now, now.Add(-refreshRevokeRetention)).
 		Delete(&RefreshToken{}).Error
 }

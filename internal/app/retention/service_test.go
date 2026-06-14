@@ -10,6 +10,8 @@ import (
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+
+	users "system-stats/internal/auth/users"
 )
 
 // TestCleanupBatchPrunesMetricsNotContainers proves retention prunes the metric
@@ -45,7 +47,7 @@ func TestCleanupBatchPrunesMetricsNotContainers(t *testing.T) {
 		t.Fatalf("seed container: %v", err)
 	}
 
-	svc := NewService(db, log.New(io.Discard), 30)
+	svc := NewService(db, log.New(io.Discard), 30, nil)
 	if _, err := svc.CleanupBatch(context.Background(), 100); err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
@@ -65,4 +67,48 @@ func TestCleanupBatchPrunesMetricsNotContainers(t *testing.T) {
 	if containerRows != 1 {
 		t.Fatalf("retention must not touch current-state containers, got %d rows", containerRows)
 	}
+}
+
+// TestCleanupExpiredTokensPrunesExpiredAndLongRevoked proves the refresh-token
+// cleanup deletes tokens that are past expiry OR revoked beyond the retention
+// window, while keeping active tokens and freshly-revoked ones (still inside the
+// rotation grace).
+func TestCleanupExpiredTokensPrunesExpiredAndLongRevoked(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&users.RefreshToken{}); err != nil {
+		t.Fatalf("migrate refresh tokens: %v", err)
+	}
+
+	now := time.Now()
+	insert := func(jti string, expiresAt time.Time, revokedAt *time.Time) {
+		if err := db.Exec(
+			`INSERT INTO user_refresh_tokens (user_id, jti, token_hash, expires_at, revoked_at, created_at) VALUES (1, ?, ?, ?, ?, ?)`,
+			jti, "hash-"+jti, expiresAt, revokedAt, now,
+		).Error; err != nil {
+			t.Fatalf("insert %s: %v", jti, err)
+		}
+	}
+	twoHrsAgo := now.Add(-2 * time.Hour)
+	thirtySecAgo := now.Add(-30 * time.Second)
+	insert("expired", now.Add(-time.Hour), nil)                  // past expiry -> delete
+	insert("long-revoked", now.Add(72*time.Hour), &twoHrsAgo)    // revoked >1h ago -> delete
+	insert("active", now.Add(72*time.Hour), nil)                 // live -> keep
+	insert("just-revoked", now.Add(72*time.Hour), &thirtySecAgo) // within grace -> keep
+
+	svc := NewService(db, log.New(io.Discard), 30, users.NewRefreshTokenRepository(db))
+	svc.CleanupExpiredTokens(context.Background())
+
+	var remaining []string
+	if err := db.Raw(`SELECT jti FROM user_refresh_tokens ORDER BY jti`).Scan(&remaining).Error; err != nil {
+		t.Fatalf("scan remaining: %v", err)
+	}
+	if len(remaining) != 2 || remaining[0] != "active" || remaining[1] != "just-revoked" {
+		t.Fatalf("expected [active just-revoked] to remain, got %v", remaining)
+	}
+
+	// Second immediate call is throttled — a no-op, never an error/panic.
+	svc.CleanupExpiredTokens(context.Background())
 }

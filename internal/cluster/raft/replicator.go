@@ -112,18 +112,6 @@ func (r *Replicator) SubmitConnectorDelete(ctx context.Context, connectorType, f
 	return err
 }
 
-// SubmitMetricBatch replicates one host's current metrics to the whole
-// cluster so every node can serve that host's stats (and they survive the
-// origin going offline). Best-effort: callers ignore the error so a missing
-// quorum never stalls the local collection cycle.
-func (r *Replicator) SubmitMetricBatch(ctx context.Context, p MetricBatchPayload) error {
-	if !r.Enabled() {
-		return nil
-	}
-	_, err := SubmitTyped(ctx, r.svc, CmdMetricBatch, p, 5*time.Second)
-	return err
-}
-
 // SubmitHostDelete cascades a host delete (row + all its metrics) across the
 // cluster, keyed by the host's MAC so every node removes the right local row.
 func (r *Replicator) SubmitHostDelete(ctx context.Context, mac string) error {

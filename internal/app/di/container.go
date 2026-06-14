@@ -20,6 +20,7 @@ import (
 	hosts "system-stats/internal/cluster/hosts"
 	raftcluster "system-stats/internal/cluster/raft"
 	raftbridge "system-stats/internal/cluster/raft/bridge"
+	metricstream "system-stats/internal/cluster/raft/metricstream"
 	cpu "system-stats/internal/metrics/cpu"
 	disk "system-stats/internal/metrics/disk"
 	docker "system-stats/internal/metrics/docker"
@@ -82,6 +83,16 @@ type Container struct {
 	bridgeSender   *raftbridge.Sender
 	bridgeReceiver *raftbridge.Receiver
 
+	// Best-effort metric stream (non-durable, off-Raft). The sink writes a
+	// received batch into local state + SSE; the sender broadcasts this node's
+	// metrics to peers; the receiver authenticates + ingests inbound batches.
+	metricSink     *raftcluster.MetricSink
+	metricSender   *metricstream.Sender
+	metricReceiver *metricstream.Receiver
+	// jwtSecret is the cluster-shared secret reused as the HMAC key for the
+	// intra-cluster metric stream (all nodes of a cluster share it).
+	jwtSecret string
+
 	// activateMu serialises ActivateRaft / ConfigureBridge / Close.
 	activateMu sync.Mutex
 	// appCtx is the long-running context used by the bridge sender /
@@ -96,9 +107,9 @@ type Container struct {
 	// activation so the admin UI can surface it ("Raft is disabled
 	// because port :7000 is in use; reconfigure below").
 	raftBootError string
-	// leaderAdvertiseStarted guards the single leader-advertise loop
-	// (startLeaderAdvertiseLoopLocked) so it is launched at most once.
-	leaderAdvertiseStarted bool
+	// selfAdvertiseStarted guards the single self-advertise loop
+	// (startSelfAdvertiseLoopLocked) so it is launched at most once.
+	selfAdvertiseStarted bool
 	// postActivate is fired in a goroutine after every successful
 	// Raft activation. Used by server.Run to (re-)start metrics
 	// collection when the wizard's join branch flips Raft on
@@ -133,8 +144,9 @@ func (c *Container) SetPostActivateHook(fn func()) {
 // is present.
 func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret, refreshSecret string, startTime time.Time, raftCfg config.RaftConfig, traefikDirs []string) (*Container, error) {
 	container := &Container{
-		logger: logger,
-		broker: stream.NewBroker(),
+		logger:    logger,
+		broker:    stream.NewBroker(),
+		jwtSecret: jwtSecret,
 	}
 
 	db, err := database.Initialize(dbConfig)
@@ -255,30 +267,38 @@ func (c *Container) activateLocked(ctx context.Context, cfg config.RaftConfig) (
 	if c.raftSwap.Enabled() {
 		return c.raftFSM, c.raftCfgSnapshot, nil
 	}
+	appliersDeps := raftcluster.AppliersDeps{
+		Logger:           c.logger,
+		DB:               c.db,
+		ClusterID:        cfg.ClusterID,
+		HostRepo:         c.hostRepository,
+		UserRepo:         c.userRepository,
+		RefreshTokenRepo: c.refreshTokenRepository,
+		CPURepo:          c.cpuRepository,
+		MemoryRepo:       c.memoryRepository,
+		DiskRepo:         c.diskRepository,
+		NetworkRepo:      c.networkRepository,
+		DockerRepo:       c.dockerRepository,
+		ConnectorRepo:    c.connectorRepository,
+		Publish:          c.broker.Publish,
+	}
 	act, err := raftcluster.Activate(ctx, raftcluster.ActivationDeps{
-		Logger: c.logger,
-		DB:     c.db,
-		Appliers: raftcluster.AppliersDeps{
-			Logger:           c.logger,
-			DB:               c.db,
-			ClusterID:        cfg.ClusterID,
-			HostRepo:         c.hostRepository,
-			UserRepo:         c.userRepository,
-			RefreshTokenRepo: c.refreshTokenRepository,
-			CPURepo:          c.cpuRepository,
-			MemoryRepo:       c.memoryRepository,
-			DiskRepo:         c.diskRepository,
-			NetworkRepo:      c.networkRepository,
-			DockerRepo:       c.dockerRepository,
-			ConnectorRepo:    c.connectorRepository,
-			Publish:          c.broker.Publish,
-		},
+		Logger:   c.logger,
+		DB:       c.db,
+		Appliers: appliersDeps,
 	}, cfg, c.raftSwap)
 	if err != nil {
 		return nil, cfg, err
 	}
 	c.raftFSM = act.FSM
 	c.raftCfgSnapshot = cfg
+
+	// Best-effort metric stream (off-Raft). Built whenever Raft is active: the
+	// intra-cluster P2P path needs only the cluster-shared JWT secret; the
+	// cross-cluster uplink additionally uses the bridge secret (carried in cfg).
+	c.metricSink = raftcluster.NewMetricSink(appliersDeps)
+	c.metricSender = metricstream.NewSender(c.logger, c.db, cfg.ClusterID, cfg.NodeID, c.jwtSecret, cfg.Bridge)
+	c.metricReceiver = metricstream.NewReceiver(c.logger, c.metricSink, cfg.ClusterID, c.jwtSecret, cfg.Bridge)
 
 	// Tell the host repository which cluster id is OURS so its connector
 	// cross-site guard only deflects rows from a genuinely DIFFERENT cluster.
@@ -367,22 +387,23 @@ func (c *Container) SetAppContext(ctx context.Context) {
 	defer c.activateMu.Unlock()
 	c.appCtx = ctx
 	c.startBridgeGoroutinesLocked()
-	c.startLeaderAdvertiseLoopLocked(ctx)
+	c.startSelfAdvertiseLoopLocked(ctx)
 }
 
-// startLeaderAdvertiseLoopLocked launches a single background loop that
-// (re)publishes this node's advertise URL into the peer catalog whenever it is
-// the Raft leader. hashicorp/raft only signals leadership transitions and
-// nothing else re-publishes the URL, so a node that became leader via runtime
-// hot-activation (the setup wizard) or after a leadership change would never
-// advertise itself — leaving followers unable to forward writes ("no known
-// leader to forward to"). The advertise is an idempotent upsert and a no-op
-// when this node isn't the leader or has no advertise URL configured.
-func (c *Container) startLeaderAdvertiseLoopLocked(ctx context.Context) {
-	if ctx == nil || c.leaderAdvertiseStarted {
+// startSelfAdvertiseLoopLocked launches a single background loop that
+// (re)publishes THIS node's advertise URL into the replicated peer catalog.
+// EVERY node advertises itself — not just the leader — because the best-effort
+// intra-cluster metric fanout discovers its peers from this catalog (each node
+// POSTs its metrics directly to every other node's HTTP URL). The leader applies
+// its own advertise directly; a follower forwards it to the leader (which is why
+// the leader still advertises promptly on gaining leadership, so followers have
+// a leader URL to forward to). The advertise is an idempotent upsert and a no-op
+// when Raft is disabled or no advertise URL is configured.
+func (c *Container) startSelfAdvertiseLoopLocked(ctx context.Context) {
+	if ctx == nil || c.selfAdvertiseStarted {
 		return
 	}
-	c.leaderAdvertiseStarted = true
+	c.selfAdvertiseStarted = true
 	go func() {
 		t := time.NewTicker(3 * time.Second)
 		defer t.Stop()
@@ -395,10 +416,13 @@ func (c *Container) startLeaderAdvertiseLoopLocked(ctx context.Context) {
 			case <-t.C:
 			}
 			svc := c.GetRaftService()
-			isLeader := svc != nil && svc.Enabled() && svc.IsLeader()
-			// Advertise promptly on acquiring leadership, then refresh ~every 30s
-			// (covers a missed/dropped catalog write or a follower that restarted).
-			if isLeader && (!wasLeader || ticks%10 == 0) {
+			enabled := svc != nil && svc.Enabled()
+			isLeader := enabled && svc.IsLeader()
+			// Advertise self when: we just gained leadership (so the leader URL
+			// lands ASAP and followers can forward), OR every ~30s for every node
+			// (covers a dropped catalog write, a restarted node, and keeps all
+			// peers discoverable for the metric fanout).
+			if enabled && ((!wasLeader && isLeader) || ticks%10 == 0) {
 				c.AdvertiseSelfNow(ctx)
 			}
 			wasLeader = isLeader
@@ -596,6 +620,9 @@ func (c *Container) shutdownAndWipeLocked() error {
 	c.bridgeSender = nil
 	c.bridgePicker = nil
 	c.bridgeReceiver = nil
+	c.metricSink = nil
+	c.metricSender = nil
+	c.metricReceiver = nil
 
 	dir := prevCfg.DataDir
 	if dir == "" {
@@ -845,6 +872,11 @@ func (c *Container) GetMemoryRepository() memory.Repository   { return c.memoryR
 func (c *Container) GetDiskRepository() disk.Repository       { return c.diskRepository }
 func (c *Container) GetNetworkRepository() network.Repository { return c.networkRepository }
 
+// GetRefreshTokenRepository exposes the refresh-token repo for retention pruning.
+func (c *Container) GetRefreshTokenRepository() users.RefreshTokenRepository {
+	return c.refreshTokenRepository
+}
+
 func (c *Container) GetHealthService() health.Service {
 	return c.healthService
 }
@@ -942,6 +974,22 @@ func (c *Container) GetBridgeReceiver() *raftbridge.Receiver {
 	c.activateMu.Lock()
 	defer c.activateMu.Unlock()
 	return c.bridgeReceiver
+}
+
+// GetMetricSender returns the best-effort metric-stream sender, or nil when Raft
+// is inactive. Called each collection tick to broadcast this node's metrics.
+func (c *Container) GetMetricSender() *metricstream.Sender {
+	c.activateMu.Lock()
+	defer c.activateMu.Unlock()
+	return c.metricSender
+}
+
+// GetMetricReceiver returns the best-effort metric-stream receiver handler, or
+// nil when Raft is inactive. Mounted at metricstream.Path.
+func (c *Container) GetMetricReceiver() *metricstream.Receiver {
+	c.activateMu.Lock()
+	defer c.activateMu.Unlock()
+	return c.metricReceiver
 }
 
 // Close releases resources held by the container. Currently shuts down the

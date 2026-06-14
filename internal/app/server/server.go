@@ -37,6 +37,7 @@ import (
 	users "system-stats/internal/auth/users"
 	hosts "system-stats/internal/cluster/hosts"
 	raftcluster "system-stats/internal/cluster/raft"
+	metricstream "system-stats/internal/cluster/raft/metricstream"
 	cpu "system-stats/internal/metrics/cpu"
 	disk "system-stats/internal/metrics/disk"
 	docker "system-stats/internal/metrics/docker"
@@ -215,12 +216,20 @@ func Run() {
 		DiskRepo:   container.GetDiskRepository(),
 		NetRepo:    container.GetNetworkRepository(),
 		Publish:    container.GetBroker().Publish,
+		// Best-effort cluster fanout for guest metrics (off-Raft). Resolved at
+		// call time since the metric sender is built on Raft activation, after
+		// the poller is constructed.
+		BroadcastMetrics: func(ctx context.Context, batch raftcluster.MetricBatchPayload) {
+			if s := container.GetMetricSender(); s != nil {
+				s.Broadcast(ctx, batch)
+			}
+		},
 	})
 	connectorsSvc.SetSyncTrigger(pvePoller.TriggerSync)
 	go pvePoller.Run(appCtx)
 
 	historicalMetricsService := container.GetHistoricalMetricsService()
-	retentionSvc := retention.NewService(container.GetDB(), logger, cfg.RetentionDays)
+	retentionSvc := retention.NewService(container.GetDB(), logger, cfg.RetentionDays, container.GetRefreshTokenRepository())
 
 	// Wire SSE broker into the after-collect hook (harmless before collection starts).
 	broker := container.GetBroker()
@@ -267,10 +276,13 @@ func Run() {
 		}
 		broker.Publish(out)
 
-		// Replicate this host's metrics to the cluster so every node can serve
-		// them and they survive this node going offline. Best-effort: disabled
-		// Raft or a missing quorum is a no-op and never blocks collection.
-		if repl := container.GetRaftReplicator(); repl != nil && repl.Enabled() {
+		// Replicate this host's metrics to the cluster via the best-effort metric
+		// stream (NOT the durable Raft log — that is what ballooned the log/RSS).
+		// Each peer (and, when uplinking, the cross-cluster hub) receives the full
+		// current state every tick, so a dropped batch self-heals next cycle. The
+		// metrics survive this node going offline because peers persist them
+		// locally. No-op when Raft is inactive (sender is nil).
+		if sender := container.GetMetricSender(); sender != nil {
 			if host, herr := container.GetHostService().GetCurrentHost(appCtx); herr == nil && host != nil && host.MacAddress != "" {
 				batch := raftcluster.MetricBatchPayload{
 					HostMAC:   host.MacAddress,
@@ -302,11 +314,9 @@ func Run() {
 						batch.Docker = b
 					}
 				}
-				go func() {
-					subCtx, cancel := context.WithTimeout(appCtx, 6*time.Second)
-					defer cancel()
-					_ = repl.SubmitMetricBatch(subCtx, batch)
-				}()
+				// Broadcast fires one short-timeout POST per target and returns
+				// immediately, so it never blocks the collection cycle.
+				sender.Broadcast(appCtx, batch)
 			}
 		}
 
@@ -318,6 +328,8 @@ func Run() {
 			if _, err := retentionSvc.CleanupBatch(cleanupCtx, retention.DefaultBatchSize); err != nil && cleanupCtx.Err() == nil {
 				logger.Warn("Retention batch error", "error", err)
 			}
+			// Prune expired/long-revoked refresh tokens (self-throttled to ~10min).
+			retentionSvc.CleanupExpiredTokens(cleanupCtx)
 		}()
 	})
 
@@ -677,6 +689,18 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 				return
 			}
 			c.JSON(http.StatusNotFound, gin.H{"error": "bridge receiving is not enabled on this node"})
+		})
+
+		// Best-effort metric stream (off-Raft): peers POST their host metrics
+		// here; we authenticate (HMAC) and write them straight into local state +
+		// SSE without a consensus round. Resolved at request time since the
+		// receiver is (re)built on every Raft activation.
+		api.POST(metricstream.RoutePath, func(c *gin.Context) {
+			if mr := container.GetMetricReceiver(); mr != nil {
+				mr.Handle(c)
+				return
+			}
+			c.JSON(http.StatusNotFound, gin.H{"error": "metric stream not enabled on this node"})
 		})
 
 		// Metrics current snapshot

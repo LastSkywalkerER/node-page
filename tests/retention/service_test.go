@@ -47,7 +47,7 @@ func countRows(t *testing.T, db *gorm.DB, table string) int64 {
 
 func TestCleanup_DeletesOldRows(t *testing.T) {
 	db := setupTestDB(t)
-	svc := retention.NewService(db, log.Default(), 30)
+	svc := retention.NewService(db, log.Default(), 30, nil)
 
 	old := time.Now().AddDate(0, 0, -60)
 	insertRow(t, db, "cpu_metrics", old)
@@ -64,7 +64,7 @@ func TestCleanup_DeletesOldRows(t *testing.T) {
 
 func TestCleanup_PreservesRecentRows(t *testing.T) {
 	db := setupTestDB(t)
-	svc := retention.NewService(db, log.Default(), 30)
+	svc := retention.NewService(db, log.Default(), 30, nil)
 
 	recent := time.Now().Add(-time.Hour)
 	insertRow(t, db, "cpu_metrics", recent)
@@ -80,7 +80,7 @@ func TestCleanup_PreservesRecentRows(t *testing.T) {
 
 func TestCleanup_MultipleTablesAtOnce(t *testing.T) {
 	db := setupTestDB(t)
-	svc := retention.NewService(db, log.Default(), 7)
+	svc := retention.NewService(db, log.Default(), 7, nil)
 
 	old := time.Now().AddDate(0, 0, -14)
 	recent := time.Now().Add(-time.Hour)

@@ -48,15 +48,19 @@ type PollerDeps struct {
 	// (incl. the VMID from the lxc cgroup) for the self-link flow.
 	Detector *connectors.Detector
 
-	Raft     *raftcluster.Replicator // nil-safe; Enabled() gates the raft path
+	Raft     *raftcluster.Replicator // nil-safe; Enabled() gates control-plane raft writes (host upsert/delete)
 	RaftSvc  raftcluster.Service     // leader check; nil = standalone
 	CPURepo  cpu.Repository
 	MemRepo  memory.Repository
 	DiskRepo disk.Repository
 	NetRepo  network.Repository
-	// Publish pushes a live SSE envelope to the local stream broker
-	// (standalone path only — the Raft applier publishes on every node).
+	// Publish pushes a live SSE envelope to the local stream broker.
 	Publish func([]byte)
+	// BroadcastMetrics ships a guest's metric batch to cluster peers over the
+	// best-effort metric stream (NOT the durable Raft log). nil = standalone:
+	// metrics are only written locally. The poller always writes guest metrics
+	// to the local repos + broker first, then broadcasts.
+	BroadcastMetrics func(context.Context, raftcluster.MetricBatchPayload)
 }
 
 // Poller drives every enabled Proxmox connector: topology discovery, host
@@ -214,6 +218,12 @@ func (p *Poller) cycle(ctx context.Context) {
 		p.deps.Logger.Warn("proxmox: list connectors", "error", err)
 		return
 	}
+	// Live key sets for the cache eviction below: which connectors are still
+	// active this cycle. connID-keyed maps (nodeIdent/guestCfg) match on
+	// "<id>/"; external-id-keyed maps (netPrev/upsertState) match on the
+	// connector's external-id prefix.
+	liveConnPrefixes := make(map[string]struct{})
+	livePrefixes := make(map[string]struct{})
 	for _, conn := range conns {
 		if conn.Type != connectors.TypeProxmox {
 			continue
@@ -224,10 +234,58 @@ func (p *Poller) cycle(ctx context.Context) {
 			}
 			continue
 		}
+		liveConnPrefixes[fmt.Sprintf("%d/", conn.ID)] = struct{}{}
+		livePrefixes[connectors.ExternalIDPrefix(conn.Type, conn.Fingerprint)] = struct{}{}
 		connCtx, connCancel := context.WithTimeout(ctx, 45*time.Second)
 		p.syncConnector(connCtx, conn)
 		connCancel()
 	}
+
+	// Drop caches for connectors that are no longer active (disabled or deleted):
+	// per-connector evictStale only runs for connectors that sync, so without this
+	// a removed connector's identity/guest/network caches would linger for the
+	// whole process lifetime.
+	p.evictDisconnected(liveConnPrefixes, livePrefixes)
+}
+
+// evictDisconnected removes every cache entry whose owning connector is not in
+// the live sets. An enabled-but-temporarily-unreachable connector stays in the
+// live sets (it failed to sync, but it's still listed+enabled), so only truly
+// disabled/deleted connectors are evicted.
+func (p *Poller) evictDisconnected(liveConnPrefixes, livePrefixes map[string]struct{}) {
+	hasAny := func(key string, set map[string]struct{}) bool {
+		for pfx := range set {
+			if pfx != "" && strings.HasPrefix(key, pfx) {
+				return true
+			}
+		}
+		return false
+	}
+	p.mu.Lock()
+	for k := range p.nodeIdent {
+		if !hasAny(k, liveConnPrefixes) {
+			delete(p.nodeIdent, k)
+		}
+	}
+	for k := range p.guestCfg {
+		if !hasAny(k, liveConnPrefixes) {
+			delete(p.guestCfg, k)
+		}
+	}
+	for k := range p.netPrev {
+		if !hasAny(k, livePrefixes) {
+			delete(p.netPrev, k)
+		}
+	}
+	p.mu.Unlock()
+
+	p.upsertMu.Lock()
+	for k := range p.upsertState {
+		if !hasAny(k, livePrefixes) {
+			delete(p.upsertState, k)
+		}
+	}
+	p.upsertMu.Unlock()
 }
 
 func (p *Poller) syncConnector(ctx context.Context, conn connectors.Connector) {
@@ -806,30 +864,9 @@ func (p *Poller) submitMetrics(ctx context.Context, host *hosts.Host, cpuM *cpu.
 		return b
 	}
 
-	if p.deps.Raft != nil && p.deps.Raft.Enabled() {
-		batch := raftcluster.MetricBatchPayload{
-			HostMAC:   host.MacAddress,
-			HostName:  host.Name,
-			Timestamp: ts,
-		}
-		if cpuM != nil {
-			batch.CPU = marshal(cpuM)
-		}
-		if memM != nil {
-			batch.Memory = marshal(memM)
-		}
-		if diskM != nil {
-			batch.Disk = marshal(diskM)
-		}
-		if netM != nil {
-			batch.Network = marshal(netM)
-		}
-		if err := p.deps.Raft.SubmitMetricBatch(ctx, batch); err != nil {
-			p.deps.Logger.Debug("proxmox: replicate metrics", "host", host.Name, "error", err)
-		}
-		return
-	}
-
+	// Persist the guest's metrics LOCALLY (on the polling node) + push to its SSE
+	// broker. Metrics no longer ride the durable Raft log; the cluster fanout
+	// below replicates them best-effort instead.
 	env := map[string]any{"collecting_host_id": host.ID, "timestamp": ts}
 	if cpuM != nil {
 		if err := p.deps.CPURepo.SaveCurrentMetricAt(ctx, *cpuM, host.ID, ts); err == nil {
@@ -855,6 +892,25 @@ func (p *Poller) submitMetrics(ctx context.Context, host *hosts.Host, cpuM *cpu.
 		if b, err := json.Marshal(env); err == nil {
 			p.deps.Publish(b)
 		}
+	}
+
+	// Best-effort cluster fanout: ship the guest batch to peers (and the
+	// cross-cluster hub) over the metric stream. nil on a standalone node.
+	if p.deps.BroadcastMetrics != nil {
+		batch := raftcluster.MetricBatchPayload{HostMAC: host.MacAddress, HostName: host.Name, Timestamp: ts}
+		if cpuM != nil {
+			batch.CPU = marshal(cpuM)
+		}
+		if memM != nil {
+			batch.Memory = marshal(memM)
+		}
+		if diskM != nil {
+			batch.Disk = marshal(diskM)
+		}
+		if netM != nil {
+			batch.Network = marshal(netM)
+		}
+		p.deps.BroadcastMetrics(ctx, batch)
 	}
 }
 

@@ -123,6 +123,28 @@ func ListPeerAdvertises(ctx context.Context, db *gorm.DB) ([]PeerAdvertise, erro
 	return out, nil
 }
 
+// ListClusterPeerURLs returns the advertised HTTP base URLs of every OTHER node
+// in clusterID (excluding selfNodeID and any empty URL). It is the discovery
+// source for the best-effort intra-cluster metric fanout: each node POSTs its
+// own metrics directly to these URLs. Requires every node (not just the leader)
+// to advertise itself into peer_node_advertise.
+func ListClusterPeerURLs(ctx context.Context, db *gorm.DB, clusterID, selfNodeID string) ([]string, error) {
+	var rows []peerNodeAdvertise
+	if err := db.WithContext(ctx).
+		Where("cluster_id = ? AND node_id <> ?", clusterID, selfNodeID).
+		Order("node_id ASC").
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if r.URL != "" {
+			out = append(out, r.URL)
+		}
+	}
+	return out, nil
+}
+
 // LookupJoinToken returns the join token row for tokenHash, or nil if missing.
 func LookupJoinToken(ctx context.Context, db *gorm.DB, tokenHash string) (*ClusterJoinTokenView, error) {
 	var row clusterJoinToken

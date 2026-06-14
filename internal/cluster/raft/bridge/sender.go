@@ -80,14 +80,16 @@ const (
 	backoffMax  = 60 * time.Second
 )
 
-// uplinkTypes is the allowlist shipped in "push" mode: host registry,
-// topology and metrics — nothing identity- or config-bearing.
+// uplinkTypes is the allowlist shipped in "push" mode: host registry +
+// topology only — nothing identity- or config-bearing. Metrics are NOT here:
+// they no longer flow through the durable Raft log at all (that is what
+// ballooned the on-disk log + RSS). Cross-cluster metric replication rides the
+// best-effort metric stream (see internal/cluster/raft/metricstream) instead.
 var uplinkTypes = map[raftcluster.CommandType]bool{
 	raftcluster.CmdHostUpsert:          true,
 	raftcluster.CmdConnectorHostUpsert: true,
 	raftcluster.CmdHostDelete:          true,
 	raftcluster.CmdHostLastSeen:        true,
-	raftcluster.CmdMetricBatch:         true,
 }
 
 // crossClusterDeny lists command types that must NEVER cross the HTTPS bridge
@@ -222,7 +224,11 @@ func (s *Sender) Run(ctx context.Context) {
 		max := s.flushSize * 4
 		if len(buf) > max {
 			drop := len(buf) - max
-			buf = buf[drop:]
+			// Copy the kept tail into a FRESH slice so the dropped prefix — and
+			// the Payload []byte each dropped Envelope holds — is released to the
+			// GC. A plain buf = buf[drop:] reslice keeps the whole backing array
+			// alive, retaining every dropped payload until the slice is realloc'd.
+			buf = append(make([]Envelope, 0, max), buf[drop:]...)
 			droppedTotal += uint64(drop)
 			droppedSinceWarn += uint64(drop)
 			if s.logger != nil && time.Since(lastDropWarnAt) > 30*time.Second {
