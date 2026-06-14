@@ -176,8 +176,18 @@ func initPostgres(dbConfig config.DatabaseConfig) (*gorm.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get sql.DB: %w", err)
 	}
-	sqlDB.SetMaxOpenConns(25)
-	sqlDB.SetMaxIdleConns(10)
+	// This is a periodic-write monitoring app, not a high-concurrency OLTP
+	// service: a handful of queries run at once (metric persist, retention, the
+	// dashboard's SELECTs, SSE fan-out). Every open connection is a full Postgres
+	// backend process holding its own private memory until closed, so a fat idle
+	// pool is pure resident-RAM cost with no throughput gain — the dominant
+	// "Postgres RAM grows over time" lever on managed deployments where we can't
+	// touch shared_buffers (dokploy). Cap the ceiling, keep the idle floor tiny,
+	// and reap idle backends quickly so their RAM is returned between bursts.
+	// ConnMaxLifetime still recycles active backends to bound per-backend cache.
+	sqlDB.SetMaxOpenConns(10)
+	sqlDB.SetMaxIdleConns(2)
+	sqlDB.SetConnMaxIdleTime(2 * time.Minute)
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 
 	return db, nil
