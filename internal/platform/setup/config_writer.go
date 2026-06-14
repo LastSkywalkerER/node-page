@@ -350,6 +350,12 @@ func buildEnvFileContent(config *ConfigValues) string {
 		if strings.ToLower(strings.TrimSpace(config.RaftBridgeEnabled)) == "true" {
 			lines = append(lines, "RAFT_BRIDGE_ENABLED=true")
 		}
+		// Persist the mode — without this it was dropped, so every restart fell
+		// back to NormalizeBridgeMode("") == "both", silently flipping a
+		// "send to a hub" (push) spoke into a two-way pair.
+		if v := strings.TrimSpace(config.RaftBridgeMode); v != "" {
+			lines = append(lines, fmt.Sprintf("RAFT_BRIDGE_MODE=%s", escapeValue(v)))
+		}
 		if v := strings.TrimSpace(config.RaftBridgeSharedSecret); v != "" {
 			lines = append(lines, fmt.Sprintf("RAFT_BRIDGE_SHARED_SECRET=%s", escapeValue(v)))
 		}

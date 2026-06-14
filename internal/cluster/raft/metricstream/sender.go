@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -52,6 +53,11 @@ type Sender struct {
 	bridgeSecret string
 	bridgeMode   string
 	hubSeeds     []string
+
+	// gzipDisabled is set once a peer rejects a gzipped body (an older node that
+	// can't decompress returns 400). The newer side degrades to plain bodies so a
+	// version skew doesn't black-hole metrics. Reset on restart.
+	gzipDisabled atomic.Bool
 }
 
 // NewSender builds a metric-stream sender. intraSecret is the cluster-shared key
@@ -81,9 +87,12 @@ func (s *Sender) Broadcast(ctx context.Context, payload raftcluster.MetricBatchP
 		return
 	}
 	// gzip once for all targets — the docker-heavy JSON compresses ~5-10x.
+	// Skip if a peer previously rejected a gzipped body (older, pre-gzip node).
 	encoding := ""
-	if gz, ok := bridge.Gzip(body); ok {
-		body, encoding = gz, bridge.EncodingGzip
+	if !s.gzipDisabled.Load() {
+		if gz, ok := bridge.Gzip(body); ok {
+			body, encoding = gz, bridge.EncodingGzip
+		}
 	}
 
 	// Intra-cluster peers (P2P): discovered from the replicated advertise catalog.
@@ -129,6 +138,14 @@ func (s *Sender) fire(baseURL string, body []byte, encoding, secret string) {
 		resp, err := s.httpClient.Do(req)
 		if err != nil {
 			return // best-effort: drop on failure, next tick re-sends
+		}
+		// An older peer that can't decompress returns 400 on a gzipped body —
+		// permanently fall back to plain bodies so a version skew doesn't
+		// black-hole metrics (resumes after restart once peers are upgraded).
+		if encoding == bridge.EncodingGzip && resp.StatusCode == http.StatusBadRequest {
+			if s.gzipDisabled.CompareAndSwap(false, true) && s.logger != nil {
+				s.logger.Warn("metricstream: peer rejected gzip; falling back to uncompressed bodies")
+			}
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()

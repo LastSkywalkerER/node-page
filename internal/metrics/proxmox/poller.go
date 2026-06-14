@@ -622,10 +622,22 @@ func (p *Poller) findExisting(ctx context.Context, externalID string, macs []str
 			add(h)
 		}
 	}
+	// The local collector's own row (LocalCollectorHostID) always wins when it
+	// matched — this is the self-guest case (the node is an LXC/VM of its own
+	// Proxmox). It must never be orphaned or deleted, so it is the canonical row
+	// the connector topology attaches to.
 	for _, h := range matches {
-		if hosts.MergeSource(h.Source, hosts.SourceConnector) != hosts.SourceConnector {
-			best = h // agent-maintained row wins
+		if h.ID == hosts.LocalCollectorHostID {
+			best = h
 			break
+		}
+	}
+	if best == nil {
+		for _, h := range matches {
+			if hosts.MergeSource(h.Source, hosts.SourceConnector) != hosts.SourceConnector {
+				best = h // agent-maintained row wins over a pure connector row
+				break
+			}
 		}
 	}
 	if best == nil {
@@ -634,8 +646,19 @@ func (p *Poller) findExisting(ctx context.Context, externalID string, macs []str
 		}
 		return nil, nil
 	}
+	// A second matched row for the SAME machine is a duplicate to clean up:
+	//   - a pure connector row (the original "agent appeared via a different MAC"
+	//     case), or
+	//   - any other row sharing best's non-empty hardware UUID — the self-guest
+	//     dup, where the agent row (id=1, NIC MAC A) and a connector-discovered
+	//     row (NIC MAC B from the PVE config) coexist for one physical machine.
+	// Never return the local collector row as stale (it is canonical).
 	for _, h := range matches {
-		if h.ID != best.ID && h.Source == hosts.SourceConnector {
+		if h.ID == best.ID || h.ID == hosts.LocalCollectorHostID {
+			continue
+		}
+		sameMachine := best.HardwareUUID != "" && h.HardwareUUID == best.HardwareUUID
+		if h.Source == hosts.SourceConnector || sameMachine {
 			return best, h
 		}
 	}

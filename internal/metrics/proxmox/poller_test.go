@@ -1,11 +1,91 @@
 package proxmox
 
 import (
+	"context"
+	"io"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/log"
+	"gorm.io/gorm"
+
 	hosts "system-stats/internal/cluster/hosts"
 )
+
+// fakeHostRepo is a minimal hosts.Repository for findExisting tests: only the
+// four lookup methods are implemented; any other call panics (none are made).
+type fakeHostRepo struct {
+	hosts.Repository
+	byExternalID   map[string]*hosts.Host
+	byMAC          map[string]*hosts.Host
+	byUUID         map[string]*hosts.Host
+	unlinkedByName map[string]*hosts.Host
+}
+
+func (f *fakeHostRepo) get(m map[string]*hosts.Host, k string) (*hosts.Host, error) {
+	if h, ok := m[k]; ok {
+		return h, nil
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+func (f *fakeHostRepo) GetHostByExternalID(_ context.Context, id string) (*hosts.Host, error) {
+	return f.get(f.byExternalID, id)
+}
+func (f *fakeHostRepo) GetHostByMacAddress(_ context.Context, mac string) (*hosts.Host, error) {
+	return f.get(f.byMAC, mac)
+}
+func (f *fakeHostRepo) GetHostByHardwareUUID(_ context.Context, uuid string) (*hosts.Host, error) {
+	return f.get(f.byUUID, uuid)
+}
+func (f *fakeHostRepo) GetUnlinkedAgentHostByName(_ context.Context, name string) (*hosts.Host, error) {
+	return f.get(f.unlinkedByName, name)
+}
+
+// TestFindExistingSelfGuestDedup reproduces the dokploy duplicate: the node is
+// its own Proxmox LXC, so the agent row (id=1, NIC MAC A, no external_id) and a
+// connector-discovered row (id=41, NIC MAC B, external_id, SAME hardware UUID)
+// coexist. findExisting must pick the local collector row as canonical (best)
+// and mark the other same-machine row stale for removal.
+func TestFindExistingSelfGuestDedup(t *testing.T) {
+	const uuid = "032e02b4-0499-05c3-2206-ab0700080009"
+	const extID = "proxmox:node/mika-pve@10.0.0.1:8006/mika-pve/lxc/103"
+	agent := &hosts.Host{ID: hosts.LocalCollectorHostID, Name: "dokploy", MacAddress: "3e:d0:e2:ff:55:9b", Source: hosts.SourceAgent, HardwareUUID: uuid}
+	dup := &hosts.Host{ID: 41, Name: "dokploy", MacAddress: "92:a5:fd:c4:0a:02", Source: hosts.MergeSource(hosts.SourceAgent, hosts.SourceConnector), ExternalID: extID, HardwareUUID: uuid}
+	repo := &fakeHostRepo{
+		byExternalID:   map[string]*hosts.Host{extID: dup},
+		byMAC:          map[string]*hosts.Host{"92:a5:fd:c4:0a:02": dup},
+		unlinkedByName: map[string]*hosts.Host{"dokploy": agent},
+	}
+	p := &Poller{deps: PollerDeps{Logger: log.New(io.Discard), HostRepo: repo}}
+
+	best, stale := p.findExisting(context.Background(), extID, []string{"92:a5:fd:c4:0a:02"}, "", "dokploy")
+	if best == nil || best.ID != hosts.LocalCollectorHostID {
+		t.Fatalf("best must be the local collector row (id=%d), got %+v", hosts.LocalCollectorHostID, best)
+	}
+	if stale == nil || stale.ID != 41 {
+		t.Fatalf("the same-machine connector dup (id=41) must be returned stale, got %+v", stale)
+	}
+}
+
+// TestFindExistingNoDupKeepsSingleRow: once consolidated (one agent+connector
+// row, no twin), findExisting returns it as best with no stale — stable, no churn.
+func TestFindExistingNoDupKeepsSingleRow(t *testing.T) {
+	const extID = "proxmox:node/mika-pve@10.0.0.1:8006/mika-pve/lxc/103"
+	merged := &hosts.Host{ID: hosts.LocalCollectorHostID, Name: "dokploy", MacAddress: "3e:d0:e2:ff:55:9b", Source: hosts.MergeSource(hosts.SourceAgent, hosts.SourceConnector), ExternalID: extID, HardwareUUID: "u1"}
+	repo := &fakeHostRepo{
+		byExternalID: map[string]*hosts.Host{extID: merged},
+		byMAC:        map[string]*hosts.Host{"3e:d0:e2:ff:55:9b": merged},
+	}
+	p := &Poller{deps: PollerDeps{Logger: log.New(io.Discard), HostRepo: repo}}
+
+	best, stale := p.findExisting(context.Background(), extID, []string{"3e:d0:e2:ff:55:9b"}, "", "dokploy")
+	if best == nil || best.ID != hosts.LocalCollectorHostID {
+		t.Fatalf("best must be the single consolidated row, got %+v", best)
+	}
+	if stale != nil {
+		t.Fatalf("no stale expected for a single consolidated row, got %+v", stale)
+	}
+}
 
 func newThrottlePoller() *Poller {
 	return &Poller{upsertState: map[string]hostUpsertState{}}

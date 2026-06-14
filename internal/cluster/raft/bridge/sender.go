@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -69,6 +70,13 @@ type Sender struct {
 	shippedTotal uint64
 	pending      int
 	failing      bool
+
+	// gzipDisabled is set once a peer rejects a gzipped body (an older hub that
+	// can't decompress returns a decode/400). Cross-cluster sites upgrade
+	// independently, so the newer side must degrade to plain bodies rather than
+	// wedge replication. Reset on process restart (so gzip resumes once the peer
+	// is upgraded). Sender-wide, which is fine: a spoke ships to one hub.
+	gzipDisabled atomic.Bool
 }
 
 const (
@@ -342,9 +350,12 @@ func (s *Sender) shipBatch(ctx context.Context, batch Batch) error {
 		return fmt.Errorf("encode batch: %w", err)
 	}
 	// gzip the batch (verbose, compressible JSON). HMAC is over the on-wire bytes.
+	// Skip if a prior ship to a (pre-gzip) peer rejected a compressed body.
 	encoding := ""
-	if gz, ok := Gzip(body); ok {
-		body, encoding = gz, EncodingGzip
+	if !s.gzipDisabled.Load() {
+		if gz, ok := Gzip(body); ok {
+			body, encoding = gz, EncodingGzip
+		}
 	}
 	tsNanos := time.Now().UnixNano()
 	sig := Sign(s.secret, tsNanos, body)
@@ -377,7 +388,18 @@ func (s *Sender) shipBatch(ctx context.Context, batch Batch) error {
 		// id equals …", "invalid timestamp", …) — surface it, it is the
 		// actionable part.
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		if msg := strings.TrimSpace(string(b)); msg != "" {
+		msg := strings.TrimSpace(string(b))
+		// An older peer that can't decompress a gzipped body returns a 400 decode
+		// error (the body starts with the gzip magic 0x1f). Permanently fall back
+		// to plain bodies for this process so replication isn't wedged by version
+		// skew; the same batch re-ships uncompressed on the next tick.
+		if encoding == EncodingGzip && resp.StatusCode == http.StatusBadRequest &&
+			(strings.Contains(msg, "decode") || strings.Contains(msg, "\\x1f") || strings.Contains(msg, "invalid character")) {
+			if s.gzipDisabled.CompareAndSwap(false, true) && s.logger != nil {
+				s.logger.Warn("bridge: peer rejected gzip; falling back to uncompressed bodies (upgrade the peer to re-enable compression)")
+			}
+		}
+		if msg != "" {
 			return fmt.Errorf("peer returned %s: %s", resp.Status, msg)
 		}
 		return fmt.Errorf("peer returned %s", resp.Status)
