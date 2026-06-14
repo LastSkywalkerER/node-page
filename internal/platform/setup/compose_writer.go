@@ -173,7 +173,7 @@ func BuildComposeContent(ds DesiredState) string {
 		// Postgres's parallel-query/sort shared-memory ceiling above Docker's 64MB.
 		w("    mem_limit: 768m")
 		w("    shm_size: 256mb")
-		w("    command: postgres -c shared_buffers=${NODE_STATS_PG_SHARED_BUFFERS:-128MB} -c max_connections=${NODE_STATS_PG_MAX_CONNECTIONS:-16} -c wal_compression=on -c checkpoint_completion_target=0.9")
+		w("    command: postgres -c shared_buffers=${NODE_STATS_PG_SHARED_BUFFERS:-64MB} -c max_connections=${NODE_STATS_PG_MAX_CONNECTIONS:-16} -c wal_compression=on -c checkpoint_completion_target=0.9")
 		w("    environment:")
 		w("      - POSTGRES_DB=" + name)
 		w("      - POSTGRES_USER=" + user)

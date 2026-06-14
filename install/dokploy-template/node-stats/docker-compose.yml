@@ -61,7 +61,7 @@ services:
     # volume — the workload is high-churn metric writes.
     mem_limit: 768m
     shm_size: 256mb
-    command: postgres -c shared_buffers=${NODE_STATS_PG_SHARED_BUFFERS:-128MB} -c max_connections=${NODE_STATS_PG_MAX_CONNECTIONS:-16} -c wal_compression=on -c checkpoint_completion_target=0.9
+    command: postgres -c shared_buffers=${NODE_STATS_PG_SHARED_BUFFERS:-64MB} -c max_connections=${NODE_STATS_PG_MAX_CONNECTIONS:-16} -c wal_compression=on -c checkpoint_completion_target=0.9
     environment:
       - POSTGRES_DB=node_stats
       - POSTGRES_USER=node_stats
