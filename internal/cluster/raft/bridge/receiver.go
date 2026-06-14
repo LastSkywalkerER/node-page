@@ -110,6 +110,14 @@ func (r *Receiver) Handle(c *gin.Context) {
 		return
 	}
 
+	// Decompress AFTER verifying the HMAC over the on-wire (compressed) bytes.
+	// A plain body from an older/rolling peer (no Content-Encoding) passes through.
+	body, err = Gunzip(c.GetHeader(EncodingHeader), body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "decompress: " + err.Error()})
+		return
+	}
+
 	var batch Batch
 	if err := json.Unmarshal(body, &batch); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "decode batch: " + err.Error()})

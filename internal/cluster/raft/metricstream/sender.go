@@ -80,6 +80,11 @@ func (s *Sender) Broadcast(ctx context.Context, payload raftcluster.MetricBatchP
 	if err != nil {
 		return
 	}
+	// gzip once for all targets — the docker-heavy JSON compresses ~5-10x.
+	encoding := ""
+	if gz, ok := bridge.Gzip(body); ok {
+		body, encoding = gz, bridge.EncodingGzip
+	}
 
 	// Intra-cluster peers (P2P): discovered from the replicated advertise catalog.
 	if s.intraSecret != "" {
@@ -90,19 +95,19 @@ func (s *Sender) Broadcast(ctx context.Context, payload raftcluster.MetricBatchP
 			}
 		}
 		for _, u := range peers {
-			s.fire(u, body, s.intraSecret)
+			s.fire(u, body, encoding, s.intraSecret)
 		}
 	}
 
 	// Cross-cluster hub uplink (push/both): same payload, bridge-secret signed.
 	if s.bridgeSecret != "" && (s.bridgeMode == config.BridgeModePush || s.bridgeMode == config.BridgeModeBoth) {
 		for _, u := range s.hubSeeds {
-			s.fire(u, body, s.bridgeSecret)
+			s.fire(u, body, encoding, s.bridgeSecret)
 		}
 	}
 }
 
-func (s *Sender) fire(baseURL string, body []byte, secret string) {
+func (s *Sender) fire(baseURL string, body []byte, encoding, secret string) {
 	go func() {
 		fireCtx, cancel := context.WithTimeout(context.Background(), shipTimeout)
 		defer cancel()
@@ -114,6 +119,9 @@ func (s *Sender) fire(baseURL string, body []byte, secret string) {
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if encoding != "" {
+			req.Header.Set(bridge.EncodingHeader, encoding)
+		}
 		req.Header.Set(bridge.TimestampHeader, strconv.FormatInt(ts, 10))
 		req.Header.Set(bridge.HMACHeader, sig)
 		req.Header.Set(bridge.SenderClusterHeader, s.localCluster)

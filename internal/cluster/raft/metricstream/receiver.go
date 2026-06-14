@@ -83,6 +83,13 @@ func (r *Receiver) Handle(c *gin.Context) {
 		return
 	}
 
+	// Decompress AFTER verifying the HMAC over the on-wire (compressed) bytes.
+	body, err = bridge.Gunzip(c.GetHeader(bridge.EncodingHeader), body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "decompress: " + err.Error()})
+		return
+	}
+
 	var p raftcluster.MetricBatchPayload
 	if err := json.Unmarshal(body, &p); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "decode batch: " + err.Error()})

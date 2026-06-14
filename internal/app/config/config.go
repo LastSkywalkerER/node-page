@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -48,6 +49,12 @@ type Config struct {
 
 	// Data retention
 	RetentionDays int // METRICS_RETENTION_DAYS: how long to keep historical metrics, default 30
+
+	// Metrics cadence. Collection + SSE/stream run every MetricsInterval; the DB
+	// write runs only every MetricsPersistInterval (decoupled so live updates stay
+	// frequent while DB write/WAL/vacuum load drops).
+	MetricsInterval        time.Duration // METRICS_INTERVAL, default 10s
+	MetricsPersistInterval time.Duration // METRICS_PERSIST_INTERVAL, default 30s
 
 	// Observability
 	PrometheusEnabled bool   // PROMETHEUS_ENABLED: expose /metrics endpoint, default false
@@ -165,6 +172,18 @@ func Load() (*Config, error) {
 		retentionDays = 30
 	}
 	config.RetentionDays = retentionDays
+
+	// Metrics cadence
+	config.MetricsInterval = getEnvDuration("METRICS_INTERVAL", 10*time.Second)
+	if config.MetricsInterval < time.Second {
+		config.MetricsInterval = time.Second
+	}
+	config.MetricsPersistInterval = getEnvDuration("METRICS_PERSIST_INTERVAL", 30*time.Second)
+	if config.MetricsPersistInterval < config.MetricsInterval {
+		// Persisting more often than we collect makes no sense; floor at the
+		// collection interval (i.e. persist every tick).
+		config.MetricsPersistInterval = config.MetricsInterval
+	}
 
 	// Observability
 	prometheusEnv := strings.ToLower(getEnv("PROMETHEUS_ENABLED", "false"))
@@ -323,6 +342,22 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// getEnvDuration parses a Go duration (e.g. "10s", "30s", "2m") from env, or a
+// bare integer treated as seconds, falling back to def on empty/invalid input.
+func getEnvDuration(key string, def time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+		return d
+	}
+	if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return def
 }
 
 // Bridge modes.

@@ -341,6 +341,11 @@ func (s *Sender) shipBatch(ctx context.Context, batch Batch) error {
 	if err != nil {
 		return fmt.Errorf("encode batch: %w", err)
 	}
+	// gzip the batch (verbose, compressible JSON). HMAC is over the on-wire bytes.
+	encoding := ""
+	if gz, ok := Gzip(body); ok {
+		body, encoding = gz, EncodingGzip
+	}
 	tsNanos := time.Now().UnixNano()
 	sig := Sign(s.secret, tsNanos, body)
 
@@ -354,6 +359,9 @@ func (s *Sender) shipBatch(ctx context.Context, batch Batch) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if encoding != "" {
+		req.Header.Set(EncodingHeader, encoding)
+	}
 	req.Header.Set(HMACHeader, sig)
 	req.Header.Set(TimestampHeader, strconv.FormatInt(tsNanos, 10))
 	req.Header.Set(SenderClusterHeader, s.myCluster)

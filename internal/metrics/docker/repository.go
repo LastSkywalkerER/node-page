@@ -2,8 +2,11 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"hash/fnv"
 	"sort"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -14,11 +17,32 @@ import (
 
 type dockerRepository struct {
 	db *gorm.DB
+
+	// sigMu guards lastSig: host_id -> container id -> content hash (excluding the
+	// per-tick timestamp). It lets SaveCurrentMetricAt skip re-UPSERTing rows that
+	// did not change since the last persist — idle containers (identical stats)
+	// stop re-sending their full, static-heavy rows (labels/ports/image), which is
+	// the dominant app->DB write volume.
+	sigMu   sync.Mutex
+	lastSig map[uint]map[string]uint64
 }
 
 // NewRepository creates a new Docker repository.
 func NewRepository(db *gorm.DB) DockerRepository {
-	return &dockerRepository{db: db}
+	return &dockerRepository{db: db, lastSig: map[uint]map[string]uint64{}}
+}
+
+// entitySig hashes a container row excluding its per-tick MetricTimestamp, so an
+// otherwise-unchanged (idle) container hashes the same tick-to-tick.
+func entitySig(e DockerContainerEntity) uint64 {
+	e.MetricTimestamp = time.Time{}
+	b, err := json.Marshal(e)
+	if err != nil {
+		return 0
+	}
+	h := fnv.New64a()
+	_, _ = h.Write(b)
+	return h.Sum64()
 }
 
 func (r *dockerRepository) SaveCurrentMetric(ctx context.Context, metric DockerMetric, hostId uint) error {
@@ -50,8 +74,25 @@ func (r *dockerRepository) SaveCurrentMetricAt(ctx context.Context, metric Docke
 		}
 	}
 
+	// Content-hash gate: only UPSERT containers whose row changed since the last
+	// persist (excluding the per-tick timestamp). Idle containers are skipped, so
+	// their static-heavy rows (labels/ports/image) are not re-sent every persist —
+	// the bulk of the app->DB write volume. Always keep currentIDs for the prune.
+	r.sigMu.Lock()
+	hostSigs := r.lastSig[hostId]
+	r.sigMu.Unlock()
+	changed := make([]DockerContainerEntity, 0, len(containerEntities))
+	newSigs := make(map[string]uint64, len(containerEntities))
+	for _, e := range containerEntities {
+		sig := entitySig(e)
+		newSigs[e.ID] = sig
+		if prev, ok := hostSigs[e.ID]; !ok || prev != sig {
+			changed = append(changed, e)
+		}
+	}
+
 	// Save metric and containers in transaction
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// The counter row is a per-tick time series (PK host_id, timestamp) kept
 		// for the historical container-count chart. Raft-log replay re-applies
 		// entries after a restart, so the same (host_id, timestamp) row must be a
@@ -63,12 +104,12 @@ func (r *dockerRepository) SaveCurrentMetricAt(ctx context.Context, metric Docke
 		// place. This keeps the table bounded to the live container count instead
 		// of appending N rows every tick forever. The conflict target is the full
 		// composite PK so a container id shared across hosts (cloned VMs) does not
-		// clobber another host's row.
-		if len(containerEntities) > 0 {
+		// clobber another host's row. Only CHANGED rows are written (see the gate).
+		if len(changed) > 0 {
 			if err := tx.Clauses(clause.OnConflict{
 				Columns:   []clause.Column{{Name: "id"}, {Name: "host_id"}},
 				UpdateAll: true,
-			}).Create(&containerEntities).Error; err != nil {
+			}).Create(&changed).Error; err != nil {
 				return err
 			}
 		}
@@ -87,6 +128,18 @@ func (r *dockerRepository) SaveCurrentMetricAt(ctx context.Context, metric Docke
 		}
 		return nil
 	})
+	if err != nil {
+		// Don't advance the signature cache on failure — the unwritten rows stay
+		// "changed" and get retried on the next persist.
+		return err
+	}
+
+	// Commit signatures only after a successful write; drop gone containers so a
+	// future re-add is re-written.
+	r.sigMu.Lock()
+	r.lastSig[hostId] = newSigs
+	r.sigMu.Unlock()
+	return nil
 }
 
 // containersForHost loads the current container set for a host and groups it by

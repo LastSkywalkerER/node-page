@@ -18,9 +18,9 @@ type HistoricalMetricsService interface {
 	CollectAndSaveMetrics(ctx context.Context) error
 
 	// StartPeriodicCollection begins automatic periodic collection of metrics.
-	// This method starts a background goroutine that collects metrics at regular intervals
-	// and can be stopped using StopPeriodicCollection.
-	StartPeriodicCollection(ctx context.Context, interval time.Duration) error
+	// Collection + live fan-out run every `interval`; DB writes run every
+	// `persistInterval` (>= interval). Stopped via StopPeriodicCollection.
+	StartPeriodicCollection(ctx context.Context, interval, persistInterval time.Duration) error
 
 	// StopPeriodicCollection stops the periodic metric collection process.
 	// This method safely terminates the background collection goroutine and cleans up resources.

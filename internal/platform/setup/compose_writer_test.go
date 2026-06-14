@@ -56,7 +56,7 @@ func TestBuildComposeContent_PostgresManaged(t *testing.T) {
 		// Managed-db resource tuning for the small hub VPS.
 		"mem_limit: 768m",
 		"shm_size: 256mb",
-		"command: postgres -c shared_buffers=192MB -c max_connections=30 -c checkpoint_completion_target=0.9",
+		"command: postgres -c shared_buffers=${NODE_STATS_PG_SHARED_BUFFERS:-128MB} -c max_connections=${NODE_STATS_PG_MAX_CONNECTIONS:-16} -c wal_compression=on -c checkpoint_completion_target=0.9",
 	})
 }
 

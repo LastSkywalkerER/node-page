@@ -40,11 +40,44 @@ type Service struct {
 	tokenRepo        users.RefreshTokenRepository
 	tokenMu          sync.Mutex
 	lastTokenCleanup time.Time
+
+	metricMu          sync.Mutex
+	lastMetricCleanup time.Time
+}
+
+// RunDue runs all retention chores that are due, each self-throttled: metric
+// pruning every metricCleanupInterval and token pruning every
+// tokenCleanupInterval. Safe to call from the metrics hook every tick — most
+// calls are cheap no-ops. Errors are logged, never returned.
+func (s *Service) RunDue(ctx context.Context) {
+	s.metricMu.Lock()
+	due := s.lastMetricCleanup.IsZero() || time.Since(s.lastMetricCleanup) >= metricCleanupInterval
+	if due {
+		s.lastMetricCleanup = time.Now()
+	}
+	s.metricMu.Unlock()
+	if due {
+		if _, err := s.CleanupBatch(ctx, metricCleanupBatch); err != nil && ctx.Err() == nil {
+			s.logger.Warn("Retention batch error", "error", err)
+		}
+	}
+	s.CleanupExpiredTokens(ctx)
 }
 
 // tokenCleanupInterval bounds how often refresh-token pruning runs — it needn't
 // run every metrics tick.
 const tokenCleanupInterval = 10 * time.Minute
+
+// metricCleanupInterval throttles metric retention: instead of a small DELETE
+// every collection tick (which thrashes autovacuum with many tiny statements),
+// run a larger batch every few minutes. The dead-tuple VOLUME is fixed by the
+// insert/age-out rate, but batching into fewer, bigger DELETEs cuts statement +
+// lock overhead. metricCleanupBatch is sized to clear the rows that accrue
+// within the interval comfortably.
+const (
+	metricCleanupInterval = 2 * time.Minute
+	metricCleanupBatch    = 2000
+)
 
 func NewService(db *gorm.DB, logger *log.Logger, retentionDays int, tokenRepo users.RefreshTokenRepository) *Service {
 	return &Service{db: db, logger: logger, retentionDays: retentionDays, tokenRepo: tokenRepo}

@@ -90,6 +90,40 @@ func TestReceiverCrossClusterValid(t *testing.T) {
 	}
 }
 
+func TestReceiverGzipBodyRoundTrip(t *testing.T) {
+	ing := &fakeIngester{}
+	r := NewReceiver(nil, ing, "site-a", "jwtkey", config.RaftBridgeConfig{})
+
+	plain, _ := json.Marshal(raftcluster.MetricBatchPayload{HostMAC: "aa:bb", HostName: "node1"})
+	gz, ok := bridge.Gzip(plain)
+	if !ok {
+		t.Fatal("gzip failed")
+	}
+	if len(gz) == 0 {
+		t.Fatal("empty gzip")
+	}
+	ts := time.Now().UnixNano()
+	sig := bridge.Sign("jwtkey", ts, gz) // HMAC over the on-wire (gzipped) bytes
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	req := httptest.NewRequest(http.MethodPost, Path, bytes.NewReader(gz))
+	req.Header.Set(bridge.EncodingHeader, bridge.EncodingGzip)
+	req.Header.Set(bridge.TimestampHeader, strconv.FormatInt(ts, 10))
+	req.Header.Set(bridge.HMACHeader, sig)
+	req.Header.Set(bridge.SenderClusterHeader, "site-a")
+	c.Request = req
+	r.Handle(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !ing.called || ing.payload.HostMAC != "aa:bb" {
+		t.Fatalf("gzipped body not decoded/ingested: %+v", ing.payload)
+	}
+}
+
 func TestReceiverRejectsBadSignature(t *testing.T) {
 	ing := &fakeIngester{}
 	r := NewReceiver(nil, ing, "site-a", "jwtkey", config.RaftBridgeConfig{})

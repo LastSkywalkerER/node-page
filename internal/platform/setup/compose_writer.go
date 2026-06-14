@@ -165,12 +165,15 @@ func BuildComposeContent(ds DesiredState) string {
 		w("  db:")
 		w("    image: postgres:16-alpine")
 		w("    restart: unless-stopped")
-		// Tuned for the small hub VPS (2 CPU/4GB): bound memory and shared_buffers,
-		// keep connections modest. shm_size lifts Postgres's parallel-query/sort
-		// shared-memory ceiling above the 64MB Docker default.
+		// Tuned for a small VPS: modest shared_buffers + connections (the app uses
+		// only a handful), and wal_compression to shrink WAL volume (the workload is
+		// write-heavy: a metric tick per host). Both knobs are overridable from the
+		// stack .env (NODE_STATS_PG_SHARED_BUFFERS / NODE_STATS_PG_MAX_CONNECTIONS)
+		// so a bigger box can raise them without a code change. shm_size lifts
+		// Postgres's parallel-query/sort shared-memory ceiling above Docker's 64MB.
 		w("    mem_limit: 768m")
 		w("    shm_size: 256mb")
-		w("    command: postgres -c shared_buffers=192MB -c max_connections=30 -c checkpoint_completion_target=0.9")
+		w("    command: postgres -c shared_buffers=${NODE_STATS_PG_SHARED_BUFFERS:-128MB} -c max_connections=${NODE_STATS_PG_MAX_CONNECTIONS:-16} -c wal_compression=on -c checkpoint_completion_target=0.9")
 		w("    environment:")
 		w("      - POSTGRES_DB=" + name)
 		w("      - POSTGRES_USER=" + user)

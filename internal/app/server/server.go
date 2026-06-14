@@ -320,16 +320,13 @@ func Run() {
 			}
 		}
 
-		// Run an incremental retention batch off the metrics tick (every 5s).
-		// Bounded by appCtx + a short deadline so it never blocks the collection cycle.
+		// Run due retention chores off the metrics tick — each is self-throttled
+		// (metrics ~2min, tokens ~10min), so most ticks are cheap no-ops. Bounded
+		// by appCtx + a short deadline so it never blocks the collection cycle.
 		go func() {
-			cleanupCtx, cancel := context.WithTimeout(appCtx, 3*time.Second)
+			cleanupCtx, cancel := context.WithTimeout(appCtx, 10*time.Second)
 			defer cancel()
-			if _, err := retentionSvc.CleanupBatch(cleanupCtx, retention.DefaultBatchSize); err != nil && cleanupCtx.Err() == nil {
-				logger.Warn("Retention batch error", "error", err)
-			}
-			// Prune expired/long-revoked refresh tokens (self-throttled to ~10min).
-			retentionSvc.CleanupExpiredTokens(cleanupCtx)
+			retentionSvc.RunDue(cleanupCtx)
 		}()
 	})
 
@@ -344,7 +341,7 @@ func Run() {
 		}
 
 		logger.Info("Starting periodic metrics collection...")
-		if err := historicalMetricsService.StartPeriodicCollection(appCtx, 5*time.Second); err != nil {
+		if err := historicalMetricsService.StartPeriodicCollection(appCtx, cfg.MetricsInterval, cfg.MetricsPersistInterval); err != nil {
 			logger.Error("Failed to start periodic collection", "error", err)
 			return
 		}
