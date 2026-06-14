@@ -56,10 +56,16 @@ jobs:
           # covered by the semver tags above; PRs get a pr-prefixed sha tag below.
           type=sha,prefix={{branch}}-,enable=${{ startsWith(github.ref, 'refs/heads/') }}
           type=sha,prefix=pr-${{ github.event.number }}-,enable=${{ github.event_name == 'pull_request' }}
-          # :latest follows BOTH main (dev) and v* tags (release). A release
-          # build runs after its main build, so cutting vX.Y.Z makes :latest the
-          # clean-versioned release image that dokploy/valheim pull + redeploy.
-          type=raw,value=latest,enable=${{ github.event_name == 'push' }}
+          # :latest follows ONLY v* release tags — NEVER main pushes. A main
+          # build stamps version.Version="main" (non-semver); if such an image
+          # ever became :latest, every deployment auto-pulling it would report
+          # "Current main" and the in-app updater would go blind — it can't
+          # semver-compare, so it falls back to a build-date heuristic that reads
+          # "you're on the latest" forever (the main build is as new as the
+          # release it raced). Tag-only :latest keeps it a clean-versioned
+          # release image so auto-update always works. (Main still publishes a
+          # pullable dev image as <branch>-<sha> above.)
+          type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
     - name: Build metadata
       id: buildmeta
