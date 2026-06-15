@@ -166,6 +166,15 @@ export function UpdateBadge() {
               </div>
             </div>
 
+            {v.managed_externally && (
+              <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[0.65rem] leading-relaxed text-amber-600 dark:text-amber-400">
+                The actual image is set by your orchestrator’s{' '}
+                <span className="font-mono">NODE_STATS_IMAGE</span> tag — to run beta, set it to{' '}
+                <span className="font-mono">…:beta</span> in dokploy and redeploy. This toggle only
+                changes which line the updater watches, not what gets deployed.
+              </p>
+            )}
+
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs">Auto-update</span>
               <Switch
