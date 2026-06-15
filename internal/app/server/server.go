@@ -560,6 +560,19 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 			}
 			return os.Setenv("NODE_STATS_DEPLOY_WEBHOOK_URL", url)
 		},
+	).WithReleaseChannel(
+		getEnvOr("NODE_STATS_RELEASE_CHANNEL", "stable"),
+		func(channel string) error {
+			cv, err := configWriter.ReadCurrentConfig()
+			if err != nil {
+				return err
+			}
+			cv.ReleaseChannel = channel
+			if err := configWriter.WriteConfigFile(cv); err != nil {
+				return err
+			}
+			return os.Setenv("NODE_STATS_RELEASE_CHANNEL", channel)
+		},
 	)
 	updateSvc.Start(context.Background())
 
@@ -826,6 +839,28 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 			}
 			c.JSON(http.StatusOK, gin.H{"data": updateSvc.Status()})
 		})
+		// Release channel (admin): switch the line the updater follows
+		// (stable | beta). Persists NODE_STATS_RELEASE_CHANNEL and re-checks so
+		// /version immediately reflects the new channel's latest.
+		authAPI.POST("/settings/release-channel", middleware.RequireAdmin(), func(c *gin.Context) {
+			var body struct {
+				Channel string `json:"channel"`
+			}
+			if err := c.ShouldBindJSON(&body); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "Invalid request data"})
+				return
+			}
+			ch := strings.ToLower(strings.TrimSpace(body.Channel))
+			if ch != "stable" && ch != "beta" {
+				c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "channel must be stable or beta"})
+				return
+			}
+			if err := updateSvc.SetReleaseChannel(c.Request.Context(), ch); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"data": updateSvc.Status()})
+		})
 
 		// Post-setup configuration (admin). Mirrors the setup-wizard fields so an
 		// operator can change them after install. Each save rewrites .env via the
@@ -1084,4 +1119,12 @@ func boolStr(b bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+// getEnvOr returns the env var value or a fallback when unset/empty.
+func getEnvOr(key, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return fallback
 }

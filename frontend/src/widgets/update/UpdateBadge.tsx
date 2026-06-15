@@ -11,6 +11,7 @@ import {
   useRefreshVersion,
   useDeployWebhook,
   useSetDeployWebhook,
+  useSetReleaseChannel,
 } from './useVersion'
 
 /**
@@ -21,6 +22,7 @@ import {
 export function UpdateBadge() {
   const { data: v } = useVersion()
   const setAuto = useSetAutoUpdate()
+  const setChannel = useSetReleaseChannel()
   const updateNow = useUpdateNow()
   const refresh = useRefreshVersion()
   const [open, setOpen] = useState(false)
@@ -130,6 +132,31 @@ export function UpdateBadge() {
                 </div>
               </div>
             )}
+
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs">Channel</span>
+              <div className="inline-flex overflow-hidden rounded-md border border-border/70 text-[0.7rem]">
+                {(['stable', 'beta'] as const).map((ch) => (
+                  <button
+                    key={ch}
+                    type="button"
+                    disabled={setChannel.isPending || v.channel === ch}
+                    onClick={() => {
+                      setMsg(null)
+                      setChannel.mutate(ch)
+                    }}
+                    className={cn(
+                      'px-2 py-0.5 capitalize transition-colors disabled:cursor-default',
+                      v.channel === ch
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:bg-muted',
+                    )}
+                  >
+                    {ch}
+                  </button>
+                ))}
+              </div>
+            </div>
 
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs">Auto-update</span>

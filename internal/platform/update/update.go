@@ -80,11 +80,14 @@ type Service struct {
 	persistWebhook func(url string) error
 	client         *http.Client
 
+	persistChannel func(channel string) error
+
 	mu              sync.RWMutex
 	latest          string
 	latestPublished time.Time
 	checkedAt       time.Time
 	autoUpdate      bool
+	channel         string // "stable" | "beta"
 	webhookURL      string
 	// lastWebhookTag is the release tag the deploy webhook was last triggered
 	// for. A webhook redeploy can be a no-op (the image tag may lag the GitHub
@@ -106,9 +109,57 @@ func NewService(repo, dataDir string, autoUpdate bool, persist PersistFn, dbStat
 		dbState:    dbState,
 		client:     &http.Client{Timeout: 15 * time.Second},
 		autoUpdate: autoUpdate,
+		channel:    channelStable,
 	}
 	s.loadWebhookState()
 	return s
+}
+
+// Release channels the updater can follow.
+const (
+	channelStable = "stable"
+	channelBeta   = "beta"
+)
+
+// normalizeChannel coerces arbitrary input to a known channel, defaulting to stable.
+func normalizeChannel(c string) string {
+	if strings.EqualFold(strings.TrimSpace(c), channelBeta) {
+		return channelBeta
+	}
+	return channelStable
+}
+
+// WithReleaseChannel seeds the persisted release channel (from .env) and the
+// persist function applied when an admin changes it at runtime.
+func (s *Service) WithReleaseChannel(channel string, persist func(string) error) *Service {
+	s.mu.Lock()
+	s.channel = normalizeChannel(channel)
+	s.mu.Unlock()
+	s.persistChannel = persist
+	return s
+}
+
+// ReleaseChannel reports the channel currently followed.
+func (s *Service) ReleaseChannel() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.channel
+}
+
+// SetReleaseChannel validates, persists and applies a channel switch, then
+// re-checks so /version reflects the new channel's latest immediately.
+func (s *Service) SetReleaseChannel(ctx context.Context, channel string) error {
+	ch := normalizeChannel(channel)
+	if s.persistChannel != nil {
+		if err := s.persistChannel(ch); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	s.channel = ch
+	s.mu.Unlock()
+	_ = s.Check(ctx)
+	return nil
 }
 
 // WithDeployWebhook seeds the orchestrator deploy-webhook URL (from env /
@@ -155,6 +206,7 @@ func (s *Service) Status() Info {
 	v := version.Get()
 	s.mu.RLock()
 	latest, published, checkedAt, auto := s.latest, s.latestPublished, s.checkedAt, s.autoUpdate
+	channel := s.channel
 	webhookSet := s.webhookURL != ""
 	s.mu.RUnlock()
 	info := Info{
@@ -162,7 +214,7 @@ func (s *Service) Status() Info {
 		Commit:                  v.Commit,
 		BuiltAt:                 v.BuiltAt,
 		Deployment:              v.Deployment,
-		Channel:                 "stable",
+		Channel:                 channel,
 		Latest:                  latest,
 		AutoUpdate:              auto,
 		ManagedExternally:       setup.ManagedExternally(),
@@ -363,12 +415,29 @@ func (s *Service) updateDocker() (string, error) {
 		}
 		ds = &setup.DesiredState{DBMode: mode, DBDSN: dsn}
 	}
+	// Pin the image tag to the followed channel so a beta-channel update pulls
+	// the moving :beta image and a stable one pulls :latest.
+	ds.Image = channelImage(s.ReleaseChannel())
 	ds.PullBeforeApply = true
 	ds.Generation++
 	if err := setup.WriteDesiredState(s.dataDir, *ds); err != nil {
 		return "", fmt.Errorf("failed to request update from the controller: %w", err)
 	}
 	return "Pulling the latest image and recreating the stack — this can take a moment.", nil
+}
+
+// channelImage returns the container image reference for a release channel:
+// the published repo (from setup.DefaultImage) with the :latest tag for stable
+// or :beta for beta. Mirrors the tags the CI workflow publishes.
+func channelImage(channel string) string {
+	base := setup.DefaultImage
+	if i := strings.LastIndex(base, ":"); i > strings.LastIndex(base, "/") {
+		base = base[:i] // strip the existing tag
+	}
+	if channel == channelBeta {
+		return base + ":beta"
+	}
+	return base + ":latest"
 }
 
 // webhookStateFile remembers (in dataDir, which survives the redeploy) the
@@ -461,11 +530,39 @@ type ghAsset struct {
 type ghRelease struct {
 	TagName     string    `json:"tag_name"`
 	PublishedAt string    `json:"published_at"`
+	Prerelease  bool      `json:"prerelease"`
+	Draft       bool      `json:"draft"`
 	Assets      []ghAsset `json:"assets"`
 }
 
+// fetchLatestRelease returns the newest release for the followed channel.
+//
+//   - stable: GitHub's /releases/latest already excludes drafts and
+//     prereleases, so a single cheap request suffices.
+//   - beta: the newest non-draft release INCLUDING prereleases — /releases/latest
+//     would skip a `-beta` prerelease, so we list /releases (sorted newest-first)
+//     and take the first non-draft.
 func (s *Service) fetchLatestRelease(ctx context.Context) (*ghRelease, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", s.repo)
+	if s.ReleaseChannel() == channelBeta {
+		return s.fetchLatestFromList(ctx)
+	}
+	return s.fetchGitHub(ctx, fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", s.repo), false)
+}
+
+// fetchLatestFromList pulls the recent releases page and returns the newest
+// non-draft entry (prerelease or full) — the beta channel's "latest".
+func (s *Service) fetchLatestFromList(ctx context.Context) (*ghRelease, error) {
+	rel, err := s.fetchGitHub(ctx, fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=20", s.repo), true)
+	if err != nil {
+		return nil, err
+	}
+	return rel, nil
+}
+
+// fetchGitHub GETs a releases endpoint. When list is true the body is a JSON
+// array and the first non-draft release is returned; otherwise it's a single
+// release object.
+func (s *Service) fetchGitHub(ctx context.Context, url string, list bool) (*ghRelease, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -483,11 +580,23 @@ func (s *Service) fetchLatestRelease(ctx context.Context) (*ghRelease, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("github releases API returned %s", resp.Status)
 	}
-	var rel ghRelease
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+	if !list {
+		var rel ghRelease
+		if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+			return nil, err
+		}
+		return &rel, nil
+	}
+	var rels []ghRelease
+	if err := json.NewDecoder(resp.Body).Decode(&rels); err != nil {
 		return nil, err
 	}
-	return &rel, nil
+	for i := range rels {
+		if !rels[i].Draft {
+			return &rels[i], nil
+		}
+	}
+	return nil, nil
 }
 
 // ---- semver compare ----

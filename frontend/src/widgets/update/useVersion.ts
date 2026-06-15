@@ -58,6 +58,18 @@ export function useSetAutoUpdate() {
   });
 }
 
+/** Switch the release channel (admin): 'stable' | 'beta'. Returns new version state. */
+export function useSetReleaseChannel() {
+  const qc = useQueryClient();
+  return useMutation<VersionInfo, Error, 'stable' | 'beta'>({
+    mutationFn: async (channel) => {
+      const r = await apiClient.post<{ data: VersionInfo }>('/settings/release-channel', { channel });
+      return r.data.data;
+    },
+    onSuccess: (data) => qc.setQueryData(['version'], data),
+  });
+}
+
 /** Trigger an immediate update (admin). Docker → controller pull+recreate. */
 export function useUpdateNow() {
   return useMutation<{ message: string }, Error, void>({

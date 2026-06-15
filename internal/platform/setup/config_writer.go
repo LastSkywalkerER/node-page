@@ -67,6 +67,9 @@ type ConfigValues struct {
 	// AutoUpdate ("true"/"false"): when on, the app checks GitHub Releases and
 	// applies updates (docker → controller pull+recreate; native → self-replace).
 	AutoUpdate string `json:"auto_update"`
+	// ReleaseChannel ("stable"/"beta"): which release line the updater follows.
+	// stable = full releases / :latest image; beta = prereleases / :beta image.
+	ReleaseChannel string `json:"release_channel"`
 	// DeployWebhookURL: orchestrator (dokploy, …) deploy-webhook URL for
 	// managed-externally deployments — "update now"/auto-update trigger it.
 	DeployWebhookURL string `json:"deploy_webhook_url"`
@@ -111,6 +114,7 @@ func (cw *ConfigWriter) ReadCurrentConfig() (*ConfigValues, error) {
 		PrometheusAuth:         getEnv("PROMETHEUS_AUTH", "false"),
 		PrometheusToken:        os.Getenv("PROMETHEUS_TOKEN"),
 		AutoUpdate:             getEnv("AUTO_UPDATE", "false"),
+		ReleaseChannel:         getEnv("NODE_STATS_RELEASE_CHANNEL", "stable"),
 		DeployWebhookURL:       os.Getenv("NODE_STATS_DEPLOY_WEBHOOK_URL"),
 		NodeStatsHostname:      os.Getenv("NODE_STATS_HOSTNAME"),
 		NodeStatsIPv4:          os.Getenv("NODE_STATS_IPV4"),
@@ -293,6 +297,14 @@ func buildEnvFileContent(config *ConfigValues) string {
 		lines = append(lines, "")
 		lines = append(lines, "# Auto-update: check GitHub Releases and apply (docker → controller pull+recreate)")
 		lines = append(lines, "AUTO_UPDATE=true")
+	}
+
+	// Persist the release channel only when it deviates from the default so a
+	// plain install's .env stays minimal.
+	if ch := strings.ToLower(strings.TrimSpace(config.ReleaseChannel)); ch != "" && ch != "stable" {
+		lines = append(lines, "")
+		lines = append(lines, "# Release channel followed by the updater: stable | beta")
+		lines = append(lines, fmt.Sprintf("NODE_STATS_RELEASE_CHANNEL=%s", escapeValue(ch)))
 	}
 
 	if v := strings.TrimSpace(config.DeployWebhookURL); v != "" {
