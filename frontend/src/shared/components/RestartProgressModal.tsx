@@ -127,6 +127,17 @@ export function RestartProgressModal() {
           <p className="text-sm text-muted-foreground">The app is back online. Reload to continue.</p>
         )}
 
+        {/* No controller (external manager / native): the app can't mutate the
+            compose, so structural changes (DB engine, ports, volumes) must be
+            reflected there by hand before the redeploy takes effect. */}
+        {(mode === 'webhook' || mode === 'manual') && phase !== 'back' && (
+          <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+            No controller is running (managed externally). If this change touches the database engine,
+            ports or volumes, update your compose to match <strong>before</strong> redeploying —
+            otherwise it boots back on the old configuration.
+          </p>
+        )}
+
         <div className="flex justify-end gap-2">
           {phase === 'back' ? (
             <Button size="sm" onClick={() => window.location.reload()}>

@@ -69,6 +69,9 @@ export function UpdateBadge() {
           <div className="absolute right-0 top-full z-50 mt-1 w-64 space-y-3 rounded-lg bg-popover p-3 text-sm text-popover-foreground shadow-lg ring-1 ring-foreground/10 backdrop-blur-xl">
             <div className="text-xs text-muted-foreground">
               Current <span className="font-mono text-foreground">{v.current}</span>
+              {v.commit && (
+                <span className="font-mono text-foreground/70"> ·{v.commit.slice(0, 7)}</span>
+              )}
               {v.latest && (
                 <>
                   {' · '}Latest <span className="font-mono text-foreground">{v.latest}</span>
