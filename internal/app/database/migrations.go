@@ -15,6 +15,7 @@ import (
 	docker "system-stats/internal/metrics/docker"
 	memory "system-stats/internal/metrics/memory"
 	network "system-stats/internal/metrics/network"
+	appicons "system-stats/internal/platform/appicons"
 	connectors "system-stats/internal/platform/connectors"
 )
 
@@ -75,6 +76,14 @@ func Migrate(db *gorm.DB) error {
 	err = db.AutoMigrate(&connectors.Connector{})
 	if err != nil {
 		return fmt.Errorf("failed to migrate connectors: %w", err)
+	}
+
+	// Persistent app-icon byte cache (BLOB/BYTEA) so resolved icons survive
+	// restarts and serve instantly. A regenerable cache — excluded from Raft
+	// snapshots and the DB-switch dump.
+	err = db.AutoMigrate(&appicons.IconCacheEntry{})
+	if err != nil {
+		return fmt.Errorf("failed to migrate app icon cache: %w", err)
 	}
 
 	// Fix existing invitations with NULL email before adding NOT NULL constraint

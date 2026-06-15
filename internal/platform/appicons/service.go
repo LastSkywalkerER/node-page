@@ -63,6 +63,11 @@ type Service struct {
 	// 6-fetch resolutions in parallel — now they share one.
 	sf singleflight.Group
 
+	// store is the optional persistent (DB) L2 cache. When set, resolved icon
+	// bytes survive process restarts and a cold process serves them from the DB
+	// instead of re-resolving against the CDNs.
+	store Store
+
 	mu       sync.Mutex
 	cache    map[string]entry
 	index    map[string]string // collapsed name -> canonical slug
@@ -74,6 +79,31 @@ func NewService(logger *log.Logger) *Service {
 		logger: logger,
 		httpc:  &http.Client{Timeout: 6 * time.Second},
 		cache:  make(map[string]entry),
+	}
+}
+
+// WithStore attaches a persistent (DB) icon cache so resolved bytes outlive the
+// process. Returns the service for chaining.
+func (s *Service) WithStore(store Store) *Service {
+	s.store = store
+	return s
+}
+
+// Prewarm resolves the given keys in the background (non-blocking, singleflighted)
+// so their bytes are warm in the cache by the time the browser requests them —
+// e.g. kicked off when the applications list is built. Already-cached keys are
+// effectively free (the L1/L2 fast paths short-circuit).
+func (s *Service) Prewarm(keys []string) {
+	for _, raw := range keys {
+		key := strings.ToLower(strings.TrimSpace(raw))
+		if key == "" {
+			continue
+		}
+		go func(k string) {
+			ctx, cancel := context.WithTimeout(context.Background(), resolveBudget+2*time.Second)
+			defer cancel()
+			_, _, _ = s.Get(ctx, k)
+		}(key)
 	}
 }
 
@@ -106,6 +136,17 @@ func (s *Service) Get(ctx context.Context, raw string) (data []byte, ctype strin
 	}
 	s.mu.Unlock()
 
+	// L2: the persistent DB cache. A cold process (post-restart) finds the
+	// already-resolved bytes here and skips the CDN resolution entirely.
+	if s.store != nil {
+		if data, ctype, ok, exp, found := s.store.Load(ctx, key); found && time.Now().Before(exp) {
+			s.mu.Lock()
+			s.cache[key] = entry{data: data, ctype: ctype, ok: ok, exp: exp}
+			s.mu.Unlock()
+			return data, ctype, ok
+		}
+	}
+
 	// Collapse concurrent resolutions of the same name into one external pass;
 	// every caller shares the single result. The budget context is owned by the
 	// flight leader, so a cancelled follower can't abort the shared work.
@@ -119,6 +160,7 @@ func (s *Service) Get(ctx context.Context, raw string) (data []byte, ctype strin
 		if !rok {
 			ttl = missTTL
 		}
+		exp := time.Now().Add(ttl)
 		s.mu.Lock()
 		if len(s.cache) >= maxEntries {
 			for k := range s.cache {
@@ -128,8 +170,13 @@ func (s *Service) Get(ctx context.Context, raw string) (data []byte, ctype strin
 				}
 			}
 		}
-		s.cache[key] = entry{data: rd, ctype: rc, ok: rok, exp: time.Now().Add(ttl)}
+		s.cache[key] = entry{data: rd, ctype: rc, ok: rok, exp: exp}
 		s.mu.Unlock()
+		// Persist to L2 so the bytes survive a restart. Best-effort, detached
+		// from the request context so a cancelled client can't drop the write.
+		if s.store != nil {
+			s.store.Save(context.WithoutCancel(ctx), key, rd, rc, rok, exp)
+		}
 		return entry{data: rd, ctype: rc, ok: rok}, nil
 	})
 	res := v.(entry)

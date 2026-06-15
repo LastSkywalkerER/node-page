@@ -15,11 +15,18 @@ import (
 	hosts "system-stats/internal/cluster/hosts"
 )
 
+// IconPrewarmer warms the icon byte cache for a set of slugs in the background
+// (non-blocking) so the bytes are ready by the time the browser requests them.
+type IconPrewarmer interface {
+	Prewarm(keys []string)
+}
+
 // Handler handles HTTP requests for Docker container metrics.
 type Handler struct {
-	logger  *log.Logger
-	service Service
-	hosts   hosts.Service
+	logger   *log.Logger
+	service  Service
+	hosts    hosts.Service
+	prewarms IconPrewarmer
 }
 
 // NewHandler creates a new HTTP handler for Docker metrics endpoints.
@@ -29,6 +36,34 @@ func NewHandler(logger *log.Logger, service Service, hostsvc hosts.Service) *Han
 		service: service,
 		hosts:   hostsvc,
 	}
+}
+
+// WithIconPrewarmer wires the icon cache pre-warmer used by the applications
+// endpoints. Optional; nil-safe.
+func (h *Handler) WithIconPrewarmer(p IconPrewarmer) *Handler {
+	h.prewarms = p
+	return h
+}
+
+// prewarmIcons kicks off background resolution of every app's icon slug so the
+// bytes land in the cache before the browser's <img> requests reach the
+// /app-icons endpoint — icons then arrive "with the cards".
+func (h *Handler) prewarmIcons(apps []DockerApplication) {
+	if h.prewarms == nil || len(apps) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(apps)*2)
+	for _, a := range apps {
+		if a.IconSlug != "" {
+			keys = append(keys, a.IconSlug)
+		}
+		// The project name often resolves when the image-derived slug doesn't
+		// (mirrors the frontend's altSlug candidate), so warm it too.
+		if a.Project != "" && !strings.EqualFold(a.Project, a.IconSlug) {
+			keys = append(keys, a.Project)
+		}
+	}
+	h.prewarms.Prewarm(keys)
 }
 
 // HandleDockerStats returns Docker container statistics and status information with latest and historical data.
@@ -161,6 +196,7 @@ func (h *Handler) HandleApplications(c *gin.Context) {
 			}
 			apps = append(apps, hostApps...)
 		}
+		h.prewarmIcons(apps)
 		c.JSON(http.StatusOK, gin.H{"applications": apps, "docker_available": true})
 		return
 	}
@@ -183,6 +219,7 @@ func (h *Handler) HandleApplications(c *gin.Context) {
 	for i := range apps {
 		apps[i].HostID = effective
 	}
+	h.prewarmIcons(apps)
 	c.JSON(http.StatusOK, gin.H{"applications": apps, "docker_available": true})
 }
 

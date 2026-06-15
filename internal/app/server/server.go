@@ -770,8 +770,14 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		// Application icons (any signed-in user): server-side resolution
 		// against icon registries (selfh.st index collapsed-name matching)
 		// with an in-memory cache shared by every client.
-		appIconsSvc := appicons.NewService(logger)
+		// L2 = a persistent DB cache (app_icon_cache table): resolved icon BYTES
+		// survive restarts/redeploys, so a cold process serves them instantly
+		// instead of re-resolving every name against the CDNs.
+		appIconsSvc := appicons.NewService(logger).WithStore(appicons.NewGormStore(container.GetDB()))
 		authAPI.GET("/app-icons/:slug", appIconsSvc.Handle)
+		// Warm the icon cache when the applications list is built so the bytes are
+		// ready by the time the cards' <img> requests arrive.
+		dockerHandler.WithIconPrewarmer(appIconsSvc)
 
 		// Raft cluster status (admin) — surfaces leader, peers, indices, RTTs
 		authAPI.GET("/raft/status", middleware.RequireAdmin(), raftHandler.Status)
