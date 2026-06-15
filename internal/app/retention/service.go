@@ -43,6 +43,9 @@ type Service struct {
 
 	metricMu          sync.Mutex
 	lastMetricCleanup time.Time
+
+	iconMu          sync.Mutex
+	lastIconCleanup time.Time
 }
 
 // RunDue runs all retention chores that are due, each self-throttled: metric
@@ -62,6 +65,37 @@ func (s *Service) RunDue(ctx context.Context) {
 		}
 	}
 	s.CleanupExpiredTokens(ctx)
+	s.CleanupExpiredIcons(ctx)
+}
+
+// iconCleanupInterval bounds how often the app-icon cache is pruned — entries
+// have a 24h TTL, so an hourly sweep keeps the (small) table from accumulating
+// long-stale rows without running every tick.
+const iconCleanupInterval = time.Hour
+
+// CleanupExpiredIcons deletes app_icon_cache rows past their expiry, throttled
+// to iconCleanupInterval. The table is small and regenerable, so a single
+// unbatched DELETE is fine on both SQLite and Postgres. Errors are logged.
+func (s *Service) CleanupExpiredIcons(ctx context.Context) {
+	s.iconMu.Lock()
+	if !s.lastIconCleanup.IsZero() && time.Since(s.lastIconCleanup) < iconCleanupInterval {
+		s.iconMu.Unlock()
+		return
+	}
+	s.lastIconCleanup = time.Now()
+	s.iconMu.Unlock()
+
+	// Skip cleanly when the cache table doesn't exist (e.g. a build/test without
+	// the migration) instead of logging a spurious error every hour.
+	if !s.db.Migrator().HasTable("app_icon_cache") {
+		return
+	}
+	res := s.db.WithContext(ctx).Exec("DELETE FROM app_icon_cache WHERE expires_at < ?", time.Now())
+	if res.Error != nil && ctx.Err() == nil {
+		s.logger.Warn("app-icon cache cleanup failed", "error", res.Error)
+	} else if res.RowsAffected > 0 {
+		s.logger.Debug("app-icon cache cleanup", "deleted", res.RowsAffected)
+	}
 }
 
 // tokenCleanupInterval bounds how often refresh-token pruning runs — it needn't

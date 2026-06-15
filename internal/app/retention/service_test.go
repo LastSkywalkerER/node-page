@@ -12,7 +12,30 @@ import (
 	"gorm.io/gorm/logger"
 
 	users "system-stats/internal/auth/users"
+	appicons "system-stats/internal/platform/appicons"
 )
+
+// TestCleanupExpiredIcons prunes app_icon_cache rows past expiry, keeping fresh ones.
+func TestCleanupExpiredIcons(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&appicons.IconCacheEntry{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	db.Create(&appicons.IconCacheEntry{Key: "stale", OK: true, ExpiresAt: time.Now().Add(-time.Hour)})
+	db.Create(&appicons.IconCacheEntry{Key: "fresh", OK: true, ExpiresAt: time.Now().Add(time.Hour)})
+
+	svc := NewService(db, log.New(io.Discard), 30, nil)
+	svc.CleanupExpiredIcons(context.Background())
+
+	var keys []string
+	db.Model(&appicons.IconCacheEntry{}).Pluck("key", &keys)
+	if len(keys) != 1 || keys[0] != "fresh" {
+		t.Fatalf("want only [fresh], got %v", keys)
+	}
+}
 
 // TestCleanupBatchPrunesMetricsNotContainers proves retention prunes the metric
 // time-series tables (here docker_metrics) by the time cutoff, but leaves
