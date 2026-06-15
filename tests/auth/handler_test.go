@@ -37,11 +37,13 @@ func (m *mockUserService) GetByEmail(_ context.Context, _ string) (*users.User, 
 func (m *mockUserService) List(_ context.Context, _, _ int) ([]*users.User, error) {
 	return nil, nil
 }
-func (m *mockUserService) UpdateRole(_ context.Context, _, _ uint, _ string) error { return nil }
-func (m *mockUserService) Delete(_ context.Context, _, _ uint) error               { return nil }
-func (m *mockUserService) Count(_ context.Context) (int64, error)                  { return 0, nil }
-func (m *mockUserService) HashPassword(_ string) (string, error)                { return "", nil }
-func (m *mockUserService) VerifyPassword(_, _ string) error                     { return nil }
+func (m *mockUserService) UpdateRole(_ context.Context, _, _ uint, _ string) error     { return nil }
+func (m *mockUserService) Delete(_ context.Context, _, _ uint) error                   { return nil }
+func (m *mockUserService) Count(_ context.Context) (int64, error)                      { return 0, nil }
+func (m *mockUserService) HashPassword(_ string) (string, error)                       { return "", nil }
+func (m *mockUserService) VerifyPassword(_, _ string) error                            { return nil }
+func (m *mockUserService) ChangePassword(_ context.Context, _ uint, _, _ string) error { return nil }
+func (m *mockUserService) ResetPassword(_ context.Context, _ uint, _ string) error     { return nil }
 
 var _ users.UserService = (*mockUserService)(nil)
 
