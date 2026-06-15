@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { User, AuthResponse, authService } from '../lib/auth';
+import { refreshSession } from '../lib/api';
 
 interface UserState {
   user: User | null;
@@ -52,16 +53,16 @@ export const useUserStore = create<UserState>((set, get) => ({
 
   scheduleTokenRefresh: (expiresIn: number) => {
     cancelRefreshTimer();
-    // Fire 60 s before the token expires so the refresh happens proactively
+    // Fire 60 s before the token expires so the refresh happens proactively.
     const delayMs = Math.max((expiresIn - 60) * 1000, 0);
-    refreshTimerHandle = setTimeout(async () => {
-      try {
-        const newExpiresIn = await authService.refresh();
-        get().scheduleTokenRefresh(newExpiresIn);
-      } catch {
-        // Refresh token is gone or invalid — force the user to log in again
+    refreshTimerHandle = setTimeout(() => {
+      // Shared single-flight with the 401 interceptor: refreshSession() reuses
+      // an in-flight refresh and reschedules the next one on success, so the
+      // timer and a concurrent 401 can't race into a rotation conflict.
+      refreshSession().catch(() => {
+        // Refresh token is genuinely gone/invalid — force a fresh login.
         get().clearAuth();
-      }
+      });
     }, delayMs);
   },
 

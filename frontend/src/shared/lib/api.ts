@@ -8,7 +8,34 @@ const apiClient: AxiosInstance = axios.create({
   timeout: 15000,
 });
 
-let refreshPromise: Promise<void> | null = null;
+let refreshPromise: Promise<number> | null = null;
+
+/**
+ * Single-flight access-token refresh. BOTH the response interceptor (reactive,
+ * on a 401) and the proactive timer in the user store call this, so the two
+ * paths can never fire two concurrent `/auth/refresh` requests that race into a
+ * refresh-token rotation conflict — the loser of which gets
+ * `invalid_or_revoked_refresh` and would log the user out despite a successful
+ * refresh. Concurrent callers share the in-flight promise; on success the next
+ * proactive refresh is scheduled. Resolves to the new access-token TTL (seconds).
+ */
+export function refreshSession(): Promise<number> {
+  if (!refreshPromise) {
+    refreshPromise = apiClient
+      .post<{ data: { expires_in: number } }>('/auth/refresh')
+      .then((res: AxiosResponse<{ data: { expires_in: number } }>) => {
+        const expiresIn = res.data?.data?.expires_in ?? 0;
+        if (expiresIn > 0) {
+          useUserStore.getState().scheduleTokenRefresh(expiresIn);
+        }
+        return expiresIn;
+      })
+      .finally(() => {
+        refreshPromise = null;
+      });
+  }
+  return refreshPromise;
+}
 
 // Response interceptor: on 401 attempt a silent token refresh via cookie, then retry once
 apiClient.interceptors.response.use(
@@ -27,29 +54,11 @@ apiClient.interceptors.response.use(
 
     if (error.response?.status === 401 && !originalRequest._retry) {
       originalRequest._retry = true;
-
-      if (!refreshPromise) {
-        refreshPromise = apiClient
-          .post<{ data: { expires_in: number } }>('/auth/refresh')
-          .then((res: AxiosResponse<{ data: { expires_in: number } }>) => {
-            const expiresIn = res.data?.data?.expires_in;
-            if (typeof expiresIn === 'number') {
-              useUserStore.getState().scheduleTokenRefresh(expiresIn);
-            }
-          })
-          .catch((err: unknown) => {
-            useUserStore.getState().clearAuth();
-            throw err; // re-throw so refreshPromise rejects and callers see the failure
-          })
-          .finally(() => {
-            refreshPromise = null;
-          });
-      }
-
       try {
-        await refreshPromise;
+        await refreshSession();
         return apiClient(originalRequest);
       } catch {
+        useUserStore.getState().clearAuth();
         return Promise.reject(error);
       }
     }
