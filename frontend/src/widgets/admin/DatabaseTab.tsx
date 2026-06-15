@@ -73,6 +73,19 @@ export function DatabaseTab() {
             </AlertDescription>
           </Alert>
 
+          {cfg?.managed_externally && (
+            <Alert>
+              <AlertTitle>Managed externally</AlertTitle>
+              <AlertDescription>
+                Your orchestrator (e.g. dokploy) sets <code>DB_TYPE</code>/<code>DB_DSN</code> in the
+                compose, which overrides what this app writes. Switching here exports your users +
+                config and triggers a redeploy, but you must also edit the compose (set the new
+                engine / remove the old db service) before that redeploy, or it will boot back on the
+                old database.
+              </AlertDescription>
+            </Alert>
+          )}
+
           <div className="space-y-2">
             <Label htmlFor="db-type" className="text-xs text-muted-foreground">
               New engine

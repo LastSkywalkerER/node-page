@@ -21,6 +21,7 @@ import { PrometheusTab } from './widgets/admin/PrometheusTab'
 import { DatabaseTab } from './widgets/admin/DatabaseTab'
 import { AdminRoute } from './shared/guards/AdminRoute'
 import { CyberBackdrop } from './shared/components/CyberBackdrop'
+import { RestartProgressModal } from './shared/components/RestartProgressModal'
 
 function ProtectedLayout() {
   return (
@@ -34,6 +35,7 @@ function ProtectedLayout() {
             </main>
           </div>
         </div>
+        <RestartProgressModal />
       </ProtectedRoute>
     </SetupRoute>
   )

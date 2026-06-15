@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { apiClient } from '@/shared/lib/api'
+import { notifyRestartFromResult } from '@/shared/lib/restartStore'
 
 export interface SettingsConfig {
   addr: string
@@ -21,6 +22,7 @@ export interface SettingsConfig {
 export interface RestartResult {
   restart_pending: boolean
   restart_required: boolean
+  apply_mode?: 'controller' | 'webhook' | 'manual'
   error?: string
 }
 
@@ -34,15 +36,12 @@ export function useSettingsConfig() {
   })
 }
 
-// notifyRestart surfaces what happens after a settings change that needs the
-// process to restart: a controller-driven recreate (Docker) vs. a manual
-// restart hint (native / externally managed).
-export function notifyRestart(r: RestartResult) {
-  if (r.restart_pending) {
-    toast.success('Saved — the app is recreating to apply. This can take a moment.')
-  } else {
-    toast.success('Saved. Restart the app (or redeploy) to apply the change.')
-  }
+// notifyRestart opens the shared restart-approval / progress modal, which drives
+// the controller recreate or the orchestrator redeploy and polls until the app
+// is back. `what` labels the change (e.g. "Prometheus settings").
+export function notifyRestart(r: RestartResult, what = 'changes') {
+  toast.success('Saved.')
+  notifyRestartFromResult(r, what)
 }
 
 export function useSavePrometheus() {
@@ -54,7 +53,7 @@ export function useSavePrometheus() {
     },
     onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ['settings', 'config'] })
-      notifyRestart(r)
+      notifyRestart(r, 'Prometheus settings')
     },
     onError: (err: Error & { response?: { data?: { error?: string } } }) => {
       toast.error(err.response?.data?.error || err.message || 'Failed to save Prometheus settings')
@@ -71,7 +70,7 @@ export function useSavePorts() {
     },
     onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ['settings', 'config'] })
-      notifyRestart(r)
+      notifyRestart(r, 'port change')
     },
     onError: (err: Error & { response?: { data?: { error?: string } } }) => {
       toast.error(err.response?.data?.error || err.message || 'Failed to change ports')
@@ -107,7 +106,7 @@ export function useSwitchDb() {
       const res = await apiClient.post<{ data: RestartResult & { db_mode: string } }>('/settings/db/switch', body)
       return res.data.data
     },
-    onSuccess: (r) => notifyRestart(r),
+    onSuccess: (r) => notifyRestart(r, 'database switch'),
     onError: (err: Error & { response?: { data?: { error?: string } } }) => {
       toast.error(err.response?.data?.error || err.message || 'Failed to switch database')
     },
@@ -131,7 +130,7 @@ export function useSaveServer() {
     },
     onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ['settings', 'config'] })
-      notifyRestart(r)
+      notifyRestart(r, 'server settings')
     },
     onError: (err: Error & { response?: { data?: { error?: string } } }) => {
       toast.error(err.response?.data?.error || err.message || 'Failed to save server settings')

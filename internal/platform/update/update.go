@@ -180,6 +180,17 @@ func (s *Service) DeployWebhookURL() string {
 	return s.webhookURL
 }
 
+// RedeployViaWebhook triggers the orchestrator deploy webhook to redeploy the
+// stack (used to apply a settings change on a managed-externally deployment).
+// Errors if no webhook is configured.
+func (s *Service) RedeployViaWebhook() (string, error) {
+	url := s.DeployWebhookURL()
+	if url == "" {
+		return "", fmt.Errorf("no deploy webhook configured — set it in the update settings, or redeploy in your orchestrator")
+	}
+	return s.triggerDeployWebhook(url)
+}
+
 // SetDeployWebhook validates, persists and applies the orchestrator
 // deploy-webhook URL. An empty string clears it.
 func (s *Service) SetDeployWebhook(rawURL string) error {

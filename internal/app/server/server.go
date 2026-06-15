@@ -880,12 +880,25 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		// shared ConfigWriter (preserving secrets + resolved DB_DSN) and, when a
 		// restart is needed to apply, asks the controller to recreate the app
 		// (Docker) or returns restart_required so the UI shows a "restart" banner.
+		// How a pending change actually gets applied, so the client can drive the
+		// right restart flow: "controller" (Docker controller recreates on the
+		// desired-state bump), "webhook" (managed-externally → trigger the
+		// orchestrator deploy webhook), or "manual" (native / no webhook).
+		applyMode := func() string {
+			if setup.RunningInDocker() && !setup.ManagedExternally() {
+				return "controller"
+			}
+			if setup.ManagedExternally() && updateSvc.DeployWebhookURL() != "" {
+				return "webhook"
+			}
+			return "manual"
+		}
 		requestRestart := func() gin.H {
 			pending, rerr := setup.RequestRecreate(updateDataDir, string(cfg.Database.Type), cfg.Database.DSN)
 			if rerr != nil {
-				return gin.H{"restart_pending": false, "restart_required": true, "error": rerr.Error()}
+				return gin.H{"restart_pending": false, "restart_required": true, "apply_mode": "manual", "error": rerr.Error()}
 			}
-			return gin.H{"restart_pending": pending, "restart_required": !pending}
+			return gin.H{"restart_pending": pending, "restart_required": !pending, "apply_mode": applyMode()}
 		}
 
 		// GET /settings/config — current values for prefilling the settings tabs.
@@ -1026,7 +1039,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 					c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": rerr.Error()})
 					return
 				}
-				c.JSON(http.StatusOK, gin.H{"data": gin.H{"restart_pending": pending, "restart_required": !pending}})
+				c.JSON(http.StatusOK, gin.H{"data": gin.H{"restart_pending": pending, "restart_required": !pending, "apply_mode": applyMode()}})
 				return
 			}
 			// Native: ADDR / RAFT_BIND_ADDR in .env, restart required.
@@ -1047,7 +1060,31 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 			if cv.RaftBindAddr != "" {
 				_ = os.Setenv("RAFT_BIND_ADDR", cv.RaftBindAddr)
 			}
-			c.JSON(http.StatusOK, gin.H{"data": gin.H{"restart_pending": false, "restart_required": true}})
+			c.JSON(http.StatusOK, gin.H{"data": gin.H{"restart_pending": false, "restart_required": true, "apply_mode": applyMode()}})
+		})
+
+		// POST /settings/redeploy — apply a pending change that needs a restart.
+		// managed-externally → trigger the orchestrator deploy webhook; controller
+		// → bump the desired state so the controller recreates; otherwise manual.
+		authAPI.POST("/settings/redeploy", middleware.RequireAdmin(), func(c *gin.Context) {
+			switch applyMode() {
+			case "webhook":
+				msg, err := updateSvc.RedeployViaWebhook()
+				if err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"code": "redeploy_failed", "error": err.Error()})
+					return
+				}
+				c.JSON(http.StatusOK, gin.H{"data": gin.H{"apply_mode": "webhook", "message": msg}})
+			case "controller":
+				pending, err := setup.RequestRecreate(updateDataDir, string(cfg.Database.Type), cfg.Database.DSN)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": err.Error()})
+					return
+				}
+				c.JSON(http.StatusOK, gin.H{"data": gin.H{"apply_mode": "controller", "restart_pending": pending}})
+			default:
+				c.JSON(http.StatusOK, gin.H{"data": gin.H{"apply_mode": "manual", "message": "Restart the app (or redeploy) to apply."}})
+			}
 		})
 
 		// POST /settings/db/test — pre-flight an external Postgres DSN (admin).
@@ -1145,6 +1182,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 				"db_mode":          mode,
 				"restart_pending":  pending,
 				"restart_required": !pending,
+				"apply_mode":       applyMode(),
 			}})
 		})
 	}

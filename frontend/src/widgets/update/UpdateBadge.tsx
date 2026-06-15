@@ -4,6 +4,7 @@ import { Switch } from '@/shared/ui/switch'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
+import { useRestartStore } from '@/shared/lib/restartStore'
 import {
   useVersion,
   useSetAutoUpdate,
@@ -85,6 +86,10 @@ export function UpdateBadge() {
                   try {
                     const r = await updateNow.mutateAsync()
                     setMsg(r.message)
+                    // The update was already triggered server-side (controller
+                    // pull+recreate / orchestrator webhook); just poll until back.
+                    setOpen(false)
+                    useRestartStore.getState().show('poll', 'update')
                   } catch (e) {
                     setMsg(e instanceof Error ? e.message : 'update failed')
                   }
@@ -179,9 +184,15 @@ export function UpdateBadge() {
             </p>
 
             {msg && <p className="text-[0.65rem] leading-relaxed text-emerald-400">{msg}</p>}
-            {!hasUpdate && (
-              <p className="text-[0.65rem] text-muted-foreground">You're on the latest release.</p>
-            )}
+            {!hasUpdate &&
+              (v.channel === 'beta' ? (
+                <p className="text-[0.65rem] text-muted-foreground">
+                  Beta channel — tracking the rolling <span className="font-mono">main</span> build
+                  (use “Update to {v.latest}” / Stable for a tagged release).
+                </p>
+              ) : (
+                <p className="text-[0.65rem] text-muted-foreground">You're on the latest release.</p>
+              ))}
           </div>
         </>
       )}
