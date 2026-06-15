@@ -21,6 +21,10 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        # Full history + tags so the beta version step can find the latest
+        # release tag and count commits since it (git describe / rev-list).
+        fetch-depth: 0
 
     - name: Set up QEMU (multi-arch emulation for the arm64 final stage)
       uses: docker/setup-qemu-action@v3
@@ -78,6 +82,27 @@ jobs:
       id: buildmeta
       run: echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
+    - name: Compute version
+      id: ver
+      # Produce a readable, ordered version string stamped into the binary
+      # (version.Version, shown by /version):
+      #   • v* tag push  → the clean release version (e.g. 0.7.5)
+      #   • main (beta)  → next-patch prerelease: <maj>.<min>.<patch+1>-beta.<N>
+      #     where N = commits since the latest tag. So beta sorts AFTER the last
+      #     release and BEFORE the next one (0.7.4 < 0.7.5-beta.14 < 0.7.5), and
+      #     each push bumps N — readable instead of the opaque "main".
+      run: |
+        if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        else
+          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)
+          BASE=${LATEST#v}
+          IFS='.' read -r MA MI PA <<< "${BASE%%-*}"
+          MA=${MA:-0}; MI=${MI:-0}; PA=${PA:-0}
+          COUNT=$(git rev-list "${LATEST}..HEAD" --count 2>/dev/null || git rev-list HEAD --count)
+          echo "version=${MA}.${MI}.$((PA+1))-beta.${COUNT}" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
       with:
@@ -90,7 +115,7 @@ jobs:
         # from main) detect releases by comparing the release published_at
         # against the build date.
         build-args: |
-          VERSION=${{ steps.meta.outputs.version }}
+          VERSION=${{ steps.ver.outputs.version }}
           COMMIT=${{ github.sha }}
           DATE=${{ steps.buildmeta.outputs.date }}
         tags: ${{ steps.meta.outputs.tags }}

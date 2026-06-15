@@ -85,6 +85,7 @@ type Service struct {
 	mu              sync.RWMutex
 	latest          string
 	latestPublished time.Time
+	latestCommit    string // beta channel: latest commit SHA on main
 	checkedAt       time.Time
 	autoUpdate      bool
 	channel         string // "stable" | "beta"
@@ -217,7 +218,7 @@ func (s *Service) Status() Info {
 	v := version.Get()
 	s.mu.RLock()
 	latest, published, checkedAt, auto := s.latest, s.latestPublished, s.checkedAt, s.autoUpdate
-	channel := s.channel
+	channel, latestCommit := s.channel, s.latestCommit
 	webhookSet := s.webhookURL != ""
 	s.mu.RUnlock()
 	info := Info{
@@ -234,9 +235,36 @@ func (s *Service) Status() Info {
 	if !checkedAt.IsZero() {
 		info.CheckedAt = checkedAt.UTC().Format(time.RFC3339)
 	}
+	if channel == channelBeta {
+		// Beta is the rolling :beta image built from main HEAD — there is no
+		// release to semver-compare against. "Newer beta" = main has a commit
+		// other than the one this build was cut from. Show the short SHA as the
+		// latest marker so the popover isn't comparing against a stale release tag.
+		if latestCommit != "" {
+			info.Latest = "main@" + shortSHA(latestCommit)
+			info.UpdateAvailable = v.Commit != "" && !sameCommit(v.Commit, latestCommit)
+		}
+		return info
+	}
 	info.UpdateAvailable = newerAvailable(v.Current, latest) ||
 		dateBasedUpdateAvailable(v.Deployment, v.Current, latest, buildTime(v.BuiltAt), published)
 	return info
+}
+
+// shortSHA returns the first 7 chars of a git SHA (or the whole string if shorter).
+func shortSHA(s string) string {
+	if len(s) > 7 {
+		return s[:7]
+	}
+	return s
+}
+
+// sameCommit compares two SHAs tolerant of short/long forms.
+func sameCommit(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	return strings.HasPrefix(a, b) || strings.HasPrefix(b, a)
 }
 
 // RefreshIfStale forces a release re-check when the cached state is older than
@@ -346,7 +374,8 @@ func (s *Service) autoApply(ctx context.Context) {
 	}
 }
 
-// Check polls the latest GitHub release tag and caches it.
+// Check polls the latest GitHub release tag and caches it. On the beta channel
+// it also caches main's HEAD commit, the rolling :beta image's "latest".
 func (s *Service) Check(ctx context.Context) error {
 	rel, err := s.fetchLatestRelease(ctx)
 	if err != nil {
@@ -360,12 +389,47 @@ func (s *Service) Check(ctx context.Context) error {
 			published = t
 		}
 	}
+	latestCommit := ""
+	if s.ReleaseChannel() == channelBeta {
+		// Best-effort: a commit-fetch failure shouldn't fail the whole check.
+		if sha, cerr := s.fetchLatestMainCommit(ctx); cerr == nil {
+			latestCommit = sha
+		} else {
+			log.Debug("update: beta main-commit check failed", "error", cerr)
+		}
+	}
 	s.mu.Lock()
 	s.latest = latest
 	s.latestPublished = published
+	s.latestCommit = latestCommit
 	s.checkedAt = time.Now()
 	s.mu.Unlock()
 	return nil
+}
+
+// fetchLatestMainCommit returns the SHA of main's current HEAD.
+func (s *Service) fetchLatestMainCommit(ctx context.Context) (string, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/commits/main", s.repo)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("github commits API returned %s", resp.Status)
+	}
+	var c struct {
+		SHA string `json:"sha"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&c); err != nil {
+		return "", err
+	}
+	return c.SHA, nil
 }
 
 // UpdateNow applies the latest release. Docker → tell the controller to pull +
