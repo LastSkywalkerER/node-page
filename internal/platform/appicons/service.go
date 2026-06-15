@@ -7,6 +7,11 @@ package appicons
 // collapsed-name matching against the selfh.st icon index plus direct CDN
 // candidates — fetches the first hit once, and serves it to every client
 // with long browser-cache headers.
+//
+// The resolved icon BYTES are cached ONLY in the database (the Store) — there is
+// deliberately no per-process in-RAM byte cache, to keep the app's resident
+// memory low (see CLAUDE.md). singleflight still collapses concurrent
+// resolutions of the same name into one CDN pass.
 
 import (
 	"context"
@@ -44,7 +49,6 @@ const (
 	// sequential candidate fetches (each candidate still has its own 6s cap),
 	// so a string of slow/unreachable CDNs can't pin a request for ~36s.
 	resolveBudget = 8 * time.Second
-	maxEntries    = 2048
 	maxIconSize   = 1 << 20 // 1 MiB per icon is plenty
 )
 
@@ -52,7 +56,6 @@ type entry struct {
 	data  []byte
 	ctype string
 	ok    bool
-	exp   time.Time
 }
 
 type Service struct {
@@ -63,13 +66,14 @@ type Service struct {
 	// 6-fetch resolutions in parallel — now they share one.
 	sf singleflight.Group
 
-	// store is the optional persistent (DB) L2 cache. When set, resolved icon
-	// bytes survive process restarts and a cold process serves them from the DB
-	// instead of re-resolving against the CDNs.
+	// store is the persistent (DB) cache — the ONLY place resolved icon bytes
+	// live (no per-process RAM byte cache). When nil (tests/dev), every miss
+	// re-resolves against the CDN.
 	store Store
 
+	// mu guards only the small slug index below — the collapsed-name → canonical
+	// slug lookup table, NOT icon bytes.
 	mu       sync.Mutex
-	cache    map[string]entry
 	index    map[string]string // collapsed name -> canonical slug
 	indexExp time.Time
 }
@@ -78,7 +82,6 @@ func NewService(logger *log.Logger) *Service {
 	return &Service{
 		logger: logger,
 		httpc:  &http.Client{Timeout: 6 * time.Second},
-		cache:  make(map[string]entry),
 	}
 }
 
@@ -129,20 +132,11 @@ func (s *Service) Get(ctx context.Context, raw string) (data []byte, ctype strin
 	if key == "" {
 		return nil, "", false
 	}
-	s.mu.Lock()
-	if e, hit := s.cache[key]; hit && time.Now().Before(e.exp) {
-		s.mu.Unlock()
-		return e.data, e.ctype, e.ok
-	}
-	s.mu.Unlock()
 
-	// L2: the persistent DB cache. A cold process (post-restart) finds the
+	// The DB is the only cache. A cold process (post-restart) finds the
 	// already-resolved bytes here and skips the CDN resolution entirely.
 	if s.store != nil {
 		if data, ctype, ok, exp, found := s.store.Load(ctx, key); found && time.Now().Before(exp) {
-			s.mu.Lock()
-			s.cache[key] = entry{data: data, ctype: ctype, ok: ok, exp: exp}
-			s.mu.Unlock()
 			return data, ctype, ok
 		}
 	}
@@ -160,22 +154,11 @@ func (s *Service) Get(ctx context.Context, raw string) (data []byte, ctype strin
 		if !rok {
 			ttl = missTTL
 		}
-		exp := time.Now().Add(ttl)
-		s.mu.Lock()
-		if len(s.cache) >= maxEntries {
-			for k := range s.cache {
-				delete(s.cache, k)
-				if len(s.cache) < maxEntries/2 {
-					break
-				}
-			}
-		}
-		s.cache[key] = entry{data: rd, ctype: rc, ok: rok, exp: exp}
-		s.mu.Unlock()
-		// Persist to L2 so the bytes survive a restart. Best-effort, detached
-		// from the request context so a cancelled client can't drop the write.
+		// Persist so the bytes survive a restart and the next request is a DB
+		// hit. Best-effort, detached from the request context so a cancelled
+		// client can't drop the write.
 		if s.store != nil {
-			s.store.Save(context.WithoutCancel(ctx), key, rd, rc, rok, exp)
+			s.store.Save(context.WithoutCancel(ctx), key, rd, rc, rok, time.Now().Add(ttl))
 		}
 		return entry{data: rd, ctype: rc, ok: rok}, nil
 	})

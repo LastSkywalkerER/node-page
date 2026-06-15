@@ -6,6 +6,10 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 func setup(t *testing.T) (svc *Service, cdnHits *int64) {
@@ -43,7 +47,16 @@ func setup(t *testing.T) (svc *Service, cdnHits *int64) {
 	SelfhstIndexURL = index.URL
 	t.Cleanup(func() { SelfhstBase, DashboardIconsBase, SelfhstIndexURL = oldSelf, oldDash, oldIdx })
 
-	return NewService(nil), &hits
+	// The DB is the only cache now, so the caching assertions below need a store.
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&IconCacheEntry{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	return NewService(nil).WithStore(NewGormStore(db)), &hits
 }
 
 // "nginxproxymanager" (compose project name) must match the registry slug
