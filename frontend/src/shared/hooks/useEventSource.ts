@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { resetLiveMetrics, useMetricsStore } from '../lib/metricsStore';
 import { recordGaugeFromEnvelope } from '../lib/hostGaugesStore';
 import { applyEnvelopeToMetricCaches } from './useLiveMetricsQuerySync';
+import { subscribeStream } from '../lib/sseManager';
 
 export function useMetricsStream(hostId?: number | null) {
   const url = hostId ? `/api/v1/stream?host_id=${hostId}` : '/api/v1/stream';
@@ -10,9 +11,7 @@ export function useMetricsStream(hostId?: number | null) {
   useEffect(() => {
     resetLiveMetrics();
 
-    const es = new EventSource(url, { withCredentials: true });
-
-    es.addEventListener('metrics', (e: MessageEvent) => {
+    const onMetrics = (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data) as Record<string, unknown> & { collecting_host_id?: number };
         // The stream carries EVERY host's envelopes; even when this page only
@@ -23,7 +22,10 @@ export function useMetricsStream(hostId?: number | null) {
         if (hostId != null && cid !== undefined && Number(cid) !== Number(hostId)) {
           return;
         }
-        const { collecting_host_id: _ignored, timestamp: tsRaw, ...rest } = data;
+        const tsRaw = (data as Record<string, unknown>).timestamp;
+        const rest: Record<string, unknown> = { ...data };
+        delete rest.collecting_host_id;
+        delete rest.timestamp;
         let streamTimestamp: string | undefined;
         if (typeof tsRaw === 'string' && tsRaw.length > 0) {
           streamTimestamp = tsRaw;
@@ -42,17 +44,15 @@ export function useMetricsStream(hostId?: number | null) {
       } catch {
         // ignore malformed messages
       }
-    });
-
-    es.onerror = () => {
-      // browser reconnects automatically via EventSource spec
     };
+
+    const unsubscribe = subscribeStream(url, { onMetrics });
 
     return () => {
-      es.close();
+      unsubscribe();
       resetLiveMetrics();
     };
-  }, [url]);
+  }, [url, hostId]);
 }
 
 /**
@@ -72,8 +72,7 @@ export function useHostGaugesStream(): { connected: boolean } {
   qcRef.current = qc;
 
   useEffect(() => {
-    const es = new EventSource('/api/v1/stream', { withCredentials: true });
-    es.addEventListener('metrics', (e: MessageEvent) => {
+    const onMetrics = (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data) as Record<string, unknown> & {
           collecting_host_id?: number;
@@ -81,19 +80,16 @@ export function useHostGaugesStream(): { connected: boolean } {
         };
         recordGaugeFromEnvelope(data);
         applyEnvelopeToMetricCaches(qcRef.current, data);
-        setConnected(true);
       } catch {
         // ignore malformed messages
       }
-    });
-    es.onopen = () => setConnected(true);
-    es.onerror = () => {
-      // browser reconnects automatically via EventSource spec; treat as down so
-      // the list page falls back to a slow poll until messages resume.
-      setConnected(false);
     };
+    const unsubscribe = subscribeStream('/api/v1/stream', {
+      onMetrics,
+      onStatus: setConnected,
+    });
     return () => {
-      es.close();
+      unsubscribe();
       setConnected(false);
     };
   }, []);
