@@ -18,6 +18,7 @@ import { ConnectorsTab } from './widgets/connectors/ConnectorsTab'
 import { AccountTab } from './widgets/admin/AccountTab'
 import { ServerTab } from './widgets/admin/ServerTab'
 import { PrometheusTab } from './widgets/admin/PrometheusTab'
+import { DatabaseTab } from './widgets/admin/DatabaseTab'
 import { AdminRoute } from './shared/guards/AdminRoute'
 import { CyberBackdrop } from './shared/components/CyberBackdrop'
 
@@ -76,6 +77,7 @@ function App() {
             <Route path="nodes" element={<NodesTab />} />
             <Route path="connectors" element={<ConnectorsTab />} />
             <Route path="server" element={<ServerTab />} />
+            <Route path="database" element={<DatabaseTab />} />
             <Route path="prometheus" element={<PrometheusTab />} />
             <Route path="account" element={<AccountTab />} />
           </Route>

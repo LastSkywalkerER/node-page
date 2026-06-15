@@ -29,6 +29,7 @@ import (
 
 	_ "system-stats/docs"
 	"system-stats/internal/app/config"
+	"system-stats/internal/app/database/configdump"
 	"system-stats/internal/app/di"
 	"system-stats/internal/app/help"
 	"system-stats/internal/app/middleware"
@@ -113,6 +114,17 @@ func Run() {
 		"raft_cluster", cfg.Raft.ClusterID,
 		"raft_node_id", cfg.Raft.NodeID,
 	)
+
+	// After a database switch the previous engine's users + config were dumped
+	// to NODE_STATS_DATA_DIR/db-migrate.dump; the migrations have just created
+	// the fresh schema, so import that dump now (metrics intentionally start
+	// empty) and delete it. No-op on a normal boot.
+	dataDir := getEnvOr("NODE_STATS_DATA_DIR", "/app/data")
+	if imported, derr := configdump.ImportIfPresent(container.GetDB(), filepath.Join(dataDir, setup.DBMigrationDumpFile)); derr != nil {
+		logger.Error("db switch: failed to import config dump into the new database", "error", derr)
+	} else if imported {
+		logger.Info("db switch: imported users + configuration into the new database (metrics start fresh)")
+	}
 
 	regCtx, regCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	if _, err := container.GetHostService().RegisterOrUpdateCurrentHost(regCtx); err != nil {
@@ -1036,6 +1048,104 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 				_ = os.Setenv("RAFT_BIND_ADDR", cv.RaftBindAddr)
 			}
 			c.JSON(http.StatusOK, gin.H{"data": gin.H{"restart_pending": false, "restart_required": true}})
+		})
+
+		// POST /settings/db/test — pre-flight an external Postgres DSN (admin).
+		authAPI.POST("/settings/db/test", middleware.RequireAdmin(), func(c *gin.Context) {
+			var body struct {
+				Host, Port, Name, User, Password, SSLMode, DSN string
+			}
+			if err := c.ShouldBindJSON(&body); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "Invalid request data"})
+				return
+			}
+			dsn := strings.TrimSpace(body.DSN)
+			if dsn == "" {
+				dsn = setup.AssembleDSN(&setup.ConfigValues{
+					DBType: "postgres", DBHost: body.Host, DBPort: body.Port, DBName: body.Name,
+					DBUser: body.User, DBPassword: body.Password, DBSSLMode: body.SSLMode,
+				})
+			}
+			if err := setup.TestPostgresDSN(c.Request.Context(), dsn); err != nil {
+				c.JSON(http.StatusOK, gin.H{"data": gin.H{"ok": false, "error": err.Error()}})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"data": gin.H{"ok": true}})
+		})
+
+		// POST /settings/db/switch — change the database engine with a FULL RESET.
+		// Only users + configuration migrate (dumped here, re-imported on the next
+		// boot); metric history starts fresh. Destructive: requires acknowledge.
+		authAPI.POST("/settings/db/switch", middleware.RequireAdmin(), func(c *gin.Context) {
+			var body struct {
+				Type        string `json:"db_type"`
+				Managed     bool   `json:"db_managed"`
+				Host        string `json:"db_host"`
+				Port        string `json:"db_port"`
+				Name        string `json:"db_name"`
+				User        string `json:"db_user"`
+				Password    string `json:"db_password"`
+				SSLMode     string `json:"db_sslmode"`
+				SQLitePath  string `json:"db_sqlite_path"`
+				Acknowledge bool   `json:"acknowledge_data_loss"`
+			}
+			if err := c.ShouldBindJSON(&body); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "Invalid request data"})
+				return
+			}
+			if !body.Acknowledge {
+				c.JSON(http.StatusBadRequest, gin.H{"code": "ack_required", "error": "acknowledge_data_loss must be true — metric history is not migrated"})
+				return
+			}
+			cv, err := configWriter.ReadCurrentConfig()
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": err.Error()})
+				return
+			}
+			// Overlay the requested DB target onto the current config.
+			cv.DBType = strings.ToLower(strings.TrimSpace(body.Type))
+			cv.DBManaged = body.Managed
+			cv.DBHost, cv.DBPort, cv.DBName = body.Host, body.Port, body.Name
+			cv.DBUser, cv.DBPassword, cv.DBSSLMode = body.User, body.Password, body.SSLMode
+			if cv.DBType == "sqlite" {
+				cv.DBDSN = strings.TrimSpace(body.SQLitePath)
+				if cv.DBDSN == "" {
+					cv.DBDSN = "stats.db"
+				}
+				cv.DBHost = ""
+			}
+			if cv.DBType != "sqlite" && cv.DBType != "postgres" {
+				c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "db_type must be sqlite or postgres"})
+				return
+			}
+
+			// Dump users + configuration from the CURRENT database before switching.
+			dumpPath := filepath.Join(updateDataDir, setup.DBMigrationDumpFile)
+			if derr := configdump.Export(container.GetDB(), dumpPath); derr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": "failed to export users/config: " + derr.Error()})
+				return
+			}
+
+			mode, pending, perr := setup.PrepareDBSwitch(updateDataDir, cv)
+			if perr != nil {
+				_ = os.Remove(dumpPath)
+				c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": perr.Error()})
+				return
+			}
+			if !pending {
+				// Native / managed-externally: persist DB_TYPE/DB_DSN to .env; the
+				// operator restarts and the boot import applies the dump.
+				if werr := configWriter.WriteConfigFile(cv); werr != nil {
+					_ = os.Remove(dumpPath)
+					c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": werr.Error()})
+					return
+				}
+			}
+			c.JSON(http.StatusOK, gin.H{"data": gin.H{
+				"db_mode":          mode,
+				"restart_pending":  pending,
+				"restart_required": !pending,
+			}})
 		})
 	}
 

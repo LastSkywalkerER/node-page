@@ -27,11 +27,13 @@ function AdminNav() {
       ? 'Connectors'
       : pathname.includes('/admin/server')
         ? 'Server'
-        : pathname.includes('/admin/prometheus')
-          ? 'Prometheus'
-          : pathname.includes('/admin/account')
-            ? 'Account'
-            : 'Users'
+        : pathname.includes('/admin/database')
+          ? 'Database'
+          : pathname.includes('/admin/prometheus')
+            ? 'Prometheus'
+            : pathname.includes('/admin/account')
+              ? 'Account'
+              : 'Users'
 
   return (
     <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
@@ -138,6 +140,23 @@ function AdminNav() {
               )}
             >
               Server
+            </span>
+          )}
+        </NavLink>
+        <NavLink
+          to="/admin/database"
+          className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        >
+          {({ isActive }) => (
+            <span
+              className={cn(
+                'px-3 py-1 rounded-md transition-all duration-200 cursor-pointer select-none text-xs font-medium inline-block',
+                isActive
+                  ? 'bg-primary text-primary-foreground shadow-[0_0_20px_-4px_oklch(0.72_0.16_195/0.45)]'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-background/50 dark:hover:bg-white/5'
+              )}
+            >
+              Database
             </span>
           )}
         </NavLink>

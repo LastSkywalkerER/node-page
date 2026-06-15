@@ -79,6 +79,41 @@ export function useSavePorts() {
   })
 }
 
+export interface DbSwitchBody {
+  db_type: 'sqlite' | 'postgres'
+  db_managed: boolean
+  db_host?: string
+  db_port?: string
+  db_name?: string
+  db_user?: string
+  db_password?: string
+  db_sslmode?: string
+  db_sqlite_path?: string
+  acknowledge_data_loss: boolean
+}
+
+export function useTestDb() {
+  return useMutation<{ ok: boolean; error?: string }, Error, Record<string, string>>({
+    mutationFn: async (body) => {
+      const res = await apiClient.post<{ data: { ok: boolean; error?: string } }>('/settings/db/test', body)
+      return res.data.data
+    },
+  })
+}
+
+export function useSwitchDb() {
+  return useMutation<RestartResult & { db_mode: string }, Error, DbSwitchBody>({
+    mutationFn: async (body) => {
+      const res = await apiClient.post<{ data: RestartResult & { db_mode: string } }>('/settings/db/switch', body)
+      return res.data.data
+    },
+    onSuccess: (r) => notifyRestart(r),
+    onError: (err: Error & { response?: { data?: { error?: string } } }) => {
+      toast.error(err.response?.data?.error || err.message || 'Failed to switch database')
+    },
+  })
+}
+
 export interface ServerSettingsBody {
   gin_mode?: string
   debug?: boolean
