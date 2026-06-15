@@ -49,6 +49,13 @@ type DesiredState struct {
 
 	// ManagedExternally disables controller mutation entirely (Dokploy/Traefik).
 	ManagedExternally bool `json:"managed_externally"`
+
+	// HTTPPort / RaftPort, when non-empty, are the published host ports the
+	// controller writes into the stack .env (NODE_STATS_PORT / NODE_STATS_RAFT_PORT)
+	// before recreating, so a port change from the in-app settings takes effect.
+	// Empty leaves the installer-managed values untouched.
+	HTTPPort string `json:"http_port,omitempty"`
+	RaftPort string `json:"raft_port,omitempty"`
 }
 
 // DBProvision configures the managed Postgres container.

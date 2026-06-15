@@ -62,6 +62,23 @@ export function useSavePrometheus() {
   })
 }
 
+export function useSavePorts() {
+  const qc = useQueryClient()
+  return useMutation<RestartResult, Error, { http_port: string; raft_port?: string }>({
+    mutationFn: async (body) => {
+      const res = await apiClient.post<{ data: RestartResult }>('/settings/ports', body)
+      return res.data.data
+    },
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ['settings', 'config'] })
+      notifyRestart(r)
+    },
+    onError: (err: Error & { response?: { data?: { error?: string } } }) => {
+      toast.error(err.response?.data?.error || err.message || 'Failed to change ports')
+    },
+  })
+}
+
 export interface ServerSettingsBody {
   gin_mode?: string
   debug?: boolean

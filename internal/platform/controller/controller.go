@@ -112,6 +112,24 @@ func (c *controller) apply(ds setup.DesiredState) bool {
 		return c.fail(ds, "write compose", err)
 	}
 
+	// A port change from the in-app settings arrives as HTTPPort/RaftPort on the
+	// desired state. Compose reads the published ports from the stack .env
+	// (NODE_STATS_PORT / NODE_STATS_RAFT_PORT), which only the controller can
+	// write — upsert them here before the recreate so the new mapping applies.
+	if strings.TrimSpace(ds.HTTPPort) != "" || strings.TrimSpace(ds.RaftPort) != "" {
+		envPath := filepath.Join(c.stackDir, ".env")
+		if ds.HTTPPort != "" {
+			if err := upsertEnvKey(envPath, "NODE_STATS_PORT", ds.HTTPPort); err != nil {
+				return c.fail(ds, "update stack .env (NODE_STATS_PORT)", err)
+			}
+		}
+		if ds.RaftPort != "" {
+			if err := upsertEnvKey(envPath, "NODE_STATS_RAFT_PORT", ds.RaftPort); err != nil {
+				return c.fail(ds, "update stack .env (NODE_STATS_RAFT_PORT)", err)
+			}
+		}
+	}
+
 	managed := ds.DBMode == setup.DBModePostgresManaged
 	if managed {
 		// Bring the DB up and wait for its healthcheck before recreating the app
@@ -342,6 +360,34 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// upsertEnvKey sets KEY=value in a dotenv-style file, replacing an existing
+// (uncommented) line for KEY or appending one, and preserving every other line
+// (comments included). Creates the file if missing. The stack .env is the
+// installer's, so we touch only the single key requested.
+func upsertEnvKey(path, key, value string) error {
+	var lines []string
+	if b, err := os.ReadFile(path); err == nil {
+		lines = strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	prefix := key + "="
+	replaced := false
+	for i, ln := range lines {
+		trimmed := strings.TrimSpace(ln)
+		if strings.HasPrefix(trimmed, prefix) {
+			lines[i] = key + "=" + value
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		lines = append(lines, key+"="+value)
+	}
+	out := strings.Join(lines, "\n") + "\n"
+	return writeFileAtomic(path, []byte(out))
 }
 
 // writeFileAtomic writes data via a temp file + rename so a reader (or compose)

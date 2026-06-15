@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -988,6 +989,54 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 			_ = os.Setenv("NODE_STATS_IPV4", cv.NodeStatsIPv4)
 			c.JSON(http.StatusOK, gin.H{"data": requestRestart()})
 		})
+
+		// POST /settings/ports — change the published HTTP / Raft ports. In Docker
+		// the ports live in the controller-owned stack .env, so the change rides
+		// the desired state and the controller recreates; on native we rewrite
+		// ADDR / RAFT_BIND_ADDR in .env. Changing the HTTP port drops the current
+		// connection — the UI warns and reconnects on the new port.
+		authAPI.POST("/settings/ports", middleware.RequireAdmin(), func(c *gin.Context) {
+			var body struct {
+				HTTPPort string `json:"http_port"`
+				RaftPort string `json:"raft_port"`
+			}
+			if err := c.ShouldBindJSON(&body); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "Invalid request data"})
+				return
+			}
+			if !validPort(body.HTTPPort) || (body.RaftPort != "" && !validPort(body.RaftPort)) {
+				c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "ports must be 1-65535"})
+				return
+			}
+			if setup.RunningInDocker() {
+				pending, rerr := setup.RequestPortChange(updateDataDir, string(cfg.Database.Type), cfg.Database.DSN, body.HTTPPort, body.RaftPort)
+				if rerr != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": rerr.Error()})
+					return
+				}
+				c.JSON(http.StatusOK, gin.H{"data": gin.H{"restart_pending": pending, "restart_required": !pending}})
+				return
+			}
+			// Native: ADDR / RAFT_BIND_ADDR in .env, restart required.
+			cv, err := configWriter.ReadCurrentConfig()
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": err.Error()})
+				return
+			}
+			cv.Addr = ":" + strings.TrimSpace(body.HTTPPort)
+			if body.RaftPort != "" {
+				cv.RaftBindAddr = ":" + strings.TrimSpace(body.RaftPort)
+			}
+			if err := configWriter.WriteConfigFile(cv); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": err.Error()})
+				return
+			}
+			_ = os.Setenv("ADDR", cv.Addr)
+			if cv.RaftBindAddr != "" {
+				_ = os.Setenv("RAFT_BIND_ADDR", cv.RaftBindAddr)
+			}
+			c.JSON(http.StatusOK, gin.H{"data": gin.H{"restart_pending": false, "restart_required": true}})
+		})
 	}
 
 	// Static files for React app (hashed bundles from Vite). Served from the
@@ -1119,6 +1168,12 @@ func boolStr(b bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+// validPort reports whether s is a decimal port in 1-65535.
+func validPort(s string) bool {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	return err == nil && n >= 1 && n <= 65535
 }
 
 // getEnvOr returns the env var value or a fallback when unset/empty.

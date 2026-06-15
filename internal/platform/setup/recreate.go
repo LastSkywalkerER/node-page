@@ -11,6 +11,36 @@ import (
 // wrapper over dockerenv.Running so callers needn't import dockerenv directly).
 func RunningInDocker() bool { return dockerenv.Running() }
 
+// RequestPortChange records new published host ports on the desired state so the
+// controller writes them into the stack .env and recreates (Docker only). Empty
+// strings leave a port unchanged. Returns restartPending=false on native /
+// managed-externally (the caller persists ADDR/RAFT_BIND_ADDR to .env instead).
+func RequestPortChange(dataDir, dbType, dbDSN, httpPort, raftPort string) (restartPending bool, err error) {
+	if !dockerenv.Running() || ManagedExternally() {
+		return false, nil
+	}
+	ds, _ := ReadDesiredState(dataDir)
+	if ds == nil {
+		mode := DBModeSQLite
+		dsn := ""
+		if strings.EqualFold(dbType, "postgres") {
+			mode, dsn = DBModePostgresExternal, dbDSN
+		}
+		ds = &DesiredState{DBMode: mode, DBDSN: dsn}
+	}
+	if strings.TrimSpace(httpPort) != "" {
+		ds.HTTPPort = strings.TrimSpace(httpPort)
+	}
+	if strings.TrimSpace(raftPort) != "" {
+		ds.RaftPort = strings.TrimSpace(raftPort)
+	}
+	ds.Generation++
+	if err := WriteDesiredState(dataDir, *ds); err != nil {
+		return false, fmt.Errorf("failed to request a port change from the controller: %w", err)
+	}
+	return true, nil
+}
+
 // RequestRecreate asks the controller to recreate the app container so it
 // re-reads the freshly written .env (used by post-setup settings changes that
 // only take effect at process start: ports, Prometheus, log level, …).

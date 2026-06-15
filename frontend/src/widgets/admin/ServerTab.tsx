@@ -5,7 +5,85 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/shared/ui/select'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { useSettingsConfig, useSaveServer } from './useSettings'
+import { useSettingsConfig, useSaveServer, useSavePorts } from './useSettings'
+
+function currentHttpPort(): string {
+  if (window.location.port) return window.location.port
+  return window.location.protocol === 'https:' ? '443' : '80'
+}
+
+function PortsCard() {
+  const savePorts = useSavePorts()
+  const [httpPort, setHttpPort] = useState(currentHttpPort())
+  const [confirm, setConfirm] = useState(false)
+
+  const changed = httpPort !== currentHttpPort()
+  const valid = /^\d+$/.test(httpPort) && Number(httpPort) >= 1 && Number(httpPort) <= 65535
+
+  const onSave = () => {
+    savePorts.mutate(
+      { http_port: httpPort },
+      {
+        onSuccess: (r) => {
+          setConfirm(false)
+          // The HTTP port moved — this connection will drop on recreate. Point
+          // the operator at the new address (auto-navigate after a short delay
+          // when the controller is recreating).
+          if (r.restart_pending) {
+            const url = `${window.location.protocol}//${window.location.hostname}:${httpPort}${window.location.pathname}`
+            setTimeout(() => {
+              window.location.href = url
+            }, 8000)
+          }
+        },
+      },
+    )
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="font-display text-base tracking-wide">Published HTTP port</CardTitle>
+        <CardDescription>
+          Changing the port restarts the app and drops this connection — you&apos;ll reconnect on the
+          new port.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="max-w-md space-y-3 pt-2">
+        <div className="space-y-2">
+          <Label htmlFor="http-port" className="text-xs text-muted-foreground">
+            HTTP port
+          </Label>
+          <Input
+            id="http-port"
+            value={httpPort}
+            onChange={(e) => setHttpPort(e.target.value)}
+            placeholder="9090"
+            className="h-9 font-mono text-xs"
+          />
+        </div>
+        {changed && (
+          <label className="flex items-start gap-2 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={confirm}
+              onChange={(e) => setConfirm(e.target.checked)}
+              className="mt-0.5"
+            />
+            I understand this restarts the app and I&apos;ll reconnect on port {httpPort}.
+          </label>
+        )}
+        <Button
+          variant="outline"
+          onClick={onSave}
+          disabled={!changed || !valid || !confirm || savePorts.isPending}
+        >
+          {savePorts.isPending ? 'Applying…' : 'Change port'}
+        </Button>
+      </CardContent>
+    </Card>
+  )
+}
 
 export function ServerTab() {
   const { data: cfg, isLoading } = useSettingsConfig()
@@ -43,6 +121,7 @@ export function ServerTab() {
   }
 
   return (
+    <div className="space-y-6">
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="font-display text-lg tracking-wide">Server</CardTitle>
@@ -128,5 +207,7 @@ export function ServerTab() {
         </Button>
       </CardContent>
     </Card>
+    {!managed && <PortsCard />}
+    </div>
   )
 }
