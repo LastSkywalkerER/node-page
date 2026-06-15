@@ -826,6 +826,133 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 			}
 			c.JSON(http.StatusOK, gin.H{"data": updateSvc.Status()})
 		})
+
+		// Post-setup configuration (admin). Mirrors the setup-wizard fields so an
+		// operator can change them after install. Each save rewrites .env via the
+		// shared ConfigWriter (preserving secrets + resolved DB_DSN) and, when a
+		// restart is needed to apply, asks the controller to recreate the app
+		// (Docker) or returns restart_required so the UI shows a "restart" banner.
+		requestRestart := func() gin.H {
+			pending, rerr := setup.RequestRecreate(updateDataDir, string(cfg.Database.Type), cfg.Database.DSN)
+			if rerr != nil {
+				return gin.H{"restart_pending": false, "restart_required": true, "error": rerr.Error()}
+			}
+			return gin.H{"restart_pending": pending, "restart_required": !pending}
+		}
+
+		// GET /settings/config — current values for prefilling the settings tabs.
+		// Secrets are never returned in clear; a "*_set" boolean is exposed instead.
+		authAPI.GET("/settings/config", middleware.RequireAdmin(), func(c *gin.Context) {
+			cv, err := configWriter.ReadCurrentConfig()
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"data": gin.H{
+				"addr":                 cv.Addr,
+				"gin_mode":             cv.GinMode,
+				"debug":                cv.Debug,
+				"node_stats_hostname":  cv.NodeStatsHostname,
+				"node_stats_ipv4":      cv.NodeStatsIPv4,
+				"raft_enabled":         cv.RaftEnabled,
+				"raft_bind_addr":       cv.RaftBindAddr,
+				"raft_advertise_addr":  cv.RaftAdvertiseAddr,
+				"db_type":              cv.DBType,
+				"prometheus_enabled":   cv.PrometheusEnabled,
+				"prometheus_auth":      cv.PrometheusAuth,
+				"prometheus_token_set": strings.TrimSpace(cv.PrometheusToken) != "",
+				"managed_externally":   setup.ManagedExternally(),
+			}})
+		})
+
+		// POST /settings/prometheus — toggle the /api/v1/metrics exporter + bearer.
+		authAPI.POST("/settings/prometheus", middleware.RequireAdmin(), func(c *gin.Context) {
+			var body struct {
+				Enabled bool    `json:"enabled"`
+				Auth    bool    `json:"auth"`
+				Token   *string `json:"token"`
+			}
+			if err := c.ShouldBindJSON(&body); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "Invalid request data"})
+				return
+			}
+			cv, err := configWriter.ReadCurrentConfig()
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": err.Error()})
+				return
+			}
+			cv.PrometheusEnabled = boolStr(body.Enabled)
+			cv.PrometheusAuth = boolStr(body.Enabled && body.Auth)
+			if !body.Enabled || !body.Auth {
+				cv.PrometheusToken = "" // clear token when auth is off
+			} else if body.Token != nil && strings.TrimSpace(*body.Token) != "" {
+				cv.PrometheusToken = strings.TrimSpace(*body.Token)
+			}
+			if cv.PrometheusAuth == "true" && strings.TrimSpace(cv.PrometheusToken) == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "a bearer token is required when auth is enabled"})
+				return
+			}
+			if err := configWriter.WriteConfigFile(cv); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": err.Error()})
+				return
+			}
+			_ = os.Setenv("PROMETHEUS_ENABLED", cv.PrometheusEnabled)
+			_ = os.Setenv("PROMETHEUS_AUTH", cv.PrometheusAuth)
+			_ = os.Setenv("PROMETHEUS_TOKEN", cv.PrometheusToken)
+			c.JSON(http.StatusOK, gin.H{"data": requestRestart()})
+		})
+
+		// POST /settings/server — server identity + log level + addresses.
+		authAPI.POST("/settings/server", middleware.RequireAdmin(), func(c *gin.Context) {
+			var body struct {
+				GinMode  *string `json:"gin_mode"`
+				Debug    *bool   `json:"debug"`
+				Hostname *string `json:"hostname"`
+				IPv4     *string `json:"ipv4"`
+				Addr     *string `json:"addr"`
+			}
+			if err := c.ShouldBindJSON(&body); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "Invalid request data"})
+				return
+			}
+			cv, err := configWriter.ReadCurrentConfig()
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": err.Error()})
+				return
+			}
+			if body.GinMode != nil {
+				m := strings.ToLower(strings.TrimSpace(*body.GinMode))
+				if m != "debug" && m != "release" {
+					c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "gin_mode must be debug or release"})
+					return
+				}
+				cv.GinMode = m
+			}
+			if body.Debug != nil {
+				cv.Debug = boolStr(*body.Debug)
+			}
+			if body.Hostname != nil {
+				cv.NodeStatsHostname = strings.TrimSpace(*body.Hostname)
+			}
+			if body.IPv4 != nil {
+				cv.NodeStatsIPv4 = strings.TrimSpace(*body.IPv4)
+			}
+			// Changing ADDR (the in-process listen port) only makes sense on native
+			// deployments; in Docker the published port is installer-owned (stack
+			// .env) and the in-container ADDR is fixed by the generated compose.
+			if body.Addr != nil && !setup.RunningInDocker() {
+				cv.Addr = strings.TrimSpace(*body.Addr)
+			}
+			if err := configWriter.WriteConfigFile(cv); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": err.Error()})
+				return
+			}
+			_ = os.Setenv("GIN_MODE", cv.GinMode)
+			_ = os.Setenv("DEBUG", cv.Debug)
+			_ = os.Setenv("NODE_STATS_HOSTNAME", cv.NodeStatsHostname)
+			_ = os.Setenv("NODE_STATS_IPV4", cv.NodeStatsIPv4)
+			c.JSON(http.StatusOK, gin.H{"data": requestRestart()})
+		})
 	}
 
 	// Static files for React app (hashed bundles from Vite). Served from the
@@ -948,4 +1075,13 @@ func pathLooksLikeMissingStaticAsset(urlPath string) bool {
 	default:
 		return false
 	}
+}
+
+// boolStr renders a Go bool as the "true"/"false" string the ConfigWriter and
+// .env expect.
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }
