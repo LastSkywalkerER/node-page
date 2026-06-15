@@ -135,6 +135,18 @@ func (r *Replicator) SubmitUserUpsert(ctx context.Context, email, passwordHash, 
 	return err
 }
 
+// SubmitUserPasswordChange publishes a CmdUserPasswordChange for an existing user.
+func (r *Replicator) SubmitUserPasswordChange(ctx context.Context, email, passwordHash string) error {
+	if !r.Enabled() {
+		return nil
+	}
+	_, err := SubmitTyped(ctx, r.svc, CmdUserPasswordChange, UserPasswordChangePayload{
+		Email:        email,
+		PasswordHash: passwordHash,
+	}, 5*time.Second)
+	return err
+}
+
 // SubmitAuthSecretSet publishes the cluster-shared JWT signing keys.
 func (r *Replicator) SubmitAuthSecretSet(ctx context.Context, jwtSecret, refreshSecret string) error {
 	if !r.Enabled() {

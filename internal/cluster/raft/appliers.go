@@ -75,6 +75,7 @@ func RegisterAppliers(fsm *FSM, deps AppliersDeps) {
 	register(CmdMetricBatch, a.applyMetricBatch)
 
 	register(CmdUserUpsert, a.applyUserUpsert)
+	register(CmdUserPasswordChange, a.applyUserPasswordChange)
 	register(CmdUserDelete, a.applyUserDelete)
 	register(CmdRefreshTokenIssue, a.applyRefreshTokenIssue)
 	register(CmdRefreshTokenRevoke, a.applyRefreshTokenRevoke)
@@ -372,11 +373,32 @@ func (a *appliers) applyUserUpsert(cmd Command, _ *hraft.Log) error {
 		return nil
 	}
 	// Existing — only role updates flow through this path post-creation;
-	// password changes are intentionally not part of this commit's surface.
+	// password changes ride their own CmdUserPasswordChange (applyUserPasswordChange).
 	if p.Role != "" && existing.Role != p.Role {
 		return a.deps.UserRepo.UpdateRole(ctx, existing.ID, p.Role)
 	}
 	return nil
+}
+
+func (a *appliers) applyUserPasswordChange(cmd Command, _ *hraft.Log) error {
+	var p UserPasswordChangePayload
+	if err := DecodeTyped(cmd, &p); err != nil {
+		return err
+	}
+	ctx, cancel := a.applierCtx()
+	defer cancel()
+
+	existing, err := a.deps.UserRepo.FindByEmail(ctx, p.Email)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		// Nothing to update on this replica yet — a CmdUserUpsert for this
+		// email orders before this command in the log, so a missing row here
+		// means the account was deleted. Treat as a no-op.
+		return nil
+	}
+	return a.deps.UserRepo.UpdatePassword(ctx, existing.ID, p.PasswordHash)
 }
 
 func (a *appliers) applyUserDelete(cmd Command, _ *hraft.Log) error {

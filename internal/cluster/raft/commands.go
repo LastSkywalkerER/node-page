@@ -46,6 +46,10 @@ const (
 	CmdRefreshTokenIssue  CommandType = 42
 	CmdRefreshTokenRevoke CommandType = 43
 	CmdAuthSecretSet      CommandType = 44
+	// CmdUserPasswordChange updates an existing user's password hash. Kept
+	// separate from CmdUserUpsert (whose existing-user path only touches role)
+	// so a password change can't accidentally flip a role and vice-versa.
+	CmdUserPasswordChange CommandType = 45
 
 	// Cluster-wide configuration
 	CmdConfigSet CommandType = 50

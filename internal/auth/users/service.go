@@ -29,6 +29,8 @@ var (
 	ErrCannotDemoteSelf         = errors.New("cannot demote yourself")
 	ErrCannotDemoteLastAdmin    = errors.New("cannot demote the last admin")
 	ErrCannotDeleteLastAdmin    = errors.New("cannot delete the last admin")
+	ErrWrongCurrentPassword     = errors.New("current password is incorrect")
+	ErrWeakPassword             = errors.New("password must be at least 8 characters and contain a letter and a digit")
 )
 
 // TokenPair represents access and refresh tokens
@@ -61,6 +63,10 @@ type UserService interface {
 	Count(ctx context.Context) (int64, error)
 	HashPassword(password string) (string, error)
 	VerifyPassword(hash, password string) error
+	// ChangePassword verifies currentPassword for the user before setting newPassword.
+	ChangePassword(ctx context.Context, userID uint, currentPassword, newPassword string) error
+	// ResetPassword sets newPassword without verifying a current one (admin action).
+	ResetPassword(ctx context.Context, targetUserID uint, newPassword string) error
 }
 
 // RaftReplicator is the subset of internal/cluster/raft.Service the user
@@ -68,6 +74,7 @@ type UserService interface {
 type RaftReplicator interface {
 	Enabled() bool
 	SubmitUserUpsert(ctx context.Context, email, passwordHash, role string) error
+	SubmitUserPasswordChange(ctx context.Context, email, passwordHash string) error
 }
 
 type userService struct {
@@ -287,6 +294,98 @@ func (s *userService) Delete(ctx context.Context, currentUserID, targetUserID ui
 // Count returns the total number of users
 func (s *userService) Count(ctx context.Context) (int64, error) {
 	return s.userRepo.Count(ctx)
+}
+
+// ChangePassword verifies the user's current password, then sets a new one.
+func (s *userService) ChangePassword(ctx context.Context, userID uint, currentPassword, newPassword string) error {
+	user, err := s.userRepo.FindByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		return ErrInvalidCredentials
+	}
+	if err := s.VerifyPassword(user.PasswordHash, currentPassword); err != nil {
+		return ErrWrongCurrentPassword
+	}
+	return s.setPassword(ctx, user, newPassword)
+}
+
+// ResetPassword sets a new password for a user without checking a current one.
+// Used by admins to reset another account's password.
+func (s *userService) ResetPassword(ctx context.Context, targetUserID uint, newPassword string) error {
+	user, err := s.userRepo.FindByID(ctx, targetUserID)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		return ErrInvalidCredentials
+	}
+	return s.setPassword(ctx, user, newPassword)
+}
+
+// setPassword validates, hashes, persists, replicates and invalidates sessions
+// for a password change. Shared by ChangePassword and ResetPassword.
+func (s *userService) setPassword(ctx context.Context, user *User, newPassword string) error {
+	if !validPassword(newPassword) {
+		return ErrWeakPassword
+	}
+	hash, err := s.HashPassword(newPassword)
+	if err != nil {
+		return fmt.Errorf("failed to hash password: %w", err)
+	}
+	if err := s.userRepo.UpdatePassword(ctx, user.ID, hash); err != nil {
+		return fmt.Errorf("failed to update password: %w", err)
+	}
+
+	// Replicate to the cluster so the new password authenticates on every node.
+	// Best-effort with a short not-leader retry, mirroring Register.
+	if s.raft != nil && s.raft.Enabled() {
+		deadline := time.Now().Add(5 * time.Second)
+		var lastErr error
+		for time.Now().Before(deadline) {
+			rerr := s.raft.SubmitUserPasswordChange(ctx, user.Email, hash)
+			if rerr == nil {
+				lastErr = nil
+				break
+			}
+			lastErr = rerr
+			msg := rerr.Error()
+			if strings.Contains(msg, "not the leader") || strings.Contains(msg, "raft: disabled") {
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			break
+		}
+		if lastErr != nil {
+			fmt.Printf("users.setPassword: raft replication for %q failed: %v\n", user.Email, lastErr)
+		}
+	}
+
+	// Invalidate existing sessions so a stolen/old credential can't keep a
+	// session alive after a password change. Best-effort.
+	if s.tokenSvc != nil {
+		_ = s.tokenSvc.RevokeAllUserTokens(ctx, user.ID)
+	}
+	return nil
+}
+
+// validPassword enforces the same rule as the setup wizard: at least 8
+// characters, containing at least one letter and one digit.
+func validPassword(pw string) bool {
+	if len(pw) < 8 {
+		return false
+	}
+	var hasLetter, hasDigit bool
+	for _, r := range pw {
+		switch {
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
+			hasLetter = true
+		}
+	}
+	return hasLetter && hasDigit
 }
 
 // HashPassword creates a bcrypt hash of the password

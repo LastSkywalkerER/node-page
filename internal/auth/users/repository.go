@@ -17,6 +17,7 @@ type UserRepository interface {
 	CountByRole(ctx context.Context, role string) (int64, error)
 	List(ctx context.Context, offset, limit int) ([]*User, error)
 	UpdateRole(ctx context.Context, userID uint, role string) error
+	UpdatePassword(ctx context.Context, userID uint, passwordHash string) error
 	Delete(ctx context.Context, userID uint) error
 }
 
@@ -85,6 +86,11 @@ func (r *userRepository) List(ctx context.Context, offset, limit int) ([]*User, 
 // UpdateRole updates a user's role
 func (r *userRepository) UpdateRole(ctx context.Context, userID uint, role string) error {
 	return r.db.WithContext(ctx).Model(&User{}).Where("id = ?", userID).Update("role", role).Error
+}
+
+// UpdatePassword updates a user's bcrypt password hash
+func (r *userRepository) UpdatePassword(ctx context.Context, userID uint, passwordHash string) error {
+	return r.db.WithContext(ctx).Model(&User{}).Where("id = ?", userID).Update("password_hash", passwordHash).Error
 }
 
 // Delete deletes a user by ID

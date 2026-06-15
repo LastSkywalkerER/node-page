@@ -106,6 +106,14 @@ type UserUpsertPayload struct {
 	Role         string `json:"role"`
 }
 
+// UserPasswordChangePayload replicates a password change for an existing user.
+// Keyed by email (the stable cluster-wide identity — local row ids differ per
+// node), carrying only the new bcrypt hash.
+type UserPasswordChangePayload struct {
+	Email        string `json:"email"`
+	PasswordHash string `json:"password_hash"`
+}
+
 // UserDeletePayload removes a user by ID.
 type UserDeletePayload struct {
 	UserID uint `json:"user_id"`

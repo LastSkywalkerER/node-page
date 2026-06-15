@@ -11,7 +11,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { UserPlus, MoreHorizontal, Copy, Check } from 'lucide-react'
+import { UserPlus, MoreHorizontal, Copy, Check, KeyRound } from 'lucide-react'
+import { PasswordInput } from '@/shared/ui/password-input'
 import { toast } from 'sonner'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -41,6 +42,8 @@ export function UsersTab() {
   const [inviteEmail, setInviteEmail] = useState('')
   const [inviteLink, setInviteLink] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [resetUser, setResetUser] = useState<User | null>(null)
+  const [resetPassword, setResetPassword] = useState('')
   const queryClient = useQueryClient()
 
   const { data, isLoading } = useQuery({
@@ -76,6 +79,20 @@ export function UsersTab() {
     },
     onError: (err: Error & { response?: { data?: { error?: string } } }) => {
       toast.error(err.response?.data?.error || err.message || 'Failed to update role')
+    },
+  })
+
+  const resetPasswordMutation = useMutation({
+    mutationFn: async ({ id, password }: { id: number; password: string }) => {
+      await apiClient.post(`/users/${id}/reset-password`, { new_password: password })
+    },
+    onSuccess: () => {
+      toast.success('Password reset')
+      setResetUser(null)
+      setResetPassword('')
+    },
+    onError: (err: Error & { response?: { data?: { error?: string } } }) => {
+      toast.error(err.response?.data?.error || err.message || 'Failed to reset password')
     },
   })
 
@@ -261,6 +278,14 @@ export function UsersTab() {
                               Set as User
                             </DropdownMenuItem>
                             <DropdownMenuItem
+                              onClick={() => {
+                                setResetUser(user)
+                                setResetPassword('')
+                              }}
+                            >
+                              Reset password
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
                               className="text-destructive"
                               onClick={() => deleteUserMutation.mutate(user.id)}
                             >
@@ -272,6 +297,53 @@ export function UsersTab() {
                     ))}
                   </div>
                 </ScrollArea>
+              )}
+
+              {resetUser && (
+                <div className="mt-4 space-y-3 rounded-lg border border-primary/30 bg-primary/5 p-4">
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <KeyRound className="h-4 w-4 text-primary" />
+                    Reset password for{' '}
+                    <span className="font-mono">{resetUser.email}</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Sets a new password directly (no current password needed) and signs that user out
+                    everywhere. Min 8 chars, with a letter and a digit.
+                  </p>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <PasswordInput
+                      autoComplete="new-password"
+                      placeholder="New password"
+                      value={resetPassword}
+                      onChange={(e) => setResetPassword(e.target.value)}
+                      className="h-9 w-full min-w-0 sm:flex-1"
+                    />
+                    <Button
+                      size="lg"
+                      className="h-9 w-full shrink-0 px-4 sm:w-auto"
+                      onClick={() =>
+                        resetPasswordMutation.mutate({
+                          id: resetUser.id,
+                          password: resetPassword,
+                        })
+                      }
+                      disabled={resetPasswordMutation.isPending || resetPassword.length < 8}
+                    >
+                      Set password
+                    </Button>
+                    <Button
+                      size="lg"
+                      variant="ghost"
+                      className="h-9 w-full shrink-0 sm:w-auto"
+                      onClick={() => {
+                        setResetUser(null)
+                        setResetPassword('')
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
               )}
             </AccordionContent>
           </AccordionItem>

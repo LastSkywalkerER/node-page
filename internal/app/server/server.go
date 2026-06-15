@@ -643,8 +643,10 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		users := api.Group("/users", middleware.AuthJWT(container.GetTokenService()))
 		{
 			users.GET("/me", usersHandler.Me)
+			users.POST("/me/password", usersHandler.ChangeOwnPassword)
 			users.GET("", middleware.RequireAdmin(), usersHandler.List)
 			users.PATCH("/:id", middleware.RequireAdmin(), usersHandler.UpdateRole)
+			users.POST("/:id/reset-password", middleware.RequireAdmin(), usersHandler.ResetUserPassword)
 			users.DELETE("/:id", middleware.RequireAdmin(), usersHandler.Delete)
 		}
 

@@ -222,6 +222,95 @@ func (h *UsersHandler) UpdateRole(c *gin.Context) {
 	})
 }
 
+// ChangePasswordRequest is the body of POST /users/me/password.
+type ChangePasswordRequest struct {
+	CurrentPassword string `json:"current_password" binding:"required"`
+	NewPassword     string `json:"new_password" binding:"required"`
+}
+
+// ChangeOwnPassword lets the authenticated user change their own password.
+//
+// @Summary     Change own password
+// @Tags        users
+// @Accept      json
+// @Produce     json
+// @Param       body  body      ChangePasswordRequest true  "Current + new password"
+// @Success     200   {object}  map[string]interface{}
+// @Failure     400   {object}  map[string]string
+// @Failure     401   {object}  map[string]string
+// @Security    BearerAuth
+// @Router      /users/me/password [post]
+func (h *UsersHandler) ChangeOwnPassword(c *gin.Context) {
+	userID, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": "unauthorized", "error": "Authentication required"})
+		return
+	}
+
+	var req ChangePasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "Invalid request data", "detail": err.Error()})
+		return
+	}
+
+	err := h.userService.ChangePassword(c.Request.Context(), userID.(uint), req.CurrentPassword, req.NewPassword)
+	switch {
+	case err == nil:
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"message": "Password changed. Please sign in again."}})
+	case errors.Is(err, ErrWrongCurrentPassword):
+		c.JSON(http.StatusBadRequest, gin.H{"code": "wrong_current_password", "error": "Current password is incorrect"})
+	case errors.Is(err, ErrWeakPassword):
+		c.JSON(http.StatusBadRequest, gin.H{"code": "weak_password", "error": ErrWeakPassword.Error()})
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": "Failed to change password"})
+	}
+}
+
+// ResetPasswordRequest is the body of POST /users/:id/reset-password.
+type ResetPasswordRequest struct {
+	NewPassword string `json:"new_password" binding:"required"`
+}
+
+// ResetUserPassword lets an admin set another user's password (no current password).
+//
+// @Summary     Reset a user's password (admin)
+// @Tags        users
+// @Accept      json
+// @Produce     json
+// @Param       id    path      integer              true  "User ID"
+// @Param       body  body      ResetPasswordRequest true  "New password"
+// @Success     200   {object}  map[string]interface{}
+// @Failure     400   {object}  map[string]string
+// @Failure     404   {object}  map[string]string
+// @Security    BearerAuth
+// @Router      /users/{id}/reset-password [post]
+func (h *UsersHandler) ResetUserPassword(c *gin.Context) {
+	userIDStr := c.Param("id")
+	userID, err := strconv.ParseUint(userIDStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_user_id", "error": "Invalid user ID"})
+		return
+	}
+
+	var req ResetPasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "Invalid request data", "detail": err.Error()})
+		return
+	}
+
+	err = h.userService.ResetPassword(c.Request.Context(), uint(userID), req.NewPassword)
+	switch {
+	case err == nil:
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"id": userID, "message": "Password reset"}})
+	case errors.Is(err, ErrInvalidCredentials):
+		c.JSON(http.StatusNotFound, gin.H{"code": "user_not_found", "error": "User not found"})
+	case errors.Is(err, ErrWeakPassword):
+		c.JSON(http.StatusBadRequest, gin.H{"code": "weak_password", "error": ErrWeakPassword.Error()})
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "error": "Failed to reset password"})
+	}
+}
+
 // Delete deletes a user (admin only)
 //
 // @Summary     Delete user
