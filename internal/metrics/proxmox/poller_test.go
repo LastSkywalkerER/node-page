@@ -10,7 +10,20 @@ import (
 	"gorm.io/gorm"
 
 	hosts "system-stats/internal/cluster/hosts"
+	raftcluster "system-stats/internal/cluster/raft"
 )
+
+// stubRaftSvc is a raftcluster.Service whose leadership/enabled state is fixed,
+// for exercising the poller's leader-gated handover (shouldPoll). Embedding
+// DisabledService supplies every method we don't care about.
+type stubRaftSvc struct {
+	raftcluster.DisabledService
+	enabled bool
+	leader  bool
+}
+
+func (s stubRaftSvc) Enabled() bool  { return s.enabled }
+func (s stubRaftSvc) IsLeader() bool { return s.leader }
 
 // fakeHostRepo is a minimal hosts.Repository for findExisting tests: only the
 // four lookup methods are implemented; any other call panics (none are made).
@@ -263,5 +276,30 @@ func TestShouldSubmitHostUpsert_PerHostIndependent(t *testing.T) {
 	}
 	if p.shouldSubmitHostUpsert(node, now.Add(pollInterval)) {
 		t.Fatal("unchanged node must be throttled")
+	}
+}
+
+// TestShouldPoll locks the in-cluster polling-node handover gate: exactly one
+// writer per connector. A standalone node (no Raft, or Raft disabled) always
+// polls; in a cluster only the current leader polls, so when leadership moves
+// the new leader starts polling on its next tick and the old leader stops.
+func TestShouldPoll(t *testing.T) {
+	cases := []struct {
+		name string
+		svc  raftcluster.Service
+		want bool
+	}{
+		{"standalone (no raft service)", nil, true},
+		{"raft disabled", stubRaftSvc{enabled: false, leader: false}, true},
+		{"clustered follower", stubRaftSvc{enabled: true, leader: false}, false},
+		{"clustered leader", stubRaftSvc{enabled: true, leader: true}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := NewPoller(PollerDeps{RaftSvc: c.svc})
+			if got := p.shouldPoll(); got != c.want {
+				t.Fatalf("shouldPoll() = %v, want %v", got, c.want)
+			}
+		})
 	}
 }
