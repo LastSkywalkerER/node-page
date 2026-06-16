@@ -182,9 +182,19 @@ function HostMetrics({ hostId, live }: { hostId: number; live: boolean }) {
   )
 }
 
-function MetaCell({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
+function MetaCell({
+  label,
+  value,
+  mono = true,
+  className,
+}: {
+  label: string
+  value: string
+  mono?: boolean
+  className?: string
+}) {
   return (
-    <div className="min-w-0">
+    <div className={cn('min-w-0', className)}>
       <div className="text-[9px] uppercase tracking-wider text-muted-foreground/80">{label}</div>
       <div className={cn('truncate text-[11px] leading-tight', mono && 'font-mono')} title={value}>
         {value}
@@ -196,6 +206,9 @@ function MetaCell({ label, value, mono = true }: { label: string; value: string;
 function HostCard({ host, guests = [], live }: { host: Host; guests?: Host[]; live: boolean }) {
   const { isConnected, latency, uptime, showUptime, isLoading: connLoading } = useConnectionStatus(host.id)
   const cardTitle = getHostCardTitle(host)
+  // Shares the cache key with HostMetrics' useCPU(host.id) — no extra request.
+  const { data: cpu } = useCPU(host.id)
+  const cpuModel = cpu?.latest?.model_name?.trim()
 
   return (
     <Link to={`/machines/${host.id}/stats`} className="group block cursor-pointer">
@@ -264,6 +277,7 @@ function HostCard({ host, guests = [], live }: { host: Host; guests?: Host[]; li
 
             {/* Compact metadata */}
             <div className="mt-2.5 grid grid-cols-2 gap-x-3 gap-y-1.5">
+              {cpuModel && <MetaCell label="CPU" value={cpuModel} className="col-span-2" />}
               {host.ipv4 && <MetaCell label="IPv4" value={host.ipv4} />}
               {host.virtualization_system && <MetaCell label="Virt" value={host.virtualization_system} />}
               {host.kernel_version && <MetaCell label="Kernel" value={host.kernel_version} />}

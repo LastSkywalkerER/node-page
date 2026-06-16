@@ -27,6 +27,47 @@ func TestConfigMACs(t *testing.T) {
 	}
 }
 
+func TestConfigIPv4(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  map[string]any
+		want string
+	}{
+		{
+			name: "lxc static ip with cidr",
+			cfg:  map[string]any{"net0": "name=eth0,bridge=vmbr0,hwaddr=BC:24:11:00:00:01,ip=192.168.1.50/24,gw=192.168.1.1,type=veth"},
+			want: "192.168.1.50",
+		},
+		{
+			name: "lxc dhcp has no static ip",
+			cfg:  map[string]any{"net0": "name=eth0,bridge=vmbr0,hwaddr=BC:24:11:00:00:01,ip=dhcp,type=veth"},
+			want: "",
+		},
+		{
+			name: "qemu net has no ip field",
+			cfg:  map[string]any{"net0": "virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr0,firewall=1"},
+			want: "",
+		},
+		{
+			name: "ipv6 only is ignored",
+			cfg:  map[string]any{"net0": "name=eth0,bridge=vmbr0,ip6=2001:db8::5/64,type=veth"},
+			want: "",
+		},
+		{
+			name: "second nic carries the static ip",
+			cfg:  map[string]any{"net0": "name=eth0,ip=dhcp,type=veth", "net1": "name=eth1,ip=10.0.0.7/8,type=veth"},
+			want: "10.0.0.7",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ConfigIPv4(c.cfg); got != c.want {
+				t.Errorf("ConfigIPv4 = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestSMBIOSUUID(t *testing.T) {
 	cases := []struct {
 		smbios1 any
