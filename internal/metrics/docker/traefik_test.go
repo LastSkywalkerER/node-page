@@ -135,7 +135,7 @@ func TestEnrichWithTraefikRoutes_AttachesAndSynthesizes(t *testing.T) {
 		{Name: "front-svc.1.bbb", Project: "front-svc", Ports: []DockerPort{}},
 	}}}}
 
-	enrichWithTraefikRoutes(m, routes, nil)
+	enrichWithProxyRoutes(m, routes, nil)
 
 	api := m.Stacks[0].Containers[0]
 	if len(api.Ports) != 1 || api.Ports[0].PublicURL != "https://api.example.com" {
@@ -160,7 +160,7 @@ func TestEnrichWithTraefikRoutes_SkipsAmbiguousCrossProject(t *testing.T) {
 		{Name: "web", Project: "web", Ports: []DockerPort{{PrivatePort: 80, Type: "tcp"}}},
 	}}}}
 
-	enrichWithTraefikRoutes(m, routes, nil)
+	enrichWithProxyRoutes(m, routes, nil)
 
 	for _, c := range m.Stacks[0].Containers {
 		for _, p := range c.Ports {
@@ -179,7 +179,7 @@ func TestEnrichWithTraefikRoutes_AttachesToAllReplicasInOneProject(t *testing.T)
 		{Name: "websvc.2.bbb", Project: "websvc", Ports: []DockerPort{{PrivatePort: 8080, Type: "tcp"}}},
 	}}}}
 
-	enrichWithTraefikRoutes(m, routes, nil)
+	enrichWithProxyRoutes(m, routes, nil)
 
 	for _, c := range m.Stacks[0].Containers {
 		if c.Ports[0].PublicURL != "https://svc.example.com" {
@@ -225,7 +225,7 @@ func TestEnrichWithTraefikRoutes_MultipleDomainsOneService(t *testing.T) {
 		{Name: "ebcenter-app-yxkjot.1.sgmey", Project: "ebcenter-app-yxkjot", Ports: []DockerPort{}},
 	}}}}
 
-	enrichWithTraefikRoutes(m, routes, nil)
+	enrichWithProxyRoutes(m, routes, nil)
 
 	c := m.Stacks[0].Containers[0]
 	urls := map[string]bool{}
@@ -239,7 +239,7 @@ func TestEnrichWithTraefikRoutes_MultipleDomainsOneService(t *testing.T) {
 	}
 
 	// Re-running enrichment (next collection tick) must not duplicate entries.
-	enrichWithTraefikRoutes(m, routes, nil)
+	enrichWithProxyRoutes(m, routes, nil)
 	if n := len(m.Stacks[0].Containers[0].Ports); n != 2 {
 		t.Fatalf("idempotency: got %d port rows after second enrich, want 2", n)
 	}

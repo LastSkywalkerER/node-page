@@ -17,14 +17,20 @@ import (
 	yaml "gopkg.in/yaml.v2"
 )
 
-// traefikRoute is one resolved Traefik file-provider route: a public host rule
-// pointing at an upstream service:port. It is provider-generic — the same
-// format Traefik's file provider uses (dokploy, plain Traefik, etc.).
+// traefikRoute is one resolved reverse-proxy route: a public host rule pointing
+// at an upstream service:port. It is provider-generic — populated from both the
+// Traefik file provider (dokploy, plain Traefik) and nginx / Nginx Proxy
+// Manager configs (see nginx.go).
 type traefikRoute struct {
-	Host         string // public hostname from the Host(`…`) rule
+	Host         string // public hostname from the Host(`…`) rule / server_name
 	Scheme       string // http | https
 	UpstreamHost string // service/container the router forwards to (tasks. stripped)
-	UpstreamPort int    // internal container port the router targets
+	UpstreamPort int    // upstream port: the container's INTERNAL port for a named
+	// upstream, or the host's PUBLISHED port when UpstreamIsIP (NPM "IP:port").
+	// UpstreamIsIP marks an upstream addressed by IP literal rather than a
+	// service/container name (the NPM "forward to 192.168.1.5:8080" case): it is
+	// matched to the container that PUBLISHES UpstreamPort, not by name.
+	UpstreamIsIP bool
 }
 
 // URL returns the external URL for the route, or "" when no host is known.
@@ -270,11 +276,12 @@ func traefikScheme(entryPoints []string, hasTLS, dirHasACME bool, host string) s
 	return "http"
 }
 
-// enrichWithTraefikRoutes attaches Traefik-derived public URLs to each
-// container's ports. A route whose upstream port isn't an already-known port
-// is appended as a synthetic (unpublished) port carrying the URL, so the UI
-// can surface "reachable at <url>" even when the container publishes nothing.
-func enrichWithTraefikRoutes(m *DockerMetric, routes []traefikRoute, logger *log.Logger) {
+// enrichWithProxyRoutes attaches reverse-proxy-derived public URLs (Traefik or
+// nginx/NPM) to each container's ports. A route whose upstream port isn't an
+// already-known port is appended as a synthetic (unpublished) port carrying the
+// URL, so the UI can surface "reachable at <url>" even when the container
+// publishes nothing.
+func enrichWithProxyRoutes(m *DockerMetric, routes []traefikRoute, logger *log.Logger) {
 	if m == nil || len(routes) == 0 {
 		return
 	}
@@ -320,11 +327,26 @@ func enrichWithTraefikRoutes(m *DockerMetric, routes []traefikRoute, logger *log
 	}
 }
 
-// routeMatchesContainer reports whether a Traefik route's upstream host names
-// this container, matching across compose/swarm naming conventions.
+// routeMatchesContainer reports whether a route's upstream names this
+// container. Named upstreams (Traefik services, NPM forward-hostnames) match
+// across compose/swarm naming conventions; an IP-literal upstream (NPM "forward
+// to 192.168.1.5:8080") matches the container that PUBLISHES that host port.
 func routeMatchesContainer(r traefikRoute, c *DockerContainer) bool {
 	h := r.UpstreamHost
 	if h == "" {
+		return false
+	}
+	if r.UpstreamIsIP {
+		// A host port is bound by at most one container, so matching by published
+		// port is unambiguous. Port 0 (unknown) can't be resolved → no match.
+		if r.UpstreamPort == 0 {
+			return false
+		}
+		for _, p := range c.Ports {
+			if p.PublicPort == r.UpstreamPort {
+				return true
+			}
+		}
 		return false
 	}
 	if h == c.Project || h == c.Service || h == c.Name {
@@ -355,13 +377,23 @@ func attachRouteURL(c *DockerContainer, r traefikRoute) {
 		}
 	}
 	for i := range c.Ports {
-		if r.UpstreamPort == 0 || c.Ports[i].PrivatePort == r.UpstreamPort {
+		// Named upstreams target the container's INTERNAL (private) port; an
+		// IP-literal upstream targets the PUBLISHED (host) port.
+		portMatch := r.UpstreamPort == 0
+		if !portMatch {
+			if r.UpstreamIsIP {
+				portMatch = c.Ports[i].PublicPort == r.UpstreamPort
+			} else {
+				portMatch = c.Ports[i].PrivatePort == r.UpstreamPort
+			}
+		}
+		if portMatch {
 			if c.Ports[i].PublicURL == "" {
 				c.Ports[i].PublicURL = u
 				return
 			}
 			// Slot taken by another domain — keep scanning for a free row on the
-			// same private port (an earlier synthetic append may have created one).
+			// same port (an earlier synthetic append may have created one).
 		}
 	}
 	c.Ports = append(c.Ports, DockerPort{PrivatePort: r.UpstreamPort, Type: "tcp", PublicURL: u})
@@ -454,6 +486,13 @@ type TraefikDiscoveryReport struct {
 	ProxyCandidates []string             `json:"proxy_candidates,omitempty"`
 	Dirs            []TraefikDirStatus   `json:"dirs"`
 	Routes          []TraefikRouteStatus `json:"routes"`
+
+	// nginx / Nginx Proxy Manager equivalents (NGINX_DYNAMIC_DIR + discovery).
+	NginxEnvDirs        []string             `json:"nginx_env_dirs,omitempty"`
+	NginxDiscoveredDirs []string             `json:"nginx_discovered_dirs,omitempty"`
+	NginxDefaultDirs    []string             `json:"nginx_default_dirs"`
+	NginxDirs           []TraefikDirStatus   `json:"nginx_dirs"`
+	NginxRoutes         []TraefikRouteStatus `json:"nginx_routes"`
 }
 
 // TraefikDiscoveryReport runs a FRESH discovery (no caches) and simulates route
@@ -461,9 +500,11 @@ type TraefikDiscoveryReport struct {
 // where domain detection breaks on their layout.
 func (c *dockerMetricsCollector) TraefikDiscoveryReport(ctx context.Context) TraefikDiscoveryReport {
 	rep := TraefikDiscoveryReport{
-		EnvDirs:     c.traefikDirs,
-		DefaultDirs: defaultTraefikDirs(),
-		HostRoot:    hostComposeRoot(),
+		EnvDirs:          c.traefikDirs,
+		DefaultDirs:      defaultTraefikDirs(),
+		HostRoot:         hostComposeRoot(),
+		NginxEnvDirs:     c.nginxDirs,
+		NginxDefaultDirs: defaultNginxDirs(),
 	}
 	if c.client == nil || !c.IsDockerAvailable(ctx) {
 		return rep
@@ -485,6 +526,14 @@ func (c *dockerMetricsCollector) TraefikDiscoveryReport(ctx context.Context) Tra
 		rep.DiscoveredDirs = append(rep.DiscoveredDirs, c.introspectProxyContainer(ctx, ci.ID)...)
 	}
 
+	// nginx / NPM config dirs from container introspection (mirrors discoverNginxDirs).
+	for _, ci := range containers {
+		if !isNginxContainer(ci) && !isProxyCandidate(ci) {
+			continue
+		}
+		rep.NginxDiscoveredDirs = append(rep.NginxDiscoveredDirs, c.introspectNginxContainer(ctx, ci.ID)...)
+	}
+
 	all := expandTraefikDirs(append(append(append([]string{}, c.traefikDirs...), rep.DiscoveredDirs...), defaultTraefikDirs()...))
 	for _, d := range all {
 		st := TraefikDirStatus{Path: d}
@@ -499,7 +548,26 @@ func (c *dockerMetricsCollector) TraefikDiscoveryReport(ctx context.Context) Tra
 		rep.Dirs = append(rep.Dirs, st)
 	}
 
-	// Light containers carry exactly what routeMatchesContainer consults.
+	nginxAll := expandTraefikDirs(append(append(append([]string{}, c.nginxDirs...), rep.NginxDiscoveredDirs...), defaultNginxDirs()...))
+	for _, d := range nginxAll {
+		st := TraefikDirStatus{Path: d}
+		if entries, err := os.ReadDir(d); err == nil {
+			st.Readable = true
+			for _, e := range entries {
+				n := e.Name()
+				if e.IsDir() || strings.HasPrefix(n, ".") {
+					continue
+				}
+				if ext := filepath.Ext(n); ext == "" || ext == ".conf" {
+					st.YAMLFiles++ // config-file count (nginx uses .conf, not yaml)
+				}
+			}
+		}
+		rep.NginxDirs = append(rep.NginxDirs, st)
+	}
+
+	// Light containers carry exactly what routeMatchesContainer consults (names
+	// + published ports, the latter for nginx IP-literal upstream matching).
 	light := make([]DockerContainer, 0, len(containers))
 	for _, ci := range containers {
 		name := ""
@@ -507,10 +575,23 @@ func (c *dockerMetricsCollector) TraefikDiscoveryReport(ctx context.Context) Tra
 			name = strings.TrimPrefix(ci.Names[0], "/")
 		}
 		project, svc, _ := resolveProject(ci.Labels, name)
-		light = append(light, DockerContainer{Name: name, Project: project, Service: svc, Labels: ci.Labels})
+		dc := DockerContainer{Name: name, Project: project, Service: svc, Labels: ci.Labels}
+		for _, p := range ci.Ports {
+			dc.Ports = append(dc.Ports, DockerPort{PrivatePort: int(p.PrivatePort), PublicPort: int(p.PublicPort), Type: p.Type})
+		}
+		light = append(light, dc)
 	}
 
-	for _, r := range parseTraefikDirs(all) {
+	rep.Routes = simulateRouteAttachment(parseTraefikDirs(all), light)
+	rep.NginxRoutes = simulateRouteAttachment(parseNginxDirs(nginxAll), light)
+	return rep
+}
+
+// simulateRouteAttachment replays route→container matching (no mutation) for the
+// discovery report, explaining why each route did or didn't land on an app.
+func simulateRouteAttachment(routes []traefikRoute, light []DockerContainer) []TraefikRouteStatus {
+	var out []TraefikRouteStatus
+	for _, r := range routes {
 		st := TraefikRouteStatus{
 			Host: r.Host, URL: r.URL(),
 			UpstreamHost: r.UpstreamHost, UpstreamPort: r.UpstreamPort,
@@ -527,6 +608,8 @@ func (c *dockerMetricsCollector) TraefikDiscoveryReport(ctx context.Context) Tra
 		}
 		sort.Strings(st.MatchedProjects)
 		switch {
+		case r.UpstreamHost == "":
+			st.Reason = "no upstream resolved from config"
 		case len(st.MatchedContainers) == 0:
 			st.Reason = "no container matches the upstream host"
 		case len(projects) > 1:
@@ -534,7 +617,7 @@ func (c *dockerMetricsCollector) TraefikDiscoveryReport(ctx context.Context) Tra
 		default:
 			st.Attached = true
 		}
-		rep.Routes = append(rep.Routes, st)
+		out = append(out, st)
 	}
-	return rep
+	return out
 }

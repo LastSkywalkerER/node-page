@@ -46,6 +46,11 @@ type dockerMetricsCollector struct {
 	// to well-known defaults.
 	traefikDirs []string
 
+	// nginxDirs are the nginx / Nginx Proxy Manager config directories to scan
+	// for per-service public URLs (NGINX_DYNAMIC_DIR). Empty falls back to
+	// well-known defaults (NPM proxy_host dir, /etc/nginx/conf.d, …).
+	nginxDirs []string
+
 	// Container disk sizes are expensive to compute (the daemon walks layer
 	// dirs), so we refresh them only every sizeRefreshInterval and serve cached
 	// values on the fast (every-tick) collection cycles.
@@ -67,6 +72,12 @@ type dockerMetricsCollector struct {
 	// operator-configured traefikDirs.
 	discoveredTraefikDirs []string
 	traefikDiscoveryAt    time.Time
+
+	// nginx config dirs discovered by introspecting the running nginx / NPM
+	// container (its /data or /etc/nginx mounts mapped to host paths). Refreshed
+	// on the same slow cadence; merged with the operator-configured nginxDirs.
+	discoveredNginxDirs []string
+	nginxDiscoveryAt    time.Time
 
 	// Image update checks hit the registry (network), so they run rarely
 	// (updateCheckInterval) in a background goroutine; results are cached per
@@ -131,10 +142,10 @@ type cpuStatsCache struct {
 	timestamp time.Time
 }
 
-// NewDockerCollector creates a new Docker metrics collector. traefikDirs are
-// optional Traefik file-provider dynamic-config directories scanned for
+// NewDockerCollector creates a new Docker metrics collector. traefikDirs /
+// nginxDirs are optional reverse-proxy config directories scanned for
 // per-service public URLs (nil/empty falls back to well-known defaults).
-func NewDockerCollector(logger *log.Logger, traefikDirs []string) DockerMetricsCollector {
+func NewDockerCollector(logger *log.Logger, traefikDirs, nginxDirs []string) DockerMetricsCollector {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	cli := tryOpenDockerClient(ctx, logger)
@@ -148,6 +159,7 @@ func NewDockerCollector(logger *log.Logger, traefikDirs []string) DockerMetricsC
 		imageUpdateCache:   make(map[string]imageUpdateInfo),
 		registryClient:     &http.Client{},
 		traefikDirs:        traefikDirs,
+		nginxDirs:          nginxDirs,
 	}
 }
 
@@ -555,7 +567,11 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 	// merges operator config (TRAEFIK_DYNAMIC_DIR) with dirs discovered from the
 	// running Traefik container itself, then well-known defaults.
 	traefikDirs := append(append([]string{}, c.traefikDirs...), c.discoverTraefikDirs(ctx, containers)...)
-	enrichWithTraefikRoutes(&metric, loadTraefikRoutes(traefikDirs), c.logger)
+	enrichWithProxyRoutes(&metric, loadTraefikRoutes(traefikDirs), c.logger)
+
+	// nginx / Nginx Proxy Manager file-based routes, resolved the same way.
+	nginxDirs := append(append([]string{}, c.nginxDirs...), c.discoverNginxDirs(ctx, containers)...)
+	enrichWithProxyRoutes(&metric, loadNginxRoutes(nginxDirs), c.logger)
 
 	return metric, nil
 }
