@@ -47,6 +47,7 @@ Existing modules: `cpu`, `memory`, `disk`, `network`, `docker`, `sensors`, `host
 | `users/application/token_service.go` | Refresh tokens hashed with SHA-256 |
 | `internal/platform/connectors/` | External data-source registry (Proxmox detection, CRUD, AES-GCM secrets) |
 | `internal/metrics/proxmox/` | PVE API client + leader-only poller (topology + metrics) |
+| `internal/metrics/pbs/` | Proxmox Backup Server API client + leader-only poller (node vitals + datastore/backup health) |
 
 ### Repository interfaces (use for test mocks)
 - `cpu/infrastructure/repositories.CPURepository`
@@ -99,8 +100,11 @@ POST   /settings/deploy-webhook  # admin; save/clear it (persists NODE_STATS_DEP
 GET    /connectors             # admin; environment-detection hints + configured connectors
 POST   /connectors             # admin; connect Proxmox (validates token, encrypts secret, replicates)
 POST   /connectors/proxmox/test  # admin; pre-flight creds → preview (nodes/guests/matched hosts)
+POST   /connectors/pbs         # admin; connect Proxmox Backup Server (validates token, encrypts secret, replicates)
+POST   /connectors/pbs/test    # admin; pre-flight PBS creds → preview (node/datastores)
 POST   /connectors/pexels      # admin; save the dynamic-wallpaper connector (key validated + encrypted)
 GET    /wallpaper              # any user; Pexels proxy — current background (?mode=dark|light, rotates every 5 min)
+GET    /pbs                    # any user; PBS datastore capacity + backup health for ?host_id= (leader-local snapshot)
 PATCH  /connectors/:id         # admin; enable/disable
 DELETE /connectors/:id         # admin; ?remove_hosts=true also drops connector-only host rows
 POST   /connectors/:id/sync    # admin; force a poller resync
@@ -108,6 +112,8 @@ POST   /connectors/:id/sync    # admin; force a poller resync
 All metric endpoints accept `?hours=<float>` (default `0.0833` ≈ 5 min) and `?host_id=<uint>`. **`host_id=0` means this server instance** (resolved via current host MAC). Latest and history are always scoped to that host row; unknown `host_id` returns empty payloads (`latest: null`, empty history). **Metrics are replicated cluster-wide via Raft (`CmdMetricBatch`)**, so any node serves any host's CPU/mem/disk/net/docker history (and a host's data survives it going offline). The frontend is uniform: one REST load per metric on mount, then a **single SSE stream for every host** — the node publishes its own host's metrics each cycle *and* every replicated peer's metrics (`applyMetricBatch` → `broker.Publish`), and the client keeps events whose `collecting_host_id` matches the viewed host. The browser only ever talks to its own node; nodes sync over Raft. **Sensors are not replicated** (`/sensors` returns empty for remote hosts). See [docs/CLUSTER.md](docs/CLUSTER.md) for the full data-flow.
 
 **Connectors & host topology (Proxmox).** Hosts carry topology columns (`host_type`, `parent_mac`, `source`, `external_id`, `guest_status`). A configured **Proxmox connector** (admin → Connectors tab) is polled by the Raft leader (or the standalone node) every 10 s: the PVE node becomes a `hypervisor` host row, guests become `vm`/`lxc` children, and **guests are matched to already-registered agent hosts by NIC MAC** (`UpsertConnectorHost`) so nothing is duplicated — an agent row only gains topology (`agent+connector`), while agent-less guests get connector-fed metrics through the normal `CmdMetricBatch` pipeline. Credential-free probes (DMI / `lxc/<vmid>` cgroup / virtio guest-agent port, honouring `HOST_PROC`/`HOST_SYS`) surface a "running inside Proxmox" hint via `GET /connectors`. Connector rows replicate via Raft (`CmdConnectorUpsert/Delete`) with the token secret AES-GCM-encrypted under the cluster-shared `JWT_SECRET`. The UI nests guest rows inside the hypervisor's machine card / stats page. See [docs/PROXMOX.md](docs/PROXMOX.md). The same registry hosts the **Pexels wallpaper connector** (`internal/platform/wallpaper`): the API key is stored encrypted, browsers fetch the rotating background through the authenticated `GET /wallpaper` proxy (one cached upstream search per hour serves all clients; dark mode requests black-toned photos via Pexels' `color` filter; originals are capped at `w=3840`).
+
+**Proxmox Backup Server connector** (`internal/metrics/pbs`, type `pbs`). PBS exposes a PVE-style API on `:8007` (token auth uses `PBSAPIToken=<id>:<secret>` — note the `:`), reachable whether PBS runs as a Proxmox guest or on a standalone machine. The leader-gated poller (10 s, mirrors the Proxmox one) upserts the PBS node as a host row and feeds CPU/mem/disk(root fs) through the normal replicated metric pipeline (so it appears as a regular machine card). PBS-specific detail — per-datastore capacity + backup/verify/GC health from `/status/datastore-usage` and `/nodes/{node}/tasks` — is kept as an in-memory snapshot on the polling node and served by `GET /pbs?host_id=` to the `frontend/src/widgets/pbs` widget on the PBS stats page. Connector rows replicate via Raft like the Proxmox ones. (PBS exposes no NIC MAC/UUID, so a PBS that is also a Proxmox guest currently shows as its own row rather than linking to the PVE-discovered guest.)
 
 ### Environment variables
 | Variable | Default | Description |

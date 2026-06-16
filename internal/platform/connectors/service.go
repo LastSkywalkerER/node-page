@@ -68,6 +68,8 @@ type Service interface {
 	List(ctx context.Context) (*ListResult, error)
 	TestProxmox(ctx context.Context, req ConnectRequest) (*Preview, error)
 	CreateProxmox(ctx context.Context, req ConnectRequest) (*Connector, error)
+	TestPBS(ctx context.Context, req ConnectRequest) (*Preview, error)
+	CreatePBS(ctx context.Context, req ConnectRequest) (*Connector, error)
 	SavePexels(ctx context.Context, req PexelsRequest) (*Connector, error)
 	SetEnabled(ctx context.Context, id uint, enabled bool) (*Connector, error)
 	Delete(ctx context.Context, id uint, removeHosts bool) error
@@ -84,6 +86,7 @@ type service struct {
 	detector      *Detector
 	cipher        *Cipher
 	proxmoxProber Prober
+	pbsProber     Prober
 	pexelsProber  PexelsProber
 	raft          RaftReplicator
 
@@ -92,7 +95,7 @@ type service struct {
 }
 
 // NewService wires the connector registry.
-func NewService(logger *log.Logger, repo Repository, hostRepo hosts.Repository, detector *Detector, cipher *Cipher, proxmoxProber Prober, pexelsProber PexelsProber, raft RaftReplicator) Service {
+func NewService(logger *log.Logger, repo Repository, hostRepo hosts.Repository, detector *Detector, cipher *Cipher, proxmoxProber, pbsProber Prober, pexelsProber PexelsProber, raft RaftReplicator) Service {
 	return &service{
 		logger:        logger,
 		repo:          repo,
@@ -100,6 +103,7 @@ func NewService(logger *log.Logger, repo Repository, hostRepo hosts.Repository, 
 		detector:      detector,
 		cipher:        cipher,
 		proxmoxProber: proxmoxProber,
+		pbsProber:     pbsProber,
 		pexelsProber:  pexelsProber,
 		raft:          raft,
 	}
@@ -189,6 +193,57 @@ func (s *service) CreateProxmox(ctx context.Context, req ConnectRequest) (*Conne
 	}
 	s.TriggerSync()
 	return s.repo.GetByFingerprint(ctx, conn.Fingerprint)
+}
+
+func (s *service) TestPBS(ctx context.Context, req ConnectRequest) (*Preview, error) {
+	res, err := s.probePBS(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	// PBS has no guests to match against registered hosts; the preview just
+	// reports reachability + datastore count (carried in GuestCount).
+	return &Preview{ProbeResult: *res}, nil
+}
+
+func (s *service) CreatePBS(ctx context.Context, req ConnectRequest) (*Connector, error) {
+	res, err := s.probePBS(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	secretEnc, err := s.cipher.Encrypt(req.Secret)
+	if err != nil {
+		return nil, err
+	}
+	conn := Connector{
+		Type:          TypePBS,
+		Endpoint:      strings.TrimRight(strings.TrimSpace(req.Endpoint), "/"),
+		TokenID:       strings.TrimSpace(req.TokenID),
+		SecretEnc:     secretEnc,
+		SkipTLSVerify: req.SkipTLSVerify,
+		Fingerprint:   res.Fingerprint,
+		Enabled:       true,
+	}
+	if err := s.persistUpsert(ctx, conn); err != nil {
+		return nil, err
+	}
+	s.TriggerSync()
+	return s.repo.GetByFingerprint(ctx, conn.Fingerprint)
+}
+
+func (s *service) probePBS(ctx context.Context, req ConnectRequest) (*ProbeResult, error) {
+	res, err := s.pbsProber.Probe(ctx,
+		strings.TrimRight(strings.TrimSpace(req.Endpoint), "/"),
+		strings.TrimSpace(req.TokenID),
+		req.Secret,
+		req.SkipTLSVerify,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if res.Fingerprint == "" {
+		return nil, fmt.Errorf("pbs probe returned no fingerprint")
+	}
+	return res, nil
 }
 
 func (s *service) SavePexels(ctx context.Context, req PexelsRequest) (*Connector, error) {

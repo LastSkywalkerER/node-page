@@ -38,6 +38,8 @@ const windowsIcon: BrandIcon = {
 
 const platformIcons: Record<string, BrandIcon> = {
   proxmox: siProxmox,
+  'proxmox-backup-server': siProxmox,
+  pbs: siProxmox,
   ubuntu: siUbuntu,
   debian: siDebian,
   devuan: siDebian,

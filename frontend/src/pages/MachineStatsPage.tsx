@@ -10,6 +10,7 @@ import SensorsWidget from '@/widgets/sensors/SensorsWidget'
 import { MachineWorkspaceBar } from '@/shared/components/MachineWorkspaceBar'
 import { useHosts } from '@/widgets/hosts/useHosts'
 import { GuestList } from '@/widgets/hosts/GuestList'
+import { PBSWidget } from '@/widgets/pbs/PBSWidget'
 
 export function MachineStatsPage() {
   const { id } = useParams<{ id: string }>()
@@ -21,6 +22,8 @@ export function MachineStatsPage() {
   // Hypervisor pages list their guests minimized below the metric widgets.
   const { data: hostsData } = useHosts()
   const guests = (hostsData?.hosts ?? []).filter((h) => h.parent_id === hostId && h.id !== hostId)
+  const host = (hostsData?.hosts ?? []).find((h) => h.id === hostId)
+  const isPBS = host?.platform === 'proxmox-backup-server'
 
   return (
     <div className="mx-auto max-w-7xl">
@@ -30,6 +33,13 @@ export function MachineStatsPage() {
         <ErrorBoundary name="Memory"><MemoryWidget hostId={hostId} /></ErrorBoundary>
         <ErrorBoundary name="Disk"><DiskWidget hostId={hostId} /></ErrorBoundary>
         <ErrorBoundary name="Network"><NetworkWidget hostId={hostId} /></ErrorBoundary>
+        {isPBS && (
+          <ErrorBoundary name="Backup Server">
+            <div className="md:col-span-2 xl:col-span-3">
+              <PBSWidget hostId={hostId} />
+            </div>
+          </ErrorBoundary>
+        )}
         {guests.length > 0 && (
           <ErrorBoundary name="Guests">
             <div className="md:col-span-2 xl:col-span-3">

@@ -19,6 +19,9 @@ import "time"
 // Connector types.
 const (
 	TypeProxmox = "proxmox"
+	// TypePBS is the Proxmox Backup Server source (PVE-style API on :8007).
+	// Fingerprint "pbs/<endpoint-host>"; one row per backup server.
+	TypePBS = "pbs"
 	// TypePexels is the dynamic-wallpaper source (api.pexels.com). One per
 	// install, fingerprint PexelsFingerprint; the search query lives in Config.
 	TypePexels = "pexels"

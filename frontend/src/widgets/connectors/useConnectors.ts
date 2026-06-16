@@ -67,6 +67,37 @@ export function useCreateProxmox() {
   });
 }
 
+export function useTestPBS() {
+  return useMutation<ConnectorPreview, Error, ConnectRequest>({
+    mutationFn: async (req) => {
+      try {
+        const { data } = await apiClient.post('/connectors/pbs/test', req);
+        return ConnectorPreviewSchema.parse(data.preview);
+      } catch (e) {
+        throw apiError(e);
+      }
+    },
+  });
+}
+
+export function useCreatePBS() {
+  const queryClient = useQueryClient();
+  return useMutation<Connector, Error, ConnectRequest>({
+    mutationFn: async (req) => {
+      try {
+        const { data } = await apiClient.post('/connectors/pbs', req);
+        return data.connector as Connector;
+      } catch (e) {
+        throw apiError(e);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['connectors'] });
+      queryClient.invalidateQueries({ queryKey: ['hosts'] });
+    },
+  });
+}
+
 export function useSavePexels() {
   const queryClient = useQueryClient();
   return useMutation<Connector, Error, { api_key: string; query: string }>({
