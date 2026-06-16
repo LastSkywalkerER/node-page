@@ -97,7 +97,7 @@ func Run() {
 	startTime := time.Now()
 
 	logger.Info("Initializing dependency injection container...", "db_type", cfg.Database.Type, "db_dsn", config.MaskDSN(cfg.Database.DSN))
-	container, err := di.NewContainer(logger, cfg.Database, cfg.JWTSecret, cfg.RefreshSecret, startTime, cfg.Raft, cfg.TraefikDynamicDirs)
+	container, err := di.NewContainer(logger, cfg.Database, cfg.JWTSecret, cfg.RefreshSecret, startTime, cfg.Raft, cfg.TraefikDynamicDirs, cfg.NginxDynamicDirs)
 	if err != nil {
 		logger.Fatal("Failed to initialize DI container", "error", err)
 	}

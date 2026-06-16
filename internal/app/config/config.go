@@ -73,6 +73,14 @@ type Config struct {
 	// must be reachable from this process (bind-mounted in Docker deployments).
 	TraefikDynamicDirs []string
 
+	// NginxDynamicDirs are filesystem paths to nginx / Nginx Proxy Manager
+	// config directories (NGINX_DYNAMIC_DIR, colon-separated) scanned to derive
+	// per-service public URLs for the Applications view, mirroring
+	// TraefikDynamicDirs. Empty falls back to well-known defaults (NPM's
+	// proxy_host dir, /etc/nginx/conf.d, …) probed at read time. The paths must
+	// be reachable from this process (bind-mounted in Docker deployments).
+	NginxDynamicDirs []string
+
 	// Raft holds optional consensus / cross-cluster sync configuration.
 	Raft RaftConfig
 }
@@ -161,6 +169,14 @@ func Load() (*Config, error) {
 		for _, p := range strings.Split(raw, ":") {
 			if p = strings.TrimSpace(p); p != "" {
 				config.TraefikDynamicDirs = append(config.TraefikDynamicDirs, p)
+			}
+		}
+	}
+
+	if raw := strings.TrimSpace(getEnv("NGINX_DYNAMIC_DIR", "")); raw != "" {
+		for _, p := range strings.Split(raw, ":") {
+			if p = strings.TrimSpace(p); p != "" {
+				config.NginxDynamicDirs = append(config.NginxDynamicDirs, p)
 			}
 		}
 	}

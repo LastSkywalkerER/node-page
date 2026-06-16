@@ -142,7 +142,7 @@ func (c *Container) SetPostActivateHook(fn func()) {
 // pieces (picker, sender, receiver) are only constructed when both
 // raftCfg.Enabled and raftCfg.Bridge.Enabled are true and a shared secret
 // is present.
-func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret, refreshSecret string, startTime time.Time, raftCfg config.RaftConfig, traefikDirs []string) (*Container, error) {
+func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret, refreshSecret string, startTime time.Time, raftCfg config.RaftConfig, traefikDirs, nginxDirs []string) (*Container, error) {
 	container := &Container{
 		logger:    logger,
 		broker:    stream.NewBroker(),
@@ -181,7 +181,7 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 	container.memoryService = memory.NewService(container.logger, container.memoryRepository)
 	container.diskService = disk.NewService(container.logger, container.diskRepository)
 	container.networkService = network.NewService(container.logger, container.networkRepository)
-	container.dockerService = docker.NewService(container.logger, docker.NewDockerCollector(container.logger, traefikDirs), container.dockerRepository)
+	container.dockerService = docker.NewService(container.logger, docker.NewDockerCollector(container.logger, traefikDirs, nginxDirs), container.dockerRepository)
 	container.hostService = hosts.NewService(container.logger, container.hostRepository)
 	container.healthService = health.NewService(container.logger, container.hostRepository, startTime)
 	container.sensorsService = sensors.NewService(container.logger)
