@@ -97,6 +97,7 @@ type cachedGuestConfig struct {
 	macs      []string
 	ostype    string
 	uuid      string // smbios1 UUID (QEMU only)
+	ip        string // resolved IPv4 (LXC config/runtime, QEMU guest agent); "" if unknown
 	fetchedAt time.Time
 }
 
@@ -537,6 +538,7 @@ func (p *Poller) syncGuest(ctx context.Context, client *Client, conn connectors.
 		HostInfo: hosts.HostInfo{
 			Name:           r.Name,
 			MacAddress:     mac,
+			IPv4:           cfg.ip,
 			OS:             osName,
 			Platform:       platform,
 			PlatformFamily: family,
@@ -777,15 +779,47 @@ func (p *Poller) guestIdentity(ctx context.Context, client *Client, connID uint,
 		if v, ok := cfg["ostype"].(string); ok {
 			out.ostype = v
 		}
+		out.ip = ConfigIPv4(cfg) // LXC static ip=...; "" for dhcp / QEMU
 	} else {
 		p.deps.Logger.Debug("proxmox: guest config unavailable", "node", r.Node, "vmid", r.VMID, "error", err)
 		out.fetchedAt = time.Now().Add(identityTTL - 30*time.Second) // retry soon
+	}
+
+	// Resolve a runtime IP the static config didn't carry (DHCP LXC / QEMU),
+	// best-effort and only while running. QEMU needs the qemu-guest-agent.
+	if out.ip == "" && r.Status == "running" {
+		out.ip = p.guestRuntimeIPv4(ctx, client, r)
 	}
 
 	p.mu.Lock()
 	p.guestCfg[key] = out
 	p.mu.Unlock()
 	return out
+}
+
+// guestRuntimeIPv4 best-effort resolves a running guest's IPv4 from PVE's
+// runtime endpoints: the LXC interfaces list, or the QEMU guest agent (no agent
+// → error → ""). Returns "" on any failure. Cached by the guestIdentity TTL.
+func (p *Poller) guestRuntimeIPv4(ctx context.Context, client *Client, r Resource) string {
+	switch r.Type {
+	case "lxc":
+		ifaces, err := client.LXCInterfaces(ctx, r.Node, r.VMID)
+		if err != nil {
+			p.deps.Logger.Debug("proxmox: lxc interfaces unavailable", "node", r.Node, "vmid", r.VMID, "error", err)
+			return ""
+		}
+		return firstLXCIPv4(ifaces)
+	case "qemu":
+		ips, err := client.GuestAgentInterfaces(ctx, r.Node, r.VMID)
+		if err != nil {
+			p.deps.Logger.Debug("proxmox: qemu guest agent unavailable", "node", r.Node, "vmid", r.VMID, "error", err)
+			return ""
+		}
+		if len(ips) > 0 {
+			return ips[0]
+		}
+	}
+	return ""
 }
 
 // upsertHost routes the host write through Raft (replicated) or directly.

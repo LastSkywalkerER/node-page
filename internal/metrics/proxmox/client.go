@@ -268,6 +268,63 @@ func (c *Client) GuestConfig(ctx context.Context, node, kind string, vmid int) (
 	return cfg, nil
 }
 
+// LXCNetIface is one row of /nodes/{node}/lxc/{vmid}/interfaces — the running
+// container's runtime interfaces, used to resolve a DHCP-assigned IP the static
+// config (ip=dhcp) doesn't carry. Inet/Inet6 may include a /CIDR suffix.
+type LXCNetIface struct {
+	Name   string `json:"name"`
+	HWAddr string `json:"hwaddr,omitempty"`
+	Inet   string `json:"inet,omitempty"`
+	Inet6  string `json:"inet6,omitempty"`
+}
+
+// LXCInterfaces lists a running container's runtime interfaces. Errors when the
+// CT is stopped — callers treat that as "no IP".
+func (c *Client) LXCInterfaces(ctx context.Context, node string, vmid int) ([]LXCNetIface, error) {
+	var items []LXCNetIface
+	path := fmt.Sprintf("/nodes/%s/lxc/%d/interfaces", url.PathEscape(node), vmid)
+	err := c.get(ctx, path, &items)
+	return items, err
+}
+
+// qemuAgentIface mirrors one entry of the QEMU guest-agent
+// network-get-interfaces result.
+type qemuAgentIface struct {
+	Name        string `json:"name"`
+	IPAddresses []struct {
+		Type    string `json:"ip-address-type"` // "ipv4" | "ipv6"
+		Address string `json:"ip-address"`
+	} `json:"ip-addresses"`
+}
+
+// GuestAgentInterfaces queries a running QEMU guest's agent for its non-loopback
+// IPv4 addresses. Requires qemu-guest-agent installed AND running in the guest;
+// returns an error otherwise (the caller treats that as "no IP").
+func (c *Client) GuestAgentInterfaces(ctx context.Context, node string, vmid int) ([]string, error) {
+	var res struct {
+		Result []qemuAgentIface `json:"result"`
+	}
+	path := fmt.Sprintf("/nodes/%s/qemu/%d/agent/network-get-interfaces", url.PathEscape(node), vmid)
+	if err := c.get(ctx, path, &res); err != nil {
+		return nil, err
+	}
+	var ips []string
+	for _, nf := range res.Result {
+		if strings.EqualFold(nf.Name, "lo") {
+			continue
+		}
+		for _, a := range nf.IPAddresses {
+			if !strings.EqualFold(a.Type, "ipv4") {
+				continue
+			}
+			if ip := parseIPv4(a.Address); ip != "" && !net.ParseIP(ip).IsLoopback() {
+				ips = append(ips, ip)
+			}
+		}
+	}
+	return ips, nil
+}
+
 // qemu net device models whose key carries the MAC ("virtio=AA:BB:…").
 var qemuNicModels = map[string]bool{
 	"virtio": true, "e1000": true, "e1000e": true, "e1000-82540em": true,
@@ -302,6 +359,59 @@ func ConfigMACs(cfg map[string]any) []string {
 		}
 	}
 	return macs
+}
+
+// ConfigIPv4 extracts a static IPv4 from a guest config's netN lines (LXC
+// `ip=192.168.1.5/24`). Returns "" for dhcp/manual/unset and for QEMU (whose
+// netN never carries an ip=). The CIDR suffix is stripped.
+func ConfigIPv4(cfg map[string]any) string {
+	for key, raw := range cfg {
+		if !strings.HasPrefix(key, "net") {
+			continue
+		}
+		val, ok := raw.(string)
+		if !ok {
+			continue
+		}
+		for _, part := range strings.Split(val, ",") {
+			kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
+			if len(kv) != 2 || strings.ToLower(kv[0]) != "ip" {
+				continue
+			}
+			if ip := parseIPv4(kv[1]); ip != "" {
+				return ip
+			}
+		}
+	}
+	return ""
+}
+
+// parseIPv4 strips an optional /CIDR suffix and returns the address only if it
+// is a valid IPv4 literal (rejects "dhcp", "manual", IPv6).
+func parseIPv4(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		s = s[:i]
+	}
+	ip := net.ParseIP(s)
+	if ip == nil || ip.To4() == nil {
+		return ""
+	}
+	return ip.String()
+}
+
+// firstLXCIPv4 returns the first non-loopback IPv4 from a running container's
+// runtime interfaces (LXCInterfaces).
+func firstLXCIPv4(ifaces []LXCNetIface) string {
+	for _, nf := range ifaces {
+		if strings.EqualFold(nf.Name, "lo") {
+			continue
+		}
+		if ip := parseIPv4(nf.Inet); ip != "" && !net.ParseIP(ip).IsLoopback() {
+			return ip
+		}
+	}
+	return ""
 }
 
 // SMBIOSUUID extracts the guest UUID from a QEMU config's `smbios1` value
