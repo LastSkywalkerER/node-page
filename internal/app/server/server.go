@@ -45,6 +45,7 @@ import (
 	docker "system-stats/internal/metrics/docker"
 	memory "system-stats/internal/metrics/memory"
 	network "system-stats/internal/metrics/network"
+	pbs "system-stats/internal/metrics/pbs"
 	proxmox "system-stats/internal/metrics/proxmox"
 	sensors "system-stats/internal/metrics/sensors"
 	appicons "system-stats/internal/platform/appicons"
@@ -212,6 +213,7 @@ func Run() {
 		connDetector,
 		connCipher,
 		proxmox.NewProber(),
+		pbs.NewProber(),
 		pexelsClient,
 		container.GetRaftReplicator(),
 	)
@@ -238,8 +240,31 @@ func Run() {
 			}
 		},
 	})
-	connectorsSvc.SetSyncTrigger(pvePoller.TriggerSync)
+	pbsPoller := pbs.NewPoller(pbs.PollerDeps{
+		Logger:     logger,
+		Connectors: container.GetConnectorRepository(),
+		Cipher:     connCipher,
+		HostRepo:   container.GetHostRepository(),
+		Raft:       container.GetRaftReplicator(),
+		RaftSvc:    container.GetRaftService(),
+		CPURepo:    container.GetCPURepository(),
+		MemRepo:    container.GetMemoryRepository(),
+		DiskRepo:   container.GetDiskRepository(),
+		Publish:    container.GetBroker().Publish,
+		BroadcastMetrics: func(ctx context.Context, batch raftcluster.MetricBatchPayload) {
+			if s := container.GetMetricSender(); s != nil {
+				s.Broadcast(ctx, batch)
+			}
+		},
+	})
+	pbsHandler := pbs.NewHandler(pbsPoller)
+	// "sync now" / post-connect resync wakes both pollers (one connector type each).
+	connectorsSvc.SetSyncTrigger(func() {
+		pvePoller.TriggerSync()
+		pbsPoller.TriggerSync()
+	})
 	go pvePoller.Run(appCtx)
+	go pbsPoller.Run(appCtx)
 
 	historicalMetricsService := container.GetHistoricalMetricsService()
 	retentionSvc := retention.NewService(container.GetDB(), logger, cfg.RetentionDays, container.GetRefreshTokenRepository())
@@ -412,7 +437,7 @@ func Run() {
 		go startMetrics()
 	}
 
-	router := setupRouter(container, startTime, logger, cfg, onSetupComplete, connectorsSvc, wallpaperSvc)
+	router := setupRouter(container, startTime, logger, cfg, onSetupComplete, connectorsSvc, wallpaperSvc, pbsHandler)
 
 	server := &http.Server{
 		Addr:         cfg.Addr,
@@ -463,7 +488,7 @@ func Run() {
 }
 
 // setupRouter configures the Gin router with all routes, middleware, and handlers.
-func setupRouter(container *di.Container, startTime time.Time, logger *log.Logger, cfg *config.Config, onSetupComplete func(), connectorsSvc connectors.Service, wallpaperSvc *wallpaper.Service) *gin.Engine {
+func setupRouter(container *di.Container, startTime time.Time, logger *log.Logger, cfg *config.Config, onSetupComplete func(), connectorsSvc connectors.Service, wallpaperSvc *wallpaper.Service, pbsHandler *pbs.Handler) *gin.Engine {
 	router := gin.New()
 	// TrustedProxies controls whether X-Forwarded-* headers are honored.
 	// Empty list = trust none (ignore X-Forwarded-For/Host/Proto). Safe default.
@@ -758,10 +783,15 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.GET("/connectors", middleware.RequireAdmin(), connectorsHandler.HandleList)
 		authAPI.POST("/connectors", middleware.RequireAdmin(), connectorsHandler.HandleCreateProxmox)
 		authAPI.POST("/connectors/proxmox/test", middleware.RequireAdmin(), connectorsHandler.HandleTestProxmox)
+		authAPI.POST("/connectors/pbs", middleware.RequireAdmin(), connectorsHandler.HandleCreatePBS)
+		authAPI.POST("/connectors/pbs/test", middleware.RequireAdmin(), connectorsHandler.HandleTestPBS)
 		authAPI.POST("/connectors/pexels", middleware.RequireAdmin(), connectorsHandler.HandleSavePexels)
 		authAPI.PATCH("/connectors/:id", middleware.RequireAdmin(), connectorsHandler.HandleUpdate)
 		authAPI.DELETE("/connectors/:id", middleware.RequireAdmin(), connectorsHandler.HandleDelete)
 		authAPI.POST("/connectors/:id/sync", middleware.RequireAdmin(), connectorsHandler.HandleSync)
+
+		// Proxmox Backup Server datastore/backup detail (any signed-in user).
+		authAPI.GET("/pbs", pbsHandler.HandleGet)
 
 		// Dynamic wallpaper (any signed-in user): proxies the Pexels connector
 		// so the API key never reaches the browser.

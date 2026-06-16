@@ -90,6 +90,56 @@ func (h *Handler) HandleCreateProxmox(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"connector": conn})
 }
 
+// HandleTestPBS validates Proxmox Backup Server credentials without persisting.
+//
+// @Summary     Test a Proxmox Backup Server connection
+// @Description Validates endpoint + API token and returns a preview (node, datastore count). Nothing is persisted. Admin only.
+// @Tags        connectors
+// @Accept      json
+// @Produce     json
+// @Success     200 {object} map[string]interface{}
+// @Failure     400 {object} map[string]string
+// @Security    BearerAuth
+// @Router      /connectors/pbs/test [post]
+func (h *Handler) HandleTestPBS(c *gin.Context) {
+	var req ConnectRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "endpoint, token_id and secret are required"})
+		return
+	}
+	preview, err := h.service.TestPBS(c.Request.Context(), req)
+	if err != nil {
+		h.respondProbeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"preview": preview})
+}
+
+// HandleCreatePBS validates and persists a Proxmox Backup Server connector.
+//
+// @Summary     Connect Proxmox Backup Server
+// @Description Validates the credentials, encrypts the secret and saves the connector (replicated cluster-wide when Raft is on). Re-connecting the same PBS (same host) updates credentials in place. Admin only.
+// @Tags        connectors
+// @Accept      json
+// @Produce     json
+// @Success     200 {object} map[string]interface{}
+// @Failure     400 {object} map[string]string
+// @Security    BearerAuth
+// @Router      /connectors/pbs [post]
+func (h *Handler) HandleCreatePBS(c *gin.Context) {
+	var req ConnectRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "endpoint, token_id and secret are required"})
+		return
+	}
+	conn, err := h.service.CreatePBS(c.Request.Context(), req)
+	if err != nil {
+		h.respondProbeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"connector": conn})
+}
+
 // HandleSavePexels validates and persists the dynamic-wallpaper connector.
 //
 // @Summary     Save the Pexels wallpaper connector

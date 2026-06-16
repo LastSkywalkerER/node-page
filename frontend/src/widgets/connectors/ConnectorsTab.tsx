@@ -11,7 +11,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/shared/ui/switch'
 import { OSIcon } from '@/shared/components/OSIcon'
 import { cn } from '@/lib/utils'
-import { useConnectors, useTestProxmox, useCreateProxmox, useSavePexels, useToggleConnector, useDeleteConnector, useSyncConnector } from './useConnectors'
+import { useConnectors, useTestProxmox, useCreateProxmox, useTestPBS, useCreatePBS, useSavePexels, useToggleConnector, useDeleteConnector, useSyncConnector } from './useConnectors'
 import { useQueryClient } from '@tanstack/react-query'
 import type { Connector, ConnectorPreview, DiscoveredHint } from './schemas'
 
@@ -75,18 +75,58 @@ function HintCard({ hint, onConnect }: { hint: DiscoveredHint; onConnect: (hint:
   )
 }
 
-function ConnectForm({ suggestedEndpoint, onDone }: { suggestedEndpoint?: string; onDone: () => void }) {
+type ConnectKind = 'proxmox' | 'pbs'
+
+// Per-kind copy/config for the shared connect form. Proxmox VE and Proxmox
+// Backup Server share the same token-auth flow; only ports, names, the default
+// role and the preview line differ.
+const KIND_COPY: Record<ConnectKind, {
+  product: string
+  port: string
+  endpointPlaceholder: string
+  tokenPlaceholder: string
+  role: string
+  permPath: string
+  successToast: string
+}> = {
+  proxmox: {
+    product: 'Proxmox',
+    port: '8006',
+    endpointPlaceholder: 'https://192.168.1.2:8006',
+    tokenPlaceholder: 'root@pam!node-stats',
+    role: 'PVEAuditor',
+    permPath: 'Datacenter → Permissions',
+    successToast: 'Proxmox connected — discovering machines…',
+  },
+  pbs: {
+    product: 'Proxmox Backup Server',
+    port: '8007',
+    endpointPlaceholder: 'https://192.168.1.3:8007',
+    tokenPlaceholder: 'monitor@pbs!node-stats',
+    role: 'Audit',
+    permPath: 'Configuration → Access Control → Permissions',
+    successToast: 'Proxmox Backup Server connected — fetching status…',
+  },
+}
+
+function ConnectForm({ kind = 'proxmox', suggestedEndpoint, onDone }: { kind?: ConnectKind; suggestedEndpoint?: string; onDone: () => void }) {
+  const copy = KIND_COPY[kind]
   const [endpoint, setEndpoint] = useState(suggestedEndpoint ?? 'https://')
   const [tokenId, setTokenId] = useState('')
   const [secret, setSecret] = useState('')
   const [skipVerify, setSkipVerify] = useState(true)
   const [preview, setPreview] = useState<ConnectorPreview | null>(null)
-  // Errors render inline (and survive) — PVE failures like the Privilege
-  // Separation pitfall carry multi-line fix instructions a toast would eat.
+  // Errors render inline (and survive) — privilege-separation failures carry
+  // multi-line fix instructions a toast would eat.
   const [errMsg, setErrMsg] = useState<string | null>(null)
 
-  const test = useTestProxmox()
-  const create = useCreateProxmox()
+  // Both kinds' hooks are created unconditionally (rules of hooks); we pick by kind.
+  const testPve = useTestProxmox()
+  const createPve = useCreateProxmox()
+  const testPbs = useTestPBS()
+  const createPbs = useCreatePBS()
+  const test = kind === 'pbs' ? testPbs : testPve
+  const create = kind === 'pbs' ? createPbs : createPve
 
   const req = { endpoint, token_id: tokenId, secret, skip_tls_verify: skipVerify }
   const canSubmit = endpoint.trim() !== '' && tokenId.trim() !== '' && secret.trim() !== ''
@@ -107,7 +147,7 @@ function ConnectForm({ suggestedEndpoint, onDone }: { suggestedEndpoint?: string
   const onSave = () =>
     create.mutate(req, {
       onSuccess: () => {
-        toast.success('Proxmox connected — discovering machines…')
+        toast.success(copy.successToast)
         onDone()
       },
       onError: (e) => {
@@ -120,22 +160,22 @@ function ConnectForm({ suggestedEndpoint, onDone }: { suggestedEndpoint?: string
     <div className="space-y-3 rounded-lg border border-border/60 p-4 dark:border-white/10">
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5">
-          <Label htmlFor="pve-endpoint">API endpoint</Label>
+          <Label htmlFor="conn-endpoint">API endpoint</Label>
           <Input
-            id="pve-endpoint"
-            placeholder="https://192.168.1.2:8006"
+            id="conn-endpoint"
+            placeholder={copy.endpointPlaceholder}
             value={endpoint}
             onChange={(e) => setEndpoint(e.target.value)}
           />
           <p className="text-[11px] text-muted-foreground">
-            The address you open the Proxmox web UI on — same host, port <span className="font-mono">8006</span>.
+            The address you open the {copy.product} web UI on — same host, port <span className="font-mono">{copy.port}</span>.
           </p>
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="pve-token-id">API token id</Label>
+          <Label htmlFor="conn-token-id">API token id</Label>
           <Input
-            id="pve-token-id"
-            placeholder="root@pam!node-stats"
+            id="conn-token-id"
+            placeholder={copy.tokenPlaceholder}
             value={tokenId}
             onChange={(e) => setTokenId(e.target.value)}
           />
@@ -145,28 +185,27 @@ function ConnectForm({ suggestedEndpoint, onDone }: { suggestedEndpoint?: string
         </div>
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="pve-secret">Token secret</Label>
+        <Label htmlFor="conn-secret">Token secret</Label>
         <Input
-          id="pve-secret"
+          id="conn-secret"
           type="password"
           placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
           value={secret}
           onChange={(e) => setSecret(e.target.value)}
         />
         <p className="text-[11px] text-muted-foreground">
-          The UUID Proxmox shows <em>once</em> when the token is created. Lost it? Just create a new token.
+          The UUID {copy.product} shows <em>once</em> when the token is created. Lost it? Just create a new token.
         </p>
       </div>
       <div className="rounded-md border border-border/50 bg-muted/15 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground dark:border-white/8">
-        <span className="font-medium text-foreground">No token yet? Two steps in the Proxmox UI</span> (read-only access):
+        <span className="font-medium text-foreground">No token yet? Two steps in the {copy.product} UI</span> (read-only access):
         <ol className="ml-4 mt-1 list-decimal space-y-0.5">
           <li>
-            Datacenter → Permissions → <span className="font-mono">API Tokens</span> → Add: user{' '}
-            <span className="font-mono">root@pam</span>, Token ID <span className="font-mono">node-stats</span> → copy the secret.
+            {copy.permPath} → <span className="font-mono">API Tokens</span> → Add → copy the secret.
           </li>
           <li>
-            Permissions → Add → <span className="font-mono">API Token Permission</span>: path <span className="font-mono">/</span>,
-            token <span className="font-mono">root@pam!node-stats</span>, role <span className="font-mono">PVEAuditor</span>.
+            {copy.permPath} → Add → <span className="font-mono">API Token Permission</span>: path <span className="font-mono">/</span>,
+            your token, role <span className="font-mono">{copy.role}</span>.
             Without this the token authenticates but sees nothing.
           </li>
         </ol>
@@ -175,7 +214,7 @@ function ConnectForm({ suggestedEndpoint, onDone }: { suggestedEndpoint?: string
         <Switch checked={skipVerify} onCheckedChange={setSkipVerify} />
         Skip TLS certificate verification
         <ShieldAlert className="h-3.5 w-3.5 text-amber-400" />
-        <span className="text-[11px]">(Proxmox ships a self-signed certificate by default)</span>
+        <span className="text-[11px]">({copy.product} ships a self-signed certificate by default)</span>
       </label>
 
       {errMsg && (
@@ -187,8 +226,13 @@ function ConnectForm({ suggestedEndpoint, onDone }: { suggestedEndpoint?: string
       {preview && (
         <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-xs">
           <span className="font-medium text-emerald-500 dark:text-emerald-400">Reachable.</span>{' '}
-          <span className="font-mono">{preview.cluster_name}</span> · PVE {preview.version} · {preview.nodes.length}{' '}
-          node{preview.nodes.length === 1 ? '' : 's'} · {preview.guest_count} guest{preview.guest_count === 1 ? '' : 's'}
+          <span className="font-mono">{preview.cluster_name}</span> · {copy.product} {preview.version} · {preview.nodes.length}{' '}
+          node{preview.nodes.length === 1 ? '' : 's'}
+          {kind === 'pbs' ? (
+            <> · {preview.guest_count} datastore{preview.guest_count === 1 ? '' : 's'}</>
+          ) : (
+            <> · {preview.guest_count} guest{preview.guest_count === 1 ? '' : 's'}</>
+          )}
           {preview.matched_hosts > 0 && (
             <> · <span className="text-emerald-500 dark:text-emerald-400">{preview.matched_hosts} already registered here (will be linked, not duplicated)</span></>
           )}
@@ -430,6 +474,7 @@ export function ConnectorsTab() {
   const { data, isLoading } = useConnectors()
   const [formHint, setFormHint] = useState<DiscoveredHint | null>(null)
   const [formOpen, setFormOpen] = useState(false)
+  const [formKind, setFormKind] = useState<ConnectKind>('proxmox')
 
   const discovered = data?.discovered ?? []
   const configured = (data?.configured ?? []).filter((c) => c.type !== 'pexels')
@@ -459,6 +504,7 @@ export function ConnectorsTab() {
                 hint={hint}
                 onConnect={(h) => {
                   setFormHint(h)
+                  setFormKind('proxmox')
                   setFormOpen(true)
                 }}
               />
@@ -466,6 +512,7 @@ export function ConnectorsTab() {
 
             {formOpen ? (
               <ConnectForm
+                kind={formKind}
                 suggestedEndpoint={formHint?.suggested_endpoint || undefined}
                 onDone={() => {
                   setFormOpen(false)
@@ -473,11 +520,16 @@ export function ConnectorsTab() {
                 }}
               />
             ) : (
-              // Always available: several independent Proxmoxes can be added
-              // side by side; each becomes its own entry in the list below.
-              <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setFormOpen(true)}>
-                <Plug className="h-3.5 w-3.5" /> Add Proxmox connector
-              </Button>
+              // Always available: several independent Proxmox / PBS servers can
+              // be added side by side; each becomes its own entry below.
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" className="gap-1.5" onClick={() => { setFormHint(null); setFormKind('proxmox'); setFormOpen(true) }}>
+                  <Plug className="h-3.5 w-3.5" /> Add Proxmox connector
+                </Button>
+                <Button variant="outline" size="sm" className="gap-1.5" onClick={() => { setFormHint(null); setFormKind('pbs'); setFormOpen(true) }}>
+                  <Plug className="h-3.5 w-3.5" /> Add Backup Server connector
+                </Button>
+              </div>
             )}
 
             {configured.length > 0 && (
