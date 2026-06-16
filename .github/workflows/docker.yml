@@ -6,6 +6,10 @@ on:
     tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
+  # Manual trigger: lets us build the stable :latest image for a v* tag that was
+  # created by the Release workflow (a tag created by Actions' GITHUB_TOKEN does
+  # not auto-trigger this push-based workflow). Dispatch against the tag ref.
+  workflow_dispatch: {}
 
 env:
   REGISTRY: ghcr.io
@@ -108,8 +112,9 @@ jobs:
       with:
         context: .
         platforms: linux/amd64,linux/arm64
-        # Push on any push event (main branch or a v* tag); PRs build only.
-        push: ${{ github.event_name == 'push' }}
+        # Push on any push event (main branch or a v* tag) or a manual dispatch
+        # (used to build :latest for a Release-workflow-created tag); PRs build only.
+        push: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
         provenance: false
         # COMMIT/DATE feed the in-app updater: non-semver builds (e.g. :latest
         # from main) detect releases by comparing the release published_at
