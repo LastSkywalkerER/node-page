@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -324,6 +325,21 @@ func (p *Poller) syncConnector(ctx context.Context, conn connectors.Connector) {
 	liveConnKeys := make(map[string]struct{}, len(resources))
 	liveExternalIDs := make(map[string]struct{}, len(resources))
 
+	// Count nodes so a single-node (standalone) connector can fall back to the
+	// admin-entered endpoint IP when the node's network config doesn't expose one
+	// (e.g. a DHCP vmbr0 — PVE returns no address/cidr there). On a multi-node
+	// cluster the endpoint IP belongs to just one node, so don't guess.
+	nodeCount := 0
+	for _, r := range resources {
+		if r.Type == "node" {
+			nodeCount++
+		}
+	}
+	fallbackIP := ""
+	if nodeCount == 1 {
+		fallbackIP = endpointIPv4(conn.Endpoint)
+	}
+
 	// Hypervisor nodes first so guests can reference their parent MAC.
 	for _, r := range resources {
 		if r.Type != "node" {
@@ -331,7 +347,7 @@ func (p *Poller) syncConnector(ctx context.Context, conn connectors.Connector) {
 		}
 		liveConnKeys[fmt.Sprintf("%d/%s", conn.ID, r.Node)] = struct{}{}
 		liveExternalIDs[prefix+r.Node] = struct{}{}
-		mac := p.syncNode(ctx, client, conn, prefix, r)
+		mac := p.syncNode(ctx, client, conn, prefix, r, fallbackIP)
 		if mac != "" {
 			nodeMACs[r.Node] = mac
 		}
@@ -434,9 +450,14 @@ func (p *Poller) setStatus(ctx context.Context, id uint, status, msg string) {
 }
 
 // syncNode upserts the hypervisor host row + its metrics; returns its MAC.
-func (p *Poller) syncNode(ctx context.Context, client *Client, conn connectors.Connector, prefix string, r Resource) string {
+// fallbackIP (the connector endpoint IP, single-node connectors only) is used
+// when the node's network config exposes no address (e.g. a DHCP bridge).
+func (p *Poller) syncNode(ctx context.Context, client *Client, conn connectors.Connector, prefix string, r Resource, fallbackIP string) string {
 	externalID := prefix + r.Node
 	mac, ip := p.nodeIdentity(ctx, client, conn.ID, r.Node, externalID)
+	if ip == "" {
+		ip = fallbackIP
+	}
 
 	info := hosts.ConnectorHostInfo{
 		HostInfo: hosts.HostInfo{
@@ -808,6 +829,21 @@ func pickNodeIPv4(ifaces []NodeNetIface) string {
 	}
 	if best >= 0 {
 		return ifaceIPv4(ifaces[best])
+	}
+	return ""
+}
+
+// endpointIPv4 returns the host of a connector endpoint URL when it's an IPv4
+// literal (e.g. "https://10.0.0.5:8006" → "10.0.0.5"), else "". Used as the
+// node-IP fallback for a single-node connector whose network config is DHCP.
+func endpointIPv4(endpoint string) string {
+	u, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil {
+		return ""
+	}
+	host := u.Hostname()
+	if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
+		return host
 	}
 	return ""
 }
