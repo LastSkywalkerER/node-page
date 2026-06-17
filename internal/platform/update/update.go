@@ -219,7 +219,7 @@ func (s *Service) SetDeployWebhook(rawURL string) error {
 func (s *Service) Status() Info {
 	v := version.Get()
 	s.mu.RLock()
-	latest, published, checkedAt, auto := s.latest, s.latestPublished, s.checkedAt, s.autoUpdate
+	latest, checkedAt, auto := s.latest, s.checkedAt, s.autoUpdate
 	channel, latestCommit := s.channel, s.latestCommit
 	webhookSet := s.webhookURL != ""
 	s.mu.RUnlock()
@@ -248,9 +248,36 @@ func (s *Service) Status() Info {
 		}
 		return info
 	}
-	info.UpdateAvailable = newerAvailable(v.Current, latest) ||
-		dateBasedUpdateAvailable(v.Deployment, v.Current, latest, buildTime(v.BuiltAt), published)
+	info.UpdateAvailable = stableUpdateAvailable(v.Current, latest, v.Deployment)
 	return info
+}
+
+// stableUpdateAvailable decides whether the stable channel should offer `latest`
+// to a build identified by (current, deployment). The latest stable release is
+// offered whenever the running build is not THAT exact release — regardless of
+// version ordering. So a beta build can move to stable (even to a "lower" stable
+// than the running beta), and a channel switch always surfaces that channel's
+// latest; a build already on the newest tag shows nothing. A native non-semver
+// dev build (go run/air) is never nagged. Pure (no globals) for testing.
+func stableUpdateAvailable(current, latest, deployment string) bool {
+	if latest == "" || sameRelease(current, latest) {
+		return false
+	}
+	if _, isSemver := parseSemver(current); isSemver {
+		return true
+	}
+	// Non-semver: docker images (beta/main) can move to stable; a native dev
+	// build is local work — don't nag it.
+	return deployment == "docker"
+}
+
+// sameRelease reports whether two version strings name the same release,
+// tolerant of a leading "v" and surrounding space/case ("0.7.6" == "v0.7.6").
+func sameRelease(a, b string) bool {
+	norm := func(s string) string {
+		return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(s)), "v")
+	}
+	return norm(a) == norm(b)
 }
 
 // shortSHA returns the first 7 chars of a git SHA (or the whole string if shorter).

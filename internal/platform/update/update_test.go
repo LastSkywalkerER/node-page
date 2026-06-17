@@ -144,3 +144,36 @@ func TestIsPrerelease(t *testing.T) {
 		}
 	}
 }
+
+func TestStableUpdateAvailable(t *testing.T) {
+	cases := []struct {
+		name       string
+		current    string
+		latest     string
+		deployment string
+		want       bool
+	}{
+		// On the same stable release → nothing to offer.
+		{"on latest stable", "0.7.6", "v0.7.6", "docker", false},
+		{"on latest stable, v-prefixed current", "v0.7.6", "v0.7.6", "docker", false},
+		// Beta build of the SAME version → offer the stable release.
+		{"beta of same version", "0.7.6-beta.19", "v0.7.6", "docker", true},
+		// Beta build NEWER than latest stable → still offer stable (channel switch,
+		// ordering-independent — the user's requirement).
+		{"newer beta than stable", "0.7.7-beta.5", "v0.7.6", "docker", true},
+		// Older stable build → normal upgrade.
+		{"older stable", "0.7.5", "v0.7.6", "docker", true},
+		// Non-semver docker image (legacy "main" beta) → offer stable.
+		{"non-semver docker", "main", "v0.7.6", "docker", true},
+		// Native non-semver dev build → never nagged.
+		{"native dev build", "dev", "v0.7.6", "native", false},
+		// No release known yet → nothing.
+		{"no latest", "0.7.6-beta.1", "", "docker", false},
+	}
+	for _, c := range cases {
+		if got := stableUpdateAvailable(c.current, c.latest, c.deployment); got != c.want {
+			t.Errorf("%s: stableUpdateAvailable(%q,%q,%q) = %v, want %v",
+				c.name, c.current, c.latest, c.deployment, got, c.want)
+		}
+	}
+}
