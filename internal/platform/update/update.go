@@ -714,7 +714,23 @@ func newerAvailable(current, latest string) bool {
 			return l[i] > c[i]
 		}
 	}
-	return false
+	// Equal numeric version: a release outranks a prerelease of the same version
+	// (semver precedence: 0.7.6-beta.19 < 0.7.6). So the stable release IS newer
+	// than a beta build of the same version — without this the beta would never
+	// be offered the matching stable release and stay stuck on the beta line.
+	return isPrerelease(current) && !isPrerelease(latest)
+}
+
+// isPrerelease reports whether a version carries a pre-release suffix over a
+// valid dotted-numeric base (e.g. "0.7.6-beta.19"). Plain releases ("0.7.5")
+// and non-semver builds ("main") are not prereleases.
+func isPrerelease(v string) bool {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if idx := strings.IndexAny(v, "-+"); idx <= 0 {
+		return false
+	}
+	_, ok := parseSemver(v)
+	return ok
 }
 
 // parseSemver parses "v1.2.3" / "1.2.3" (ignoring any pre-release/build suffix)
