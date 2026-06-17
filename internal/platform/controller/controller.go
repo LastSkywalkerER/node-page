@@ -112,21 +112,30 @@ func (c *controller) apply(ds setup.DesiredState) bool {
 		return c.fail(ds, "write compose", err)
 	}
 
-	// A port change from the in-app settings arrives as HTTPPort/RaftPort on the
-	// desired state. Compose reads the published ports from the stack .env
-	// (NODE_STATS_PORT / NODE_STATS_RAFT_PORT), which only the controller can
-	// write — upsert them here before the recreate so the new mapping applies.
-	if strings.TrimSpace(ds.HTTPPort) != "" || strings.TrimSpace(ds.RaftPort) != "" {
-		envPath := filepath.Join(c.stackDir, ".env")
-		if ds.HTTPPort != "" {
-			if err := upsertEnvKey(envPath, "NODE_STATS_PORT", ds.HTTPPort); err != nil {
-				return c.fail(ds, "update stack .env (NODE_STATS_PORT)", err)
-			}
+	// The generated compose references the image and published ports through
+	// stack-.env vars: image: ${NODE_STATS_IMAGE:-<ds.Image>}, ports
+	// ${NODE_STATS_PORT} / ${NODE_STATS_RAFT_PORT}. The installer writes those
+	// vars into .env, and a SET value there SHADOWS the compose default — so a
+	// pinned NODE_STATS_IMAGE (e.g. :latest) defeats a channel switch / "update
+	// now" that sets ds.Image=:beta: the app is recreated on the old tag and, on
+	// the beta channel, "update available" never clears → auto-update reboot-loops
+	// the stack. Only the controller may write the stack .env, so sync the
+	// relevant keys here before the recreate. ds.Image is set by the updater
+	// (channel image); ports by the settings port-change flow. Empty = leave as-is.
+	envPath := filepath.Join(c.stackDir, ".env")
+	if img := strings.TrimSpace(ds.Image); img != "" {
+		if err := upsertEnvKey(envPath, "NODE_STATS_IMAGE", img); err != nil {
+			return c.fail(ds, "update stack .env (NODE_STATS_IMAGE)", err)
 		}
-		if ds.RaftPort != "" {
-			if err := upsertEnvKey(envPath, "NODE_STATS_RAFT_PORT", ds.RaftPort); err != nil {
-				return c.fail(ds, "update stack .env (NODE_STATS_RAFT_PORT)", err)
-			}
+	}
+	if strings.TrimSpace(ds.HTTPPort) != "" {
+		if err := upsertEnvKey(envPath, "NODE_STATS_PORT", ds.HTTPPort); err != nil {
+			return c.fail(ds, "update stack .env (NODE_STATS_PORT)", err)
+		}
+	}
+	if strings.TrimSpace(ds.RaftPort) != "" {
+		if err := upsertEnvKey(envPath, "NODE_STATS_RAFT_PORT", ds.RaftPort); err != nil {
+			return c.fail(ds, "update stack .env (NODE_STATS_RAFT_PORT)", err)
 		}
 	}
 

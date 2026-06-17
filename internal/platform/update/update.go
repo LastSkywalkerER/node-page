@@ -90,12 +90,14 @@ type Service struct {
 	autoUpdate      bool
 	channel         string // "stable" | "beta"
 	webhookURL      string
-	// lastWebhookTag is the release tag the deploy webhook was last triggered
-	// for. A webhook redeploy can be a no-op (the image tag may lag the GitHub
-	// release), so the auto-update loop must not re-fire the orchestrator for
-	// the same release every check cycle. Persisted in dataDir because a
-	// successful trigger replaces this very container.
-	lastWebhookTag string
+	// lastAutoTarget is the Latest marker the auto-update loop last applied (a
+	// release tag, or "main@<sha>" on the beta channel). An apply can fail to
+	// clear "update available" — a webhook no-op (image tag lagging the release)
+	// or a controller recreate that lands on the same image (e.g. a pinned
+	// NODE_STATS_IMAGE) — so the loop must NOT re-fire for the same target on
+	// every check (one runs 30s after every boot), which would reboot-loop the
+	// stack. Persisted in dataDir because a successful apply replaces this container.
+	lastAutoTarget string
 }
 
 // NewService constructs the update service. repo empty → DefaultRepo.
@@ -354,24 +356,43 @@ func (s *Service) SetAutoUpdate(ctx context.Context, enabled bool) error {
 // fires the webhook again. Manual "update now" has no such guard.
 func (s *Service) autoApply(ctx context.Context) {
 	st := s.Status()
-	if !st.UpdateAvailable {
+	s.mu.RLock()
+	webhook, last := s.webhookURL, s.lastAutoTarget
+	s.mu.RUnlock()
+	if !shouldAutoApply(st, webhook != "", last) {
 		return
-	}
-	if st.ManagedExternally {
-		s.mu.RLock()
-		webhook, last := s.webhookURL, s.lastWebhookTag
-		s.mu.RUnlock()
-		if webhook == "" {
-			log.Debug("update: auto-update skipped — managed externally and no deploy webhook configured")
-			return
-		}
-		if st.Latest == "" || st.Latest == last {
-			return
-		}
 	}
 	if _, err := s.UpdateNow(ctx); err != nil {
 		log.Error("update: auto-update apply failed", "error", err)
+		return
 	}
+	// Record the applied target so the same one isn't auto-applied again next
+	// check/boot (the reboot-loop guard).
+	s.rememberAutoTarget(st.Latest)
+}
+
+// shouldAutoApply decides whether the auto-update loop should apply now:
+//   - an update must be available;
+//   - a managed-externally deployment needs a deploy webhook to apply at all;
+//   - the target must not already have been auto-applied. An apply that doesn't
+//     clear "update available" (a webhook no-op when the image tag lags the
+//     release, or a controller recreate landing on the same image because a
+//     pinned NODE_STATS_IMAGE shadows ds.Image) would otherwise re-fire on every
+//     hourly check AND every boot — the loop runs a check 30s after start — and
+//     reboot-loop the stack. A genuinely newer release has a different target and
+//     still applies. Manual "Update now" doesn't go through here, so it's never
+//     suppressed.
+func shouldAutoApply(st Info, webhookConfigured bool, lastTarget string) bool {
+	if !st.UpdateAvailable {
+		return false
+	}
+	if st.ManagedExternally && !webhookConfigured {
+		return false
+	}
+	if st.Latest == "" || st.Latest == lastTarget {
+		return false
+	}
+	return true
 }
 
 // Check polls the latest GitHub release tag and caches it. On the beta channel
@@ -515,8 +536,8 @@ func channelImage(channel string) string {
 	return base + ":latest"
 }
 
-// webhookStateFile remembers (in dataDir, which survives the redeploy) the
-// release tag the deploy webhook was last triggered for. See lastWebhookTag.
+// webhookStateFile remembers (in dataDir, which survives the redeploy/recreate)
+// the Latest marker the auto-update loop last applied. See lastAutoTarget.
 const webhookStateFile = "webhook-update.json"
 
 // triggerDeployWebhook asks the orchestrator to redeploy the stack; with
@@ -544,15 +565,18 @@ func (s *Service) triggerDeployWebhook(url string) (string, error) {
 	if resp.StatusCode/100 != 2 {
 		return "", fmt.Errorf("deploy webhook returned %s — re-copy the URL from the orchestrator's Deployments tab", resp.Status)
 	}
-	s.rememberWebhookTrigger()
 	log.Info("update: orchestrator deploy webhook triggered", "host", redactURL(url))
 	return "Triggered the orchestrator's deploy webhook — it will pull the latest image and redeploy shortly.", nil
 }
 
-func (s *Service) rememberWebhookTrigger() {
-	tag := s.Status().Latest
+// rememberAutoTarget persists the Latest marker the auto-update loop just
+// applied, so the same target isn't auto-applied again on the next check/boot
+// (see lastAutoTarget). Only the auto-update loop calls this — manual "Update
+// now" and manual settings redeploys deliberately don't, so they're never
+// suppressed.
+func (s *Service) rememberAutoTarget(tag string) {
 	s.mu.Lock()
-	s.lastWebhookTag = tag
+	s.lastAutoTarget = tag
 	s.mu.Unlock()
 	if s.dataDir == "" || tag == "" {
 		return
@@ -562,7 +586,7 @@ func (s *Service) rememberWebhookTrigger() {
 		"at":                 time.Now().UTC().Format(time.RFC3339),
 	})
 	if err := os.WriteFile(filepath.Join(s.dataDir, webhookStateFile), b, 0o644); err != nil {
-		log.Debug("update: persist webhook state failed", "error", err)
+		log.Debug("update: persist auto-update state failed", "error", err)
 	}
 }
 
@@ -578,7 +602,7 @@ func (s *Service) loadWebhookState() {
 		LastTriggeredTag string `json:"last_triggered_tag"`
 	}
 	if json.Unmarshal(b, &st) == nil {
-		s.lastWebhookTag = st.LastTriggeredTag
+		s.lastAutoTarget = st.LastTriggeredTag
 	}
 }
 

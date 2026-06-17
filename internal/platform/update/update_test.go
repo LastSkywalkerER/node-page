@@ -84,3 +84,29 @@ func TestBuildTime_FallsBackToExecutableMtime(t *testing.T) {
 		t.Fatalf("buildTime(ldflags) = %v, want %v", got, want)
 	}
 }
+
+func TestShouldAutoApply(t *testing.T) {
+	cases := []struct {
+		name              string
+		st                Info
+		webhookConfigured bool
+		lastTarget        string
+		want              bool
+	}{
+		{"no update available", Info{UpdateAvailable: false, Latest: "v1.2.3"}, false, "", false},
+		{"controller: fresh target applies", Info{UpdateAvailable: true, Latest: "main@0560cf2"}, false, "", true},
+		{"controller: same target skipped (loop guard)", Info{UpdateAvailable: true, Latest: "main@0560cf2"}, false, "main@0560cf2", false},
+		{"controller: newer target after a prior apply", Info{UpdateAvailable: true, Latest: "main@aaaaaaa"}, false, "main@0560cf2", true},
+		{"empty latest never applies", Info{UpdateAvailable: true, Latest: ""}, false, "", false},
+		{"managed without webhook can't apply", Info{UpdateAvailable: true, Latest: "v1.2.3", ManagedExternally: true}, false, "", false},
+		{"managed with webhook applies", Info{UpdateAvailable: true, Latest: "v1.2.3", ManagedExternally: true}, true, "", true},
+		{"managed with webhook, same target skipped", Info{UpdateAvailable: true, Latest: "v1.2.3", ManagedExternally: true}, true, "v1.2.3", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := shouldAutoApply(c.st, c.webhookConfigured, c.lastTarget); got != c.want {
+				t.Fatalf("shouldAutoApply = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
