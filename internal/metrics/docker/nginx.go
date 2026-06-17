@@ -245,29 +245,34 @@ func nginxListenScheme(block string) string {
 	return "http"
 }
 
-// nginxUpstream resolves the backend host:port from a server block's first
-// proxy_pass, substituting NPM's `set $forward_scheme/$server/$port` variables.
-// ok is false when the block has no resolvable proxy_pass (e.g. a pure
-// redirect). isIP marks an IP-literal backend (matched by published port).
+// nginxUpstream resolves the backend host:port for a server block. Standard NPM
+// proxy_host files carry the target ONLY as `set $server/$port/$forward_scheme`
+// and proxy to it through an included snippet (conf.d/include/proxy.conf), so
+// there is no inline proxy_pass — reconstruct the upstream from those vars. An
+// explicit inline proxy_pass (NPM "advanced"/custom configs, or plain nginx)
+// still wins when present. ok is false for a pure redirect block (no target).
+// isIP marks an IP-literal backend (matched by published port, not by name).
 func nginxUpstream(block string) (host string, port int, isIP bool, ok bool) {
-	pp := nginxProxyPassRe.FindStringSubmatch(block)
-	if pp == nil {
-		return "", 0, false, false
+	vars := map[string]string{}
+	for _, m := range nginxSetRe.FindAllStringSubmatch(block, -1) {
+		vars[m[1]] = strings.Trim(strings.TrimSpace(m[2]), `"'`)
 	}
-	raw := strings.TrimSpace(pp[1])
 
-	if strings.Contains(raw, "$") {
-		vars := map[string]string{}
-		for _, m := range nginxSetRe.FindAllStringSubmatch(block, -1) {
-			vars[m[1]] = strings.Trim(strings.TrimSpace(m[2]), `"'`)
+	var raw string
+	if pp := nginxProxyPassRe.FindStringSubmatch(block); pp != nil {
+		raw = substituteNginxVars(strings.TrimSpace(pp[1]), vars)
+	} else if srv := vars["server"]; srv != "" {
+		// NPM's implied proxy_pass: $forward_scheme://$server:$port.
+		scheme := vars["forward_scheme"]
+		if scheme == "" {
+			scheme = "http"
 		}
-		raw = nginxVarRe.ReplaceAllStringFunc(raw, func(tok string) string {
-			name := nginxVarRe.FindStringSubmatch(tok)[1]
-			if v, ok := vars[name]; ok {
-				return v
-			}
-			return tok
-		})
+		raw = scheme + "://" + srv
+		if p := vars["port"]; p != "" {
+			raw += ":" + p
+		}
+	} else {
+		return "", 0, false, false
 	}
 
 	u, err := url.Parse(raw)
@@ -279,6 +284,20 @@ func nginxUpstream(block string) (host string, port int, isIP bool, ok bool) {
 		port, _ = strconv.Atoi(p)
 	}
 	return host, port, net.ParseIP(host) != nil, true
+}
+
+// substituteNginxVars replaces $var / ${var} tokens with values from the set map
+// (NPM's `set $server "…"` etc); unknown vars are left as-is.
+func substituteNginxVars(raw string, vars map[string]string) string {
+	if !strings.Contains(raw, "$") {
+		return raw
+	}
+	return nginxVarRe.ReplaceAllStringFunc(raw, func(tok string) string {
+		if v, ok := vars[nginxVarRe.FindStringSubmatch(tok)[1]]; ok {
+			return v
+		}
+		return tok
+	})
 }
 
 // ---- container introspection ----

@@ -105,6 +105,50 @@ server {
 	}
 }
 
+func TestRoutesFromNginxConf_NPMNoInlineProxyPass(t *testing.T) {
+	// The real NPM proxy_host format: the target is ONLY in `set $server/$port`;
+	// the proxy_pass lives in an included snippet, so there's no inline
+	// proxy_pass in this file. Must still resolve the upstream from the vars.
+	conf := `
+server {
+  set $forward_scheme http;
+  set $server         "wg-easy";
+  set $port           51821;
+  listen 443 ssl;
+  server_name wg.example.com;
+  location / {
+    include conf.d/include/proxy.conf;
+  }
+}`
+	routes := routesFromNginxConf(conf)
+	if len(routes) != 1 {
+		t.Fatalf("got %d routes, want 1: %+v", len(routes), routes)
+	}
+	r := routes[0]
+	if r.Host != "wg.example.com" || r.Scheme != "https" || r.UpstreamHost != "wg-easy" || r.UpstreamPort != 51821 || r.UpstreamIsIP {
+		t.Errorf("route = %+v, want wg.example.com https wg-easy:51821 name", r)
+	}
+}
+
+func TestRoutesFromNginxConf_NPMNoInlineProxyPass_IPUpstream(t *testing.T) {
+	conf := `
+server {
+  set $forward_scheme http;
+  set $server         "172.17.0.1";
+  set $port           9090;
+  listen 443 ssl;
+  server_name dash.example.com;
+  location / { include conf.d/include/proxy.conf; }
+}`
+	routes := routesFromNginxConf(conf)
+	if len(routes) != 1 {
+		t.Fatalf("got %d routes, want 1: %+v", len(routes), routes)
+	}
+	if r := routes[0]; r.UpstreamHost != "172.17.0.1" || r.UpstreamPort != 9090 || !r.UpstreamIsIP {
+		t.Errorf("route = %+v, want 172.17.0.1:9090 isIP", routes[0])
+	}
+}
+
 func TestRoutesFromNginxConf_GenericContainerUpstream(t *testing.T) {
 	conf := `
 server {
