@@ -110,3 +110,37 @@ func TestShouldAutoApply(t *testing.T) {
 		})
 	}
 }
+
+func TestNewerAvailable_PrereleaseVsRelease(t *testing.T) {
+	cases := []struct {
+		name            string
+		current, latest string
+		want            bool
+	}{
+		{"beta offered its matching stable release", "0.7.6-beta.19", "v0.7.6", true},
+		{"stable not newer than a higher beta", "0.7.6-beta.19", "v0.7.5", false}, // 0.7.5 < 0.7.6-*
+		{"beta offered a higher stable", "0.7.6-beta.1", "v0.7.7", true},
+		{"release not 'newer' than its own beta", "0.7.6", "v0.7.6-beta.1", false},
+		{"plain release no update to same", "0.7.5", "v0.7.5", false},
+		{"non-semver current never updates", "main", "v0.7.6", false},
+	}
+	for _, c := range cases {
+		if got := newerAvailable(c.current, c.latest); got != c.want {
+			t.Errorf("%s: newerAvailable(%q,%q) = %v, want %v", c.name, c.current, c.latest, got, c.want)
+		}
+	}
+}
+
+func TestIsPrerelease(t *testing.T) {
+	for _, c := range []struct {
+		v    string
+		want bool
+	}{
+		{"0.7.6-beta.19", true}, {"v0.7.6-beta.1", true}, {"0.7.5", false},
+		{"v0.7.5", false}, {"main", false}, {"", false}, {"-beta", false},
+	} {
+		if got := isPrerelease(c.v); got != c.want {
+			t.Errorf("isPrerelease(%q) = %v, want %v", c.v, got, c.want)
+		}
+	}
+}
