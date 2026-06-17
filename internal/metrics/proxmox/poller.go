@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -757,19 +758,14 @@ func (p *Poller) nodeIdentity(ctx context.Context, client *Client, connID uint, 
 
 	mac, ip := externalID, ""
 	if ifaces, err := client.NodeNetwork(ctx, node); err == nil {
-		best := -1
-		for i, nf := range ifaces {
-			if normalizeMAC(nf.HWAddr) == "" {
-				continue
-			}
-			if best == -1 || ifaceScore(nf) > ifaceScore(ifaces[best]) {
-				best = i
-			}
+		// MAC and IP are resolved INDEPENDENTLY: on a PVE node the management IP
+		// lives on a bridge (vmbr0) while a usable MAC may only be on the physical
+		// NIC — coupling them to one interface drops the IP when the highest-scored
+		// MAC-bearing iface has no address (or vice-versa).
+		if m := pickNodeMAC(ifaces); m != "" {
+			mac = m
 		}
-		if best >= 0 {
-			mac = normalizeMAC(ifaces[best].HWAddr)
-			ip = strings.SplitN(ifaces[best].Address, "/", 2)[0]
-		}
+		ip = pickNodeIPv4(ifaces)
 	} else {
 		p.deps.Logger.Debug("proxmox: node network unavailable", "node", node, "error", err)
 	}
@@ -780,11 +776,63 @@ func (p *Poller) nodeIdentity(ctx context.Context, client *Client, connID uint, 
 	return mac, ip
 }
 
+// pickNodeMAC returns the best MAC among interfaces that carry one (gateway >
+// address > eth), or "" when none do.
+func pickNodeMAC(ifaces []NodeNetIface) string {
+	best := -1
+	for i := range ifaces {
+		if normalizeMAC(ifaces[i].HWAddr) == "" {
+			continue
+		}
+		if best == -1 || ifaceScore(ifaces[i]) > ifaceScore(ifaces[best]) {
+			best = i
+		}
+	}
+	if best >= 0 {
+		return normalizeMAC(ifaces[best].HWAddr)
+	}
+	return ""
+}
+
+// pickNodeIPv4 returns the best IPv4 among interfaces that carry one (gateway >
+// address > eth), independent of whether that interface exposes a MAC.
+func pickNodeIPv4(ifaces []NodeNetIface) string {
+	best := -1
+	for i := range ifaces {
+		if ifaceIPv4(ifaces[i]) == "" {
+			continue
+		}
+		if best == -1 || ifaceScore(ifaces[i]) > ifaceScore(ifaces[best]) {
+			best = i
+		}
+	}
+	if best >= 0 {
+		return ifaceIPv4(ifaces[best])
+	}
+	return ""
+}
+
+// ifaceIPv4 extracts a usable IPv4 from an interface's address or cidr field
+// (newer PVE returns the management IP only in cidr). "" when neither is a v4.
+func ifaceIPv4(nf NodeNetIface) string {
+	for _, v := range []string{nf.Address, nf.CIDR} {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		host := strings.SplitN(v, "/", 2)[0]
+		if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
+			return host
+		}
+	}
+	return ""
+}
+
 func ifaceScore(nf NodeNetIface) int {
 	switch {
 	case nf.Gateway != "":
 		return 3
-	case nf.Address != "":
+	case ifaceIPv4(nf) != "":
 		return 2
 	case nf.Type == "eth":
 		return 1

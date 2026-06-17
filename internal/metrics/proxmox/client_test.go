@@ -68,6 +68,30 @@ func TestConfigIPv4(t *testing.T) {
 	}
 }
 
+func TestPickNodeIdentity(t *testing.T) {
+	// Realistic PVE node: management IP on the bridge (cidr only, no hwaddr in
+	// the API), MAC only on the physical NIC. MAC and IP must be resolved
+	// independently — the old coupled logic dropped the IP here.
+	ifaces := []NodeNetIface{
+		{Iface: "eno1", Type: "eth", HWAddr: "aa:bb:cc:dd:ee:01"},
+		{Iface: "vmbr0", Type: "bridge", CIDR: "10.0.0.5/24", Gateway: "10.0.0.1"},
+	}
+	if ip := pickNodeIPv4(ifaces); ip != "10.0.0.5" {
+		t.Errorf("pickNodeIPv4 = %q, want 10.0.0.5 (from cidr on the gateway bridge)", ip)
+	}
+	if mac := pickNodeMAC(ifaces); mac != "aa:bb:cc:dd:ee:01" {
+		t.Errorf("pickNodeMAC = %q, want the physical NIC MAC", mac)
+	}
+
+	// address form (older PVE) still works; ipv6-only is ignored.
+	if ip := pickNodeIPv4([]NodeNetIface{{Iface: "vmbr0", Type: "bridge", Address: "192.168.1.10/24"}}); ip != "192.168.1.10" {
+		t.Errorf("pickNodeIPv4(address) = %q, want 192.168.1.10", ip)
+	}
+	if ip := pickNodeIPv4([]NodeNetIface{{Iface: "vmbr0", Type: "bridge", CIDR: "2001:db8::5/64"}}); ip != "" {
+		t.Errorf("pickNodeIPv4(ipv6) = %q, want empty", ip)
+	}
+}
+
 func TestSMBIOSUUID(t *testing.T) {
 	cases := []struct {
 		smbios1 any
