@@ -92,6 +92,21 @@ func TestPickNodeIdentity(t *testing.T) {
 	}
 }
 
+func TestEndpointIPv4(t *testing.T) {
+	cases := []struct{ endpoint, want string }{
+		{"https://10.202.20.17:8006", "10.202.20.17"},
+		{"https://10.0.0.5", "10.0.0.5"},
+		{"https://pve.lan:8006", ""}, // hostname, not an IP
+		{"https://[2001:db8::5]:8006", ""}, // IPv6
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := endpointIPv4(c.endpoint); got != c.want {
+			t.Errorf("endpointIPv4(%q) = %q, want %q", c.endpoint, got, c.want)
+		}
+	}
+}
+
 func TestSMBIOSUUID(t *testing.T) {
 	cases := []struct {
 		smbios1 any
