@@ -583,7 +583,10 @@ func (c *dockerMetricsCollector) TraefikDiscoveryReport(ctx context.Context) Tra
 	}
 
 	rep.Routes = simulateRouteAttachment(parseTraefikDirs(all), light)
-	rep.NginxRoutes = simulateRouteAttachment(parseNginxDirs(nginxAll), light)
+	// nginx routes from both the host-path scan and a direct read of the proxy
+	// container's filesystem (the latter works when /host can't see the config).
+	nginxRoutes := append(parseNginxDirs(nginxAll), c.nginxRoutesFromContainers(ctx, containers)...)
+	rep.NginxRoutes = simulateRouteAttachment(nginxRoutes, light)
 	return rep
 }
 
