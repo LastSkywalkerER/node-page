@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Copy, Check, RefreshCw, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { confirmDialog } from '@/shared/lib/confirmDialog'
 import {
   useRaftStatus,
   useIssueRaftJoinToken,
@@ -239,7 +240,13 @@ export function RaftClusterWidget() {
   }
 
   const onRemove = async (id: string) => {
-    if (!window.confirm(`Remove Raft voter "${id}" from this cluster?`)) return
+    const { confirmed } = await confirmDialog({
+      title: 'Remove Raft voter?',
+      description: `Remove Raft voter "${id}" from this cluster?`,
+      variant: 'destructive',
+      confirmText: 'Remove',
+    })
+    if (!confirmed) return
     try {
       await removePeer.mutateAsync(id)
       toast.success(`Voter ${id} removed`)
@@ -258,12 +265,16 @@ export function RaftClusterWidget() {
   }
 
   const onFactoryReset = async () => {
-    const ok = window.confirm(
-      'This will wipe Raft state AND remove RAFT_* lines from .env on this node. ' +
+    const { confirmed } = await confirmDialog({
+      title: 'Factory-reset Raft on this node?',
+      description:
+        'This will wipe Raft state AND remove RAFT_* lines from .env on this node. ' +
         'After restart, this node will be Raft-disabled. SQLite data (users, hosts, metrics) is kept. ' +
-        'Use this on EVERY node when the cluster is wedged and you want to start over via the wizard. Continue?',
-    )
-    if (!ok) return
+        'Use this on EVERY node when the cluster is wedged and you want to start over via the wizard.',
+      variant: 'destructive',
+      confirmText: 'Factory reset',
+    })
+    if (!confirmed) return
     try {
       await factoryReset.mutateAsync()
       toast.success('Raft factory-reset done. Restart the process to apply.')
@@ -273,11 +284,15 @@ export function RaftClusterWidget() {
   }
 
   const onWipeState = async () => {
-    const ok = window.confirm(
-      'This will throw away the Raft consensus log + cluster membership on this node and re-bootstrap as a fresh single-voter cluster. ' +
-        'Replicated data (users, hosts, metrics) is KEPT. Other voters will be orphaned and need to re-join. Continue?',
-    )
-    if (!ok) return
+    const { confirmed } = await confirmDialog({
+      title: 'Wipe Raft state on this node?',
+      description:
+        'This will throw away the Raft consensus log + cluster membership on this node and re-bootstrap as a fresh single-voter cluster. ' +
+        'Replicated data (users, hosts, metrics) is KEPT. Other voters will be orphaned and need to re-join.',
+      variant: 'destructive',
+      confirmText: 'Wipe state',
+    })
+    if (!confirmed) return
     try {
       await wipeState.mutateAsync()
       toast.success('Raft state wiped — node is now a fresh single-voter cluster')
@@ -715,7 +730,13 @@ export function RaftClusterWidget() {
 function BootErrorBanner({ message }: { message: string }) {
   const reset = useResetRaftConfig()
   const onReset = async () => {
-    if (!window.confirm("This will remove RAFT_* lines from .env. Raft stays running until the next restart. Continue?")) return
+    const { confirmed } = await confirmDialog({
+      title: 'Reset Raft config?',
+      description: 'This will remove RAFT_* lines from .env. Raft stays running until the next restart.',
+      variant: 'destructive',
+      confirmText: 'Reset',
+    })
+    if (!confirmed) return
     try {
       await reset.mutateAsync()
       toast.success("Raft config reset. Restart the process to apply.")

@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
+import { confirmDialog } from '@/shared/lib/confirmDialog'
 import { Trash2, LogOut, ExternalLink } from 'lucide-react'
 import { OSIcon } from '@/shared/components/OSIcon'
 import { apiClient } from '@/shared/lib/api'
@@ -57,36 +58,47 @@ export function NodesTab() {
   const leaveCluster = useLeaveRaftCluster()
   const factoryReset = useFactoryResetRaft()
 
-  const onRemoveHost = (id: number, name: string) => {
-    if (!window.confirm(`Remove host "${name}" and all of its metrics from the cluster? This cannot be undone.`)) return
+  const onRemoveHost = async (id: number, name: string) => {
+    const { confirmed } = await confirmDialog({
+      title: 'Remove host?',
+      description: `Remove host "${name}" and all of its metrics from the cluster? This cannot be undone.`,
+      variant: 'destructive',
+      confirmText: 'Remove',
+    })
+    if (!confirmed) return
     deleteHost.mutate(id, {
       onSuccess: () => toast.success(`Host "${name}" removed`),
       onError: (e) => toast.error('Remove failed: ' + e.message),
     })
   }
 
-  const onLeaveCluster = () => {
-    if (
-      !window.confirm(
-        'Leave the Raft cluster? This node will be removed from the cluster and revert to standalone (Raft stopped, RAFT_* cleared from .env). Its local data is kept.'
-      )
-    )
-      return
+  const onLeaveCluster = async () => {
+    const { confirmed } = await confirmDialog({
+      title: 'Leave the Raft cluster?',
+      description:
+        'This node will be removed from the cluster and revert to standalone (Raft stopped, RAFT_* cleared from .env). Its local data is kept.',
+      variant: 'destructive',
+      confirmText: 'Leave',
+    })
+    if (!confirmed) return
     leaveCluster.mutate(undefined, {
       onSuccess: (r) => toast.success(r.next || 'Left the cluster'),
-      onError: (e) => {
+      onError: async (e) => {
         // A clean leave can fail when this node is wedged (e.g. a half-completed
         // join with no quorum, so no leader can process the membership removal).
         // Offer the force path: factory-reset wipes Raft state + RAFT_* from .env
         // and reverts to standalone without needing a leader.
         toast.error('Leave failed: ' + e.message)
-        if (
-          window.confirm(
+        const { confirmed: force } = await confirmDialog({
+          title: 'Force out with a factory reset?',
+          description:
             'Leave failed — this node may be stuck (e.g. a failed cluster join with no quorum).\n\n' +
-              'Force it out with a Factory reset? This wipes Raft state and removes RAFT_* from .env, ' +
-              'reverting this node to standalone after a restart. Local data (users, hosts, metrics) is kept.'
-          )
-        ) {
+            'Force it out with a Factory reset? This wipes Raft state and removes RAFT_* from .env, ' +
+            'reverting this node to standalone after a restart. Local data (users, hosts, metrics) is kept.',
+          variant: 'destructive',
+          confirmText: 'Factory reset',
+        })
+        if (force) {
           factoryReset.mutate(undefined, {
             onSuccess: () => toast.success('Raft factory-reset done. Restart the process to apply.'),
             onError: (err) => toast.error('Factory reset failed: ' + err.message),

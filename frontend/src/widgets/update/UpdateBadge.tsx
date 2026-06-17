@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ArrowUpCircle } from 'lucide-react'
 import { Switch } from '@/shared/ui/switch'
 import { Button } from '@/components/ui/button'
@@ -33,6 +33,28 @@ export function UpdateBadge() {
   const webhook = useDeployWebhook(open && !!v?.managed_externally)
   const saveWebhook = useSetDeployWebhook()
   const [webhookDraft, setWebhookDraft] = useState<string | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // Close on click outside the popover or Escape. A document-level listener is
+  // more robust than an overlay div here: the header's backdrop-blur creates a
+  // stacking context that an absolutely-positioned overlay can't reliably cover.
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
 
   if (!v) return null
   const hasUpdate = !!v.update_available
@@ -41,7 +63,7 @@ export function UpdateBadge() {
   const webhookValue = webhookDraft ?? savedWebhookUrl
 
   return (
-    <div className="relative">
+    <div className="relative" ref={containerRef}>
       <button
         type="button"
         onClick={() =>
@@ -64,8 +86,6 @@ export function UpdateBadge() {
 
       {open && (
         <>
-          {/* click-away */}
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div className="absolute right-0 top-full z-50 mt-1 w-64 space-y-3 rounded-lg bg-popover p-3 text-sm text-popover-foreground shadow-lg ring-1 ring-foreground/10 backdrop-blur-xl">
             <div className="text-xs text-muted-foreground">
               Current <span className="font-mono text-foreground">{v.current}</span>

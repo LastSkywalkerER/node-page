@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
+import { confirmDialog } from '@/shared/lib/confirmDialog'
 import { Plug, RefreshCw, Trash2, ShieldAlert, Image as ImageIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -259,12 +260,19 @@ function ConnectorRow({ connector }: { connector: Connector }) {
   const del = useDeleteConnector()
   const sync = useSyncConnector()
 
-  const onDelete = () => {
-    if (!window.confirm(`Remove the ${connector.type} connector "${connector.fingerprint}"?`)) return
-    const removeHosts = window.confirm(
-      'Also remove the machines it discovered (hypervisor + agent-less guests) and their metrics?\n\n' +
-        'Machines running a node-stats agent are only unlinked and stay either way.'
-    )
+  const onDelete = async () => {
+    const { confirmed, checked: removeHosts } = await confirmDialog({
+      title: 'Remove connector?',
+      description: `Remove the ${connector.type} connector "${connector.fingerprint}"?`,
+      variant: 'destructive',
+      confirmText: 'Remove',
+      checkbox: {
+        label:
+          'Also remove the machines it discovered (hypervisor + agent-less guests) and their metrics. ' +
+          'Machines running a node-stats agent are only unlinked and stay either way.',
+      },
+    })
+    if (!confirmed) return
     del.mutate(
       { id: connector.id, removeHosts },
       {
@@ -451,8 +459,14 @@ function WallpaperCard({ connector }: { connector?: Connector }) {
                 size="icon"
                 className="h-7 w-7 text-muted-foreground/60 hover:bg-destructive/10 hover:text-destructive"
                 disabled={del.isPending}
-                onClick={() => {
-                  if (!window.confirm('Remove the wallpaper connector? The bundled background returns.')) return
+                onClick={async () => {
+                  const { confirmed } = await confirmDialog({
+                    title: 'Remove wallpaper connector?',
+                    description: 'The bundled background returns.',
+                    variant: 'destructive',
+                    confirmText: 'Remove',
+                  })
+                  if (!confirmed) return
                   del.mutate(
                     { id: connector.id, removeHosts: false },
                     { onSuccess: () => { refreshWallpaper(); toast.success('Wallpaper connector removed') } }
