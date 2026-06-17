@@ -225,7 +225,10 @@ type NodeNetIface struct {
 	Iface   string `json:"iface"`
 	Type    string `json:"type"` // eth | bridge | bond | vlan | ...
 	HWAddr  string `json:"hwaddr,omitempty"`
-	Address string `json:"address,omitempty"` // may carry /CIDR
+	Address string `json:"address,omitempty"` // bare IP (older PVE)
+	// CIDR is the address/CIDR form newer PVE returns instead of/alongside
+	// Address (e.g. "10.0.0.5/24"); the management IP often lives only here.
+	CIDR    string `json:"cidr,omitempty"`
 	Gateway string `json:"gateway,omitempty"`
 	Active  int    `json:"active,omitempty"`
 }
