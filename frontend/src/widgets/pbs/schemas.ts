@@ -16,6 +16,14 @@ export const PBSTaskSchema = z.object({
   status: z.string().optional().default(''),
 })
 
+export const PBSGroupSchema = z.object({
+  datastore: z.string().optional().default(''),
+  backup_type: z.string().optional().default(''), // vm | ct | host
+  backup_id: z.string().optional().default(''),
+  last_backup: z.number().optional().default(0),
+  count: z.number().optional().default(0),
+})
+
 export const PBSBackupHealthSchema = z.object({
   last_backup_at: z.number().optional().default(0),
   last_error_at: z.number().optional().default(0),
@@ -27,10 +35,12 @@ export const PBSBackupHealthSchema = z.object({
 export const PBSStatusSchema = z.object({
   host_id: z.number(),
   datastores: z.array(PBSDatastoreSchema).optional().default([]),
+  groups: z.array(PBSGroupSchema).optional().default([]),
   backups: PBSBackupHealthSchema.optional().default({}),
   updated_at: z.string().optional().default(''),
 })
 
 export type PBSStatus = z.infer<typeof PBSStatusSchema>
 export type PBSDatastore = z.infer<typeof PBSDatastoreSchema>
+export type PBSGroup = z.infer<typeof PBSGroupSchema>
 export type PBSTask = z.infer<typeof PBSTaskSchema>
