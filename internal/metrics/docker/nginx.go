@@ -1,7 +1,9 @@
 package docker
 
 import (
+	"archive/tar"
 	"context"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -334,6 +336,100 @@ func (c *dockerMetricsCollector) discoverNginxDirs(ctx context.Context, containe
 		c.logger.Debug("Discovered nginx config dirs from container introspection", "dirs", found)
 	}
 	return found
+}
+
+// nginxContainerDirs are the in-container paths read straight from an nginx/NPM
+// container's filesystem (NPM's generated proxy_host configs + generic nginx).
+func nginxContainerDirs() []string {
+	return []string{"/data/nginx/proxy_host", "/etc/nginx/conf.d", "/etc/nginx/sites-enabled"}
+}
+
+// nginxRoutesFromContainers reads nginx/NPM configs directly from the proxy
+// container's filesystem via the Docker API (CopyFromContainer). This is the
+// robust path when the config lives on a host mount node-stats can't see through
+// /host — a separate data disk, CasaOS/ZimaOS /DATA, or restrictive mount
+// propagation. Cached for traefikCacheTTL. Results are merged with the host-path
+// scan (dedup happens in attachRouteURL by URL).
+func (c *dockerMetricsCollector) nginxRoutesFromContainers(ctx context.Context, containers []container.Summary) []traefikRoute {
+	c.cacheMutex.RLock()
+	fresh := !c.nginxContainerAt.IsZero() && time.Since(c.nginxContainerAt) < traefikCacheTTL
+	cached := c.nginxContainerRoutes
+	c.cacheMutex.RUnlock()
+	if fresh || c.client == nil {
+		return cached
+	}
+
+	var out []traefikRoute
+	seen := map[string]struct{}{}
+	for _, ci := range containers {
+		if !isNginxContainer(ci) {
+			continue
+		}
+		for _, dir := range nginxContainerDirs() {
+			rc, _, err := c.client.CopyFromContainer(ctx, ci.ID, dir)
+			if err != nil {
+				continue // dir absent in this image — try the next
+			}
+			routes := parseNginxTar(rc)
+			rc.Close()
+			for _, r := range routes {
+				key := r.Host + "\x00" + r.URL()
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				out = append(out, r)
+			}
+		}
+	}
+
+	c.cacheMutex.Lock()
+	c.nginxContainerRoutes = out
+	c.nginxContainerAt = time.Now()
+	c.cacheMutex.Unlock()
+	if len(out) > 0 {
+		c.logger.Debug("Read nginx routes from container filesystem", "routes", len(out))
+	}
+	return out
+}
+
+// parseNginxTar extracts *.conf (and extension-less) files from a tar stream —
+// the Docker CopyFromContainer archive — and parses nginx server blocks from
+// each. Entry sizes are bounded; non-regular entries are skipped.
+func parseNginxTar(r io.Reader) []traefikRoute {
+	const maxConf = 1 << 20 // nginx site configs are a few KB; cap defensively
+	tr := tar.NewReader(r)
+	var out []traefikRoute
+	seen := map[string]struct{}{}
+	for {
+		hdr, err := tr.Next()
+		if err != nil {
+			break // EOF or a malformed archive — stop
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+		name := filepath.Base(hdr.Name)
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		if ext := filepath.Ext(name); ext != "" && ext != ".conf" {
+			continue
+		}
+		data, err := io.ReadAll(io.LimitReader(tr, maxConf))
+		if err != nil {
+			continue
+		}
+		for _, rt := range routesFromNginxConf(string(data)) {
+			key := rt.Host + "\x00" + rt.URL()
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, rt)
+		}
+	}
+	return out
 }
 
 // introspectNginxContainer maps an nginx/NPM container's data/config bind mounts

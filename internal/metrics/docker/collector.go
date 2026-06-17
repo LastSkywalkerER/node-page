@@ -79,6 +79,13 @@ type dockerMetricsCollector struct {
 	discoveredNginxDirs []string
 	nginxDiscoveryAt    time.Time
 
+	// nginx routes read straight from the proxy container's filesystem via the
+	// Docker API (robust when the config lives on a host mount /host can't see —
+	// separate data disks, CasaOS/ZimaOS /DATA, restrictive mount propagation).
+	// Cached for traefikCacheTTL.
+	nginxContainerRoutes []traefikRoute
+	nginxContainerAt     time.Time
+
 	// Image update checks hit the registry (network), so they run rarely
 	// (updateCheckInterval) in a background goroutine; results are cached per
 	// image reference and applied to containers on every cycle.
@@ -572,6 +579,9 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 	// nginx / Nginx Proxy Manager file-based routes, resolved the same way.
 	nginxDirs := append(append([]string{}, c.nginxDirs...), c.discoverNginxDirs(ctx, containers)...)
 	enrichWithProxyRoutes(&metric, loadNginxRoutes(nginxDirs), c.logger)
+	// Also read nginx/NPM configs straight from the proxy container — works when
+	// the config lives on a host mount /host can't reach (separate data disks).
+	enrichWithProxyRoutes(&metric, c.nginxRoutesFromContainers(ctx, containers), c.logger)
 
 	return metric, nil
 }

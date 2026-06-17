@@ -1,6 +1,73 @@
 package docker
 
-import "testing"
+import (
+	"archive/tar"
+	"bytes"
+	"testing"
+)
+
+func TestParseNginxTar(t *testing.T) {
+	// Mimic `docker cp` of NPM's proxy_host dir: a tar with a dir entry + .conf
+	// files (one NPM variable-upstream, one with a non-.conf file to be skipped).
+	files := []struct {
+		name, body string
+		dir        bool
+	}{
+		{name: "proxy_host/", dir: true},
+		{name: "proxy_host/1.conf", body: `
+server {
+  set $forward_scheme http;
+  set $server "wg-easy";
+  set $port 51821;
+  listen 443 ssl;
+  server_name wg.example.com;
+  location / { proxy_pass $forward_scheme://$server:$port; }
+}`},
+		{name: "proxy_host/2.conf", body: `
+server {
+  set $forward_scheme http;
+  set $server "172.17.0.1";
+  set $port 9090;
+  listen 443 ssl;
+  server_name dash.example.com;
+  location / { proxy_pass $forward_scheme://$server:$port; }
+}`},
+		{name: "proxy_host/.keep", body: "ignore me"},
+	}
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, f := range files {
+		hdr := &tar.Header{Name: f.name, Mode: 0o644, Size: int64(len(f.body))}
+		if f.dir {
+			hdr.Typeflag = tar.TypeDir
+			hdr.Size = 0
+		} else {
+			hdr.Typeflag = tar.TypeReg
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if !f.dir {
+			_, _ = tw.Write([]byte(f.body))
+		}
+	}
+	tw.Close()
+
+	routes := parseNginxTar(&buf)
+	if len(routes) != 2 {
+		t.Fatalf("got %d routes, want 2: %+v", len(routes), routes)
+	}
+	byHost := map[string]traefikRoute{}
+	for _, r := range routes {
+		byHost[r.Host] = r
+	}
+	if r, ok := byHost["wg.example.com"]; !ok || r.UpstreamHost != "wg-easy" || r.UpstreamIsIP || r.Scheme != "https" {
+		t.Errorf("wg route = %+v", r)
+	}
+	if r, ok := byHost["dash.example.com"]; !ok || r.UpstreamHost != "172.17.0.1" || !r.UpstreamIsIP || r.UpstreamPort != 9090 {
+		t.Errorf("dash route = %+v", r)
+	}
+}
 
 func TestRoutesFromNginxConf_NPMVariableUpstream(t *testing.T) {
 	// Nginx Proxy Manager generated proxy_host config: forward target via
