@@ -110,3 +110,34 @@ func TestClientAuthHeaderAndParsing(t *testing.T) {
 		t.Fatalf("node status parsed wrong: %+v", st)
 	}
 }
+
+func TestDatastoreGroupsParsing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api2/json/admin/datastore/main/groups" {
+			// PBS uses kebab-case keys — the struct tags must match exactly.
+			_, _ = w.Write([]byte(`{"data":[
+				{"backup-type":"vm","backup-id":"100","last-backup":1700000000,"backup-count":12},
+				{"backup-type":"ct","backup-id":"201","last-backup":1700009999,"backup-count":3}
+			]}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(srv.URL, "t@pbs!x", "s", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, err := client.DatastoreGroups(context.Background(), "main")
+	if err != nil {
+		t.Fatalf("DatastoreGroups: %v", err)
+	}
+	if len(groups) != 2 {
+		t.Fatalf("got %d groups, want 2", len(groups))
+	}
+	if groups[0].BackupType != "vm" || groups[0].BackupID != "100" || groups[0].LastBackup != 1700000000 || groups[0].BackupCount != 12 {
+		t.Errorf("group[0] parsed wrong: %+v", groups[0])
+	}
+}

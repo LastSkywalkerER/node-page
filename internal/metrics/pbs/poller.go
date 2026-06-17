@@ -73,15 +73,26 @@ type BackupHealth struct {
 	RecentTasks  []TaskSummary `json:"recent_tasks,omitempty"`
 }
 
+// BackupGroup is one backed-up machine on a datastore (a vm/ct/host group) with
+// its most-recent backup time and snapshot count.
+type BackupGroup struct {
+	Datastore  string `json:"datastore"`
+	BackupType string `json:"backup_type"` // vm | ct | host
+	BackupID   string `json:"backup_id"`
+	LastBackup int64  `json:"last_backup,omitempty"`
+	Count      int    `json:"count"`
+}
+
 // Status is the PBS-specific detail surfaced by GET /pbs?host_id= for the
-// backup-server widget (datastore capacity + backup health). It is a live
-// snapshot kept by the polling node (leader); node CPU/mem/disk vitals flow
-// through the normal replicated metric pipeline instead.
+// backup-server widget (datastore capacity, backed-up machines, backup health).
+// It is a live snapshot kept by the polling node (leader); node CPU/mem/disk
+// vitals flow through the normal replicated metric pipeline instead.
 type Status struct {
-	HostID     uint        `json:"host_id"`
-	Datastores []Datastore `json:"datastores"`
-	Backups    BackupHealth `json:"backups"`
-	UpdatedAt  time.Time   `json:"updated_at"`
+	HostID     uint          `json:"host_id"`
+	Datastores []Datastore   `json:"datastores"`
+	Groups     []BackupGroup `json:"groups"` // backed-up machines + last-backup time
+	Backups    BackupHealth  `json:"backups"`
+	UpdatedAt  time.Time     `json:"updated_at"`
 }
 
 // Poller drives every enabled PBS connector. Exactly one node polls in a
@@ -286,6 +297,23 @@ func (p *Poller) refreshDetail(ctx context.Context, client *Client, node string,
 		p.deps.Logger.Debug("pbs: datastore usage unavailable", "error", err)
 	}
 
+	// Backed-up machines: backup groups per datastore (newest backup first).
+	var groups []BackupGroup
+	for _, ds := range datastores {
+		gs, err := client.DatastoreGroups(ctx, ds.Store)
+		if err != nil {
+			p.deps.Logger.Debug("pbs: datastore groups unavailable", "store", ds.Store, "error", err)
+			continue
+		}
+		for _, g := range gs {
+			groups = append(groups, BackupGroup{
+				Datastore: ds.Store, BackupType: g.BackupType, BackupID: g.BackupID,
+				LastBackup: g.LastBackup, Count: g.BackupCount,
+			})
+		}
+	}
+	sort.SliceStable(groups, func(i, j int) bool { return groups[i].LastBackup > groups[j].LastBackup })
+
 	var backups BackupHealth
 	if tasks, err := client.Tasks(ctx, node, 100); err == nil {
 		backups = buildBackupHealth(tasks)
@@ -294,7 +322,7 @@ func (p *Poller) refreshDetail(ctx context.Context, client *Client, node string,
 	}
 
 	p.mu.Lock()
-	p.status[hostID] = Status{HostID: hostID, Datastores: datastores, Backups: backups, UpdatedAt: time.Now()}
+	p.status[hostID] = Status{HostID: hostID, Datastores: datastores, Groups: groups, Backups: backups, UpdatedAt: time.Now()}
 	p.mu.Unlock()
 }
 

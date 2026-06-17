@@ -78,6 +78,11 @@ type Repository interface {
 	// external_id ends with suffix (e.g. "/lxc/105") — used by the self-link
 	// flow to find this node's own guest row across configured connectors.
 	FindConnectorOnlyHostsByExternalIDSuffix(ctx context.Context, suffix string) ([]Host, error)
+	// FindConnectorOnlyHostsByExternalIDPrefix lists connector-owned rows whose
+	// external_id starts with prefix (one connector's nodes + guests) — used by
+	// the poller to prune rows for guests/nodes removed from the source since the
+	// last cycle (e.g. a VM/LXC deleted in Proxmox). Excludes the local collector.
+	FindConnectorOnlyHostsByExternalIDPrefix(ctx context.Context, prefix string) ([]Host, error)
 	// UnlinkConnectorHosts detaches every host whose external_id starts with
 	// prefix: agent rows lose their topology fields; connector-only rows are
 	// cascade-deleted when removeHosts is true, otherwise kept (frozen).
@@ -594,6 +599,17 @@ func (r *hostRepository) FindConnectorOnlyHostsByExternalIDSuffix(ctx context.Co
 	var hosts []Host
 	err := r.db.WithContext(ctx).
 		Where("external_id LIKE ? AND source = ?", "%"+suffix, SourceConnector).
+		Find(&hosts).Error
+	return hosts, err
+}
+
+func (r *hostRepository) FindConnectorOnlyHostsByExternalIDPrefix(ctx context.Context, prefix string) ([]Host, error) {
+	if prefix == "" {
+		return nil, nil
+	}
+	var hosts []Host
+	err := r.db.WithContext(ctx).
+		Where("external_id LIKE ? AND source = ? AND id != ?", prefix+"%", SourceConnector, LocalCollectorHostID).
 		Find(&hosts).Error
 	return hosts, err
 }

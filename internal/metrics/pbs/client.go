@@ -195,6 +195,23 @@ func (c *Client) DatastoreUsage(ctx context.Context) ([]DatastoreUsage, error) {
 	return items, err
 }
 
+// DatastoreGroup is one backup group on a datastore — all snapshots of a single
+// backed-up guest/host (a vm/<id>, ct/<id> or host/<name>). From
+// /admin/datastore/{store}/groups.
+type DatastoreGroup struct {
+	BackupType  string `json:"backup-type"` // vm | ct | host
+	BackupID    string `json:"backup-id"`
+	LastBackup  int64  `json:"last-backup"` // unix seconds of the newest snapshot
+	BackupCount int    `json:"backup-count"`
+}
+
+// DatastoreGroups lists the backup groups (backed-up machines) on a datastore.
+func (c *Client) DatastoreGroups(ctx context.Context, store string) ([]DatastoreGroup, error) {
+	var items []DatastoreGroup
+	err := c.get(ctx, "/admin/datastore/"+url.PathEscape(store)+"/groups", &items)
+	return items, err
+}
+
 // Task is one row of /nodes/{node}/tasks. Status is "OK" or an error string for
 // finished tasks; empty (with EndTime 0) while still running.
 type Task struct {

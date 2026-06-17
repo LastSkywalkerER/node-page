@@ -351,7 +351,37 @@ func (p *Poller) syncConnector(ctx context.Context, conn connectors.Connector) {
 	// transient outage never wipes still-valid state.
 	p.evictStale(conn.ID, prefix, liveConnKeys, liveExternalIDs)
 
+	// Remove host ROWS for guests/nodes that no longer exist on the connector
+	// (e.g. a VM/LXC deleted in Proxmox) — otherwise they linger forever as
+	// "stopped". Same safety as evictStale: only after a successful resource
+	// fetch, so a transient outage never deletes still-valid rows.
+	p.pruneVanished(ctx, prefix, liveExternalIDs)
+
 	_ = p.deps.Connectors.UpdateLocalStatus(ctx, conn.ID, connectors.StatusOK, "", time.Now())
+}
+
+// pruneVanished deletes connector-owned host rows under prefix whose external_id
+// is absent from this cycle's live set — guests/nodes removed at the source.
+// Pure connector rows only (agent / agent+connector rows are left to the agent);
+// the local collector row is excluded by the repository query.
+func (p *Poller) pruneVanished(ctx context.Context, prefix string, liveExternalIDs map[string]struct{}) {
+	existing, err := p.deps.HostRepo.FindConnectorOnlyHostsByExternalIDPrefix(ctx, prefix)
+	if err != nil {
+		p.deps.Logger.Warn("proxmox: list connector hosts for prune", "error", err)
+		return
+	}
+	for i := range existing {
+		h := existing[i]
+		if h.ExternalID == "" {
+			continue
+		}
+		if _, live := liveExternalIDs[h.ExternalID]; live {
+			continue
+		}
+		p.deps.Logger.Info("proxmox: removing host no longer present on the connector",
+			"external_id", h.ExternalID, "name", h.Name, "host_id", h.ID)
+		p.removeHost(ctx, &h)
+	}
 }
 
 // evictStale removes cached identity/network/upsert state for one connector's
