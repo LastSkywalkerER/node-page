@@ -38,6 +38,7 @@ func cpuMetricFromHistorical(metric HistoricalCPUMetric) CPUMetric {
 		LoadAvg5:     metric.LoadAvg5,
 		LoadAvg15:    metric.LoadAvg15,
 		Temperature:  metric.Temperature,
+		ModelName:    metric.ModelName,
 	}
 }
 
@@ -55,6 +56,7 @@ func (r *cpuRepository) SaveCurrentMetricAt(ctx context.Context, metric CPUMetri
 		LoadAvg5:    metric.LoadAvg5,
 		LoadAvg15:   metric.LoadAvg15,
 		Temperature: metric.Temperature,
+		ModelName:   metric.ModelName,
 	}
 	// Raft log replay re-applies entries after a restart: the same
 	// (host_id, timestamp) row must be a no-op, not a pkey violation.

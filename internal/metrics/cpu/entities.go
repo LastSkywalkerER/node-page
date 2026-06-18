@@ -43,6 +43,10 @@ type HistoricalCPUMetric struct {
 	LoadAvg5    float64   `json:"load_avg_5" gorm:"column:load_avg_5"`
 	LoadAvg15   float64   `json:"load_avg_15" gorm:"column:load_avg_15"`
 	Temperature float64   `json:"temperature" gorm:"column:temperature"`
+	// ModelName is the CPU model string. It's static per machine but kept on the
+	// latest row so the host's static hardware identity is queryable at read time
+	// (the /hosts response surfaces it) without relying on a live SSE tick.
+	ModelName string `json:"model_name" gorm:"column:model_name"`
 }
 
 func (h HistoricalCPUMetric) GetTimestamp() time.Time { return h.Timestamp }

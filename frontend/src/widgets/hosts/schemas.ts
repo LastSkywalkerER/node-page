@@ -27,6 +27,12 @@ export const HostSchema = z.object({
   guest_status: z.string().optional().default(''),
   // Uplink site this row arrived from over the cross-cluster bridge ('' = local cluster).
   origin_cluster: z.string().optional().default(''),
+  // Static hardware identity, served with the host row (from its latest metrics)
+  // so the card renders these without waiting on the per-metric queries / SSE.
+  cpu_model: z.string().optional().default(''),
+  cpu_cores: z.number().optional().default(0),
+  memory_total: z.number().optional().default(0), // bytes
+  disk_total: z.number().optional().default(0), // bytes
   last_seen: z.string().optional().default(''),
   created_at: z.string(),
   updated_at: z.string(),

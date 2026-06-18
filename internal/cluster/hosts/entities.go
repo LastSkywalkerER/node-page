@@ -100,6 +100,15 @@ type Host struct {
 	// time for the UI (not a DB column — ids differ per node).
 	ParentID uint `json:"parent_id,omitempty" gorm:"-"`
 
+	// Static hardware identity (CPU model/cores, total RAM/disk bytes), filled
+	// at read time from this host's latest metric rows — NOT DB columns. They
+	// let the node card render its static facts from the single /hosts request
+	// instead of waiting on the per-metric queries / SSE.
+	CPUModel    string `json:"cpu_model,omitempty" gorm:"-"`
+	CPUCores    int    `json:"cpu_cores,omitempty" gorm:"-"`
+	MemoryTotal uint64 `json:"memory_total,omitempty" gorm:"-"`
+	DiskTotal   uint64 `json:"disk_total,omitempty" gorm:"-"`
+
 	// BootTime is the host's boot time in Unix seconds. Replicated cluster-wide
 	// so any node can show this host's real system uptime (now - boot_time).
 	BootTime int64 `json:"boot_time"`

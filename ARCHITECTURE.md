@@ -295,6 +295,7 @@ Each widget in page components is wrapped in `<ErrorBoundary name="...">` to iso
 
 ### Machine stats data flow (SSE-first)
 - **REST** (`GET /cpu|memory|disk|network|docker?host_id=`): one load per visit — `latest` from DB + `history` for charts (`staleTime: Infinity`, no `refetchInterval`).
+- **Node cards** load each host as one unit: `HostCard` holds a full-card skeleton until its metric/health/PBS queries have all loaded once, so the card reveals whole instead of piecemeal. Its **static hardware identity** (cpu model/cores, ram/disk totals) rides on the host row: `GET /hosts` enriches each host from its latest metric rows (`hosts.StaticHardwareSource`, adapted over the cpu/memory/disk repos in DI), so the card's static fields come from that one request rather than the per-metric queries / SSE. The CPU model is persisted on the cpu metric row (`HistoricalCPUMetric.ModelName`) so it's queryable at read time, not SSE-only.
 - **SSE** (`GET /stream?host_id=`): each collector tick pushes a live snapshot with `collecting_host_id`; `useLiveMetricsQuerySync` merges it into the same React Query keys so widgets update without polling.
 - **Sensors**: not in SSE; single REST load per page (`/sensors?host_id=`).
 - **Health** (machine cards): poll every 5s. **`status: online`** only if `last_seen` is fresh (single threshold, no agent distinction). UI uses `status`, not HTTP success. Cards use JSON **`uptime`** (this API process uptime). Card stripe/icon: green online, **red offline**.

@@ -41,6 +41,24 @@ type RaftReplicator interface {
 	SubmitHostDelete(ctx context.Context, mac string) error
 }
 
+// HostStatics is a host's static hardware identity, read at response time from
+// its latest metric rows.
+type HostStatics struct {
+	CPUModel    string
+	CPUCores    int
+	MemoryTotal uint64
+	DiskTotal   uint64
+}
+
+// StaticHardwareSource yields a host's static hardware facts so the /hosts
+// response can carry them (so the node card doesn't wait on the per-metric
+// queries / SSE for its static scaffold). Defined locally to avoid importing
+// the metric packages; the DI layer adapts the cpu/memory/disk repositories to
+// it. Nil-safe: when unset, /hosts simply omits these fields.
+type StaticHardwareSource interface {
+	HostStatics(ctx context.Context, hostID uint) HostStatics
+}
+
 // Service defines the hosts service interface.
 type Service interface {
 	RegisterOrUpdateCurrentHost(ctx context.Context) (*Host, error)
@@ -60,6 +78,7 @@ type service struct {
 	collector      *HostCollector
 	hostRepository Repository
 	raft           RaftReplicator
+	statics        StaticHardwareSource
 
 	// upsertMu guards the throttling state for the periodic Raft host upsert.
 	upsertMu sync.Mutex
@@ -96,6 +115,26 @@ func AttachRaftReplicator(svc Service, r RaftReplicator) {
 	if impl, ok := svc.(*service); ok {
 		impl.raft = r
 	}
+}
+
+// AttachStaticHardwareSource wires the latest-metrics adapter used to enrich
+// the /hosts response with each host's static hardware identity.
+func AttachStaticHardwareSource(svc Service, src StaticHardwareSource) {
+	if impl, ok := svc.(*service); ok {
+		impl.statics = src
+	}
+}
+
+// enrichStatics fills a host's static hardware fields from its latest metrics.
+func (s *service) enrichStatics(ctx context.Context, h *Host) {
+	if s.statics == nil || h == nil {
+		return
+	}
+	st := s.statics.HostStatics(ctx, h.ID)
+	h.CPUModel = st.CPUModel
+	h.CPUCores = st.CPUCores
+	h.MemoryTotal = st.MemoryTotal
+	h.DiskTotal = st.DiskTotal
 }
 
 func (s *service) RegisterOrUpdateCurrentHost(ctx context.Context) (*Host, error) {
@@ -239,6 +278,11 @@ func (s *service) GetAllHosts(ctx context.Context) ([]Host, error) {
 			hosts[i].ParentID = macToID[pm]
 		}
 	}
+	// Static hardware identity from each host's latest metrics, so the node
+	// card gets cpu model/cores + ram/disk totals in this single request.
+	for i := range hosts {
+		s.enrichStatics(ctx, &hosts[i])
+	}
 	s.logger.Debug("All hosts retrieved successfully", "count", len(hosts))
 	return hosts, nil
 }
@@ -269,7 +313,12 @@ func (s *service) RemoveHost(ctx context.Context, id uint) error {
 }
 
 func (s *service) GetCurrentHost(ctx context.Context) (*Host, error) {
-	return s.hostRepository.GetHostByID(ctx, LocalCollectorHostID)
+	host, err := s.hostRepository.GetHostByID(ctx, LocalCollectorHostID)
+	if err != nil {
+		return nil, err
+	}
+	s.enrichStatics(ctx, host)
+	return host, nil
 }
 
 func (s *service) GetCurrentHostInfo(ctx context.Context) (HostInfo, error) {

@@ -36,6 +36,30 @@ import (
 	"github.com/charmbracelet/log"
 )
 
+// hostStaticsAdapter implements hosts.StaticHardwareSource over the metric
+// repositories, reading each host's static hardware identity from its latest
+// cpu/memory/disk rows for the /hosts response.
+type hostStaticsAdapter struct {
+	cpu  cpu.Repository
+	mem  memory.Repository
+	disk disk.Repository
+}
+
+func (a hostStaticsAdapter) HostStatics(ctx context.Context, hostID uint) hosts.HostStatics {
+	var s hosts.HostStatics
+	if m, err := a.cpu.GetLatestMetricByHost(ctx, hostID); err == nil && m != nil {
+		s.CPUModel = m.ModelName
+		s.CPUCores = m.Cores
+	}
+	if m, err := a.mem.GetLatestMetricByHost(ctx, hostID); err == nil && m != nil {
+		s.MemoryTotal = m.Total
+	}
+	if m, err := a.disk.GetLatestMetricByHost(ctx, hostID); err == nil && m != nil {
+		s.DiskTotal = m.Total
+	}
+	return s
+}
+
 // Container holds all application dependencies.
 type Container struct {
 	logger *log.Logger
@@ -183,6 +207,14 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 	container.networkService = network.NewService(container.logger, container.networkRepository)
 	container.dockerService = docker.NewService(container.logger, docker.NewDockerCollector(container.logger, traefikDirs, nginxDirs), container.dockerRepository)
 	container.hostService = hosts.NewService(container.logger, container.hostRepository)
+	// Enrich /hosts with each host's static hardware identity (cpu model/cores,
+	// ram/disk totals) read from its latest metric rows, so the node card gets
+	// its static facts in that one request instead of the per-metric queries.
+	hosts.AttachStaticHardwareSource(container.hostService, hostStaticsAdapter{
+		cpu:  container.cpuRepository,
+		mem:  container.memoryRepository,
+		disk: container.diskRepository,
+	})
 	container.healthService = health.NewService(container.logger, container.hostRepository, startTime)
 	container.sensorsService = sensors.NewService(container.logger)
 

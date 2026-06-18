@@ -119,7 +119,8 @@ function MetricTile({
   )
 }
 
-function HostMetrics({ hostId, live }: { hostId: number; live: boolean }) {
+function HostMetrics({ host, live }: { host: Host; live: boolean }) {
+  const hostId = host.id
   const opts = live ? SSE_LIVE : SSE_FALLBACK
   const { data: cpu } = useCPU(hostId, opts)
   const { data: mem } = useMemory(hostId, opts)
@@ -131,16 +132,18 @@ function HostMetrics({ hostId, live }: { hostId: number; live: boolean }) {
   const diskPct = disk?.latest?.usage_percent ?? null
   const netNow = netSpeedKbps(net?.latest?.interfaces)
 
-  const cpuCores = cpu?.latest?.cores
+  // Static parts (cores, totals) come from the host row served by /hosts; the
+  // live parts (used, %) come from the metric stream.
+  const cpuCores = host.cpu_cores || cpu?.latest?.cores
   const cpuSub = cpuCores ? `${cpuCores} cores` : undefined
-  const memSub =
-    mem?.latest?.used != null && mem?.latest?.total != null
-      ? `${formatBytes(mem.latest.used)} / ${formatBytes(mem.latest.total)}`
-      : undefined
-  const diskSub =
-    disk?.latest?.used != null && disk?.latest?.total != null
-      ? `${formatBytes(disk.latest.used)} / ${formatBytes(disk.latest.total)}`
-      : undefined
+  const memTotal = host.memory_total || mem?.latest?.total
+  const memSub = memTotal
+    ? `${mem?.latest?.used != null ? formatBytes(mem.latest.used) : '--'} / ${formatBytes(memTotal)}`
+    : undefined
+  const diskTotal = host.disk_total || disk?.latest?.total
+  const diskSub = diskTotal
+    ? `${disk?.latest?.used != null ? formatBytes(disk.latest.used) : '--'} / ${formatBytes(diskTotal)}`
+    : undefined
 
   const cpuSeries = (cpu?.history ?? []).map((p) => p.usage)
   const memSeries = (mem?.history ?? []).map((p) => p.usage_percent)
@@ -269,7 +272,9 @@ function HostCard({ host, guests = [], live }: { host: Host; guests?: Host[]; li
 
   const { isConnected, latency, uptime, showUptime } = conn
   const cardTitle = getHostCardTitle(host)
-  const cpuModel = cpu.data?.latest?.model_name?.trim()
+  // Static identity comes from the host row (one /hosts request); fall back to
+  // the cpu metric only if the row hasn't been enriched yet.
+  const cpuModel = host.cpu_model?.trim() || cpu.data?.latest?.model_name?.trim()
 
   return (
     <Link to={`/machines/${host.id}/stats`} className="group block cursor-pointer">
@@ -334,7 +339,7 @@ function HostCard({ host, guests = [], live }: { host: Host; guests?: Host[]; li
             </div>
 
             {/* Live metrics */}
-            <HostMetrics hostId={host.id} live={live} />
+            <HostMetrics host={host} live={live} />
 
             {/* Compact metadata */}
             <div className="mt-2.5 grid grid-cols-2 gap-x-3 gap-y-1.5">
