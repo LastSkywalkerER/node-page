@@ -17,6 +17,7 @@ import { formatBytes } from '@/shared/lib/utils'
 import type { Host } from '@/widgets/hosts/schemas'
 import { GuestList } from '@/widgets/hosts/GuestList'
 import { PBSCardSummary } from '@/widgets/pbs/PBSCardSummary'
+import { usePBS } from '@/widgets/pbs/usePBS'
 import { OSIcon } from '@/shared/components/OSIcon'
 import { getHostCardTitle } from '@/shared/lib/hostDisplay'
 import { AllApplicationsSection } from '@/widgets/applications/AllApplicationsSection'
@@ -204,12 +205,71 @@ function MetaCell({
   )
 }
 
+/** Full-card placeholder shown while a card's queries do their first load, so
+ *  the card appears whole instead of fields/charts/backups popping in one by
+ *  one. Mirrors the real card's frame to avoid layout shift. */
+function HostCardSkeleton() {
+  return (
+    <div className="relative">
+      <div className="cyber-frame relative flex flex-col overflow-hidden rounded-xl border border-border/60 bg-card backdrop-blur-xl dark:border-white/10">
+        <div className="absolute left-0 right-0 top-0 z-3 h-[3px] bg-muted-foreground/15" />
+        <div className="relative z-2 flex-1 p-3 pt-5">
+          <div className="mb-2.5 flex items-start gap-2">
+            <Skeleton className="mt-0.5 h-4 w-4 shrink-0 rounded" />
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <Skeleton className="h-3.5 w-28" />
+              <Skeleton className="h-2.5 w-20" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-1.5">
+            {[0, 1, 2, 3].map((i) => (
+              <Skeleton key={i} className="h-16 w-full rounded-md" />
+            ))}
+          </div>
+          <div className="mt-2.5 space-y-1.5">
+            <Skeleton className="h-3 w-44" />
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 pt-0.5">
+              <Skeleton className="h-3 w-24" />
+              <Skeleton className="h-3 w-20" />
+            </div>
+          </div>
+        </div>
+        <div className="relative z-2 flex items-center gap-4 border-t border-border/60 bg-muted/25 px-3 py-2 dark:border-white/8 dark:bg-black/20">
+          <Skeleton className="h-3 w-12" />
+          <Skeleton className="h-3 w-14" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function HostCard({ host, guests = [], live }: { host: Host; guests?: Host[]; live: boolean }) {
-  const { isConnected, latency, uptime, showUptime, isLoading: connLoading } = useConnectionStatus(host.id)
+  // A card is one consistent entity: gather every query it needs (metrics,
+  // health, PBS backups) and hold a skeleton until they've all loaded once, so
+  // the card pops in whole instead of charts/fields/backups arriving piecemeal.
+  const opts = live ? SSE_LIVE : SSE_FALLBACK
+  const cpu = useCPU(host.id, opts)
+  const mem = useMemory(host.id, opts)
+  const disk = useDisk(host.id, opts)
+  const net = useNetwork(host.id, opts)
+  const conn = useConnectionStatus(host.id)
+  const isPBS = host.platform === 'proxmox-backup-server'
+  const pbs = usePBS(host.id, isPBS)
+
+  if (
+    cpu.isLoading ||
+    mem.isLoading ||
+    disk.isLoading ||
+    net.isLoading ||
+    conn.isLoading ||
+    (isPBS && pbs.isLoading)
+  ) {
+    return <HostCardSkeleton />
+  }
+
+  const { isConnected, latency, uptime, showUptime } = conn
   const cardTitle = getHostCardTitle(host)
-  // Shares the cache key with HostMetrics' useCPU(host.id) — no extra request.
-  const { data: cpu } = useCPU(host.id)
-  const cpuModel = cpu?.latest?.model_name?.trim()
+  const cpuModel = cpu.data?.latest?.model_name?.trim()
 
   return (
     <Link to={`/machines/${host.id}/stats`} className="group block cursor-pointer">
@@ -301,24 +361,15 @@ function HostCard({ host, guests = [], live }: { host: Host; guests?: Host[]; li
               'border-border/60 bg-muted/25 backdrop-blur-md dark:border-white/8 dark:bg-black/20'
             )}
           >
-            {connLoading ? (
-              <>
-                <Skeleton className="h-3 w-12" />
-                <Skeleton className="h-3 w-14" />
-              </>
-            ) : (
-              <>
-                <span className="flex items-center gap-1.5 font-mono">
-                  <Zap className="h-3 w-3 text-amber-400 drop-shadow-[0_0_6px_oklch(0.8_0.14_85/0.45)]" />
-                  {fmtLatency(latency)}
-                </span>
-                {showUptime && uptime && (
-                  <span className="flex items-center gap-1.5 font-mono">
-                    <Clock className="h-3 w-3 text-cyan-400/90" />
-                    {uptime}
-                  </span>
-                )}
-              </>
+            <span className="flex items-center gap-1.5 font-mono">
+              <Zap className="h-3 w-3 text-amber-400 drop-shadow-[0_0_6px_oklch(0.8_0.14_85/0.45)]" />
+              {fmtLatency(latency)}
+            </span>
+            {showUptime && uptime && (
+              <span className="flex items-center gap-1.5 font-mono">
+                <Clock className="h-3 w-3 text-cyan-400/90" />
+                {uptime}
+              </span>
             )}
           </div>
         </div>
@@ -364,17 +415,7 @@ export function MachineListPage() {
         {isLoading ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {[1, 2, 3, 4].map((i) => (
-              <div
-                key={i}
-                className="rounded-xl border border-border/60 bg-card/40 backdrop-blur-lg p-3 space-y-3 dark:border-white/10"
-              >
-                <Skeleton className="h-4 w-28" />
-                <div className="grid grid-cols-2 gap-1.5 pt-1">
-                  {[1, 2, 3, 4].map((j) => (
-                    <Skeleton key={j} className="h-12 w-full" />
-                  ))}
-                </div>
-              </div>
+              <HostCardSkeleton key={i} />
             ))}
           </div>
         ) : hosts.length === 0 ? (
