@@ -2,10 +2,44 @@ package pbs
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/charmbracelet/log"
 )
+
+// A snapshot replicated over the metric stream (peers / bridged hub) is keyed by
+// the LOCAL host id and must survive the local poll cycle's prune, while a
+// locally-polled snapshot for the same host always wins.
+func TestRemoteSnapshotServedAndRekeyed(t *testing.T) {
+	p := NewPoller(PollerDeps{Logger: log.New(nil)})
+
+	// Spoke-side snapshot carries the spoke's host id (99); the hub stores it
+	// under its own local id (7).
+	raw, _ := json.Marshal(Status{HostID: 99, Groups: []BackupGroup{{BackupID: "103", Name: "dokploy", LastSize: 42}}})
+	p.IngestRemoteSnapshot(context.Background(), 7, raw)
+
+	got, ok := p.Snapshot(7)
+	if !ok {
+		t.Fatal("remote snapshot not served")
+	}
+	if got.HostID != 7 {
+		t.Errorf("HostID = %d, want 7 (re-keyed to local id)", got.HostID)
+	}
+	if len(got.Groups) != 1 || got.Groups[0].Name != "dokploy" || got.Groups[0].LastSize != 42 {
+		t.Errorf("groups not preserved: %+v", got.Groups)
+	}
+
+	// A locally-polled snapshot takes precedence over the remote one.
+	p.mu.Lock()
+	p.status[7] = Status{HostID: 7, Groups: []BackupGroup{{BackupID: "local"}}}
+	p.mu.Unlock()
+	if got, _ := p.Snapshot(7); len(got.Groups) != 1 || got.Groups[0].BackupID != "local" {
+		t.Errorf("local snapshot should win, got %+v", got.Groups)
+	}
+}
 
 func TestBuildBackupHealth(t *testing.T) {
 	tasks := []Task{

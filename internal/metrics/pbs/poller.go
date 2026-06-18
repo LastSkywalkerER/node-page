@@ -106,7 +106,8 @@ type Poller struct {
 	syncCh chan struct{}
 
 	mu          sync.Mutex
-	status      map[uint]Status            // host id → latest detail snapshot
+	status      map[uint]Status            // host id → latest detail snapshot (locally polled)
+	remoteStatus map[uint]Status           // host id → snapshot received over the metric stream (peers/hub)
 	upsertState map[string]hostUpsertState // external_id → throttle state
 }
 
@@ -118,10 +119,11 @@ type hostUpsertState struct {
 // NewPoller creates the PBS poller.
 func NewPoller(deps PollerDeps) *Poller {
 	return &Poller{
-		deps:        deps,
-		syncCh:      make(chan struct{}, 1),
-		status:      map[uint]Status{},
-		upsertState: map[string]hostUpsertState{},
+		deps:         deps,
+		syncCh:       make(chan struct{}, 1),
+		status:       map[uint]Status{},
+		remoteStatus: map[uint]Status{},
+		upsertState:  map[string]hostUpsertState{},
 	}
 }
 
@@ -134,13 +136,32 @@ func (p *Poller) TriggerSync() {
 	}
 }
 
-// Snapshot returns the latest datastore/backup detail for a PBS host (the
-// polling node only). ok is false on a node that isn't polling this host.
+// Snapshot returns the latest datastore/backup detail for a PBS host. It serves
+// the locally-polled snapshot first, then one received over the metric stream
+// (so non-polling cluster peers and bridged hub clusters can answer GET /pbs).
 func (p *Poller) Snapshot(hostID uint) (Status, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	s, ok := p.status[hostID]
+	if s, ok := p.status[hostID]; ok {
+		return s, true
+	}
+	s, ok := p.remoteStatus[hostID]
 	return s, ok
+}
+
+// IngestRemoteSnapshot stores a PBS detail snapshot replicated over the metric
+// stream, keyed by THIS node's local host id (resolved by the metric sink). It
+// lands in a separate map so the local poll cycle's prune never drops it.
+func (p *Poller) IngestRemoteSnapshot(_ context.Context, hostID uint, raw json.RawMessage) {
+	var s Status
+	if err := json.Unmarshal(raw, &s); err != nil {
+		p.deps.Logger.Debug("pbs: decode remote snapshot", "host_id", hostID, "error", err)
+		return
+	}
+	s.HostID = hostID
+	p.mu.Lock()
+	p.remoteStatus[hostID] = s
+	p.mu.Unlock()
 }
 
 // Run loops until ctx is cancelled.
@@ -278,17 +299,18 @@ func (p *Poller) syncConnector(ctx context.Context, conn connectors.Connector) u
 		Free:         status.Root.Avail,
 		UsagePercent: pct(status.Root.Used, status.Root.Total),
 	}
-	p.submitMetrics(ctx, host, cpuM, memM, diskM)
-
-	// PBS-specific detail (datastores + backup health) → in-memory snapshot.
-	p.refreshDetail(ctx, client, node, host.ID)
+	// PBS-specific detail (datastores + backup health) → in-memory snapshot,
+	// computed first so it can ride the metric batch to peers / the hub.
+	snap := p.refreshDetail(ctx, client, node, host.ID)
+	p.submitMetrics(ctx, host, cpuM, memM, diskM, &snap)
 
 	_ = p.deps.Connectors.UpdateLocalStatus(ctx, conn.ID, connectors.StatusOK, "", time.Now())
 	return host.ID
 }
 
-// refreshDetail fetches datastore usage + recent tasks and stores the snapshot.
-func (p *Poller) refreshDetail(ctx context.Context, client *Client, node string, hostID uint) {
+// refreshDetail fetches datastore usage + recent tasks, stores the snapshot, and
+// returns it (so the caller can replicate it alongside the host's metrics).
+func (p *Poller) refreshDetail(ctx context.Context, client *Client, node string, hostID uint) Status {
 	var datastores []Datastore
 	if usage, err := client.DatastoreUsage(ctx); err == nil {
 		for _, u := range usage {
@@ -333,9 +355,11 @@ func (p *Poller) refreshDetail(ctx context.Context, client *Client, node string,
 		p.deps.Logger.Debug("pbs: tasks unavailable", "error", err)
 	}
 
+	snap := Status{HostID: hostID, Datastores: datastores, Groups: groups, Backups: backups, UpdatedAt: time.Now()}
 	p.mu.Lock()
-	p.status[hostID] = Status{HostID: hostID, Datastores: datastores, Groups: groups, Backups: backups, UpdatedAt: time.Now()}
+	p.status[hostID] = snap
 	p.mu.Unlock()
+	return snap
 }
 
 // snapshotInfo carries the per-group detail taken from a group's newest snapshot.
@@ -462,7 +486,7 @@ func hostFingerprint(info hosts.ConnectorHostInfo) [sha256.Size]byte {
 
 // submitMetrics replicates a metric batch (Raft fanout) or saves + publishes
 // locally. Mirrors the Proxmox poller's metric path.
-func (p *Poller) submitMetrics(ctx context.Context, host *hosts.Host, cpuM *cpu.CPUMetric, memM *memory.MemoryMetric, diskM *disk.DiskMetric) {
+func (p *Poller) submitMetrics(ctx context.Context, host *hosts.Host, cpuM *cpu.CPUMetric, memM *memory.MemoryMetric, diskM *disk.DiskMetric, snap *Status) {
 	ts := time.Now().UTC()
 	marshal := func(v any) json.RawMessage {
 		b, err := json.Marshal(v)
@@ -487,10 +511,16 @@ func (p *Poller) submitMetrics(ctx context.Context, host *hosts.Host, cpuM *cpu.
 		}
 	}
 	if p.deps.BroadcastMetrics != nil {
-		p.deps.BroadcastMetrics(ctx, raftcluster.MetricBatchPayload{
-			HostMAC: host.MacAddress, HostName: host.Name, Timestamp: ts,
+		batch := raftcluster.MetricBatchPayload{
+			HostMAC: host.MacAddress, HostName: host.Name, HostExternalID: host.ExternalID, Timestamp: ts,
 			CPU: marshal(cpuM), Memory: marshal(memM), Disk: marshal(diskM),
-		})
+		}
+		// Replicate the PBS detail alongside the metrics so non-polling peers and
+		// the bridged hub can serve GET /pbs for this host.
+		if snap != nil {
+			batch.PBS = marshal(snap)
+		}
+		p.deps.BroadcastMetrics(ctx, batch)
 	}
 }
 

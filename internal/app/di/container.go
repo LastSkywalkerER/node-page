@@ -2,6 +2,7 @@ package di
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -113,6 +114,10 @@ type Container struct {
 	metricSink     *raftcluster.MetricSink
 	metricSender   *metricstream.Sender
 	metricReceiver *metricstream.Receiver
+	// pbsSnapshotSink stores PBS detail snapshots carried by received metric
+	// batches; registered by server wiring and (re)applied to the metric sink on
+	// every Raft activation so it survives a wizard-driven join.
+	pbsSnapshotSink func(context.Context, uint, json.RawMessage)
 	// jwtSecret is the cluster-shared secret reused as the HMAC key for the
 	// intra-cluster metric stream (all nodes of a cluster share it).
 	jwtSecret string
@@ -329,6 +334,9 @@ func (c *Container) activateLocked(ctx context.Context, cfg config.RaftConfig) (
 	// intra-cluster P2P path needs only the cluster-shared JWT secret; the
 	// cross-cluster uplink additionally uses the bridge secret (carried in cfg).
 	c.metricSink = raftcluster.NewMetricSink(appliersDeps)
+	if c.pbsSnapshotSink != nil {
+		c.metricSink.SetPBSSink(c.pbsSnapshotSink)
+	}
 	c.metricSender = metricstream.NewSender(c.logger, c.db, cfg.ClusterID, cfg.NodeID, c.jwtSecret, cfg.Bridge)
 	c.metricReceiver = metricstream.NewReceiver(c.logger, c.metricSink, cfg.ClusterID, c.jwtSecret, cfg.Bridge)
 
@@ -1014,6 +1022,19 @@ func (c *Container) GetMetricSender() *metricstream.Sender {
 	c.activateMu.Lock()
 	defer c.activateMu.Unlock()
 	return c.metricSender
+}
+
+// SetPBSSnapshotSink registers the handler that stores a PBS detail snapshot
+// carried by a received metric batch (the pbs poller's IngestRemoteSnapshot).
+// It applies to the current metric sink and to any sink rebuilt on a later Raft
+// activation, so a wizard-driven join still wires it without a restart.
+func (c *Container) SetPBSSnapshotSink(fn func(context.Context, uint, json.RawMessage)) {
+	c.activateMu.Lock()
+	defer c.activateMu.Unlock()
+	c.pbsSnapshotSink = fn
+	if c.metricSink != nil {
+		c.metricSink.SetPBSSink(fn)
+	}
 }
 
 // GetMetricReceiver returns the best-effort metric-stream receiver handler, or

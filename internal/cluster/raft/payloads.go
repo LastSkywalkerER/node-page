@@ -178,12 +178,20 @@ type PeerNodeRemovePayload struct {
 type MetricBatchPayload struct {
 	HostMAC   string          `json:"host_mac"`
 	HostName  string          `json:"host_name,omitempty"`
-	Timestamp time.Time       `json:"ts"`
-	CPU       json.RawMessage `json:"cpu,omitempty"`
-	Memory    json.RawMessage `json:"memory,omitempty"`
-	Disk      json.RawMessage `json:"disk,omitempty"`
-	Network   json.RawMessage `json:"network,omitempty"`
-	Docker    json.RawMessage `json:"docker,omitempty"`
+	// HostExternalID is the stable connector identity (e.g. "pbs:<fp>/<node>"),
+	// used to resolve connector nodes that expose no NIC MAC (PBS) on a remote
+	// cluster, where the synthetic MAC is regenerated and won't match.
+	HostExternalID string          `json:"host_external_id,omitempty"`
+	Timestamp      time.Time       `json:"ts"`
+	CPU            json.RawMessage `json:"cpu,omitempty"`
+	Memory         json.RawMessage `json:"memory,omitempty"`
+	Disk           json.RawMessage `json:"disk,omitempty"`
+	Network        json.RawMessage `json:"network,omitempty"`
+	Docker         json.RawMessage `json:"docker,omitempty"`
+	// PBS carries a Proxmox Backup Server detail snapshot (datastores/backup
+	// groups/health) for this host, so non-polling nodes and bridged hub
+	// clusters can serve GET /pbs. Opaque JSON (the pbs.Status entity).
+	PBS json.RawMessage `json:"pbs,omitempty"`
 }
 
 // RetentionDeleteBeforePayload tells every replica to delete metric rows

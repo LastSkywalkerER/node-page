@@ -1068,7 +1068,7 @@ func (p *Poller) submitMetrics(ctx context.Context, host *hosts.Host, cpuM *cpu.
 	// Best-effort cluster fanout: ship the guest batch to peers (and the
 	// cross-cluster hub) over the metric stream. nil on a standalone node.
 	if p.deps.BroadcastMetrics != nil {
-		batch := raftcluster.MetricBatchPayload{HostMAC: host.MacAddress, HostName: host.Name, Timestamp: ts}
+		batch := raftcluster.MetricBatchPayload{HostMAC: host.MacAddress, HostName: host.Name, HostExternalID: host.ExternalID, Timestamp: ts}
 		if cpuM != nil {
 			batch.CPU = marshal(cpuM)
 		}

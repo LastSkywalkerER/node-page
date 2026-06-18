@@ -258,6 +258,10 @@ func Run() {
 		},
 	})
 	pbsHandler := pbs.NewHandler(pbsPoller)
+	// A PBS detail snapshot replicated over the metric stream lands in the local
+	// poller's remote-snapshot store, so non-polling peers and the bridged hub
+	// can serve GET /pbs for the host.
+	container.SetPBSSnapshotSink(pbsPoller.IngestRemoteSnapshot)
 	// "sync now" / post-connect resync wakes both pollers (one connector type each).
 	connectorsSvc.SetSyncTrigger(func() {
 		pvePoller.TriggerSync()

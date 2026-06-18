@@ -40,6 +40,19 @@ type MetricSink struct {
 	docker       docker.DockerRepository
 	publish      func(data []byte)
 	localCluster string
+	// pbsSink, when set, receives a replicated PBS detail snapshot (the batch's
+	// PBS field) keyed by the resolved LOCAL host id, so non-polling nodes and
+	// bridged hubs can serve GET /pbs. Set via SetPBSSink (DI), nil otherwise.
+	pbsSink func(ctx context.Context, hostID uint, raw json.RawMessage)
+}
+
+// SetPBSSink wires the handler that stores a replicated PBS snapshot for a host
+// (the pbs poller's IngestRemoteSnapshot). Kept as a plain callback so the raft
+// package needn't import the pbs package.
+func (s *MetricSink) SetPBSSink(fn func(ctx context.Context, hostID uint, raw json.RawMessage)) {
+	if s != nil {
+		s.pbsSink = fn
+	}
 }
 
 // NewMetricSink builds a sink from the same dependency bundle the FSM appliers
@@ -72,6 +85,12 @@ func (s *MetricSink) Ingest(ctx context.Context, p MetricBatchPayload, origin st
 		// A remote machine whose docker-bridge MAC collides with our own local
 		// row — the MAC isn't its identity here; resolve by (origin, name) below.
 		host, err = nil, gorm.ErrRecordNotFound
+	}
+	// Connector nodes without a NIC MAC (e.g. PBS) ship a synthetic MAC that a
+	// remote cluster regenerates differently — resolve them by their stable
+	// external_id, which is preserved across the bridge.
+	if errors.Is(err, gorm.ErrRecordNotFound) && p.HostExternalID != "" {
+		host, err = s.hostRepo.GetHostByExternalID(ctx, p.HostExternalID)
 	}
 	if errors.Is(err, gorm.ErrRecordNotFound) && origin != "" {
 		host, err = s.hostRepo.GetHostByOriginAndName(ctx, origin, p.HostName)
@@ -155,6 +174,12 @@ func (s *MetricSink) Ingest(ctx context.Context, p MetricBatchPayload, origin st
 		if b, err := json.Marshal(env); err == nil {
 			s.publish(b)
 		}
+	}
+
+	// PBS detail snapshot rides the same batch: hand it to the pbs poller so this
+	// (non-polling / bridged) node can serve GET /pbs for the host.
+	if len(p.PBS) > 0 && s.pbsSink != nil {
+		s.pbsSink(ctx, host.ID, p.PBS)
 	}
 	return nil
 }
