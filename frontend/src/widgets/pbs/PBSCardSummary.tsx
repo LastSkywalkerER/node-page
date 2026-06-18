@@ -24,7 +24,10 @@ function BackupRow({ group }: { group: PBSGroup }) {
         {group.backup_type || '—'}
       </span>
       <span className="min-w-0 flex-1 truncate font-medium" title={`${group.backup_type}/${group.backup_id} on ${group.datastore}`}>
-        {group.backup_id || '—'}
+        {group.name?.trim() || group.backup_id || '—'}
+        {group.name?.trim() && (
+          <span className="ml-1 font-mono text-[10px] text-muted-foreground/50">{group.backup_id}</span>
+        )}
       </span>
       <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">
         {group.last_size > 0 ? formatBytes(group.last_size) : '—'}

@@ -74,11 +74,14 @@ type BackupHealth struct {
 }
 
 // BackupGroup is one backed-up machine on a datastore (a vm/ct/host group) with
-// its most-recent backup time, that backup's size, and snapshot count.
+// its most-recent backup time, that backup's size, snapshot count, and the
+// machine name read from the newest snapshot's notes (PVE writes the guest name
+// there by default, so backups can show names instead of bare VMIDs).
 type BackupGroup struct {
 	Datastore  string `json:"datastore"`
 	BackupType string `json:"backup_type"` // vm | ct | host
 	BackupID   string `json:"backup_id"`
+	Name       string `json:"name,omitempty"` // guest name from the newest snapshot's notes
 	LastBackup int64  `json:"last_backup,omitempty"`
 	LastSize   uint64 `json:"last_size,omitempty"` // bytes — size of the newest snapshot
 	Count      int    `json:"count"`
@@ -307,16 +310,17 @@ func (p *Poller) refreshDetail(ctx context.Context, client *Client, node string,
 			p.deps.Logger.Debug("pbs: datastore groups unavailable", "store", ds.Store, "error", err)
 			continue
 		}
-		var sizes map[string]uint64
+		var latest map[string]snapshotInfo
 		if snaps, err := client.DatastoreSnapshots(ctx, ds.Store); err == nil {
-			sizes = latestSnapshotSizes(snaps)
+			latest = latestSnapshotInfo(snaps)
 		} else {
 			p.deps.Logger.Debug("pbs: datastore snapshots unavailable", "store", ds.Store, "error", err)
 		}
 		for _, g := range gs {
+			info := latest[g.BackupType+"/"+g.BackupID]
 			groups = append(groups, BackupGroup{
 				Datastore: ds.Store, BackupType: g.BackupType, BackupID: g.BackupID,
-				LastBackup: g.LastBackup, LastSize: sizes[g.BackupType+"/"+g.BackupID], Count: g.BackupCount,
+				Name: info.name, LastBackup: g.LastBackup, LastSize: info.size, Count: g.BackupCount,
 			})
 		}
 	}
@@ -334,19 +338,37 @@ func (p *Poller) refreshDetail(ctx context.Context, client *Client, node string,
 	p.mu.Unlock()
 }
 
-// latestSnapshotSizes maps "type/id" → the size (bytes) of that group's newest
-// snapshot, so each backed-up machine can show the size of its last backup.
-func latestSnapshotSizes(snaps []Snapshot) map[string]uint64 {
+// snapshotInfo carries the per-group detail taken from a group's newest snapshot.
+type snapshotInfo struct {
+	size uint64
+	name string // guest name parsed from the snapshot's notes/comment
+}
+
+// latestSnapshotInfo maps "type/id" → the size and name of that group's newest
+// snapshot, so each backed-up machine can show its last backup's size and a
+// human name (PVE stores the guest name in the snapshot notes by default).
+func latestSnapshotInfo(snaps []Snapshot) map[string]snapshotInfo {
 	latestTime := map[string]int64{}
-	sizes := map[string]uint64{}
+	out := map[string]snapshotInfo{}
 	for _, s := range snaps {
 		key := s.BackupType + "/" + s.BackupID
 		if t, seen := latestTime[key]; !seen || s.BackupTime >= t {
 			latestTime[key] = s.BackupTime
-			sizes[key] = s.Size
+			out[key] = snapshotInfo{size: s.Size, name: snapshotName(s.Comment)}
 		}
 	}
-	return sizes
+	return out
+}
+
+// snapshotName extracts a display name from a snapshot's notes: the first line,
+// trimmed. PVE's default notes-template "{{guestname}}" makes this the guest
+// name; empty when no usable note is set (UI then falls back to the VMID).
+func snapshotName(comment string) string {
+	line := comment
+	if i := strings.IndexAny(line, "\r\n"); i >= 0 {
+		line = line[:i]
+	}
+	return strings.TrimSpace(line)
 }
 
 // buildBackupHealth classifies recent tasks into last-backup time, last error,

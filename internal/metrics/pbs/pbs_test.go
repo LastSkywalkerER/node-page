@@ -147,8 +147,8 @@ func TestDatastoreSnapshotsParsing(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/api2/json/admin/datastore/main/snapshots" {
 			_, _ = w.Write([]byte(`{"data":[
-				{"backup-type":"vm","backup-id":"100","backup-time":1700000000,"size":1048576},
-				{"backup-type":"vm","backup-id":"100","backup-time":1700086400,"size":2097152}
+				{"backup-type":"vm","backup-id":"100","backup-time":1700000000,"size":1048576,"comment":"old-name"},
+				{"backup-type":"vm","backup-id":"100","backup-time":1700086400,"size":2097152,"comment":"dokploy"}
 			]}`))
 			return
 		}
@@ -164,23 +164,26 @@ func TestDatastoreSnapshotsParsing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DatastoreSnapshots: %v", err)
 	}
-	if len(snaps) != 2 || snaps[1].Size != 2097152 || snaps[1].BackupTime != 1700086400 {
+	if len(snaps) != 2 || snaps[1].Size != 2097152 || snaps[1].BackupTime != 1700086400 || snaps[1].Comment != "dokploy" {
 		t.Fatalf("snapshots parsed wrong: %+v", snaps)
 	}
 }
 
-func TestLatestSnapshotSizes(t *testing.T) {
+func TestLatestSnapshotInfo(t *testing.T) {
 	snaps := []Snapshot{
-		{BackupType: "vm", BackupID: "100", BackupTime: 100, Size: 10},
-		{BackupType: "vm", BackupID: "100", BackupTime: 300, Size: 30}, // newest wins
-		{BackupType: "vm", BackupID: "100", BackupTime: 200, Size: 20},
-		{BackupType: "ct", BackupID: "201", BackupTime: 50, Size: 5},
+		{BackupType: "vm", BackupID: "100", BackupTime: 100, Size: 10, Comment: "old"},
+		{BackupType: "vm", BackupID: "100", BackupTime: 300, Size: 30, Comment: "dokploy\nmore notes"}, // newest wins
+		{BackupType: "vm", BackupID: "100", BackupTime: 200, Size: 20, Comment: "mid"},
+		{BackupType: "ct", BackupID: "201", BackupTime: 50, Size: 5}, // no comment → no name
 	}
-	sizes := latestSnapshotSizes(snaps)
-	if sizes["vm/100"] != 30 {
-		t.Errorf("vm/100 size = %d, want 30 (newest snapshot)", sizes["vm/100"])
+	got := latestSnapshotInfo(snaps)
+	if got["vm/100"].size != 30 {
+		t.Errorf("vm/100 size = %d, want 30 (newest snapshot)", got["vm/100"].size)
 	}
-	if sizes["ct/201"] != 5 {
-		t.Errorf("ct/201 size = %d, want 5", sizes["ct/201"])
+	if got["vm/100"].name != "dokploy" { // first line of the newest snapshot's notes
+		t.Errorf("vm/100 name = %q, want dokploy", got["vm/100"].name)
+	}
+	if got["ct/201"].size != 5 || got["ct/201"].name != "" {
+		t.Errorf("ct/201 = %+v, want size 5 / empty name", got["ct/201"])
 	}
 }

@@ -215,11 +215,14 @@ func (c *Client) DatastoreGroups(ctx context.Context, store string) ([]Datastore
 // Snapshot is one backup snapshot from /admin/datastore/{store}/snapshots. Size
 // is the logical size of the backup in bytes (the sum of its index sizes — what
 // the PBS UI shows next to a snapshot, not the deduplicated on-disk size).
+// Comment is the snapshot's notes first line; Proxmox VE writes the guest name
+// here by default (notes-template "{{guestname}}"), so it doubles as a name.
 type Snapshot struct {
 	BackupType string `json:"backup-type"` // vm | ct | host
 	BackupID   string `json:"backup-id"`
 	BackupTime int64  `json:"backup-time"` // unix seconds
 	Size       uint64 `json:"size"`
+	Comment    string `json:"comment"`
 }
 
 // DatastoreSnapshots lists every snapshot on a datastore. Used to size each
