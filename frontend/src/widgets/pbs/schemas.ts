@@ -21,6 +21,7 @@ export const PBSGroupSchema = z.object({
   backup_type: z.string().optional().default(''), // vm | ct | host
   backup_id: z.string().optional().default(''),
   last_backup: z.number().optional().default(0),
+  last_size: z.number().optional().default(0), // bytes — size of the newest snapshot
   count: z.number().optional().default(0),
 })
 

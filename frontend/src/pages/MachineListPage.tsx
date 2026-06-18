@@ -16,6 +16,7 @@ import { CHART_COLORS } from '@/shared/lib/chartColors'
 import { formatBytes } from '@/shared/lib/utils'
 import type { Host } from '@/widgets/hosts/schemas'
 import { GuestList } from '@/widgets/hosts/GuestList'
+import { PBSCardSummary } from '@/widgets/pbs/PBSCardSummary'
 import { OSIcon } from '@/shared/components/OSIcon'
 import { getHostCardTitle } from '@/shared/lib/hostDisplay'
 import { AllApplicationsSection } from '@/widgets/applications/AllApplicationsSection'
@@ -286,6 +287,11 @@ function HostCard({ host, guests = [], live }: { host: Host; guests?: Host[]; li
 
             {/* Nested guests (hypervisor cards) */}
             <GuestList guests={guests} compact className="mt-2.5" />
+
+            {/* PBS backup summary — last backup time + size per machine */}
+            {host.platform === 'proxmox-backup-server' && (
+              <PBSCardSummary hostId={host.id} className="mt-2.5" />
+            )}
           </div>
 
           {/* Footer */}

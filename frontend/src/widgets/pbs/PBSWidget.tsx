@@ -43,7 +43,10 @@ function GroupRow({ group }: { group: PBSGroup }) {
         {group.backup_id || '—'}
         <span className="ml-1 font-mono text-[10px] text-muted-foreground/60">{group.datastore}</span>
       </span>
-      <span className="shrink-0 font-mono tabular-nums text-muted-foreground/70">{group.count} snap</span>
+      <span className="w-16 shrink-0 text-right font-mono tabular-nums text-muted-foreground" title="Last backup size">
+        {group.last_size > 0 ? formatBytes(group.last_size) : '—'}
+      </span>
+      <span className="hidden w-16 shrink-0 text-right font-mono tabular-nums text-muted-foreground/70 sm:inline">{group.count} snap</span>
       <span className={cn('w-28 shrink-0 truncate text-right', stale ? 'text-amber-500 dark:text-amber-400' : 'text-muted-foreground')} title={fmtUnix(group.last_backup)}>
         {group.last_backup > 0 ? fmtAgo(group.last_backup) : 'never'}
       </span>

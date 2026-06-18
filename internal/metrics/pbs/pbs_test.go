@@ -141,3 +141,46 @@ func TestDatastoreGroupsParsing(t *testing.T) {
 		t.Errorf("group[0] parsed wrong: %+v", groups[0])
 	}
 }
+
+func TestDatastoreSnapshotsParsing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api2/json/admin/datastore/main/snapshots" {
+			_, _ = w.Write([]byte(`{"data":[
+				{"backup-type":"vm","backup-id":"100","backup-time":1700000000,"size":1048576},
+				{"backup-type":"vm","backup-id":"100","backup-time":1700086400,"size":2097152}
+			]}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	client, err := NewClient(srv.URL, "t@pbs!x", "s", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snaps, err := client.DatastoreSnapshots(context.Background(), "main")
+	if err != nil {
+		t.Fatalf("DatastoreSnapshots: %v", err)
+	}
+	if len(snaps) != 2 || snaps[1].Size != 2097152 || snaps[1].BackupTime != 1700086400 {
+		t.Fatalf("snapshots parsed wrong: %+v", snaps)
+	}
+}
+
+func TestLatestSnapshotSizes(t *testing.T) {
+	snaps := []Snapshot{
+		{BackupType: "vm", BackupID: "100", BackupTime: 100, Size: 10},
+		{BackupType: "vm", BackupID: "100", BackupTime: 300, Size: 30}, // newest wins
+		{BackupType: "vm", BackupID: "100", BackupTime: 200, Size: 20},
+		{BackupType: "ct", BackupID: "201", BackupTime: 50, Size: 5},
+	}
+	sizes := latestSnapshotSizes(snaps)
+	if sizes["vm/100"] != 30 {
+		t.Errorf("vm/100 size = %d, want 30 (newest snapshot)", sizes["vm/100"])
+	}
+	if sizes["ct/201"] != 5 {
+		t.Errorf("ct/201 size = %d, want 5", sizes["ct/201"])
+	}
+}

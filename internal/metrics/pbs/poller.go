@@ -74,12 +74,13 @@ type BackupHealth struct {
 }
 
 // BackupGroup is one backed-up machine on a datastore (a vm/ct/host group) with
-// its most-recent backup time and snapshot count.
+// its most-recent backup time, that backup's size, and snapshot count.
 type BackupGroup struct {
 	Datastore  string `json:"datastore"`
 	BackupType string `json:"backup_type"` // vm | ct | host
 	BackupID   string `json:"backup_id"`
 	LastBackup int64  `json:"last_backup,omitempty"`
+	LastSize   uint64 `json:"last_size,omitempty"` // bytes — size of the newest snapshot
 	Count      int    `json:"count"`
 }
 
@@ -297,7 +298,8 @@ func (p *Poller) refreshDetail(ctx context.Context, client *Client, node string,
 		p.deps.Logger.Debug("pbs: datastore usage unavailable", "error", err)
 	}
 
-	// Backed-up machines: backup groups per datastore (newest backup first).
+	// Backed-up machines: backup groups per datastore (newest backup first). The
+	// /groups endpoint omits sizes, so we size each group by its newest snapshot.
 	var groups []BackupGroup
 	for _, ds := range datastores {
 		gs, err := client.DatastoreGroups(ctx, ds.Store)
@@ -305,10 +307,16 @@ func (p *Poller) refreshDetail(ctx context.Context, client *Client, node string,
 			p.deps.Logger.Debug("pbs: datastore groups unavailable", "store", ds.Store, "error", err)
 			continue
 		}
+		var sizes map[string]uint64
+		if snaps, err := client.DatastoreSnapshots(ctx, ds.Store); err == nil {
+			sizes = latestSnapshotSizes(snaps)
+		} else {
+			p.deps.Logger.Debug("pbs: datastore snapshots unavailable", "store", ds.Store, "error", err)
+		}
 		for _, g := range gs {
 			groups = append(groups, BackupGroup{
 				Datastore: ds.Store, BackupType: g.BackupType, BackupID: g.BackupID,
-				LastBackup: g.LastBackup, Count: g.BackupCount,
+				LastBackup: g.LastBackup, LastSize: sizes[g.BackupType+"/"+g.BackupID], Count: g.BackupCount,
 			})
 		}
 	}
@@ -324,6 +332,21 @@ func (p *Poller) refreshDetail(ctx context.Context, client *Client, node string,
 	p.mu.Lock()
 	p.status[hostID] = Status{HostID: hostID, Datastores: datastores, Groups: groups, Backups: backups, UpdatedAt: time.Now()}
 	p.mu.Unlock()
+}
+
+// latestSnapshotSizes maps "type/id" → the size (bytes) of that group's newest
+// snapshot, so each backed-up machine can show the size of its last backup.
+func latestSnapshotSizes(snaps []Snapshot) map[string]uint64 {
+	latestTime := map[string]int64{}
+	sizes := map[string]uint64{}
+	for _, s := range snaps {
+		key := s.BackupType + "/" + s.BackupID
+		if t, seen := latestTime[key]; !seen || s.BackupTime >= t {
+			latestTime[key] = s.BackupTime
+			sizes[key] = s.Size
+		}
+	}
+	return sizes
 }
 
 // buildBackupHealth classifies recent tasks into last-backup time, last error,

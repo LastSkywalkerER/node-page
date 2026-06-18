@@ -212,6 +212,24 @@ func (c *Client) DatastoreGroups(ctx context.Context, store string) ([]Datastore
 	return items, err
 }
 
+// Snapshot is one backup snapshot from /admin/datastore/{store}/snapshots. Size
+// is the logical size of the backup in bytes (the sum of its index sizes — what
+// the PBS UI shows next to a snapshot, not the deduplicated on-disk size).
+type Snapshot struct {
+	BackupType string `json:"backup-type"` // vm | ct | host
+	BackupID   string `json:"backup-id"`
+	BackupTime int64  `json:"backup-time"` // unix seconds
+	Size       uint64 `json:"size"`
+}
+
+// DatastoreSnapshots lists every snapshot on a datastore. Used to size each
+// backup group by its newest snapshot (the /groups endpoint omits sizes).
+func (c *Client) DatastoreSnapshots(ctx context.Context, store string) ([]Snapshot, error) {
+	var items []Snapshot
+	err := c.get(ctx, "/admin/datastore/"+url.PathEscape(store)+"/snapshots", &items)
+	return items, err
+}
+
 // Task is one row of /nodes/{node}/tasks. Status is "OK" or an error string for
 // finished tasks; empty (with EndTime 0) while still running.
 type Task struct {
