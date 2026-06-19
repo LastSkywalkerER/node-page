@@ -53,8 +53,9 @@ for you — so the app "sees Proxmox" with zero clicks:
    hypervisor + guests. (Backend: `connectors.BootstrapProxmoxFromEnv`.)
 
 It's **idempotent and safe**: the app skips bootstrap if a Proxmox connector
-already exists, and the script won't rotate an already-existing token (its
-secret can't be read back), so re-runs never break a working connector. Every
+already exists. On a re-create the script re-issues the per-container token
+(`nodestats-c<CTID>`) — PVE tokens outlive the container, and a freshly created
+container has an empty DB, so rotating the secret can't orphan anything. Every
 failure (no `pveum`, unreachable API, …) degrades gracefully to "add the
 connector in the UI" — the install still succeeds.
 

@@ -307,19 +307,21 @@ configure_proxmox_autoconnect() {
   else
     command -v pveum >/dev/null 2>&1 || { msg_warn "pveum not found — skipping auto-connect (add the connector in the UI)."; return; }
     token_id="${PROXMOX_USER}!${PROXMOX_TOKEN_NAME}"
-    if pveum user token list "$PROXMOX_USER" 2>/dev/null | grep -qw "$PROXMOX_TOKEN_NAME"; then
-      msg_warn "Proxmox token ${token_id} already exists — leaving it (and any existing connector) as-is."
-      return
-    fi
-    msg_info "Creating read-only Proxmox API token ${token_id} (role ${PROXMOX_ROLE})"
+    msg_info "Issuing read-only Proxmox API token ${token_id} (role ${PROXMOX_ROLE})"
     run pveum user add "$PROXMOX_USER" --comment "node-stats monitoring (auto-created)" 2>/dev/null || true
     run pveum acl modify / -user "$PROXMOX_USER" -role "$PROXMOX_ROLE" ||
       { msg_warn "could not grant ${PROXMOX_ROLE} to ${PROXMOX_USER} — skipping auto-connect."; return; }
+    # PVE API tokens live at the datacenter level and OUTLIVE the container, so
+    # a leftover from a previous run on this CTID is still here after a
+    # destroy+recreate. Rotate it (remove + re-add): a freshly created container
+    # has an empty DB (no connector yet), so re-issuing the secret can't orphan
+    # anything — and we can't read an existing token's secret back to reuse it.
+    run pveum user token remove "$PROXMOX_USER" "$PROXMOX_TOKEN_NAME" 2>/dev/null || true
     local out
     out="$(pveum user token add "$PROXMOX_USER" "$PROXMOX_TOKEN_NAME" --privsep 0 --output-format json 2>/dev/null)"
     secret="$(printf '%s' "$out" | sed -n 's/.*"value"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
     [ -n "$secret" ] || { msg_warn "could not create/parse the API token — skipping auto-connect."; return; }
-    msg_ok "Created Proxmox API token ${token_id}"
+    msg_ok "Issued Proxmox API token ${token_id}"
   fi
 
   local skip=true
