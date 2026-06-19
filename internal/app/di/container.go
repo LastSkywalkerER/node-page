@@ -562,6 +562,19 @@ func (c *Container) buildBridgeLocked(bridge config.RaftBridgeConfig, clusterID,
 			})
 		}
 	}
+
+	// The off-Raft metric stream is built once at activation, but its cross-cluster
+	// target is (re)configured here too so a live "Apply uplink" (ConfigureBridge)
+	// re-points metrics at the same hub as the topology bridge instead of leaving
+	// them shipping to the seeds captured at activation. Without this, a freshly
+	// (re)created cluster that attaches its uplink at runtime replicates host
+	// topology to the hub but never its metrics (the hub shows "--").
+	if c.metricSender != nil {
+		c.metricSender.SetBridge(bridge)
+	}
+	if c.metricReceiver != nil {
+		c.metricReceiver.SetBridgeSecret(bridge.SharedSecret)
+	}
 }
 
 // CurrentRaftConfig returns the last RaftConfig applied via ActivateRaft.

@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -50,6 +51,10 @@ type Sender struct {
 
 	// Cross-cluster uplink (optional): in push/both bridge mode this node also
 	// ships its metrics to the hub seeds, signed with the bridge shared secret.
+	// Guarded by mu — SetBridge updates them live when the uplink is
+	// (re)configured at runtime, so metrics follow the same target as the
+	// topology bridge without a process restart.
+	mu           sync.RWMutex
 	bridgeSecret string
 	bridgeMode   string
 	hubSeeds     []string
@@ -75,6 +80,20 @@ func NewSender(logger *log.Logger, db *gorm.DB, localCluster, localNode, intraSe
 		bridgeMode:   config.NormalizeBridgeMode(b.Mode),
 		hubSeeds:     b.RemoteSeeds,
 	}
+}
+
+// SetBridge updates the cross-cluster uplink target live (mode / shared secret /
+// hub seeds). Called whenever the bridge is (re)configured at runtime so the
+// metric stream self-heals onto the new hub without a restart — otherwise the
+// topology bridge would follow a live "Apply" while metrics kept shipping to the
+// seeds captured at Raft activation (often empty on a freshly (re)created
+// cluster), which silently black-holes the hub's metrics.
+func (s *Sender) SetBridge(b config.RaftBridgeConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.bridgeSecret = b.SharedSecret
+	s.bridgeMode = config.NormalizeBridgeMode(b.Mode)
+	s.hubSeeds = append([]string(nil), b.RemoteSeeds...)
 }
 
 // Broadcast ships payload (this node's host metrics) to all intra-cluster peers
@@ -109,9 +128,13 @@ func (s *Sender) Broadcast(ctx context.Context, payload raftcluster.MetricBatchP
 	}
 
 	// Cross-cluster hub uplink (push/both): same payload, bridge-secret signed.
-	if s.bridgeSecret != "" && (s.bridgeMode == config.BridgeModePush || s.bridgeMode == config.BridgeModeBoth) {
-		for _, u := range s.hubSeeds {
-			s.fire(u, body, encoding, s.bridgeSecret)
+	// Snapshot under the lock — SetBridge may swap these out concurrently.
+	s.mu.RLock()
+	secret, mode, seeds := s.bridgeSecret, s.bridgeMode, s.hubSeeds
+	s.mu.RUnlock()
+	if secret != "" && (mode == config.BridgeModePush || mode == config.BridgeModeBoth) {
+		for _, u := range seeds {
+			s.fire(u, body, encoding, secret)
 		}
 	}
 }

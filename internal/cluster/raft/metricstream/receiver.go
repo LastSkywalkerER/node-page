@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -33,7 +34,13 @@ type Receiver struct {
 	ingest       Ingester
 	localCluster string
 	intraSecret  string // same-cluster HMAC key (JWT secret)
-	bridgeSecret string // cross-cluster HMAC key ("" if not configured)
+
+	// bridgeSecret is the cross-cluster HMAC key ("" if not configured). Guarded
+	// by mu — SetBridgeSecret updates it live when the uplink is reconfigured at
+	// runtime, so a hub keeps accepting a site's metrics after the shared secret
+	// is rotated without a restart.
+	mu           sync.RWMutex
+	bridgeSecret string
 }
 
 // NewReceiver wires the receiver. intraSecret authenticates same-cluster peers;
@@ -46,6 +53,14 @@ func NewReceiver(logger *log.Logger, ingest Ingester, localCluster, intraSecret 
 		intraSecret:  intraSecret,
 		bridgeSecret: b.SharedSecret,
 	}
+}
+
+// SetBridgeSecret updates the cross-cluster HMAC key live so a hub keeps
+// authenticating uplinks after the shared secret is (re)configured at runtime.
+func (r *Receiver) SetBridgeSecret(secret string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.bridgeSecret = secret
 }
 
 // Handle processes one metric-stream POST. Mount under POST Path.
@@ -72,11 +87,14 @@ func (r *Receiver) Handle(c *gin.Context) {
 	// here is rejected.
 	secret := r.intraSecret
 	if sender != r.localCluster {
-		if r.bridgeSecret == "" {
+		r.mu.RLock()
+		bridgeSecret := r.bridgeSecret
+		r.mu.RUnlock()
+		if bridgeSecret == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "cross-cluster metric stream not enabled"})
 			return
 		}
-		secret = r.bridgeSecret
+		secret = bridgeSecret
 	}
 	if err := bridge.Verify(secret, c.GetHeader(bridge.HMACHeader), tsNanos, body); err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
