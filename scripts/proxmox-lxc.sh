@@ -16,7 +16,7 @@
 #   uninstall <ctid>    stop + destroy the container (asks first)
 #
 # Non-interactive overrides (env vars):
-#   CTID, HOSTNAME, DISK_SIZE (GB), CORE_COUNT, RAM_SIZE (MB),
+#   CTID, CT_HOSTNAME, DISK_SIZE (GB), CORE_COUNT, RAM_SIZE (MB),
 #   BRIDGE (vmbr0), NET (dhcp | <CIDR>), GATEWAY, DNS, UNPRIVILEGED (1|0),
 #   ENABLE_NESTING (1|0), START_ON_BOOT (1|0), HTTP_PORT (8080),
 #   TEMPLATE_STORAGE, CONTAINER_STORAGE, NODE_STATS_VERSION (vX.Y.Z),
@@ -90,7 +90,10 @@ detect_arch() {
 # ---- settings --------------------------------------------------------------
 set_defaults() {
   CTID="${CTID:-$(next_ctid)}"
-  HOSTNAME="${HOSTNAME:-node-stats}"
+  # NB: read CT_HOSTNAME, not HOSTNAME — bash auto-sets $HOSTNAME to the PVE
+  # host's name, which would otherwise override our default and name the
+  # container after the hypervisor.
+  CT_HOSTNAME="${CT_HOSTNAME:-node-stats}"
   DISK_SIZE="${DISK_SIZE:-4}"
   CORE_COUNT="${CORE_COUNT:-1}"
   RAM_SIZE="${RAM_SIZE:-1024}"
@@ -145,7 +148,7 @@ advanced_settings() {
   exec 3>/dev/tty || { msg_warn "no terminal — using defaults."; return; }
   local v
   v=$(whiptail --inputbox "Container ID (CTID)" 8 60 "$CTID" --title "node-stats LXC" 3>&1 1>&2 2>&3) && CTID="$v"
-  v=$(whiptail --inputbox "Hostname" 8 60 "$HOSTNAME" --title "node-stats LXC" 3>&1 1>&2 2>&3) && HOSTNAME="$v"
+  v=$(whiptail --inputbox "Hostname" 8 60 "$CT_HOSTNAME" --title "node-stats LXC" 3>&1 1>&2 2>&3) && CT_HOSTNAME="$v"
   v=$(whiptail --inputbox "Disk size (GB)" 8 60 "$DISK_SIZE" --title "node-stats LXC" 3>&1 1>&2 2>&3) && DISK_SIZE="$v"
   v=$(whiptail --inputbox "CPU cores" 8 60 "$CORE_COUNT" --title "node-stats LXC" 3>&1 1>&2 2>&3) && CORE_COUNT="$v"
   v=$(whiptail --inputbox "RAM (MB)" 8 60 "$RAM_SIZE" --title "node-stats LXC" 3>&1 1>&2 2>&3) && RAM_SIZE="$v"
@@ -163,7 +166,7 @@ confirm_settings() {
 
  ${INFO} Creating ${GN}${APP}${CL} LXC with:
     CTID            ${BL}${CTID}${CL}
-    Hostname        ${BL}${HOSTNAME}${CL}
+    Hostname        ${BL}${CT_HOSTNAME}${CL}
     OS              ${BL}Debian 12${CL} (${HOST_ARCH})
     Cores / RAM     ${BL}${CORE_COUNT}${CL} / ${BL}${RAM_SIZE} MB${CL}
     Disk            ${BL}${DISK_SIZE} GB${CL} on ${BL}${CONTAINER_STORAGE}${CL}
@@ -213,7 +216,7 @@ create_lxc() {
   msg_info "Creating LXC ${CTID}"
   local args=(
     "$CTID" "$TEMPLATE_VOLID"
-    --hostname "$HOSTNAME"
+    --hostname "$CT_HOSTNAME"
     --cores "$CORE_COUNT"
     --memory "$RAM_SIZE"
     --swap "$RAM_SIZE"

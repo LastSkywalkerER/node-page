@@ -63,6 +63,15 @@ connector in the UI" — the install still succeeds.
 > decryptable across the wizard and future restarts. The wizard reuses the
 > pre-seeded values, so you never type them.
 
+> **Requires a release that includes auto-connect.** The native install pulls
+> the latest **GitHub Release** `.deb`. Auto-connect (`BootstrapProxmoxFromEnv`)
+> landed after `v0.7.9`, so it only kicks in once the installed release contains
+> it. If you're on an older release the script still wires everything correctly,
+> but the binary ignores the `NODE_STATS_PROXMOX_*` env — just add the connector
+> in the UI (the script already saved a working token in the container's
+> `/var/lib/node-stats/.env`; copy the `NODE_STATS_PROXMOX_*` values into the
+> Connectors form). Pin a specific build with `NODE_STATS_VERSION=vX.Y.Z`.
+
 | Auto-connect knob | Default | Meaning |
 |-------------------|---------|---------|
 | `PROXMOX_AUTOCONNECT` | `1` | `0`/`false`/`off` skips the whole auto-attach. |
@@ -78,7 +87,7 @@ connector in the UI" — the install still succeeds.
 | Setting | Default | Env override |
 |---------|---------|--------------|
 | CTID | next free id | `CTID` |
-| Hostname | `node-stats` | `HOSTNAME` |
+| Hostname | `node-stats` | `CT_HOSTNAME` |
 | OS | Debian 12 | — |
 | CPU | 1 core | `CORE_COUNT` |
 | RAM / swap | 1024 MB | `RAM_SIZE` |
