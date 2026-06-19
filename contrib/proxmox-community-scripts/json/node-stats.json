@@ -1,0 +1,44 @@
+{
+  "name": "node-stats",
+  "slug": "node-stats",
+  "categories": [
+    9
+  ],
+  "date_created": "2026-06-19",
+  "type": "ct",
+  "updateable": true,
+  "privileged": false,
+  "interface_port": 8080,
+  "documentation": "https://github.com/LastSkywalkerER/node-page/blob/main/README.md",
+  "config_path": "/var/lib/node-stats",
+  "website": "https://github.com/LastSkywalkerER/node-page",
+  "logo": "https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/frontend/favicon/favicon.svg",
+  "description": "node-stats is a lightweight, self-hosted system & infrastructure monitoring dashboard (Go + React). It tracks CPU, memory, disk, network, Docker and sensor metrics with live SSE updates, stores history in SQLite or PostgreSQL, and can pull full Proxmox VE / PBS topology via built-in connectors.",
+  "install_methods": [
+    {
+      "type": "default",
+      "script": "ct/node-stats.sh",
+      "resources": {
+        "cpu": 1,
+        "ram": 1024,
+        "hdd": 4,
+        "os": "debian",
+        "version": "12"
+      }
+    }
+  ],
+  "default_credentials": {
+    "username": null,
+    "password": null
+  },
+  "notes": [
+    {
+      "text": "First run: open http://<ip>:8080 and complete the setup wizard (create the admin, pick SQLite or PostgreSQL).",
+      "type": "info"
+    },
+    {
+      "text": "The container monitors itself out of the box. To see the Proxmox host + every VM/LXC, add a Proxmox connector after setup (admin -> Connectors).",
+      "type": "info"
+    }
+  ]
+}

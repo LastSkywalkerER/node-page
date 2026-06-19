@@ -150,6 +150,21 @@ setup. Manage with `... | bash -s -- update-native | uninstall-native`. Pin a
 version with `NODE_STATS_VERSION=vX.Y.Z`. (Without `sudo`/systemd it installs to
 `~/.local/bin` and prints how to run it manually.)
 
+### Proxmox VE — one command on the host (LXC)
+
+Spin up node-stats as a tiny Debian **LXC**, community-scripts.org style. Run
+this **on the Proxmox VE host** (the hypervisor, as root):
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scripts/proxmox-lxc.sh)"
+```
+
+It creates an unprivileged Debian 12 container, installs the native release
+inside (systemd service), and prints `http://<container-ip>:8080`. To monitor the
+whole hypervisor + every VM/LXC, add a **Proxmox connector** after setup. Full
+guide (options, day-2 commands, and how to get it listed on community-scripts.org):
+**[docs/PROXMOX-LXC.md](docs/PROXMOX-LXC.md)**.
+
 ### macOS / Windows — native binary (best host metrics)
 
 Docker Desktop runs in a Linux VM, so its host metrics reflect the **VM**, not
