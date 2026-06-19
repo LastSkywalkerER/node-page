@@ -77,6 +77,10 @@ type Service interface {
 	TriggerSync()
 	// SetSyncTrigger registers the poller's wake-up callback.
 	SetSyncTrigger(fn func())
+	// BootstrapProxmoxFromEnv auto-creates a Proxmox connector from the
+	// NODE_STATS_PROXMOX_* env vars on first boot (idempotent, best-effort).
+	// Used by the Proxmox-LXC installer so the node self-attaches to its host.
+	BootstrapProxmoxFromEnv(ctx context.Context)
 }
 
 type service struct {

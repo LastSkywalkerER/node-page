@@ -160,8 +160,10 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/LastSkywalkerER/node-pag
 ```
 
 It creates an unprivileged Debian 12 container, installs the native release
-inside (systemd service), and prints `http://<container-ip>:8080`. To monitor the
-whole hypervisor + every VM/LXC, add a **Proxmox connector** after setup. Full
+inside (systemd service), and prints `http://<container-ip>:8080`. Because it
+runs on the PVE host, it also **auto-attaches the Proxmox connector** (mints a
+read-only `PVEAuditor` token and wires it in) — so the hypervisor + every VM/LXC
+show up automatically, no clicks. Disable with `PROXMOX_AUTOCONNECT=0`. Full
 guide (options, day-2 commands, and how to get it listed on community-scripts.org):
 **[docs/PROXMOX-LXC.md](docs/PROXMOX-LXC.md)**.
 

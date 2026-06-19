@@ -270,6 +270,14 @@ func Run() {
 	go pvePoller.Run(appCtx)
 	go pbsPoller.Run(appCtx)
 
+	// Proxmox-LXC installer hand-off: when NODE_STATS_PROXMOX_* env vars are
+	// present, self-attach to the hypervisor on first boot. Gated on a stable
+	// JWT secret — the token is encrypted under a key derived from it, so
+	// seeding before the wizard sets one would orphan the ciphertext.
+	if cfg.JWTSecret != "" {
+		go connectorsSvc.BootstrapProxmoxFromEnv(appCtx)
+	}
+
 	historicalMetricsService := container.GetHistoricalMetricsService()
 	retentionSvc := retention.NewService(container.GetDB(), logger, cfg.RetentionDays, container.GetRefreshTokenRepository())
 

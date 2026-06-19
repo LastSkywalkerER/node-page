@@ -36,6 +36,16 @@ and restart the unit.
 | Port     | 8080 |
 | Unprivileged | yes |
 
+> **No auto-connect here.** Unlike the repo's `scripts/proxmox-lxc.sh`, this
+> community-scripts version does **not** mint a PVE API token or auto-attach the
+> Proxmox connector (creating a PVE user/token is a host side-effect the
+> community-scripts reviewers generally don't want a `*-install.sh` to do).
+> Users add the connector in the UI after setup (admin → Connectors). The
+> backend *does* support env-based auto-attach (`NODE_STATS_PROXMOX_URL` +
+> `NODE_STATS_PROXMOX_TOKEN_ID` + `NODE_STATS_PROXMOX_TOKEN_SECRET`), so a
+> reviewer who wants it could wire token creation into `ct/node-stats.sh` (which
+> runs on the host) — see [`docs/PROXMOX-LXC.md`](../../docs/PROXMOX-LXC.md).
+
 ## Submitting / testing the PR
 
 The maintainers' contributor guide is the source of truth:

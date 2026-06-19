@@ -106,7 +106,38 @@ set_defaults() {
   CONTAINER_STORAGE="${CONTAINER_STORAGE:-$(first_storage rootdir)}"
   [ -n "$TEMPLATE_STORAGE" ] || die "no storage with 'vztmpl' content type found (need somewhere to keep the LXC template, usually 'local')."
   [ -n "$CONTAINER_STORAGE" ] || die "no storage with 'rootdir' content type found (need somewhere for the container rootfs, e.g. 'local-lvm')."
+
+  # Proxmox auto-connect: the app self-attaches to this hypervisor on first
+  # boot. Default on; disable with PROXMOX_AUTOCONNECT=0. The script (running on
+  # the PVE host as root) mints a read-only API token unless you pass your own.
+  PROXMOX_AUTOCONNECT="${PROXMOX_AUTOCONNECT:-1}"
+  PROXMOX_URL="${PROXMOX_URL:-}"                       # default: https://<host-ip>:8006
+  PROXMOX_USER="${PROXMOX_USER:-node-stats@pam}"
+  PROXMOX_ROLE="${PROXMOX_ROLE:-PVEAuditor}"           # read-only; sees all nodes/guests/storage
+  PROXMOX_TOKEN_NAME="${PROXMOX_TOKEN_NAME:-nodestats-c${CTID}}"
+  PROXMOX_TOKEN_ID="${PROXMOX_TOKEN_ID:-}"             # full id (user@realm!name) if you bring your own
+  PROXMOX_TOKEN_SECRET="${PROXMOX_TOKEN_SECRET:-}"
+  PROXMOX_SKIP_TLS_VERIFY="${PROXMOX_SKIP_TLS_VERIFY:-1}"
 }
+
+# host_ipv4 — the PVE host's primary IPv4 (the address a container reaches it on).
+host_ipv4() {
+  local ip
+  ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p' | head -1)"
+  [ -z "$ip" ] && ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  printf '%s' "$ip"
+}
+
+# gen_secret — 64 hex chars (openssl, /dev/urandom fallback).
+gen_secret() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 32
+  else
+    head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'
+  fi
+}
+
+is_off() { case "$(printf '%s' "$1" | tr 'A-Z' 'a-z')" in 0 | false | off | no) return 0 ;; *) return 1 ;; esac; }
 
 # whiptail wizard (ADVANCED=1 or no env CTID + a terminal). Falls back silently.
 advanced_settings() {
@@ -251,7 +282,80 @@ install_app() {
   fi
 }
 
+# Mint (or accept) a read-only Proxmox API token and hand it to the container,
+# so node-stats auto-attaches to this hypervisor on first boot. Best-effort:
+# every failure degrades to "add the connector in the UI" without aborting the
+# install. Idempotent: an already-existing token is left untouched (its secret
+# can't be read back, so rotating it would break the existing connector).
+AUTOCONNECT_NOTE=""
+configure_proxmox_autoconnect() {
+  if is_off "$PROXMOX_AUTOCONNECT"; then
+    msg_warn "Proxmox auto-connect disabled (PROXMOX_AUTOCONNECT=0)."
+    return
+  fi
+
+  local url token_id secret
+  url="${PROXMOX_URL:-https://$(host_ipv4):8006}"
+
+  if [ -n "$PROXMOX_TOKEN_ID" ] && [ -n "$PROXMOX_TOKEN_SECRET" ]; then
+    token_id="$PROXMOX_TOKEN_ID"
+    secret="$PROXMOX_TOKEN_SECRET"
+    msg_ok "Using the Proxmox API token from env"
+  else
+    command -v pveum >/dev/null 2>&1 || { msg_warn "pveum not found — skipping auto-connect (add the connector in the UI)."; return; }
+    token_id="${PROXMOX_USER}!${PROXMOX_TOKEN_NAME}"
+    if pveum user token list "$PROXMOX_USER" 2>/dev/null | grep -qw "$PROXMOX_TOKEN_NAME"; then
+      msg_warn "Proxmox token ${token_id} already exists — leaving it (and any existing connector) as-is."
+      return
+    fi
+    msg_info "Creating read-only Proxmox API token ${token_id} (role ${PROXMOX_ROLE})"
+    run pveum user add "$PROXMOX_USER" --comment "node-stats monitoring (auto-created)" 2>/dev/null || true
+    run pveum acl modify / -user "$PROXMOX_USER" -role "$PROXMOX_ROLE" ||
+      { msg_warn "could not grant ${PROXMOX_ROLE} to ${PROXMOX_USER} — skipping auto-connect."; return; }
+    local out
+    out="$(pveum user token add "$PROXMOX_USER" "$PROXMOX_TOKEN_NAME" --privsep 0 --output-format json 2>/dev/null)"
+    secret="$(printf '%s' "$out" | sed -n 's/.*"value"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    [ -n "$secret" ] || { msg_warn "could not create/parse the API token — skipping auto-connect."; return; }
+    msg_ok "Created Proxmox API token ${token_id}"
+  fi
+
+  local skip=true
+  is_off "$PROXMOX_SKIP_TLS_VERIFY" && skip=false
+
+  # Pre-seed stable JWT/REFRESH secrets (so the encrypted token survives the
+  # setup wizard + restarts) and hand the Proxmox creds to the app via its .env.
+  local jwt refresh
+  jwt="$(gen_secret)"
+  refresh="$(gen_secret)"
+  msg_info "Wiring auto-connect into the container (${url})"
+  pct exec "$CTID" -- bash -c "
+    set -e
+    mkdir -p /var/lib/node-stats
+    f=/var/lib/node-stats/.env
+    touch \"\$f\"; chmod 600 \"\$f\"
+    set_kv() { if grep -q \"^\$1=\" \"\$f\" 2>/dev/null; then sed -i \"s#^\$1=.*#\$1=\$2#\" \"\$f\"; else echo \"\$1=\$2\" >>\"\$f\"; fi; }
+    set_kv JWT_SECRET '${jwt}'
+    set_kv REFRESH_SECRET '${refresh}'
+    set_kv NODE_STATS_PROXMOX_URL '${url}'
+    set_kv NODE_STATS_PROXMOX_TOKEN_ID '${token_id}'
+    set_kv NODE_STATS_PROXMOX_TOKEN_SECRET '${secret}'
+    set_kv NODE_STATS_PROXMOX_SKIP_TLS_VERIFY '${skip}'
+    systemctl restart node-stats
+  " || { msg_warn "could not wire auto-connect into the container."; return; }
+  msg_ok "Proxmox auto-connect configured → app will attach to ${url} on boot"
+  AUTOCONNECT_NOTE="${url}"
+}
+
 summary() {
+  local connector_line
+  if [ -n "$AUTOCONNECT_NOTE" ]; then
+    connector_line=" ${CM} Auto-connected to Proxmox at ${BL}${AUTOCONNECT_NOTE}${CL} — the
+    hypervisor + every VM/LXC appear automatically once you finish setup."
+  else
+    connector_line=" ${INFO} The container monitors itself out of the box. To see the Proxmox
+    host + every VM/LXC, add a ${BL}Proxmox connector${CL} after setup
+    (admin → Connectors). See docs/PROXMOX.md."
+  fi
   cat <<EOF
 
  ${CM} ${GN}${APP}${CL} is up in LXC ${BL}${CTID}${CL}.
@@ -259,9 +363,7 @@ summary() {
    Open:   ${GN}http://${CONTAINER_IP}:${HTTP_PORT}${CL}
    Finish setup in the browser (create the admin, pick the database).
 
- ${INFO} The container monitors itself out of the box. To see the Proxmox
-    host + every VM/LXC, add a ${BL}Proxmox connector${CL} after setup
-    (admin → Connectors). See docs/PROXMOX.md.
+${connector_line}
 
  ${INFO} Manage this container:
     Update:     ${YW}bash proxmox-lxc.sh update ${CTID}${CL}
@@ -283,6 +385,7 @@ cmd_create() {
   ensure_template
   create_lxc
   install_app
+  configure_proxmox_autoconnect
   summary
 }
 

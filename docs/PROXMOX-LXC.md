@@ -26,14 +26,52 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/LastSkywalkerER/node-pag
 
 It picks the next free CTID, downloads the Debian 12 LXC template if needed,
 creates an **unprivileged** container, installs the latest node-stats release
-`.deb` inside, and starts it. When it finishes it prints:
+`.deb` inside, **auto-attaches it to this Proxmox host** (see below), and starts
+it. When it finishes it prints:
 
 ```
 http://<container-ip>:8080
 ```
 
 Open that in a browser to finish the setup wizard (create the admin, pick SQLite
-or PostgreSQL).
+or PostgreSQL). The Proxmox host and every VM/LXC are already there.
+
+### Auto-attach to the Proxmox host (built in)
+
+Because the script runs **on the PVE host as root**, it can wire the connector
+for you — so the app "sees Proxmox" with zero clicks:
+
+1. It mints a dedicated **read-only** API token via `pveum`
+   (user `node-stats@pam`, role `PVEAuditor` on `/`, token `nodestats-c<CTID>`,
+   `privsep 0`). `PVEAuditor` can read all nodes/guests/storage but **cannot
+   control anything**.
+2. It pre-seeds stable `JWT_SECRET`/`REFRESH_SECRET` and writes the Proxmox URL
+   (`https://<host-ip>:8006`) + token into the container's
+   `/var/lib/node-stats/.env`.
+3. On first boot node-stats reads `NODE_STATS_PROXMOX_*`, validates the token,
+   encrypts it, and creates the connector — then the poller renders the
+   hypervisor + guests. (Backend: `connectors.BootstrapProxmoxFromEnv`.)
+
+It's **idempotent and safe**: the app skips bootstrap if a Proxmox connector
+already exists, and the script won't rotate an already-existing token (its
+secret can't be read back), so re-runs never break a working connector. Every
+failure (no `pveum`, unreachable API, …) degrades gracefully to "add the
+connector in the UI" — the install still succeeds.
+
+> Why pre-seed the secrets? The connector token is encrypted under a key derived
+> from `JWT_SECRET`. Pinning it before the setup wizard runs keeps the token
+> decryptable across the wizard and future restarts. The wizard reuses the
+> pre-seeded values, so you never type them.
+
+| Auto-connect knob | Default | Meaning |
+|-------------------|---------|---------|
+| `PROXMOX_AUTOCONNECT` | `1` | `0`/`false`/`off` skips the whole auto-attach. |
+| `PROXMOX_URL` | `https://<host-ip>:8006` | Override the Proxmox API URL the container uses. |
+| `PROXMOX_USER` | `node-stats@pam` | PVE user the token belongs to. |
+| `PROXMOX_ROLE` | `PVEAuditor` | Role granted on `/` (read-only). |
+| `PROXMOX_TOKEN_NAME` | `nodestats-c<CTID>` | Token id name (per-container, avoids clashes). |
+| `PROXMOX_TOKEN_ID` / `PROXMOX_TOKEN_SECRET` | — | Bring your **own** token; the script then won't touch PVE auth. |
+| `PROXMOX_SKIP_TLS_VERIFY` | `1` | PVE ships a self-signed cert; set `0` if you front it with a trusted cert. |
 
 ### Defaults
 
@@ -104,12 +142,12 @@ native install applies updates with `node-stats update` on its own.
 
 ## Monitoring the whole Proxmox host (not just the container)
 
-By default the LXC monitors **itself** — its own CPU/RAM/disk (lxcfs scopes those
-to the container). That is the standard helper-script model: a lightweight,
-isolated dashboard appliance.
+The container itself shows up as one machine card (lxcfs scopes its CPU/RAM/disk
+to the container). The **Proxmox host and every VM/LXC** come from the connector
+— which this script **already wired for you** (see *Auto-attach* above), so by
+default there's nothing to do here.
 
-To see the **Proxmox host and every VM/LXC**, use node-stats' built-in
-**Proxmox connector** after setup:
+If you ran with `PROXMOX_AUTOCONNECT=0`, or auto-attach failed, add it by hand:
 
 1. In Proxmox: create an API token (`Datacenter → Permissions → API Tokens`)
    with at least `PVEAuditor` on `/`.
