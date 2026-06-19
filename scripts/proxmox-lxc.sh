@@ -12,6 +12,7 @@
 #
 # Subcommands (default: create):
 #   create              create the LXC and install node-stats
+#   reconnect <ctid>    (re)wire Proxmox auto-connect into an existing container
 #   update <ctid>       self-update node-stats inside an existing container
 #   uninstall <ctid>    stop + destroy the container (asks first)
 #
@@ -339,8 +340,9 @@ configure_proxmox_autoconnect() {
     f=/var/lib/node-stats/.env
     touch \"\$f\"; chmod 600 \"\$f\"
     set_kv() { if grep -q \"^\$1=\" \"\$f\" 2>/dev/null; then sed -i \"s#^\$1=.*#\$1=\$2#\" \"\$f\"; else echo \"\$1=\$2\" >>\"\$f\"; fi; }
-    set_kv JWT_SECRET '${jwt}'
-    set_kv REFRESH_SECRET '${refresh}'
+    set_default() { grep -q \"^\$1=\" \"\$f\" 2>/dev/null || echo \"\$1=\$2\" >>\"\$f\"; }
+    set_default JWT_SECRET '${jwt}'
+    set_default REFRESH_SECRET '${refresh}'
     set_kv NODE_STATS_PROXMOX_URL '${url}'
     set_kv NODE_STATS_PROXMOX_TOKEN_ID '${token_id}'
     set_kv NODE_STATS_PROXMOX_TOKEN_SECRET '${secret}'
@@ -394,6 +396,25 @@ cmd_create() {
   summary
 }
 
+# Re-wire (or first-time wire) Proxmox auto-connect into an EXISTING container,
+# without recreating it — handy after upgrading to a release that supports
+# auto-connect, or to fix a container whose env was never wired. Preserves an
+# already-set JWT/REFRESH secret (won't log out an existing install); the
+# Proxmox token is rotated and re-handed to the app.
+cmd_reconnect() {
+  preflight
+  local id="${1:-}"
+  [ -n "$id" ] || die "usage: proxmox-lxc.sh reconnect <ctid>"
+  pct status "$id" >/dev/null 2>&1 || die "no container ${id}."
+  CTID="$id"
+  set_defaults
+  run pct start "$id" 2>/dev/null || true
+  configure_proxmox_autoconnect
+  [ -n "$AUTOCONNECT_NOTE" ] &&
+    msg_ok "Done — reload the dashboard; the hypervisor + guests appear within ~10s." ||
+    msg_warn "Nothing wired (auto-connect disabled or no token). See messages above."
+}
+
 cmd_update() {
   preflight
   local id="${1:-}"
@@ -424,8 +445,9 @@ cmd_uninstall() {
 
 case "${1:-create}" in
 create) cmd_create ;;
+reconnect) cmd_reconnect "${2:-}" ;;
 update) cmd_update "${2:-}" ;;
 uninstall) cmd_uninstall "${2:-}" ;;
--h | --help | help) printf 'usage: proxmox-lxc.sh {create|update <ctid>|uninstall <ctid>}\n' ;;
-*) die "unknown command '${1}' (use create|update|uninstall)" ;;
+-h | --help | help) printf 'usage: proxmox-lxc.sh {create|reconnect <ctid>|update <ctid>|uninstall <ctid>}\n' ;;
+*) die "unknown command '${1}' (use create|reconnect|update|uninstall)" ;;
 esac

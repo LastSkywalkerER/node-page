@@ -135,6 +135,12 @@ curl -fsSL https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scri
 # self-update node-stats inside the container (newest release + restart)
 bash /tmp/node-stats-lxc.sh update 151
 
+# (re)wire Proxmox auto-connect into an existing container — no recreate.
+# Rotates the token, writes the creds, restarts. Keeps an existing JWT secret
+# (won't log you out). Use it after upgrading to a release with auto-connect,
+# or to attach a container that was set up before it was available.
+bash /tmp/node-stats-lxc.sh reconnect 151
+
 # stop + destroy the container (asks for confirmation)
 bash /tmp/node-stats-lxc.sh uninstall 151
 
