@@ -115,13 +115,13 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/LastSkywalkerER/node-pag
 Interactive whiptail wizard (prompts for CTID / resources / network):
 
 ```bash
-ADVANCED=1 bash -c "$(curl -fsSL .../scripts/proxmox-lxc.sh)"
+ADVANCED=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scripts/proxmox-lxc.sh)"
 ```
 
 See the full apt/pct output (useful when something fails):
 
 ```bash
-VERBOSE=1 bash -c "$(curl -fsSL .../scripts/proxmox-lxc.sh)"
+VERBOSE=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scripts/proxmox-lxc.sh)"
 ```
 
 ### Day-2 management

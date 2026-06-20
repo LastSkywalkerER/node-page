@@ -126,8 +126,15 @@ brings the stack up. Then open **http://localhost:9090** to finish setup.
 Manage it later:
 
 ```bash
-curl -fsSL .../scripts/install.sh | bash -s -- update      # pull + recreate
-curl -fsSL .../scripts/install.sh | bash -s -- uninstall   # stop (add --purge to wipe data)
+curl -fsSL https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scripts/install.sh | bash -s -- update      # pull + recreate
+curl -fsSL https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scripts/install.sh | bash -s -- uninstall   # stop (add --purge to wipe data)
+```
+
+No network? The stack lives in the dir above, so this is the same uninstall by hand:
+
+```bash
+cd /opt/node-stats && docker compose down --remove-orphans        # stop, keep data (use ~/.node-stats if not root)
+cd /opt/node-stats && docker compose down --remove-orphans -v && rm -rf /opt/node-stats   # wipe data too
 ```
 
 Overrides: `NODE_STATS_DIR` (stack dir), `NODE_STATS_PORT` (HTTP port),
@@ -146,7 +153,7 @@ curl -fsSL https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scri
 Downloads the matching `linux/{amd64,arm64}` release binary (checksum-verified),
 installs it to `/usr/local/bin`, and registers a `node-stats` systemd service
 (data/config in `/var/lib/node-stats`). Open **http://localhost:8080** to finish
-setup. Manage with `... | bash -s -- update-native | uninstall-native`. Pin a
+setup. Manage with `curl -fsSL https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scripts/install.sh | sudo bash -s -- update-native` (or `uninstall-native`). Pin a
 version with `NODE_STATS_VERSION=vX.Y.Z`. (Without `sudo`/systemd it installs to
 `~/.local/bin` and prints how to run it manually.)
 
