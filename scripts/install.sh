@@ -512,9 +512,10 @@ download_native_binary() {
   [ -n "$tag" ] || die "could not determine the latest release (no published release yet, or no network). Pin one with NODE_STATS_VERSION=vX.Y.Z."
   # Releases publish per-OS installers only. On Linux we pull the .deb and
   # extract /usr/bin/node-stats from it (works without root via dpkg-deb / ar).
-  # The .deb VERSION uses '~' not '-' for prereleases (Debian sorts ~ before the
-  # release), so node-stats_0.8.3~beta.14_amd64.deb under tag v0.8.3-beta.14.
-  debver="${tag#v}"; debver="${debver//-/\~}"
+  # nfpm builds the prerelease .deb as 0.8.3~beta.14, but GitHub sanitizes '~'
+  # to '.' in the served asset name → node-stats_0.8.3.beta.14_amd64.deb. So map
+  # the tag's '-' to '.' for the download (stable tags have no '-', unchanged).
+  debver="${tag#v}"; debver="${debver//-/.}"
   asset="node-stats_${debver}_${ARCH}.deb"
   tmp="$(mktemp -d)"
   if [ -n "${NODE_STATS_LOCAL_DEB:-}" ]; then

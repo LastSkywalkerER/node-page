@@ -14,6 +14,8 @@
 #   create              create the LXC and install node-stats
 #   reconnect <ctid>    (re)wire Proxmox auto-connect into an existing container
 #   update <ctid>       self-update node-stats inside an existing container
+#                       (follows the container's channel; prefix
+#                       NODE_STATS_CHANNEL=beta to switch it to beta + update)
 #   uninstall <ctid>    stop + destroy the container (asks first)
 #
 # Non-interactive overrides (env vars):
@@ -276,8 +278,9 @@ install_app() {
       fi
     fi
     [ -n \"\$TAG\" ] || { echo 'could not resolve latest release tag'; exit 1; }
-    # .deb VERSION uses '~' (Debian prerelease ordering): v0.8.3-beta.14 → 0.8.3~beta.14.
-    DEBVER=\$(printf '%s' \"\${TAG#v}\" | tr '-' '~')
+    # GitHub serves the prerelease .deb with '.' (it sanitizes nfpm's '~'):
+    # tag v0.8.3-beta.14 → node-stats_0.8.3.beta.14_<arch>.deb. Map '-' to '.'.
+    DEBVER=\$(printf '%s' \"\${TAG#v}\" | tr '-' '.')
     DEB=\"node-stats_\${DEBVER}_\${ARCH}.deb\"
     echo \"  downloading \$DEB\"
     curl -fsSL -o /tmp/\$DEB \"https://github.com/\$REPO/releases/download/\$TAG/\$DEB\"
@@ -447,6 +450,20 @@ cmd_update() {
   pct status "$id" >/dev/null 2>&1 || die "no container ${id}."
   msg_info "Updating node-stats in LXC ${id} (latest release .deb)"
   run pct start "$id" 2>/dev/null || true
+  # Explicit channel switch: NODE_STATS_CHANNEL=beta|stable persists the channel
+  # into the container before updating (the running server follows it too). Without
+  # it, update follows whatever channel the container is already on.
+  if [ -n "${NODE_STATS_CHANNEL:-}" ]; then
+    msg_info "Setting release channel to ${CHANNEL}"
+    run pct exec "$id" -- bash -c "
+      mkdir -p /var/lib/node-stats && touch /var/lib/node-stats/.env
+      if grep -q '^NODE_STATS_RELEASE_CHANNEL=' /var/lib/node-stats/.env; then
+        sed -i 's/^NODE_STATS_RELEASE_CHANNEL=.*/NODE_STATS_RELEASE_CHANNEL=${CHANNEL}/' /var/lib/node-stats/.env
+      else
+        echo 'NODE_STATS_RELEASE_CHANNEL=${CHANNEL}' >> /var/lib/node-stats/.env
+      fi
+    " && msg_ok "Channel set to ${CHANNEL}" || msg_warn "could not set channel; using the container's current one"
+  fi
   # Install the latest release .deb directly (same path as a fresh install).
   # The binary's own `node-stats update` self-replace pulls a tarball asset and
   # is easy to break with release-asset naming drift; apt-installing the .deb is
@@ -467,8 +484,9 @@ cmd_update() {
       fi
     fi
     [ -n \"\$TAG\" ] || { echo 'could not resolve latest release tag'; exit 1; }
-    # .deb VERSION uses '~' (Debian prerelease ordering): v0.8.3-beta.14 → 0.8.3~beta.14.
-    DEBVER=\$(printf '%s' \"\${TAG#v}\" | tr '-' '~')
+    # GitHub serves the prerelease .deb with '.' (it sanitizes nfpm's '~'):
+    # tag v0.8.3-beta.14 → node-stats_0.8.3.beta.14_<arch>.deb. Map '-' to '.'.
+    DEBVER=\$(printf '%s' \"\${TAG#v}\" | tr '-' '.')
     DEB=\"node-stats_\${DEBVER}_\${ARCH}.deb\"
     echo \"  downloading \$DEB\"
     curl -fsSL -o /tmp/\$DEB \"https://github.com/\$REPO/releases/download/\$TAG/\$DEB\"
