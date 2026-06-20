@@ -457,28 +457,34 @@ export function RaftClusterWidget() {
 
   const onWipeState = async () => {
     const { confirmed } = await confirmDialog({
-      title: 'Wipe Raft state on this node?',
+      title: 'Recover this node as a single-node cluster?',
       description:
-        'This will throw away the Raft consensus log + cluster membership on this node and re-bootstrap as a fresh single-voter cluster. ' +
-        'Replicated data (users, hosts, metrics) is KEPT. Other voters will be orphaned and need to re-join.',
+        'This drops the unreachable peer(s) and re-bootstraps this node as a healthy single-node cluster so it can accept writes again. ' +
+        'Your data (users, hosts, metrics) is KEPT — only the Raft consensus log resets. Any other peers will need to re-join afterwards.',
       variant: 'destructive',
-      confirmText: 'Wipe state',
+      confirmText: 'Recover (keep data)',
     })
     if (!confirmed) return
     try {
       await wipeState.mutateAsync()
-      toast.success('Raft state wiped — node is now a fresh single-voter cluster')
+      toast.success('Recovered — this node is now a healthy single-node cluster')
     } catch (e) {
-      toast.error('Wipe failed: ' + (e as Error).message)
+      toast.error('Recovery failed: ' + (e as Error).message)
     }
   }
 
   // Hashicorp returns the role with a leading capital letter ("Leader",
   // "Follower", "Candidate", "Shutdown"). Lower-case for comparison.
-  const stuck =
-    st.state &&
-    st.state.toLowerCase() !== 'leader' &&
-    st.state.toLowerCase() !== 'follower'
+  const role = (st.state || '').toLowerCase()
+  // "stuck" = the cluster can't even elect a leader (Candidate/Shutdown).
+  const stuck = role !== '' && role !== 'leader' && role !== 'follower'
+  // "wedged" = we LOOK like a healthy follower but can't actually reach the
+  // leader (one-way partition: its heartbeats reach us, our writes time out
+  // forwarding to it). Without this the recovery banner never showed and the
+  // survivor of a botched second node had no way out from the UI.
+  const wedged = role === 'follower' && st.leader_reachable === false
+  const needsRecovery = stuck || wedged
+  const deadLeaderID = wedged ? st.leader_id : undefined
 
   return (
     <div className="space-y-5">
@@ -511,16 +517,28 @@ export function RaftClusterWidget() {
         </Button>
       </header>
 
-      {stuck && (
+      {needsRecovery && (
         <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 space-y-2 text-sm">
           <p className="font-medium text-amber-200">
-            Cluster cannot elect a leader
+            {wedged ? 'Leader unreachable — writes are stuck' : 'Cluster cannot elect a leader'}
           </p>
           <p className="text-xs text-amber-100/90">
-            This usually means one of the voters in the list below has an
-            unreachable advertise address (e.g. a Docker bridge IP that the
-            other voters can't dial). The cluster needs majority of voters
-            to be reachable to make progress.
+            {wedged ? (
+              <>
+                This node still receives heartbeats from{' '}
+                <code>{deadLeaderID || 'the leader'}</code>, but it can&apos;t open a connection
+                back to it (one-way partition — e.g. the leader advertises an address that went
+                down). So this node stays a follower yet every write it forwards to the leader
+                times out: you can&apos;t issue tokens, remove the peer, or delete its host. Restore
+                connectivity to the leader to heal cleanly, or recover this node below.
+              </>
+            ) : (
+              <>
+                This usually means one of the voters in the list below has an unreachable advertise
+                address (e.g. a Docker bridge IP that the other voters can&apos;t dial). The cluster
+                needs majority of voters to be reachable to make progress.
+              </>
+            )}
           </p>
           {data.raft_stats ? (
             <div className="rounded border border-amber-500/30 bg-black/20 p-2 font-mono text-[11px] text-amber-100/80 space-y-0.5">
@@ -542,10 +560,12 @@ export function RaftClusterWidget() {
             </div>
           ) : null}
           <p className="text-xs text-amber-100/90">
-            <strong>Wipe state</strong> throws away the consensus log + cluster
-            membership and re-bootstraps THIS node as a fresh single-voter
-            cluster. Replicated SQLite data (users, hosts, metrics) is kept.
-            Use it when no other recovery option is available.
+            <strong>Recover this node</strong> drops the unreachable peer
+            {deadLeaderID ? <> (<code>{deadLeaderID}</code>)</> : null} and
+            re-bootstraps THIS node as a healthy single-node cluster, so it can
+            elect itself leader and accept writes again. Your data —{' '}
+            <strong>users, hosts and metrics are all kept</strong>; only the Raft
+            consensus log resets. Any other peers will need to re-join afterwards.
           </p>
           <Button
             size="sm"
@@ -554,7 +574,7 @@ export function RaftClusterWidget() {
             disabled={wipeState.isPending}
             className="border-amber-500/50 text-amber-100 hover:bg-amber-500/20"
           >
-            {wipeState.isPending ? 'Wiping…' : 'Wipe state & re-bootstrap'}
+            {wipeState.isPending ? 'Recovering…' : 'Recover this node (keep data)'}
           </Button>
           <p className="text-xs text-amber-100/80 pt-2">
             <strong>Wipe state</strong> only resets THIS node — the other voters still

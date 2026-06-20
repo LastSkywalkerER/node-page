@@ -22,6 +22,11 @@ export interface RaftStatus {
   advertise_url?: string
   bridge_enabled?: boolean
   bridge_started_at?: string
+  /** Only present on a non-leader that knows its leader: whether this node
+   *  can actually open a TCP connection to the leader's Raft address. false
+   *  while state==='follower' means a one-way partition — writes can't reach
+   *  the leader even though we still receive its heartbeats. */
+  leader_reachable?: boolean
 }
 
 export interface BridgeSample {

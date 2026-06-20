@@ -147,6 +147,15 @@ type Status struct {
 	AdvertiseURL    string    `json:"advertise_url,omitempty"`
 	BridgeEnabled   bool      `json:"bridge_enabled"`
 	BridgeStartedAt time.Time `json:"bridge_started_at,omitempty"`
+
+	// LeaderReachable is set only on a non-leader node that knows who the
+	// leader is: it reports whether this node can actually open a TCP
+	// connection to the leader's advertised Raft address. A *false* here
+	// while State=="follower" is the tell-tale of an asymmetric partition
+	// (the leader still reaches us — so we stay a happy follower — but we
+	// can't reach it, so every write we forward times out). nil when not
+	// applicable (we are the leader, or no leader is known yet).
+	LeaderReachable *bool `json:"leader_reachable,omitempty"`
 }
 
 // Peer describes a Raft voter known to the local node.

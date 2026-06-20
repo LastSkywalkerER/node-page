@@ -44,7 +44,20 @@ type Node struct {
 
 	closeMu sync.Mutex
 	closed  bool
+
+	// Cached result of the leader-reachability probe (see leaderReachable).
+	// Status() is polled every ~5s by the admin UI, so the actual TCP dial
+	// is rate-limited to leaderProbeTTL to keep the status handler cheap.
+	leaderProbeMu   sync.Mutex
+	leaderProbeAt   time.Time
+	leaderProbeAddr string
+	leaderProbeOK   bool
 }
+
+// leaderProbeTTL bounds how often Status() performs the leader-reachability
+// TCP dial. Long enough that a 5s poll doesn't dial every time, short enough
+// that the recovery banner appears within a few seconds of a partition.
+const leaderProbeTTL = 4 * time.Second
 
 // SetDB wires the GORM handle the leader-forwarder uses to look up peer
 // URLs. Safe to call after construction; must be called before
@@ -365,7 +378,49 @@ func (n *Node) Status() Status {
 			})
 		}
 	}
+
+	// Probe leader reachability only when we are a non-leader with a known
+	// leader. The address comes from the configuration we just built (the
+	// leader's advertised Raft addr). This is what distinguishes a genuinely
+	// healthy follower from one wedged behind a one-way partition.
+	if st.State != hraft.Leader.String() && st.LeaderID != "" && st.LeaderID != n.cfg.NodeID {
+		leaderAddr := st.LeaderAddr
+		if leaderAddr == "" {
+			for _, p := range st.Peers {
+				if p.ID == st.LeaderID {
+					leaderAddr = p.Addr
+					break
+				}
+			}
+		}
+		if leaderAddr != "" {
+			ok := n.leaderReachable(leaderAddr)
+			st.LeaderReachable = &ok
+		}
+	}
 	return st
+}
+
+// leaderReachable reports whether a fresh TCP connection to the leader's
+// advertised Raft address succeeds, caching the result for leaderProbeTTL so
+// the polled Status() handler doesn't dial on every call. A failing dial while
+// the node still shows as a follower is the signature of an asymmetric
+// partition (the wedged-for-writes state the recovery UI must surface).
+func (n *Node) leaderReachable(addr string) bool {
+	n.leaderProbeMu.Lock()
+	defer n.leaderProbeMu.Unlock()
+	if addr == n.leaderProbeAddr && time.Since(n.leaderProbeAt) < leaderProbeTTL {
+		return n.leaderProbeOK
+	}
+	conn, err := net.DialTimeout("tcp", addr, 1500*time.Millisecond)
+	ok := err == nil
+	if conn != nil {
+		_ = conn.Close()
+	}
+	n.leaderProbeAddr = addr
+	n.leaderProbeAt = time.Now()
+	n.leaderProbeOK = ok
+	return ok
 }
 
 // Enabled implements Service.
