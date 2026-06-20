@@ -7,9 +7,14 @@ name: Release
 #   - Raw binaries for the in-app self-updater (`node-stats update`):
 #       node-stats_<tag>_{linux_amd64,linux_arm64,darwin_arm64}.tar.gz,
 #       node-stats_<tag>_windows_amd64.zip, and SHA256SUMS.
-# Two ways to cut a release:
-#   1. push a tag:   git tag v0.1.2 && git push origin v0.1.2
-#   2. Actions tab → "Release" → "Run workflow", enter a version like v0.1.2
+# Three ways this runs:
+#   1. STABLE: push a tag   git tag v0.1.2 && git push origin v0.1.2
+#   2. STABLE: Actions tab → "Release" → "Run workflow", enter a version like v0.1.2
+#   3. BETA (automatic): every push to main publishes a prerelease
+#      v<maj>.<min>.<patch+1>-beta.<N> (N = commits since the latest stable tag),
+#      with the SAME version the Docker :beta image gets — so native/LXC installs
+#      on the beta channel self-update straight from main, no manual tagging.
+#      Version is computed by scripts/ci-version.sh (shared with docker.yml).
 # (The "Build and Push Docker Image" workflow is separate — it publishes the
 #  container image to GHCR, not a GitHub Release.)
 #
@@ -20,6 +25,7 @@ name: Release
 # (as CI secrets) to remove the one-time prompt.
 on:
   push:
+    branches: [ main ]
     tags: [ 'v*' ]
   workflow_dispatch:
     inputs:
@@ -31,10 +37,46 @@ on:
 permissions:
   contents: write
 
-env:
-  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+# Coalesce rapid main pushes: a newer beta build cancels the in-progress one
+# (saves runner minutes and guarantees the published beta is the latest commit).
+# Stable tag releases run in their own per-tag group and are NEVER cancelled.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
 
 jobs:
+  # Resolve the version + prerelease flag once, so every build job and the
+  # publish step agree (and match the Docker image built from the same commit).
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}       # v-prefixed (tag + asset names)
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + tags so ci-version.sh can find the latest stable tag
+          # and count commits since it.
+          fetch-depth: 0
+      - id: v
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VER="${{ inputs.version }}"                     # operator-supplied, e.g. v0.1.2
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VER="${GITHUB_REF_NAME}"                        # the pushed stable tag
+          else
+            VER="v$(bash scripts/ci-version.sh)"            # main push → rolling beta
+          fi
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          # A '-' suffix (…-beta.N) marks a GitHub prerelease: the in-app updater's
+          # beta channel picks it up while the stable channel (/releases/latest) skips it.
+          if [[ "$VER" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # Build the frontend once; every binary embeds the same dist.
   frontend:
     runs-on: ubuntu-latest
@@ -56,7 +98,7 @@ jobs:
 
   # Ubuntu/Debian .deb (amd64 + arm64): binary → /usr/bin + systemd service.
   linux:
-    needs: frontend
+    needs: [version, frontend]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -73,8 +115,8 @@ jobs:
       - name: Build .deb
         run: |
           set -euo pipefail
-          VERSION="${RELEASE_VERSION}"
-          if [ -z "${VERSION}" ]; then echo "RELEASE_VERSION is empty"; exit 1; fi
+          VERSION="${{ needs.version.outputs.version }}"
+          if [ -z "${VERSION}" ]; then echo "version is empty"; exit 1; fi
           COMMIT="$(git rev-parse --short HEAD)"
           DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} go build -tags embed_dist \
@@ -99,7 +141,7 @@ jobs:
 
   # Windows NSIS installer (amd64).
   windows:
-    needs: frontend
+    needs: [version, frontend]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -115,8 +157,8 @@ jobs:
       - name: Build installer .exe
         run: |
           set -euo pipefail
-          VERSION="${RELEASE_VERSION}"
-          if [ -z "${VERSION}" ]; then echo "RELEASE_VERSION is empty"; exit 1; fi
+          VERSION="${{ needs.version.outputs.version }}"
+          if [ -z "${VERSION}" ]; then echo "version is empty"; exit 1; fi
           COMMIT="$(git rev-parse --short HEAD)"
           DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags embed_dist \
@@ -139,7 +181,7 @@ jobs:
 
   # macOS .dmg (Apple Silicon) — node-stats.app launches the server + opens the dashboard.
   macos:
-    needs: frontend
+    needs: [version, frontend]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -153,8 +195,8 @@ jobs:
       - name: Build .dmg
         run: |
           set -euo pipefail
-          VERSION="${RELEASE_VERSION}"
-          if [ -z "${VERSION}" ]; then echo "RELEASE_VERSION is empty"; exit 1; fi
+          VERSION="${{ needs.version.outputs.version }}"
+          if [ -z "${VERSION}" ]; then echo "version is empty"; exit 1; fi
           COMMIT="$(git rev-parse --short HEAD)"
           DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -tags embed_dist \
@@ -173,8 +215,10 @@ jobs:
 
   # Publish ONLY the installers.
   release:
-    needs: [linux, windows, macos]
+    needs: [version, linux, windows, macos]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -192,12 +236,11 @@ jobs:
           ls -la
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.RELEASE_VERSION }}
-          # A semver prerelease tag (a '-' suffix, e.g. v1.2.3-beta.1) is flagged
-          # as a GitHub prerelease so the in-app updater's beta channel can pick
-          # it up while the stable channel (/releases/latest) skips it. Plain
-          # vX.Y.Z tags publish as a normal (stable) release.
-          prerelease: ${{ contains(env.RELEASE_VERSION, '-') }}
+          # On a main push this tag does not exist yet — action-gh-release creates
+          # it at the pushed commit. A '-' suffix → GitHub prerelease (beta channel);
+          # plain vX.Y.Z → normal stable release.
+          tag_name: ${{ needs.version.outputs.version }}
+          prerelease: ${{ needs.version.outputs.prerelease }}
           files: |
             dist/*.deb
             dist/*.dmg
@@ -206,3 +249,24 @@ jobs:
             dist/*.zip
             dist/SHA256SUMS
           generate_release_notes: true
+      # Every main push cuts a new beta prerelease, so they pile up. Keep the
+      # newest few and delete older beta prereleases (release + tag). Stable
+      # releases are never touched. Best-effort — never fails the publish.
+      - name: Prune old beta prereleases
+        if: needs.version.outputs.prerelease == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: '10'
+        run: |
+          set -euo pipefail
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 200 \
+            --json tagName,isPrerelease,createdAt \
+            | jq -r --argjson keep "$KEEP" '
+                [ .[] | select(.isPrerelease and (.tagName | test("-beta\\."))) ]
+                | sort_by(.createdAt) | reverse | .[$keep:] | .[].tagName
+              ' \
+            | while read -r tag; do
+                [ -n "$tag" ] || continue
+                echo "pruning old beta prerelease $tag"
+                gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+              done

@@ -276,7 +276,9 @@ install_app() {
       fi
     fi
     [ -n \"\$TAG\" ] || { echo 'could not resolve latest release tag'; exit 1; }
-    DEB=\"node-stats_\${TAG#v}_\${ARCH}.deb\"
+    # .deb VERSION uses '~' (Debian prerelease ordering): v0.8.3-beta.14 → 0.8.3~beta.14.
+    DEBVER=\$(printf '%s' \"\${TAG#v}\" | tr '-' '~')
+    DEB=\"node-stats_\${DEBVER}_\${ARCH}.deb\"
     echo \"  downloading \$DEB\"
     curl -fsSL -o /tmp/\$DEB \"https://github.com/\$REPO/releases/download/\$TAG/\$DEB\"
     apt-get install -y -qq /tmp/\$DEB
@@ -465,7 +467,9 @@ cmd_update() {
       fi
     fi
     [ -n \"\$TAG\" ] || { echo 'could not resolve latest release tag'; exit 1; }
-    DEB=\"node-stats_\${TAG#v}_\${ARCH}.deb\"
+    # .deb VERSION uses '~' (Debian prerelease ordering): v0.8.3-beta.14 → 0.8.3~beta.14.
+    DEBVER=\$(printf '%s' \"\${TAG#v}\" | tr '-' '~')
+    DEB=\"node-stats_\${DEBVER}_\${ARCH}.deb\"
     echo \"  downloading \$DEB\"
     curl -fsSL -o /tmp/\$DEB \"https://github.com/\$REPO/releases/download/\$TAG/\$DEB\"
     apt-get install -y -qq --allow-downgrades /tmp/\$DEB

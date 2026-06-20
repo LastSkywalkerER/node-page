@@ -507,12 +507,15 @@ seed_channel_native() {
 # linux/<arch> release binary into <dest>. NODE_STATS_LOCAL_TARBALL overrides the
 # download (air-gapped / testing).
 download_native_binary() {
-  local dest="$1" tag asset url tmp
+  local dest="$1" tag debver asset url tmp
   tag="$(latest_release_tag)"
   [ -n "$tag" ] || die "could not determine the latest release (no published release yet, or no network). Pin one with NODE_STATS_VERSION=vX.Y.Z."
   # Releases publish per-OS installers only. On Linux we pull the .deb and
   # extract /usr/bin/node-stats from it (works without root via dpkg-deb / ar).
-  asset="node-stats_${tag#v}_${ARCH}.deb"
+  # The .deb VERSION uses '~' not '-' for prereleases (Debian sorts ~ before the
+  # release), so node-stats_0.8.3~beta.14_amd64.deb under tag v0.8.3-beta.14.
+  debver="${tag#v}"; debver="${debver//-/\~}"
+  asset="node-stats_${debver}_${ARCH}.deb"
   tmp="$(mktemp -d)"
   if [ -n "${NODE_STATS_LOCAL_DEB:-}" ]; then
     cp "$NODE_STATS_LOCAL_DEB" "$tmp/$asset" || die "local .deb not found: $NODE_STATS_LOCAL_DEB"

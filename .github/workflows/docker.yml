@@ -73,7 +73,8 @@ jobs:
           # release it raced). Tag-only :latest keeps it a clean-versioned
           # release image so auto-update always works. (Main still publishes a
           # pullable dev image as <branch>-<sha> above.)
-          type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+          # …but NOT a prerelease tag (vX.Y.Z-beta.N) — those are beta, never stable.
+          type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
           # :beta is the moving image for the BETA release channel and tracks
           # main HEAD — every change ships to main as beta immediately, and only
           # an explicit promotion cuts a v* tag (→ :latest, the stable channel).
@@ -88,24 +89,12 @@ jobs:
 
     - name: Compute version
       id: ver
-      # Produce a readable, ordered version string stamped into the binary
-      # (version.Version, shown by /version):
-      #   • v* tag push  → the clean release version (e.g. 0.7.5)
-      #   • main (beta)  → next-patch prerelease: <maj>.<min>.<patch+1>-beta.<N>
-      #     where N = commits since the latest tag. So beta sorts AFTER the last
-      #     release and BEFORE the next one (0.7.4 < 0.7.5-beta.14 < 0.7.5), and
-      #     each push bumps N — readable instead of the opaque "main".
-      run: |
-        if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-        else
-          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)
-          BASE=${LATEST#v}
-          IFS='.' read -r MA MI PA <<< "${BASE%%-*}"
-          MA=${MA:-0}; MI=${MI:-0}; PA=${PA:-0}
-          COUNT=$(git rev-list "${LATEST}..HEAD" --count 2>/dev/null || git rev-list HEAD --count)
-          echo "version=${MA}.${MI}.$((PA+1))-beta.${COUNT}" >> "$GITHUB_OUTPUT"
-        fi
+      # Shared with release.yml (scripts/ci-version.sh) so the Docker image and
+      # the native packages from the same commit get IDENTICAL versions:
+      #   • v* tag push  → the clean release version (e.g. 0.8.2)
+      #   • main (beta)  → next-patch prerelease <maj>.<min>.<patch+1>-beta.<N>,
+      #     N = commits since the latest STABLE tag (readable, ordered, bumps each push).
+      run: echo "version=$(bash scripts/ci-version.sh)" >> "$GITHUB_OUTPUT"
 
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
