@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import { Copy, Check, RefreshCw, Trash2 } from 'lucide-react'
+import { Copy, Check, RefreshCw, Trash2, Download } from 'lucide-react'
 import { toast } from 'sonner'
 import { confirmDialog } from '@/shared/lib/confirmDialog'
 import {
@@ -44,16 +44,17 @@ function stateColor(state?: string): string {
 }
 
 const RAW_SCRIPTS = 'https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scripts'
+const RELEASES_LATEST = 'https://github.com/LastSkywalkerER/node-page/releases/latest'
 
 /** Every install path we ship, in the order shown in the platform selector. */
 type InstallKind = 'linux-docker' | 'synology' | 'windows' | 'linux-native' | 'proxmox-lxc' | 'macos'
 const INSTALL_KINDS: { id: InstallKind; label: string }[] = [
   { id: 'linux-docker', label: 'Linux · Docker' },
   { id: 'synology', label: 'Synology NAS' },
-  { id: 'windows', label: 'Windows · Docker' },
   { id: 'linux-native', label: 'Linux · native' },
   { id: 'proxmox-lxc', label: 'Proxmox · LXC' },
   { id: 'macos', label: 'macOS · native' },
+  { id: 'windows', label: 'Windows · native' },
 ]
 
 /** CopyButton — generic clipboard button with a transient check tick. */
@@ -82,6 +83,21 @@ function CodeBlock({ code }: { code: string }) {
         <CopyButton value={code} label="Copy command" />
       </span>
     </div>
+  )
+}
+
+/** DownloadLink — prominent button-link to the latest release's native installers. */
+function DownloadLink({ children }: { children: React.ReactNode }) {
+  return (
+    <a
+      href={RELEASES_LATEST}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-center gap-1.5 rounded-md border border-primary/50 bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20"
+    >
+      <Download className="h-3.5 w-3.5" />
+      {children}
+    </a>
   )
 }
 
@@ -169,9 +185,16 @@ function JoinCommandBlock({ token, advertiseURL }: { token: string; advertiseURL
       case 'windows':
         return (
           <>
-            <p className="text-xs font-medium text-foreground">Install in PowerShell (needs Docker Desktop):</p>
-            <CodeBlock code={`irm ${RAW_SCRIPTS}/install.ps1 | iex`} />
-            <WizardJoinSteps appUrl="http://localhost:9090" joinURL={joinURL} token={token} />
+            <p className="text-xs font-medium text-foreground">
+              Windows (x64) — native installer (real host metrics, no Docker):
+            </p>
+            <DownloadLink>Download node-stats_*_windows_amd64_setup.exe</DownloadLink>
+            <p className="text-[11px] text-muted-foreground">
+              Run the installer from the latest release, then launch node-stats (Start menu) — it
+              serves <span className="font-mono">http://localhost:8080</span>. Prefer Docker Desktop
+              instead? <span className="font-mono">irm {RAW_SCRIPTS}/install.ps1 | iex</span>.
+            </p>
+            <WizardJoinSteps appUrl="http://localhost:8080" joinURL={joinURL} token={token} />
           </>
         )
       case 'linux-native':
@@ -181,6 +204,14 @@ function JoinCommandBlock({ token, advertiseURL }: { token: string; advertiseURL
               Install the native binary (no Docker, real host metrics):
             </p>
             <CodeBlock code={`curl -fsSL ${RAW_SCRIPTS}/install.sh | sudo bash -s -- native`} />
+            <p className="text-[11px] text-muted-foreground">
+              Prefer no script? Download the <span className="font-mono">.deb</span> or{' '}
+              <span className="font-mono">_linux_&lt;arch&gt;.tar.gz</span> from the{' '}
+              <a className="underline" href={RELEASES_LATEST} target="_blank" rel="noreferrer">
+                latest release
+              </a>
+              .
+            </p>
             <WizardJoinSteps appUrl="http://localhost:8080" joinURL={joinURL} token={token} />
           </>
         )
@@ -195,20 +226,14 @@ function JoinCommandBlock({ token, advertiseURL }: { token: string; advertiseURL
       case 'macos':
         return (
           <>
-            <p className="text-xs font-medium text-foreground">macOS (Apple Silicon) — native binary:</p>
+            <p className="text-xs font-medium text-foreground">macOS (Apple Silicon) — native app (real host metrics):</p>
+            <DownloadLink>Download node-stats_*_darwin_arm64.dmg</DownloadLink>
             <p className="text-[11px] text-muted-foreground">
-              Download <span className="font-mono">node-stats_*_darwin_arm64.tar.gz</span> from the{' '}
-              <a
-                className="underline"
-                href="https://github.com/LastSkywalkerER/node-page/releases/latest"
-                target="_blank"
-                rel="noreferrer"
-              >
-                latest release
-              </a>
-              , then:
+              Open the .dmg from the latest release, drag node-stats to Applications, launch it — it
+              serves <span className="font-mono">http://localhost:8080</span>. CLI alternative: grab the{' '}
+              <span className="font-mono">_darwin_arm64.tar.gz</span> and run{' '}
+              <span className="font-mono">./node-stats</span>.
             </p>
-            <CodeBlock code={`tar -xzf node-stats_*_darwin_arm64.tar.gz\n./node-stats`} />
             <WizardJoinSteps appUrl="http://localhost:8080" joinURL={joinURL} token={token} />
           </>
         )
