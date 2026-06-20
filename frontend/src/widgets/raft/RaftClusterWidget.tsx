@@ -43,50 +43,197 @@ function stateColor(state?: string): string {
   }
 }
 
+const RAW_SCRIPTS = 'https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scripts'
+
+/** Every install path we ship, in the order shown in the platform selector. */
+type InstallKind = 'linux-docker' | 'synology' | 'windows' | 'linux-native' | 'proxmox-lxc' | 'macos'
+const INSTALL_KINDS: { id: InstallKind; label: string }[] = [
+  { id: 'linux-docker', label: 'Linux · Docker' },
+  { id: 'synology', label: 'Synology NAS' },
+  { id: 'windows', label: 'Windows · Docker' },
+  { id: 'linux-native', label: 'Linux · native' },
+  { id: 'proxmox-lxc', label: 'Proxmox · LXC' },
+  { id: 'macos', label: 'macOS · native' },
+]
+
+/** CopyButton — generic clipboard button with a transient check tick. */
+function CopyButton({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false)
+  const onCopy = async () => {
+    await navigator.clipboard.writeText(value)
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1500)
+  }
+  return (
+    <Button onClick={onCopy} size="icon" variant="ghost" className="h-7 w-7" aria-label={label}>
+      {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+    </Button>
+  )
+}
+
+/** CodeBlock — a copy-paste command box with a copy button in the corner. */
+function CodeBlock({ code }: { code: string }) {
+  return (
+    <div className="relative">
+      <pre className="overflow-x-auto rounded-md border border-border/60 bg-muted/20 p-3 pr-12 font-mono text-[11px] leading-relaxed dark:border-white/10 dark:bg-black/30">
+        {code}
+      </pre>
+      <span className="absolute right-1.5 top-1.5">
+        <CopyButton value={code} label="Copy command" />
+      </span>
+    </div>
+  )
+}
+
+/** LabeledCopyField — a read-only value (cluster URL / token) with a copy button. */
+function LabeledCopyField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="w-20 shrink-0 text-[11px] text-muted-foreground">{label}</span>
+      <Input readOnly value={value} className="h-8 flex-1 font-mono text-[11px]" />
+      <CopyButton value={value} label={`Copy ${label}`} />
+    </div>
+  )
+}
+
 /**
- * JoinCommandBlock renders the copy-paste one-liner that installs the Docker
- * agent on a fresh machine and joins it to THIS cluster (scripts/agent-join.sh:
- * docker checks → compose up → /setup/join-raft-cluster → snapshot wait).
- * The join URL prefers the leader's advertised URL; the browser origin is the
+ * WizardJoinSteps — for installers that don't auto-join (Windows, native,
+ * Proxmox, macOS): after install you finish the join in the setup wizard's
+ * "Join an existing cluster" branch, pasting the cluster URL + one-shot token.
+ */
+function WizardJoinSteps({ appUrl, joinURL, token }: { appUrl: string; joinURL: string; token: string }) {
+  return (
+    <div className="space-y-2 text-[11px] text-muted-foreground">
+      <p>Then finish the join from the app's setup wizard:</p>
+      <ol className="list-decimal space-y-1 pl-4">
+        <li>
+          Open <span className="font-mono">{appUrl}</span> on the new machine and continue setup.
+        </li>
+        <li>
+          Pick <span className="font-medium text-foreground">"Join an existing cluster"</span>.
+        </li>
+        <li>Paste the cluster URL and the one-shot token below.</li>
+      </ol>
+      <div className="space-y-1.5 pt-1">
+        <LabeledCopyField label="Cluster URL" value={joinURL} />
+        <LabeledCopyField label="Join token" value={token} />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * JoinCommandBlock renders a platform selector and the matching join recipe for
+ * THIS cluster. Docker paths (Linux, Synology) get a single auto-join one-liner
+ * (scripts/agent-join.sh: docker checks → compose up → /setup/join-raft-cluster
+ * → snapshot wait). The other installers can't auto-join, so they show the
+ * install command plus the wizard steps (cluster URL + token to paste). The
+ * join URL prefers the leader's advertised URL; the browser origin is the
  * fallback — both must be reachable from the new machine.
  */
 function JoinCommandBlock({ token, advertiseURL }: { token: string; advertiseURL?: string }) {
-  const [copiedCmd, setCopiedCmd] = useState(false)
+  const [kind, setKind] = useState<InstallKind>('linux-docker')
   const joinURL = advertiseURL || window.location.origin
-  const command = [
-    `NODE_STATS_JOIN_URL="${joinURL}" \\`,
-    `NODE_STATS_JOIN_KEY="${token}" \\`,
-    `bash -c "$(curl -fsSL https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scripts/agent-join.sh)"`,
-  ].join('\n')
 
-  const onCopyCmd = async () => {
-    await navigator.clipboard.writeText(command)
-    setCopiedCmd(true)
-    window.setTimeout(() => setCopiedCmd(false), 1500)
+  const body = () => {
+    switch (kind) {
+      case 'linux-docker':
+        return (
+          <>
+            <p className="text-xs font-medium text-foreground">Run on the new machine (needs Docker):</p>
+            <CodeBlock
+              code={`NODE_STATS_JOIN_URL="${joinURL}" \\\nNODE_STATS_JOIN_KEY="${token}" \\\nbash -c "$(curl -fsSL ${RAW_SCRIPTS}/agent-join.sh)"`}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Installs the Docker stack, attaches this node as a voter, and pulls the cluster
+              snapshot. If <span className="font-mono">{joinURL}</span> isn't reachable from that
+              machine, replace it with an address that is.
+            </p>
+          </>
+        )
+      case 'synology':
+        return (
+          <>
+            <p className="text-xs font-medium text-foreground">
+              Run over SSH on the NAS (needs Container Manager / Docker):
+            </p>
+            <CodeBlock
+              code={`sudo NODE_STATS_DIR=/volume1/docker/node-stats \\\n  NODE_STATS_JOIN_URL="${joinURL}" \\\n  NODE_STATS_JOIN_KEY="${token}" \\\n  bash -c "$(curl -fsSL ${RAW_SCRIPTS}/agent-join.sh)"`}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Enable SSH first (Control Panel → Terminal &amp; SNMP). x86 or 64-bit ARM models only.
+              See the "Synology NAS" section in the README for the GUI / manual route.
+            </p>
+          </>
+        )
+      case 'windows':
+        return (
+          <>
+            <p className="text-xs font-medium text-foreground">Install in PowerShell (needs Docker Desktop):</p>
+            <CodeBlock code={`irm ${RAW_SCRIPTS}/install.ps1 | iex`} />
+            <WizardJoinSteps appUrl="http://localhost:9090" joinURL={joinURL} token={token} />
+          </>
+        )
+      case 'linux-native':
+        return (
+          <>
+            <p className="text-xs font-medium text-foreground">
+              Install the native binary (no Docker, real host metrics):
+            </p>
+            <CodeBlock code={`curl -fsSL ${RAW_SCRIPTS}/install.sh | sudo bash -s -- native`} />
+            <WizardJoinSteps appUrl="http://localhost:8080" joinURL={joinURL} token={token} />
+          </>
+        )
+      case 'proxmox-lxc':
+        return (
+          <>
+            <p className="text-xs font-medium text-foreground">Run on the Proxmox VE host (creates a Debian LXC):</p>
+            <CodeBlock code={`bash -c "$(curl -fsSL ${RAW_SCRIPTS}/proxmox-lxc.sh)"`} />
+            <WizardJoinSteps appUrl="http://<container-ip>:8080" joinURL={joinURL} token={token} />
+          </>
+        )
+      case 'macos':
+        return (
+          <>
+            <p className="text-xs font-medium text-foreground">macOS (Apple Silicon) — native binary:</p>
+            <p className="text-[11px] text-muted-foreground">
+              Download <span className="font-mono">node-stats_*_darwin_arm64.tar.gz</span> from the{' '}
+              <a
+                className="underline"
+                href="https://github.com/LastSkywalkerER/node-page/releases/latest"
+                target="_blank"
+                rel="noreferrer"
+              >
+                latest release
+              </a>
+              , then:
+            </p>
+            <CodeBlock code={`tar -xzf node-stats_*_darwin_arm64.tar.gz\n./node-stats`} />
+            <WizardJoinSteps appUrl="http://localhost:8080" joinURL={joinURL} token={token} />
+          </>
+        )
+    }
   }
 
   return (
-    <div className="space-y-1.5">
-      <p className="text-xs font-medium text-foreground">Run on the new machine (needs Docker):</p>
-      <div className="relative">
-        <pre className="overflow-x-auto rounded-md border border-border/60 bg-muted/20 p-3 pr-12 font-mono text-[11px] leading-relaxed dark:border-white/10 dark:bg-black/30">
-          {command}
-        </pre>
-        <Button
-          onClick={onCopyCmd}
-          size="icon"
-          variant="ghost"
-          className="absolute right-1.5 top-1.5 h-7 w-7"
-          aria-label="Copy install command"
-        >
-          {copiedCmd ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-        </Button>
+    <div className="space-y-2.5">
+      <div className="flex flex-wrap gap-2">
+        {INSTALL_KINDS.map((k) => (
+          <button
+            key={k.id}
+            type="button"
+            onClick={() => setKind(k.id)}
+            className={`rounded-md border px-2.5 py-1.5 text-xs transition-colors ${
+              kind === k.id
+                ? 'border-primary/60 bg-primary/10 text-primary'
+                : 'border-border/60 text-muted-foreground hover:text-foreground dark:border-white/10'
+            }`}
+          >
+            {k.label}
+          </button>
+        ))}
       </div>
-      <p className="text-[11px] text-muted-foreground">
-        The script installs the stack, then the node attaches itself as a voter and pulls the
-        cluster snapshot. If <span className="font-mono">{joinURL}</span> isn't reachable from that
-        machine, replace it with an address that is.
-      </p>
+      <div className="space-y-1.5">{body()}</div>
     </div>
   )
 }
@@ -506,9 +653,9 @@ export function RaftClusterWidget() {
       <section className="space-y-2">
         <h4 className="text-sm font-display tracking-wide">Add a node</h4>
         <p className="text-xs text-muted-foreground">
-          Generate a one-shot token, then run the command below on the new machine — it installs
-          the Docker agent and joins this cluster in one go. (The token also works in the setup
-          wizard's "Join existing cluster" branch.)
+          Generate a one-shot token, pick the new machine's platform, then run the command shown — it
+          installs the agent and joins this cluster. Docker hosts join in one go; the other installers
+          finish the join from their setup wizard's "Join an existing cluster" branch (same token).
         </p>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <Input

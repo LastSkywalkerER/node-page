@@ -195,6 +195,53 @@ Requires Docker Desktop. Same VM-metrics caveat as macOS. If your execution
 policy blocks it, run from an elevated prompt with
 `powershell -ExecutionPolicy Bypass`.
 
+### Synology NAS — Docker (Container Manager)
+
+Synology runs node-stats as a Docker container. It works on **x86 (Intel/AMD)**
+models (`amd64`) and **64-bit ARM** models (`arm64`) — the image ships both; old
+32-bit ARM models aren't supported. You need the **Container Manager** package
+(DSM 7.2+) or the older **Docker** package (DSM 7.0–7.1).
+
+**Easiest — SSH + the installer.** Enable SSH (Control Panel → Terminal &
+SNMP → Enable SSH service), connect, then run — pointing the stack at a folder
+on your volume so data persists across DSM updates:
+
+```bash
+sudo NODE_STATS_DIR=/volume1/docker/node-stats \
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scripts/install.sh)"
+```
+
+Open **http://&lt;nas-ip&gt;:9090** to finish setup. `sudo` is required because the
+Docker socket is root-owned. The container reads the DSM host's `/proc` and the
+Docker socket (`pid: host` / `/host` mount), so the machine card shows the NAS's
+real CPU/RAM/disk and its containers.
+
+To install **and join an existing cluster in one go**, add the join env vars and
+call `agent-join.sh` instead of `install.sh`:
+
+```bash
+sudo NODE_STATS_DIR=/volume1/docker/node-stats \
+  NODE_STATS_JOIN_URL="http://<leader-ip>:9090" \
+  NODE_STATS_JOIN_KEY="<one-shot token>" \
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scripts/agent-join.sh)"
+```
+
+The leader's admin panel (**Admin → Nodes → Add a node**) generates this exact
+command when you pick the **Synology NAS** platform — copy it, paste it over SSH,
+done.
+
+**Manual / Container Manager GUI route.** Prefer the
+[advanced docker-compose flow](#advanced-manual-docker-compose) below with the
+stack dir set to `/volume1/docker/node-stats`. Keep `.env.agent` a **file**, not
+a folder. The controller sidecar needs the project dir identity-mounted
+(`NODE_STATS_STACK_HOST_DIR=/volume1/docker/node-stats`), which the SSH installer
+sets for you — the GUI Project import doesn't, so SSH is the recommended path.
+
+**HTTPS.** Use DSM's built-in reverse proxy (Control Panel → Login Portal →
+Advanced → Reverse Proxy) pointed at `localhost:9090`, then set
+`COOKIE_SECURE=true` in `.env.agent` and `docker compose restart node-stats`.
+SSE works out of the box (see [docs/REVERSE-PROXY.md](docs/REVERSE-PROXY.md)).
+
 ### Auto-updates
 
 node-stats checks GitHub Releases and shows an "update available" badge to
