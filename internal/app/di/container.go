@@ -1056,6 +1056,33 @@ func (c *Container) GetMetricSender() *metricstream.Sender {
 	return c.metricSender
 }
 
+// SetClusterHMACSecret swaps the cluster-shared HMAC key (the JWT secret) used by
+// the off-Raft metric stream. On a JOINED node the boot env JWT secret is a
+// placeholder until BootstrapClusterSecrets (or the join secret-swap) discovers
+// the real cluster-shared key from cluster_config; the metric sender/receiver
+// captured the placeholder at activation, so without this they'd sign/verify
+// same-cluster posts with the wrong key and every peer silently rejects them
+// (cross-node metrics never sync). Idempotent and a no-op for an empty key or
+// when nothing changed. Also updates any sender/receiver rebuilt on a later
+// (re)activation by remembering the new value on c.jwtSecret.
+func (c *Container) SetClusterHMACSecret(jwtSecret string) {
+	if jwtSecret == "" {
+		return
+	}
+	c.activateMu.Lock()
+	defer c.activateMu.Unlock()
+	if jwtSecret == c.jwtSecret {
+		return
+	}
+	c.jwtSecret = jwtSecret
+	if c.metricSender != nil {
+		c.metricSender.SetIntraSecret(jwtSecret)
+	}
+	if c.metricReceiver != nil {
+		c.metricReceiver.SetIntraSecret(jwtSecret)
+	}
+}
+
 // SetPBSSnapshotSink registers the handler that stores a PBS detail snapshot
 // carried by a received metric batch (the pbs poller's IngestRemoteSnapshot).
 // It applies to the current metric sink and to any sink rebuilt on a later Raft

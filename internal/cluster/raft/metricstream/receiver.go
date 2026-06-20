@@ -33,13 +33,15 @@ type Receiver struct {
 	logger       *log.Logger
 	ingest       Ingester
 	localCluster string
-	intraSecret  string // same-cluster HMAC key (JWT secret)
 
-	// bridgeSecret is the cross-cluster HMAC key ("" if not configured). Guarded
-	// by mu — SetBridgeSecret updates it live when the uplink is reconfigured at
-	// runtime, so a hub keeps accepting a site's metrics after the shared secret
-	// is rotated without a restart.
+	// Both HMAC keys are mu-guarded so they can be swapped live. intraSecret (the
+	// cluster-shared JWT key) starts as the boot env secret, which on a joined node
+	// is a placeholder until BootstrapClusterSecrets discovers the real one —
+	// SetIntraSecret swaps it in so same-cluster peers stop being rejected.
+	// bridgeSecret is the cross-cluster HMAC key ("" if not configured);
+	// SetBridgeSecret updates it when the uplink is (re)configured at runtime.
 	mu           sync.RWMutex
+	intraSecret  string // same-cluster HMAC key (JWT secret)
 	bridgeSecret string
 }
 
@@ -61,6 +63,18 @@ func (r *Receiver) SetBridgeSecret(secret string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.bridgeSecret = secret
+}
+
+// SetIntraSecret swaps the cluster-shared HMAC key used to authenticate
+// same-cluster peers. Called once the real cluster secret is known so a joined
+// node stops rejecting peers that sign with the cluster key. No-op for empty.
+func (r *Receiver) SetIntraSecret(secret string) {
+	if secret == "" {
+		return
+	}
+	r.mu.Lock()
+	r.intraSecret = secret
+	r.mu.Unlock()
 }
 
 // Handle processes one metric-stream POST. Mount under POST Path.
@@ -85,11 +99,11 @@ func (r *Receiver) Handle(c *gin.Context) {
 	// cluster-shared JWT secret; a foreign cluster (cross-cluster uplink) uses
 	// the bridge shared secret. A foreign sender with no bridge secret configured
 	// here is rejected.
+	r.mu.RLock()
 	secret := r.intraSecret
+	bridgeSecret := r.bridgeSecret
+	r.mu.RUnlock()
 	if sender != r.localCluster {
-		r.mu.RLock()
-		bridgeSecret := r.bridgeSecret
-		r.mu.RUnlock()
 		if bridgeSecret == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "cross-cluster metric stream not enabled"})
 			return

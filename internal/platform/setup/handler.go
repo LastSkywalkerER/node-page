@@ -60,11 +60,12 @@ type Handler struct {
 	userService     users.UserService
 	onSetupComplete func() // called once after setup finishes; may be nil
 
-	raftSvc       raftcluster.Service
-	raftActivator RaftActivator
-	tokenService  users.TokenService
-	secretReader  ClusterSecretReader
-	addr          string // local HTTP ADDR (":8080") used to derive default http_url
+	raftSvc         raftcluster.Service
+	raftActivator   RaftActivator
+	tokenService    users.TokenService
+	secretReader    ClusterSecretReader
+	metricSecretSet func(string) // pushes the cluster JWT key into the metric stream
+	addr            string       // local HTTP ADDR (":8080") used to derive default http_url
 }
 
 // WithHTTPAddr records the local HTTP listen address ("ADDR" env) so the
@@ -114,6 +115,15 @@ func (h *Handler) WithSecretReader(r ClusterSecretReader) *Handler {
 	return h
 }
 
+// WithMetricSecretSetter wires a hook (the DI container's SetClusterHMACSecret)
+// so the join flow can push the discovered cluster JWT key into the off-Raft
+// metric stream live — otherwise a freshly-joined node keeps HMACing its metrics
+// with the boot placeholder secret and peers reject them until a restart.
+func (h *Handler) WithMetricSecretSetter(fn func(string)) *Handler {
+	h.metricSecretSet = fn
+	return h
+}
+
 // pollClusterSecretsAndSwap polls the local cluster_config table for the
 // jwt_secret + refresh_secret keys that arrive via Raft snapshot replay
 // from the peer cluster. As soon as both are present it swaps them into
@@ -131,6 +141,11 @@ func (h *Handler) pollClusterSecretsAndSwap() {
 		cancel()
 		if jwt != "" && refresh != "" {
 			h.tokenService.SetSecrets(jwt, refresh)
+			// Also retune the off-Raft metric stream to the cluster key so
+			// cross-node metrics start flowing without waiting for a restart.
+			if h.metricSecretSet != nil {
+				h.metricSecretSet(jwt)
+			}
 			return
 		}
 	}

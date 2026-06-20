@@ -47,14 +47,20 @@ type Sender struct {
 
 	localCluster string
 	localNode    string
-	intraSecret  string // cluster-shared HMAC key for same-cluster peers (JWT secret)
 
 	// Cross-cluster uplink (optional): in push/both bridge mode this node also
 	// ships its metrics to the hub seeds, signed with the bridge shared secret.
 	// Guarded by mu — SetBridge updates them live when the uplink is
 	// (re)configured at runtime, so metrics follow the same target as the
 	// topology bridge without a process restart.
+	//
+	// intraSecret (the cluster-shared JWT HMAC key) is mu-guarded too: on a
+	// joined node the boot env secret is a placeholder until BootstrapClusterSecrets
+	// discovers the real cluster-shared key, so SetIntraSecret swaps it in live —
+	// otherwise same-cluster posts stay signed with the wrong key and every peer
+	// silently rejects them.
 	mu           sync.RWMutex
+	intraSecret  string // cluster-shared HMAC key for same-cluster peers (JWT secret)
 	bridgeSecret string
 	bridgeMode   string
 	hubSeeds     []string
@@ -96,6 +102,19 @@ func (s *Sender) SetBridge(b config.RaftBridgeConfig) {
 	s.hubSeeds = append([]string(nil), b.RemoteSeeds...)
 }
 
+// SetIntraSecret swaps the cluster-shared HMAC key used to sign same-cluster
+// posts. Called once the real cluster secret is known (BootstrapClusterSecrets
+// at boot, or the join secret-swap at runtime) so a joined node stops signing
+// with its placeholder boot secret. No-op for an empty key.
+func (s *Sender) SetIntraSecret(secret string) {
+	if secret == "" {
+		return
+	}
+	s.mu.Lock()
+	s.intraSecret = secret
+	s.mu.Unlock()
+}
+
 // Broadcast ships payload (this node's host metrics) to all intra-cluster peers
 // and, when uplinking, to the cross-cluster hub. Fire-and-forget per target: a
 // slow/unreachable peer never blocks the collection cycle and a failed POST is
@@ -115,7 +134,10 @@ func (s *Sender) Broadcast(ctx context.Context, payload raftcluster.MetricBatchP
 	}
 
 	// Intra-cluster peers (P2P): discovered from the replicated advertise catalog.
-	if s.intraSecret != "" {
+	s.mu.RLock()
+	intraSecret := s.intraSecret
+	s.mu.RUnlock()
+	if intraSecret != "" {
 		peers, err := raftcluster.ListClusterPeerURLs(ctx, s.db, s.localCluster, s.localNode)
 		if err != nil {
 			if s.logger != nil {
@@ -123,7 +145,7 @@ func (s *Sender) Broadcast(ctx context.Context, payload raftcluster.MetricBatchP
 			}
 		}
 		for _, u := range peers {
-			s.fire(u, body, encoding, s.intraSecret)
+			s.fire(u, body, encoding, intraSecret)
 		}
 	}
 

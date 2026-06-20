@@ -159,6 +159,13 @@ func Run() {
 			cfg.RefreshSecret = refSec
 			logger.Info("raft: token service will use cluster-shared signing keys (restart required for full effect)")
 		}
+		// The off-Raft metric stream HMACs same-cluster posts with the
+		// cluster-shared JWT key. On a joined node the metric sender/receiver
+		// captured the boot ENV secret (a placeholder) at activation, so push
+		// the discovered cluster key into them live — otherwise every peer
+		// rejects this node's metrics (and vice versa) and cross-node stats
+		// never sync, even though Raft replication and per-node auth work.
+		container.SetClusterHMACSecret(jwtSec)
 
 		go func() {
 			// Give the leader a moment to settle, then advertise this
@@ -631,6 +638,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		WithRaftActivator(container).
 		WithTokenService(container.GetTokenService()).
 		WithSecretReader(&clusterSecretAdapter{db: container.GetDB()}).
+		WithMetricSecretSetter(container.SetClusterHMACSecret).
 		WithHTTPAddr(cfg.Addr)
 	raftHandler := raftcluster.NewHandler(container.GetRaftService()).
 		WithDeps(container.GetRaftReplicator(), container.GetDB(), logger, cfg.Raft.ClusterID).
