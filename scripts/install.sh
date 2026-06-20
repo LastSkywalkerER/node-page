@@ -116,6 +116,17 @@ detect_host_ipv4() {
   printf '%s' "$ip"
 }
 
+# ip_is_local PORT — true when the given IPv4 is currently assigned to a local
+# interface. Used on reinstall to detect a persisted NODE_STATS_IPV4 that has
+# gone stale (e.g. a VPN/WireGuard address that was up at first install and has
+# since been torn down). When `ip` isn't available we conservatively report
+# "local" so we never clobber an operator-chosen override on such hosts.
+ip_is_local() {
+  [ -n "$1" ] || return 1
+  command -v ip >/dev/null 2>&1 || return 0
+  ip -o -4 addr show 2>/dev/null | grep -qw "$1"
+}
+
 # port_busy PORT — true when something already listens on PORT on this host
 # (incl. docker-proxy published ports). ss first, /proc fallback, then a
 # loopback connect probe as the last resort.
@@ -341,6 +352,20 @@ write_env() {
       sed -i.bak "s#^NODE_STATS_STACK_HOST_DIR=.*#NODE_STATS_STACK_HOST_DIR=${STACK_DIR}#" "$env" && rm -f "$env.bak"
     else
       echo "NODE_STATS_STACK_HOST_DIR=${STACK_DIR}" >>"$env"
+    fi
+    # Refresh a STALE NODE_STATS_IPV4: if the persisted address is no longer on
+    # any local interface (e.g. a WireGuard/VPN IP that was up at first install
+    # and has since gone down), it would pin a dead IP on the machine card and in
+    # the cluster advertise/join URLs. Re-detect and replace it. A value that IS
+    # still local (an intentional override) is left untouched.
+    local stored_ip new_ip
+    stored_ip="$(sed -n 's/^NODE_STATS_IPV4=//p' "$env" | head -1)"
+    if [ -n "$stored_ip" ] && ! ip_is_local "$stored_ip"; then
+      new_ip="$(detect_host_ipv4)"
+      if [ -n "$new_ip" ] && [ "$new_ip" != "$stored_ip" ]; then
+        sed -i.bak "s#^NODE_STATS_IPV4=.*#NODE_STATS_IPV4=${new_ip}#" "$env" && rm -f "$env.bak"
+        yellow "Refreshed stale NODE_STATS_IPV4 ${stored_ip} → ${new_ip} (old address is no longer on any local interface)."
+      fi
     fi
     return
   fi

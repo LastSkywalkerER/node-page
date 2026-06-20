@@ -109,8 +109,15 @@ if [ -z "$advertise" ]; then
 fi
 
 log "Joining cluster at ${NODE_STATS_JOIN_URL} (this node advertises ${advertise})…"
-join_body="$(printf '{"peer_url":"%s","token":"%s","advertise_addr":"%s","bind_addr":":%s"}' \
-  "$NODE_STATS_JOIN_URL" "$NODE_STATS_JOIN_KEY" "$advertise" "$RAFT_PORT")"
+# advertise_url is this node's EXTERNALLY reachable HTTP base URL — host from the
+# Raft advertise addr, port = the PUBLISHED app port (not the container-internal
+# :8080). Peers ship the off-Raft metric stream to this URL, so it must be the
+# host-published port or cross-node metrics silently never arrive. The leader
+# persists it as RAFT_ADVERTISE_PUBLIC_URL so the node re-advertises it on boot.
+adv_host="${advertise%%:*}"
+advertise_url="http://${adv_host}:${PORT}"
+join_body="$(printf '{"peer_url":"%s","token":"%s","advertise_addr":"%s","bind_addr":":%s","advertise_url":"%s"}' \
+  "$NODE_STATS_JOIN_URL" "$NODE_STATS_JOIN_KEY" "$advertise" "$RAFT_PORT" "$advertise_url")"
 join_resp="$(curl -sS -m 60 -X POST "${API}/setup/join-raft-cluster" \
   -H 'Content-Type: application/json' -d "$join_body" -w '\n%{http_code}')"
 join_code="$(printf '%s' "$join_resp" | tail -1)"
