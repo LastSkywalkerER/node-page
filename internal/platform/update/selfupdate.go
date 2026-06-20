@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"system-stats/internal/version"
 )
@@ -97,20 +98,50 @@ func (s *Service) selfReplace(ctx context.Context, rel *ghRelease) error {
 	return replaceExecutable(exe, bin)
 }
 
+// download fetches url with the patient asset client, retrying transient
+// network failures (slow TLS handshakes / dropped connections on SBC/LXC links)
+// with a short backoff. Returns the body or the last error.
 func (s *Service) download(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
+	cl := s.dlClient
+	if cl == nil {
+		cl = s.client
 	}
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, err
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 { // backoff before a retry: 1s, 4s
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration((attempt-1)*(attempt-1)) * time.Second):
+			}
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := cl.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("GET %s: %s", url, resp.Status)
+			// Client errors (404 etc.) won't fix on retry — bail immediately.
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+				return nil, lastErr
+			}
+			continue
+		}
+		body, rerr := io.ReadAll(io.LimitReader(resp.Body, maxAsset))
+		resp.Body.Close()
+		if rerr != nil {
+			lastErr = rerr
+			continue
+		}
+		return body, nil
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
-	}
-	return io.ReadAll(io.LimitReader(resp.Body, maxAsset))
+	return nil, lastErr
 }
 
 // lookupSum returns the hex digest for name from a "HASH  name" SHA256SUMS body.

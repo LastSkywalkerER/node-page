@@ -79,6 +79,10 @@ type Service struct {
 	dbState        DBStateFn
 	persistWebhook func(url string) error
 	client         *http.Client
+	// dlClient downloads release assets (tens of MB): a 15s total budget and the
+	// default 10s TLS-handshake timeout are too tight over slow links (SBCs /
+	// LXCs), surfacing as "net/http: TLS handshake timeout". Patient + retried.
+	dlClient *http.Client
 
 	persistChannel func(channel string) error
 
@@ -111,6 +115,15 @@ func NewService(repo, dataDir string, autoUpdate bool, persist PersistFn, dbStat
 		persist:    persist,
 		dbState:    dbState,
 		client:     &http.Client{Timeout: 15 * time.Second},
+		dlClient: &http.Client{
+			Timeout: 10 * time.Minute,
+			Transport: &http.Transport{
+				Proxy:                 http.ProxyFromEnvironment,
+				TLSHandshakeTimeout:   60 * time.Second,
+				ResponseHeaderTimeout: 60 * time.Second,
+				IdleConnTimeout:       90 * time.Second,
+			},
+		},
 		autoUpdate: autoUpdate,
 		channel:    channelStable,
 	}
