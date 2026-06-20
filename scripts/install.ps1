@@ -7,6 +7,9 @@
 #
 # Note: Docker Desktop runs containers in a Linux VM, so host metrics reflect the
 # VM, not your PC. For true host metrics use the native node-stats.exe (see README).
+#
+# Set $env:NODE_STATS_CHANNEL='beta' to follow the beta release line (the :beta
+# image; persisted so the app + self-updater keep following it).
 #Requires -Version 5.1
 [CmdletBinding()]
 param([string]$Command = 'install', [switch]$Purge)
@@ -14,7 +17,12 @@ param([string]$Command = 'install', [switch]$Purge)
 $ErrorActionPreference = 'Stop'
 $Repo    = 'LastSkywalkerER/node-page'
 $RawBase = "https://raw.githubusercontent.com/$Repo/main"
-$Image   = if ($env:NODE_STATS_IMAGE) { $env:NODE_STATS_IMAGE } else { 'ghcr.io/lastskywalkerer/node-page:latest' }
+# Release channel: stable (default) or beta. Beta pulls the moving :beta image
+# and is persisted so the running app + self-updater keep following it.
+$Channel = if ($env:NODE_STATS_CHANNEL) { $env:NODE_STATS_CHANNEL.ToLower() } else { 'stable' }
+if ($Channel -ne 'beta') { $Channel = 'stable' }
+$DefaultImage = if ($Channel -eq 'beta') { 'ghcr.io/lastskywalkerer/node-page:beta' } else { 'ghcr.io/lastskywalkerer/node-page:latest' }
+$Image   = if ($env:NODE_STATS_IMAGE) { $env:NODE_STATS_IMAGE } else { $DefaultImage }
 $Port    = if ($env:NODE_STATS_PORT)  { $env:NODE_STATS_PORT }  else { '9090' }
 $StackDir = if ($env:NODE_STATS_DIR)  { $env:NODE_STATS_DIR }   else { Join-Path $env:USERPROFILE '.node-stats' }
 $Project = 'node-stats'
@@ -34,6 +42,19 @@ function Initialize-Stack {
   $envAgent = Join-Path $StackDir '.env.agent'
   if (Test-Path $envAgent -PathType Container) { throw "$envAgent is a directory; remove it and re-run." }
   if (-not (Test-Path $envAgent)) { New-Item -ItemType File -Path $envAgent | Out-Null }
+}
+
+function Seed-Channel {
+  # Record the beta channel in .env.agent (loaded as /app/.env by the container)
+  # so the running app + self-updater follow beta. Never clobber an existing
+  # value — once installed, the channel is owned by the in-app settings toggle.
+  if ($Channel -ne 'beta') { return }
+  $envAgent = Join-Path $StackDir '.env.agent'
+  $content = if (Test-Path $envAgent) { Get-Content $envAgent -Raw -ErrorAction SilentlyContinue } else { '' }
+  if ($content -notmatch 'NODE_STATS_RELEASE_CHANNEL=') {
+    Add-Content -Path $envAgent -Value 'NODE_STATS_RELEASE_CHANNEL=beta' -Encoding ascii
+    Write-Host "Following the beta release channel (image $Image)." -ForegroundColor Green
+  }
 }
 
 function Write-Env {
@@ -66,6 +87,7 @@ switch ($Command) {
     Require-Docker
     Write-Host "Installing node-stats into $StackDir" -ForegroundColor Green
     Initialize-Stack
+    Seed-Channel
     docker pull $Image | Out-Null
     Write-Env
     Write-Compose

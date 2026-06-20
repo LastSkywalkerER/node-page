@@ -110,11 +110,11 @@ func NewService(repo, dataDir string, autoUpdate bool, persist PersistFn, dbStat
 		repo = DefaultRepo
 	}
 	s := &Service{
-		repo:       repo,
-		dataDir:    dataDir,
-		persist:    persist,
-		dbState:    dbState,
-		client:     &http.Client{Timeout: 15 * time.Second},
+		repo:    repo,
+		dataDir: dataDir,
+		persist: persist,
+		dbState: dbState,
+		client:  &http.Client{Timeout: 15 * time.Second},
 		dlClient: &http.Client{
 			Timeout: 10 * time.Minute,
 			Transport: &http.Transport{
@@ -251,18 +251,40 @@ func (s *Service) Status() Info {
 		info.CheckedAt = checkedAt.UTC().Format(time.RFC3339)
 	}
 	if channel == channelBeta {
-		// Beta is the rolling :beta image built from main HEAD — there is no
-		// release to semver-compare against. "Newer beta" = main has a commit
-		// other than the one this build was cut from. Show the short SHA as the
-		// latest marker so the popover isn't comparing against a stale release tag.
-		if latestCommit != "" {
-			info.Latest = "main@" + shortSHA(latestCommit)
-			info.UpdateAvailable = v.Commit != "" && !sameCommit(v.Commit, latestCommit)
+		// Docker beta is the rolling :beta image built from main HEAD — there is no
+		// release to semver-compare against. "Newer beta" = main has a commit other
+		// than the one this build was cut from. Show the short SHA as the latest
+		// marker so the popover isn't comparing against a stale release tag.
+		if v.Deployment == "docker" {
+			if latestCommit != "" {
+				info.Latest = "main@" + shortSHA(latestCommit)
+				info.UpdateAvailable = v.Commit != "" && !sameCommit(v.Commit, latestCommit)
+			}
+			return info
 		}
+		// Native beta self-updates from release assets, which only exist for tagged
+		// releases — so it follows the newest prerelease RELEASE tag (already cached
+		// in `latest`), not main HEAD.
+		info.UpdateAvailable = betaUpdateAvailable(v.Current, latest)
 		return info
 	}
 	info.UpdateAvailable = stableUpdateAvailable(v.Current, latest, v.Deployment)
 	return info
+}
+
+// betaUpdateAvailable decides whether the beta channel should offer `latest`
+// (the newest prerelease release tag) to a native build. Like the stable check
+// it never nags a non-semver dev build (go run / air), and it only moves forward
+// via semver + prerelease precedence — so beta.19 → beta.20 upgrades, but a
+// re-listed older prerelease does not. Pure (no globals) for testing.
+func betaUpdateAvailable(current, latest string) bool {
+	if latest == "" || sameRelease(current, latest) {
+		return false
+	}
+	if _, ok := parseSemver(current); !ok {
+		return false
+	}
+	return newerAvailable(current, latest)
 }
 
 // stableUpdateAvailable decides whether the stable channel should offer `latest`
@@ -451,7 +473,11 @@ func (s *Service) Check(ctx context.Context) error {
 		}
 	}
 	latestCommit := ""
-	if s.ReleaseChannel() == channelBeta {
+	// The rolling :beta image (compared by commit) is a docker-only concept: a
+	// native beta build self-updates from the latest prerelease RELEASE tag, so it
+	// needs no commit lookup. Skipping it on native also avoids a needless GitHub
+	// API call and its failure path.
+	if s.ReleaseChannel() == channelBeta && version.Deployment() == "docker" {
 		// Best-effort: a commit-fetch failure shouldn't fail the whole check.
 		if sha, cerr := s.fetchLatestMainCommit(ctx); cerr == nil {
 			latestCommit = sha
@@ -754,11 +780,87 @@ func newerAvailable(current, latest string) bool {
 			return l[i] > c[i]
 		}
 	}
-	// Equal numeric version: a release outranks a prerelease of the same version
-	// (semver precedence: 0.7.6-beta.19 < 0.7.6). So the stable release IS newer
-	// than a beta build of the same version — without this the beta would never
-	// be offered the matching stable release and stay stuck on the beta line.
-	return isPrerelease(current) && !isPrerelease(latest)
+	// Equal numeric base: fall back to semver pre-release precedence.
+	cp, lp := isPrerelease(current), isPrerelease(latest)
+	if cp != lp {
+		// A full release outranks any prerelease of the same base (0.7.6-beta.19 <
+		// 0.7.6), so the stable release IS newer than a beta build of the same
+		// version — and a prerelease is never "newer" than the matching release.
+		return cp && !lp
+	}
+	if cp && lp {
+		// Two prereleases of the same base (beta.19 vs beta.20): compare suffixes so
+		// the beta channel can roll forward between prereleases.
+		return comparePrerelease(current, latest) < 0
+	}
+	return false // identical release
+}
+
+// comparePrerelease orders two semver pre-release suffixes (the part after '-')
+// per semver §11: dot-separated identifiers compared left-to-right, numeric ones
+// numerically (so beta.10 > beta.9), numeric identifiers ranking below
+// alphanumeric, and — all else equal — the longer identifier list winning.
+// Returns <0 when a<b, 0 when equal, >0 when a>b.
+func comparePrerelease(a, b string) int {
+	ai, bi := prereleaseIdentifiers(a), prereleaseIdentifiers(b)
+	for i := 0; i < len(ai) && i < len(bi); i++ {
+		an, aNum := atoiOK(ai[i])
+		bn, bNum := atoiOK(bi[i])
+		switch {
+		case aNum && bNum:
+			if an != bn {
+				return sign(an - bn)
+			}
+		case aNum != bNum:
+			if aNum { // numeric < alphanumeric
+				return -1
+			}
+			return 1
+		default:
+			if ai[i] != bi[i] {
+				if ai[i] < bi[i] {
+					return -1
+				}
+				return 1
+			}
+		}
+	}
+	return sign(len(ai) - len(bi))
+}
+
+// prereleaseIdentifiers extracts the dot-separated prerelease identifiers from a
+// version's "-suffix" (build metadata after '+' is dropped). Empty when there is
+// no prerelease part.
+func prereleaseIdentifiers(v string) []string {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	dash := strings.IndexByte(v, '-')
+	if dash < 0 {
+		return nil
+	}
+	suffix := v[dash+1:]
+	if plus := strings.IndexByte(suffix, '+'); plus >= 0 {
+		suffix = suffix[:plus]
+	}
+	if suffix == "" {
+		return nil
+	}
+	return strings.Split(suffix, ".")
+}
+
+func atoiOK(s string) (int, bool) {
+	n, err := strconv.Atoi(s)
+	return n, err == nil
+}
+
+func sign(n int) int {
+	switch {
+	case n < 0:
+		return -1
+	case n > 0:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // isPrerelease reports whether a version carries a pre-release suffix over a

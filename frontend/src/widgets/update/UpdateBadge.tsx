@@ -219,8 +219,23 @@ export function UpdateBadge() {
             {!hasUpdate &&
               (v.channel === 'beta' ? (
                 <p className="text-[0.65rem] text-muted-foreground">
-                  Beta channel — tracking the rolling <span className="font-mono">main</span> build
-                  (use “Update to {v.latest}” / Stable for a tagged release).
+                  {v.deployment === 'native' ? (
+                    <>
+                      Beta channel — tracking the latest prerelease release
+                      {v.latest ? (
+                        <>
+                          {' '}
+                          (<span className="font-mono">{v.latest}</span>)
+                        </>
+                      ) : null}
+                      . Switch to Stable for tagged releases only.
+                    </>
+                  ) : (
+                    <>
+                      Beta channel — tracking the rolling <span className="font-mono">main</span>{' '}
+                      build (use “Update to {v.latest}” / Stable for a tagged release).
+                    </>
+                  )}
                 </p>
               ) : (
                 <p className="text-[0.65rem] text-muted-foreground">You're on the latest release.</p>

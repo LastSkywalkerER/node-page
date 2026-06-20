@@ -16,12 +16,21 @@
 #
 # Env overrides:  NODE_STATS_DIR   NODE_STATS_PORT   NODE_STATS_IMAGE
 #                 NODE_STATS_VERSION (pin a vX.Y.Z release for native)
+#                 NODE_STATS_CHANNEL=beta (follow the beta release line: :beta
+#                   docker image / latest prerelease native asset; persisted)
 #
 set -euo pipefail
 
 REPO="LastSkywalkerER/node-page"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
-IMAGE="${NODE_STATS_IMAGE:-ghcr.io/lastskywalkerer/node-page:latest}"
+# Release channel: stable (default) or beta. Beta pulls the moving :beta docker
+# image / the latest prerelease native asset and is persisted so the running app
+# and the self-updater keep following it after install.
+CHANNEL="$(printf '%s' "${NODE_STATS_CHANNEL:-stable}" | tr '[:upper:]' '[:lower:]')"
+[ "$CHANNEL" = beta ] || CHANNEL=stable
+DEFAULT_IMAGE="ghcr.io/lastskywalkerer/node-page:latest"
+[ "$CHANNEL" = beta ] && DEFAULT_IMAGE="ghcr.io/lastskywalkerer/node-page:beta"
+IMAGE="${NODE_STATS_IMAGE:-$DEFAULT_IMAGE}"
 HTTP_PORT="${NODE_STATS_PORT:-9090}"
 RAFT_PORT="${NODE_STATS_RAFT_PORT:-7000}"
 # Compose project name. Override (along with distinct ports + dir) to run more
@@ -312,6 +321,18 @@ prepare_stack_dir() {
   chmod 600 "$STACK_DIR/.env.agent" 2>/dev/null || true
 }
 
+# seed_channel_agent records the beta release channel in .env.agent (the file the
+# dockerized app loads as /app/.env) so the running app + its self-updater follow
+# beta. Never clobbers an existing value — once installed, the channel is owned by
+# the in-app settings toggle, not the installer.
+seed_channel_agent() {
+  [ "$CHANNEL" = beta ] || return 0
+  local f="$STACK_DIR/.env.agent"
+  grep -q '^NODE_STATS_RELEASE_CHANNEL=' "$f" 2>/dev/null && return 0
+  echo "NODE_STATS_RELEASE_CHANNEL=beta" >>"$f"
+  green "Following the beta release channel (image ${IMAGE})."
+}
+
 write_env() {
   local env="$STACK_DIR/.env"
   if [ -f "$env" ]; then
@@ -400,6 +421,7 @@ cmd_install() {
   check_existing_install
   pick_ports
   prepare_stack_dir
+  seed_channel_agent
   green "Pulling ${IMAGE} ..."
   if ! docker pull "$IMAGE" >/dev/null 2>&1; then
     docker image inspect "$IMAGE" >/dev/null 2>&1 || die "failed to pull ${IMAGE} (and no local copy present)"
@@ -458,8 +480,27 @@ latest_release_tag() {
     printf '%s' "$NODE_STATS_VERSION"
     return
   fi
+  if [ "$CHANNEL" = beta ]; then
+    # Beta: newest non-draft release INCLUDING prereleases. /releases/latest skips
+    # prereleases, so list /releases (newest-first) and take the first tag.
+    fetch "https://api.github.com/repos/${REPO}/releases?per_page=20" |
+      sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1
+    return
+  fi
   fetch "https://api.github.com/repos/${REPO}/releases/latest" |
     sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1
+}
+
+# seed_channel_native records the beta channel in the native install's .env
+# (WorkingDirectory of the systemd unit), so the booted server and `node-stats
+# update` follow beta. Never clobbers an existing value (UI-owned post-install).
+seed_channel_native() {
+  [ "$CHANNEL" = beta ] || return 0
+  mkdir -p "$NATIVE_DIR"
+  local f="$NATIVE_DIR/.env"
+  grep -q '^NODE_STATS_RELEASE_CHANNEL=' "$f" 2>/dev/null && return 0
+  echo "NODE_STATS_RELEASE_CHANNEL=beta" >>"$f"
+  green "Following the beta release channel."
 }
 
 # download_native_binary <dest> — fetch + checksum-verify + extract the
@@ -527,6 +568,7 @@ cmd_install_native() {
   [ "$OS" = linux ] || die "native install is Linux-only. On macOS/Windows download the binary from the Releases page."
   green "Installing node-stats (native, no Docker) for linux/${ARCH}"
   mkdir -p "$NATIVE_DIR"
+  seed_channel_native
   local bin="$NATIVE_BIN_DIR/node-stats"
   download_native_binary "$bin"
   green "Installed → $bin   (data/config dir: $NATIVE_DIR)"
@@ -548,7 +590,9 @@ cmd_update_native() {
   local bin="$NATIVE_BIN_DIR/node-stats"
   [ -x "$bin" ] || die "no native install found at $bin"
   green "Self-updating $bin ..."
-  "$bin" update || die "update failed"
+  # Run from the data dir so `node-stats update` loads its .env and follows the
+  # release channel the admin picked in the UI (persisted there), not just stable.
+  ( cd "$NATIVE_DIR" && "$bin" update ) || die "update failed"
   if command -v systemctl >/dev/null 2>&1 && [ -f "/etc/systemd/system/${SERVICE}.service" ]; then
     systemctl restart "${SERVICE}" && green "restarted ${SERVICE}"
   else

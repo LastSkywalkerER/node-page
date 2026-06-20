@@ -145,6 +145,64 @@ func TestIsPrerelease(t *testing.T) {
 	}
 }
 
+func TestNewerAvailable_BetaToBeta(t *testing.T) {
+	cases := []struct {
+		name            string
+		current, latest string
+		want            bool
+	}{
+		{"beta rolls forward", "0.7.6-beta.19", "v0.7.6-beta.20", true},
+		{"beta does not roll back", "0.7.6-beta.20", "v0.7.6-beta.19", false},
+		{"beta numeric not lexical", "0.7.6-beta.2", "v0.7.6-beta.10", true},
+		{"same beta is not newer", "0.7.6-beta.19", "v0.7.6-beta.19", false},
+		{"higher base beta wins", "0.7.6-beta.20", "v0.8.0-beta.1", true},
+	}
+	for _, c := range cases {
+		if got := newerAvailable(c.current, c.latest); got != c.want {
+			t.Errorf("%s: newerAvailable(%q,%q) = %v, want %v", c.name, c.current, c.latest, got, c.want)
+		}
+	}
+}
+
+func TestComparePrerelease(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int // sign
+	}{
+		{"0.7.6-beta.9", "0.7.6-beta.10", -1}, // numeric ordering
+		{"0.7.6-beta.10", "0.7.6-beta.9", 1},
+		{"0.7.6-beta.1", "0.7.6-beta.1", 0},
+		{"0.7.6-alpha.1", "0.7.6-beta.1", -1}, // alpha < beta lexically
+		{"0.7.6-beta", "0.7.6-beta.1", -1},    // shorter id list < longer
+		{"0.7.6-beta.1", "0.7.6-1", 1},        // numeric id < alphanumeric id
+	}
+	for _, c := range cases {
+		if got := sign(comparePrerelease(c.a, c.b)); got != c.want {
+			t.Errorf("comparePrerelease(%q,%q) sign = %d, want %d", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+func TestBetaUpdateAvailable(t *testing.T) {
+	cases := []struct {
+		name            string
+		current, latest string
+		want            bool
+	}{
+		{"beta rolls forward to newer prerelease", "0.7.6-beta.19", "v0.7.6-beta.20", true},
+		{"stable build offered the next beta line", "0.7.5", "v0.7.6-beta.1", true},
+		{"stable build not downgraded to same-base beta", "0.7.6", "v0.7.6-beta.20", false},
+		{"already on the latest beta", "0.7.6-beta.20", "v0.7.6-beta.20", false},
+		{"non-semver dev build never nagged", "main", "v0.7.6-beta.1", false},
+		{"no release known yet", "0.7.6-beta.1", "", false},
+	}
+	for _, c := range cases {
+		if got := betaUpdateAvailable(c.current, c.latest); got != c.want {
+			t.Errorf("%s: betaUpdateAvailable(%q,%q) = %v, want %v", c.name, c.current, c.latest, got, c.want)
+		}
+	}
+}
+
 func TestStableUpdateAvailable(t *testing.T) {
 	cases := []struct {
 		name       string

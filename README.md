@@ -248,6 +248,16 @@ node-stats checks GitHub Releases and shows an "update available" badge to
 admins. Toggle **auto-update** in settings: Docker deployments pull the new
 image and recreate via the controller; native installs use `node-stats update`.
 
+**Release channel (stable / beta).** Pick the update line in the admin update
+popup — it applies to every install type and is remembered. **stable** follows
+the latest full release; **beta** follows the bleeding edge (the rolling `:beta`
+image on Docker, the newest prerelease release on native). To start a fresh
+install on beta, pass `NODE_STATS_CHANNEL=beta` to any installer, e.g.:
+
+```bash
+NODE_STATS_CHANNEL=beta bash -c "$(curl -fsSL https://raw.githubusercontent.com/LastSkywalkerER/node-page/main/scripts/install.sh)"
+```
+
 <details>
 <summary><b>Advanced: manual docker-compose</b></summary>
 

@@ -21,6 +21,8 @@
 #   BRIDGE (vmbr0), NET (dhcp | <CIDR>), GATEWAY, DNS, UNPRIVILEGED (1|0),
 #   ENABLE_NESTING (1|0), START_ON_BOOT (1|0), HTTP_PORT (8080),
 #   TEMPLATE_STORAGE, CONTAINER_STORAGE, NODE_STATS_VERSION (vX.Y.Z),
+#   NODE_STATS_CHANNEL=beta (follow the beta release line: latest prerelease
+#     .deb; persisted in the container so the self-updater keeps following it),
 #   VERBOSE (1 to stream apt output). Set ADVANCED=1 for the whiptail wizard.
 #
 set -euo pipefail
@@ -28,6 +30,9 @@ set -euo pipefail
 REPO="LastSkywalkerER/node-page"
 APP="node-stats"
 HTTP_PORT_DEFAULT="${HTTP_PORT:-8080}"
+# Release channel for a fresh create: stable (default) or beta.
+CHANNEL="$(printf '%s' "${NODE_STATS_CHANNEL:-stable}" | tr '[:upper:]' '[:lower:]')"
+[ "$CHANNEL" = beta ] || CHANNEL=stable
 
 # ---- pretty output (mirrors the community-scripts look) --------------------
 if [ -t 1 ]; then
@@ -260,10 +265,15 @@ install_app() {
     set -e
     export DEBIAN_FRONTEND=noninteractive
     REPO='${REPO}'
+    CHANNEL='${CHANNEL}'
     ARCH=\$(dpkg --print-architecture)
     TAG='${NODE_STATS_VERSION:-}'
     if [ -z \"\$TAG\" ]; then
-      TAG=\$(curl -fsSL https://api.github.com/repos/\$REPO/releases/latest | sed -n 's/.*\"tag_name\": *\"\\([^\"]*\\)\".*/\\1/p' | head -1)
+      if [ \"\$CHANNEL\" = beta ]; then
+        TAG=\$(curl -fsSL https://api.github.com/repos/\$REPO/releases?per_page=20 | sed -n 's/.*\"tag_name\": *\"\\([^\"]*\\)\".*/\\1/p' | head -1)
+      else
+        TAG=\$(curl -fsSL https://api.github.com/repos/\$REPO/releases/latest | sed -n 's/.*\"tag_name\": *\"\\([^\"]*\\)\".*/\\1/p' | head -1)
+      fi
     fi
     [ -n \"\$TAG\" ] || { echo 'could not resolve latest release tag'; exit 1; }
     DEB=\"node-stats_\${TAG#v}_\${ARCH}.deb\"
@@ -273,6 +283,19 @@ install_app() {
     rm -f /tmp/\$DEB
   " || die "node-stats install failed (re-run with VERBOSE=1)."
   msg_ok "${APP} installed"
+
+  # Persist the beta channel in the container so the booted server + its
+  # self-updater follow beta (the systemd unit's WorkingDirectory is
+  # /var/lib/node-stats, where the server reads .env).
+  if [ "$CHANNEL" = beta ]; then
+    msg_info "Recording the beta release channel"
+    run pct exec "$CTID" -- bash -c "
+      mkdir -p /var/lib/node-stats && touch /var/lib/node-stats/.env
+      grep -q '^NODE_STATS_RELEASE_CHANNEL=' /var/lib/node-stats/.env ||
+        echo 'NODE_STATS_RELEASE_CHANNEL=beta' >> /var/lib/node-stats/.env
+      systemctl restart node-stats 2>/dev/null || true
+    " && msg_ok "Beta release channel recorded" || msg_warn "could not record the beta channel; switch it in the UI"
+  fi
 
   # Apply a custom HTTP port via a systemd drop-in (default service is :8080).
   if [ "$HTTP_PORT" != "8080" ]; then
@@ -431,9 +454,15 @@ cmd_update() {
     export DEBIAN_FRONTEND=noninteractive
     REPO='${REPO}'
     ARCH=\$(dpkg --print-architecture)
+    # Follow whatever channel the container was installed on (persisted in .env).
+    CHANNEL=\$(sed -n 's/^NODE_STATS_RELEASE_CHANNEL=//p' /var/lib/node-stats/.env 2>/dev/null | head -1)
     TAG='${NODE_STATS_VERSION:-}'
     if [ -z \"\$TAG\" ]; then
-      TAG=\$(curl -fsSL https://api.github.com/repos/\$REPO/releases/latest | sed -n 's/.*\"tag_name\": *\"\\([^\"]*\\)\".*/\\1/p' | head -1)
+      if [ \"\$CHANNEL\" = beta ]; then
+        TAG=\$(curl -fsSL https://api.github.com/repos/\$REPO/releases?per_page=20 | sed -n 's/.*\"tag_name\": *\"\\([^\"]*\\)\".*/\\1/p' | head -1)
+      else
+        TAG=\$(curl -fsSL https://api.github.com/repos/\$REPO/releases/latest | sed -n 's/.*\"tag_name\": *\"\\([^\"]*\\)\".*/\\1/p' | head -1)
+      fi
     fi
     [ -n \"\$TAG\" ] || { echo 'could not resolve latest release tag'; exit 1; }
     DEB=\"node-stats_\${TAG#v}_\${ARCH}.deb\"

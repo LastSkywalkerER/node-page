@@ -20,6 +20,7 @@
 # Optional env knobs:
 #   NODE_STATS_REPO            owner/name for the raw scripts (default LastSkywalkerER/node-page)
 #   NODE_STATS_IMAGE           container image override
+#   NODE_STATS_CHANNEL=beta    follow the beta release line (passed through to install.sh)
 #   NODE_STATS_PORT            HTTP port (default 9090)
 #   NODE_STATS_RAFT_PORT       Raft TCP port (default 7000)
 #   NODE_STATS_DIR             stack directory override
