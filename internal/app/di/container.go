@@ -121,6 +121,11 @@ type Container struct {
 	// jwtSecret is the cluster-shared secret reused as the HMAC key for the
 	// intra-cluster metric stream (all nodes of a cluster share it).
 	jwtSecret string
+	// envJWTSecret / envRefreshSecret are the BOOT env auth secrets, kept so the
+	// secret reconciler can seed an empty cluster_config from the leader's env
+	// (jwtSecret may later be swapped to the adopted cluster-shared value).
+	envJWTSecret     string
+	envRefreshSecret string
 
 	// activateMu serialises ActivateRaft / ConfigureBridge / Close.
 	activateMu sync.Mutex
@@ -143,6 +148,9 @@ type Container struct {
 	// (startMembershipManagerLocked) so it is launched at most once. It reads
 	// the swappable Service live, so one long-lived loop survives re-activation.
 	membershipStarted bool
+	// secretReconcilerStarted guards the single cluster-secret reconciler loop
+	// (startClusterSecretReconcilerLocked) so it is launched at most once.
+	secretReconcilerStarted bool
 	// postActivate is fired in a goroutine after every successful
 	// Raft activation. Used by server.Run to (re-)start metrics
 	// collection when the wizard's join branch flips Raft on
@@ -177,9 +185,11 @@ func (c *Container) SetPostActivateHook(fn func()) {
 // is present.
 func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret, refreshSecret string, startTime time.Time, raftCfg config.RaftConfig, traefikDirs, nginxDirs []string) (*Container, error) {
 	container := &Container{
-		logger:    logger,
-		broker:    stream.NewBroker(),
-		jwtSecret: jwtSecret,
+		logger:           logger,
+		broker:           stream.NewBroker(),
+		jwtSecret:        jwtSecret,
+		envJWTSecret:     jwtSecret,
+		envRefreshSecret: refreshSecret,
 	}
 
 	db, err := database.Initialize(dbConfig)
@@ -433,6 +443,81 @@ func (c *Container) SetAppContext(ctx context.Context) {
 	c.startBridgeGoroutinesLocked()
 	c.startSelfAdvertiseLoopLocked(ctx)
 	c.startMembershipManagerLocked(ctx)
+	c.startClusterSecretReconcilerLocked(ctx)
+}
+
+// startClusterSecretReconcilerLocked launches the single loop that keeps the
+// cluster-shared auth secret (JWT/refresh) converged across all nodes. The
+// metric-stream HMAC and cross-node sessions both depend on every node using
+// the SAME key, but the boot/join paths can leave a node on its own env
+// placeholder (cluster_config not seeded yet, or not adopted after a restart) —
+// which surfaces as "bridge: signature mismatch" on every metric post and
+// per-node-only logins. This loop self-heals it: the leader seeds an empty
+// cluster_config from its env secret, and every node adopts the cluster_config
+// secret (into the metric stream + token service) whenever it differs from what
+// it's currently using. activateMu must be held.
+func (c *Container) startClusterSecretReconcilerLocked(ctx context.Context) {
+	if ctx == nil || c.secretReconcilerStarted || c.raftSwap == nil {
+		return
+	}
+	c.secretReconcilerStarted = true
+	go func() {
+		first := time.NewTimer(5 * time.Second)
+		defer first.Stop()
+		t := time.NewTicker(20 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-first.C:
+			case <-t.C:
+			}
+			c.reconcileClusterSecret(ctx)
+		}
+	}()
+}
+
+// reconcileClusterSecret performs one convergence pass (see the loop above).
+func (c *Container) reconcileClusterSecret(ctx context.Context) {
+	svc := c.GetRaftService()
+	if svc == nil || !svc.Enabled() || c.db == nil {
+		return
+	}
+	rc, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	gotJWT, _ := raftcluster.LookupClusterConfig(rc, c.db, "jwt_secret")
+	gotRefresh, _ := raftcluster.LookupClusterConfig(rc, c.db, "refresh_secret")
+
+	if gotJWT != "" && gotRefresh != "" {
+		// Adopt the cluster-shared secret if we're not already on it. This is the
+		// source of truth; the leader's own seeded value adopts as a no-op.
+		c.activateMu.Lock()
+		cur := c.jwtSecret
+		c.activateMu.Unlock()
+		if gotJWT != cur {
+			c.SetClusterHMACSecret(gotJWT) // metric-stream HMAC
+			if c.tokenService != nil {
+				c.tokenService.SetSecrets(gotJWT, gotRefresh) // cross-node sessions
+			}
+			c.logger.Info("raft: adopted cluster-shared auth secret from cluster_config (metrics + sessions now aligned)")
+		}
+		return
+	}
+
+	// Not seeded yet: the leader publishes its env secret so the cluster
+	// converges. Only the leader can commit; followers wait for replication.
+	if svc.IsLeader() && c.envJWTSecret != "" && c.envRefreshSecret != "" {
+		repl := c.GetRaftReplicator()
+		if repl == nil {
+			return
+		}
+		if err := repl.SubmitAuthSecretSet(rc, c.envJWTSecret, c.envRefreshSecret); err != nil {
+			c.logger.Warn("raft: seed cluster-shared auth secret failed", "error", err)
+		} else {
+			c.logger.Info("raft: seeded cluster-shared auth secret from leader env")
+		}
+	}
 }
 
 // startMembershipManagerLocked launches the single Raft membership manager.
