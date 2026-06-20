@@ -69,6 +69,10 @@ type Sender struct {
 	// can't decompress returns 400). The newer side degrades to plain bodies so a
 	// version skew doesn't black-hole metrics. Reset on restart.
 	gzipDisabled atomic.Bool
+
+	// lastErrLog is the unix-nano time of the last "peer rejected" warning,
+	// used to rate-limit that log to ~once/30s across all peers/ticks.
+	lastErrLog atomic.Int64
 }
 
 // NewSender builds a metric-stream sender. intraSecret is the cluster-shared key
@@ -190,6 +194,18 @@ func (s *Sender) fire(baseURL string, body []byte, encoding, secret string) {
 		if encoding == bridge.EncodingGzip && resp.StatusCode == http.StatusBadRequest {
 			if s.gzipDisabled.CompareAndSwap(false, true) && s.logger != nil {
 				s.logger.Warn("metricstream: peer rejected gzip; falling back to uncompressed bodies")
+			}
+		}
+		// Surface a persistently rejecting peer (e.g. HMAC/secret mismatch, clock
+		// skew, wrong path) — otherwise a black-holed metric stream is invisible.
+		// Rate-limited to ~once/30s so a steady failure doesn't flood the log.
+		if resp.StatusCode/100 != 2 && s.logger != nil {
+			snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+			now := time.Now().UnixNano()
+			last := s.lastErrLog.Load()
+			if now-last > int64(30*time.Second) && s.lastErrLog.CompareAndSwap(last, now) {
+				s.logger.Warn("metricstream: peer rejected metric post",
+					"url", url, "status", resp.StatusCode, "body", strings.TrimSpace(string(snippet)))
 			}
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)

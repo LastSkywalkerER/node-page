@@ -39,17 +39,31 @@ func Sign(secret string, tsNanos int64, body []byte) string {
 }
 
 // Verify checks the signature on a received bridge request. Returns nil
-// when both the timestamp is fresh AND the HMAC matches.
+// when both the timestamp is fresh (within MaxClockSkew) AND the HMAC matches.
+// Use this for the cross-cluster bridge (untrusted internet path).
 func Verify(secret, header string, tsNanos int64, body []byte) error {
+	return VerifyWithSkew(secret, header, tsNanos, body, MaxClockSkew)
+}
+
+// VerifyWithSkew is Verify with an explicit freshness window. A maxSkew <= 0
+// SKIPS the clock-skew check entirely and only verifies the HMAC — used for the
+// intra-cluster metric stream, a trusted authenticated LAN channel where a
+// replay just re-ingests the node's current metrics (harmless, overwritten next
+// tick). This keeps cross-node metrics flowing even when peers' clocks drift
+// (common on SBCs / containers without reliable NTP), which would otherwise
+// reject every batch with "timestamp out of allowed clock skew".
+func VerifyWithSkew(secret, header string, tsNanos int64, body []byte, maxSkew time.Duration) error {
 	if secret == "" {
 		return errors.New("bridge: shared secret not configured")
 	}
 	if header == "" {
 		return errors.New("bridge: missing signature header")
 	}
-	now := time.Now().UnixNano()
-	if abs(now-tsNanos) > int64(MaxClockSkew) {
-		return errors.New("bridge: timestamp out of allowed clock skew")
+	if maxSkew > 0 {
+		now := time.Now().UnixNano()
+		if abs(now-tsNanos) > int64(maxSkew) {
+			return errors.New("bridge: timestamp out of allowed clock skew")
+		}
 	}
 	expected := Sign(secret, tsNanos, body)
 	if !hmac.Equal([]byte(expected), []byte(header)) {

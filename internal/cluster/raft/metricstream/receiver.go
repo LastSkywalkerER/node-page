@@ -103,14 +103,21 @@ func (r *Receiver) Handle(c *gin.Context) {
 	secret := r.intraSecret
 	bridgeSecret := r.bridgeSecret
 	r.mu.RUnlock()
+	// Same-cluster posts skip the clock-skew window: this is a trusted,
+	// HMAC-authenticated LAN channel and replaying a node's current metrics is
+	// harmless (overwritten next tick), so we must not reject batches just
+	// because a peer's clock drifted (common on SBCs/containers w/o NTP).
+	// Cross-cluster uplinks (untrusted internet) keep the strict 5-min window.
+	skew := time.Duration(0)
 	if sender != r.localCluster {
 		if bridgeSecret == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "cross-cluster metric stream not enabled"})
 			return
 		}
 		secret = bridgeSecret
+		skew = bridge.MaxClockSkew
 	}
-	if err := bridge.Verify(secret, c.GetHeader(bridge.HMACHeader), tsNanos, body); err != nil {
+	if err := bridge.VerifyWithSkew(secret, c.GetHeader(bridge.HMACHeader), tsNanos, body, skew); err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
 	}
