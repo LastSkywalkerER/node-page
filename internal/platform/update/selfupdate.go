@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"runtime"
@@ -40,7 +41,43 @@ func (s *Service) updateNative(ctx context.Context) (string, error) {
 	if err := s.selfReplace(ctx, rel); err != nil {
 		return "", err
 	}
+	// The binary on disk is swapped, but the running process is still the old
+	// version. Under systemd (native/.deb/LXC installs) restart ourselves so the
+	// update actually takes effect — otherwise the operator has to run
+	// `systemctl restart node-stats` by hand and the UI's restart-poll hangs.
+	if scheduleSelfRestart() {
+		return fmt.Sprintf("Updated %s → %s. Restarting now…", cur, rel.TagName), nil
+	}
 	return fmt.Sprintf("Updated %s → %s. Restart node-stats to run the new version.", cur, rel.TagName), nil
+}
+
+// scheduleSelfRestart asks systemd to restart this service a couple of seconds
+// after we return (so the HTTP response flushes first), making a native in-app
+// self-update take effect without a manual `systemctl restart`. It only fires
+// when we ARE the systemd unit's main process (INVOCATION_ID is set) and
+// systemd-run is available — so the `node-stats update` CLI (run outside the
+// unit by the installer scripts, which restart on their own) is unaffected.
+// Returns true when a restart was scheduled.
+func scheduleSelfRestart() bool {
+	if os.Getenv("INVOCATION_ID") == "" { // not the main process of a systemd unit
+		return false
+	}
+	runBin, err := exec.LookPath("systemd-run")
+	if err != nil {
+		return false
+	}
+	unit := strings.TrimSpace(os.Getenv("NODE_STATS_SYSTEMD_UNIT"))
+	if unit == "" {
+		unit = "node-stats"
+	}
+	// A transient timer unit runs the restart out-of-band, so killing us doesn't
+	// kill the restart; --collect cleans the transient unit up afterwards.
+	cmd := exec.Command(runBin, "--on-active=2", "--collect", "systemctl", "restart", unit)
+	if err := cmd.Start(); err != nil {
+		return false
+	}
+	_ = cmd.Process.Release()
+	return true
 }
 
 // selfReplace fetches + verifies the platform asset and swaps the executable.
