@@ -30,8 +30,10 @@ func (f *fakeService) SubmitCommand(_ context.Context, _ raftcluster.Command, _ 
 func (f *fakeService) Status() raftcluster.Status    { return raftcluster.Status{Enabled: true} }
 func (f *fakeService) Enabled() bool                 { return true }
 func (f *fakeService) IsLeader() bool                { return f.leader }
-func (f *fakeService) AddVoter(string, string) error { return nil }
-func (f *fakeService) RemovePeer(string) error       { return nil }
+func (f *fakeService) AddVoter(string, string) error    { return nil }
+func (f *fakeService) AddNonvoter(string, string) error { return nil }
+func (f *fakeService) DemoteVoter(string) error         { return nil }
+func (f *fakeService) RemovePeer(string) error          { return nil }
 func (f *fakeService) TransferLeadership() error     { return nil }
 func (f *fakeService) Stats() map[string]string      { return nil }
 func (f *fakeService) Close() error                  { return nil }

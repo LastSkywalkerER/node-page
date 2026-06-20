@@ -15,6 +15,18 @@ host going offline.
 > with exactly **2 nodes** losing one drops quorum, so the survivor still serves reads but
 > can't accept new control-plane writes (or replicate fresh metrics) until the peer returns.
 > Each node always keeps collecting and saving its **own** metrics locally regardless of quorum.
+>
+> **Membership safety.** A joining node enters as a **non-voter** (it replicates the full
+> log/snapshot but doesn't count toward quorum), so a node that joins with a bad/unreachable
+> advertise address can never wedge the cluster's write quorum. The leader's membership manager
+> (`membership.go`, ~10s) **promotes** a non-voter to voter once it has stayed reachable, and
+> **demotes** a voter that's been unreachable ~90s — but only while a majority is still reachable
+> (the demote config-change itself needs to commit). The genuine 2-node "lost a voter" case can't
+> be fixed by consensus, so the survivor exposes a one-click **recovery** (Admin → Nodes → Raft):
+> when a follower can't reach its leader (`leader_reachable=false`, e.g. the leader's advertised IP
+> went down), the panel offers "Recover this node (keep data)" — it drops the unreachable peer and
+> re-bootstraps as a healthy single-node cluster, preserving users/hosts/metrics (only the
+> consensus log resets).
 
 ---
 
@@ -74,11 +86,12 @@ sequenceDiagram
   J->>J: ActivateRaft(bootstrap=false)
   J->>L: POST /raft/join {token, node_id, advertise_addr, http_url}
   L->>L: verify token → CmdJoinTokenConsume
-  L->>L: raft.AddVoter(node2@advertise:7000)
+  L->>L: raft.AddNonvoter(node2@advertise:7000)
   L->>L: CmdPeerNodeAdvertise(node2 URL)
   L-->>J: {peers:[node1,node2], leader, applied_idx}
   L->>J: Raft TCP :7000 — AppendEntries (log) + InstallSnapshot
   J->>J: FSM.Restore → users, hosts, config, auth keys land
+  Note over L: membership manager (leader, ~10s): node2 stays reachable →<br/>raft.AddVoter (promote); a voter unreachable ~90s w/ quorum → DemoteVoter
   Br->>J: poll /setup/raft-progress → setup_needed=false → redirect /auth
   Note over L,Br: CmdPeerNodeAdvertise applied everywhere →<br/>node1 success screen shows "✓ node2 connected"
 ```

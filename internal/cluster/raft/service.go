@@ -26,6 +26,14 @@ type Service interface {
 	// AddVoter adds a peer Raft voter. Leader-only.
 	AddVoter(id, addr string) error
 
+	// AddNonvoter adds a peer as a non-voting member (replicates but does not
+	// count toward quorum). New nodes join this way. Leader-only.
+	AddNonvoter(id, addr string) error
+
+	// DemoteVoter turns a voter back into a non-voter. Leader-only; needs the
+	// current quorum to commit.
+	DemoteVoter(id string) error
+
 	// RemovePeer removes a peer Raft server. Leader-only.
 	RemovePeer(id string) error
 
@@ -69,6 +77,12 @@ func (DisabledService) IsLeader() bool { return false }
 
 // AddVoter is a no-op for the disabled service.
 func (DisabledService) AddVoter(id, addr string) error { return ErrDisabled }
+
+// AddNonvoter is a no-op for the disabled service.
+func (DisabledService) AddNonvoter(id, addr string) error { return ErrDisabled }
+
+// DemoteVoter is a no-op for the disabled service.
+func (DisabledService) DemoteVoter(id string) error { return ErrDisabled }
 
 // RemovePeer is a no-op for the disabled service.
 func (DisabledService) RemovePeer(id string) error { return ErrDisabled }

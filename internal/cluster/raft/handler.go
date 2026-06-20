@@ -617,8 +617,13 @@ func (h *Handler) Join(c *gin.Context) {
 		return
 	}
 
-	// Add as voter first; if that fails we don't consume the token.
-	if err := h.svc.AddVoter(req.NodeID, req.AdvertiseAddr); err != nil {
+	// Add as a NON-voter first; if that fails we don't consume the token.
+	// A non-voter replicates the full log/snapshot (so the joiner converges
+	// and can serve reads) but does not count toward quorum — so a node that
+	// joins with a bad/unreachable advertise address can never wedge the
+	// cluster's write quorum. The leader's membership manager promotes it to a
+	// voter once it has stayed reachable (see membership.go).
+	if err := h.svc.AddNonvoter(req.NodeID, req.AdvertiseAddr); err != nil {
 		if errors.Is(err, ErrDisabled) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 			return

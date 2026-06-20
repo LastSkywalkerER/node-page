@@ -63,6 +63,12 @@ func (s *SwappableService) IsLeader() bool { return s.Inner().IsLeader() }
 // AddVoter delegates to the current inner Service.
 func (s *SwappableService) AddVoter(id, addr string) error { return s.Inner().AddVoter(id, addr) }
 
+// AddNonvoter delegates to the current inner Service.
+func (s *SwappableService) AddNonvoter(id, addr string) error { return s.Inner().AddNonvoter(id, addr) }
+
+// DemoteVoter delegates to the current inner Service.
+func (s *SwappableService) DemoteVoter(id string) error { return s.Inner().DemoteVoter(id) }
+
 // RemovePeer delegates to the current inner Service.
 func (s *SwappableService) RemovePeer(id string) error { return s.Inner().RemovePeer(id) }
 

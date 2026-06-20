@@ -139,6 +139,10 @@ type Container struct {
 	// selfAdvertiseStarted guards the single self-advertise loop
 	// (startSelfAdvertiseLoopLocked) so it is launched at most once.
 	selfAdvertiseStarted bool
+	// membershipStarted guards the single membership manager loop
+	// (startMembershipManagerLocked) so it is launched at most once. It reads
+	// the swappable Service live, so one long-lived loop survives re-activation.
+	membershipStarted bool
 	// postActivate is fired in a goroutine after every successful
 	// Raft activation. Used by server.Run to (re-)start metrics
 	// collection when the wizard's join branch flips Raft on
@@ -428,6 +432,21 @@ func (c *Container) SetAppContext(ctx context.Context) {
 	c.appCtx = ctx
 	c.startBridgeGoroutinesLocked()
 	c.startSelfAdvertiseLoopLocked(ctx)
+	c.startMembershipManagerLocked(ctx)
+}
+
+// startMembershipManagerLocked launches the single Raft membership manager.
+// It promotes healthy non-voters to voters and demotes long-unreachable
+// voters, acting only while THIS node is the leader. It reads the swappable
+// Service live, so one loop keeps working across a wipe-state re-activation.
+// activateMu must be held.
+func (c *Container) startMembershipManagerLocked(ctx context.Context) {
+	if ctx == nil || c.membershipStarted || c.raftSwap == nil {
+		return
+	}
+	c.membershipStarted = true
+	mgr := raftcluster.NewMembershipManager(c.raftSwap, c.logger)
+	go mgr.Run(ctx)
 }
 
 // startSelfAdvertiseLoopLocked launches a single background loop that

@@ -439,6 +439,38 @@ func (n *Node) AddVoter(id, addr string) error {
 	return nil
 }
 
+// AddNonvoter adds a peer as a non-voting member. A non-voter receives the
+// full log + snapshots (so it converges and can serve reads) but does NOT
+// count toward quorum — so adding one can never reduce the cluster's write
+// availability. New nodes join this way and are promoted to voter only once
+// the leader confirms they stay reachable. Leader-only.
+func (n *Node) AddNonvoter(id, addr string) error {
+	if n.raft == nil {
+		return ErrDisabled
+	}
+	f := n.raft.AddNonvoter(hraft.ServerID(id), hraft.ServerAddress(addr), 0, 10*time.Second)
+	if err := f.Error(); err != nil {
+		return fmt.Errorf("raft: add nonvoter: %w", err)
+	}
+	return nil
+}
+
+// DemoteVoter turns a voting member back into a non-voter so it stops counting
+// toward quorum (used when a voter has been unreachable long enough that it is
+// dragging down write availability). Leader-only; the config change still needs
+// the CURRENT quorum to commit, so the caller must only attempt it while a
+// majority of voters is reachable.
+func (n *Node) DemoteVoter(id string) error {
+	if n.raft == nil {
+		return ErrDisabled
+	}
+	f := n.raft.DemoteVoter(hraft.ServerID(id), 0, 10*time.Second)
+	if err := f.Error(); err != nil {
+		return fmt.Errorf("raft: demote voter: %w", err)
+	}
+	return nil
+}
+
 // RemovePeer removes a peer from the Raft configuration. Leader-only.
 func (n *Node) RemovePeer(id string) error {
 	if n.raft == nil {
