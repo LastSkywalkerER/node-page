@@ -420,10 +420,29 @@ cmd_update() {
   local id="${1:-}"
   [ -n "$id" ] || die "usage: proxmox-lxc.sh update <ctid>"
   pct status "$id" >/dev/null 2>&1 || die "no container ${id}."
-  msg_info "Self-updating node-stats in LXC ${id}"
-  run pct start "$id" || true
-  pct exec "$id" -- bash -c '/usr/bin/node-stats update && systemctl restart node-stats' \
-    || die "update failed."
+  msg_info "Updating node-stats in LXC ${id} (latest release .deb)"
+  run pct start "$id" 2>/dev/null || true
+  # Install the latest release .deb directly (same path as a fresh install).
+  # The binary's own `node-stats update` self-replace pulls a tarball asset and
+  # is easy to break with release-asset naming drift; apt-installing the .deb is
+  # the reliable path on a Debian LXC. NODE_STATS_VERSION pins a release.
+  pct exec "$id" -- bash -c "
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+    REPO='${REPO}'
+    ARCH=\$(dpkg --print-architecture)
+    TAG='${NODE_STATS_VERSION:-}'
+    if [ -z \"\$TAG\" ]; then
+      TAG=\$(curl -fsSL https://api.github.com/repos/\$REPO/releases/latest | sed -n 's/.*\"tag_name\": *\"\\([^\"]*\\)\".*/\\1/p' | head -1)
+    fi
+    [ -n \"\$TAG\" ] || { echo 'could not resolve latest release tag'; exit 1; }
+    DEB=\"node-stats_\${TAG#v}_\${ARCH}.deb\"
+    echo \"  downloading \$DEB\"
+    curl -fsSL -o /tmp/\$DEB \"https://github.com/\$REPO/releases/download/\$TAG/\$DEB\"
+    apt-get install -y -qq --allow-downgrades /tmp/\$DEB
+    rm -f /tmp/\$DEB
+    systemctl restart node-stats
+  " || die "update failed (re-run with VERBOSE=1)."
   msg_ok "Updated node-stats in LXC ${id}"
 }
 

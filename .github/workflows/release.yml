@@ -1,10 +1,13 @@
 name: Release
 
-# Publishes ONLY clean per-OS installers as a GitHub Release:
+# Publishes per-OS installers PLUS raw-binary archives as a GitHub Release:
 #   - Ubuntu/Debian: node-stats_<v>_amd64.deb and _arm64.deb  (binary + systemd service)
 #   - macOS (Apple Silicon): node-stats_<v>_darwin_arm64.dmg   (drag node-stats.app → Applications)
 #   - Windows: node-stats_<v>_windows_amd64_setup.exe          (NSIS installer)
-# No tarballs/zip/rpm/checksums. Two ways to cut a release:
+#   - Raw binaries for the in-app self-updater (`node-stats update`):
+#       node-stats_<tag>_{linux_amd64,linux_arm64,darwin_arm64}.tar.gz,
+#       node-stats_<tag>_windows_amd64.zip, and SHA256SUMS.
+# Two ways to cut a release:
 #   1. push a tag:   git tag v0.1.2 && git push origin v0.1.2
 #   2. Actions tab → "Release" → "Run workflow", enter a version like v0.1.2
 # (The "Build and Push Docker Image" workflow is separate — it publishes the
@@ -77,11 +80,15 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} go build -tags embed_dist \
             -ldflags "-s -w -X system-stats/internal/version.Version=${VERSION} -X system-stats/internal/version.Commit=${COMMIT} -X system-stats/internal/version.Date=${DATE}" \
             -o node-stats ./cmd/server
+          mkdir -p dist
+          # Raw-binary tarball for the in-app self-updater (`node-stats update`),
+          # which fetches node-stats_<tag>_<os>_<arch>.tar.gz and swaps the binary.
+          # The .deb below is for apt / install.sh; the tarball is for self-update.
+          tar -czf "dist/node-stats_${VERSION}_linux_${{ matrix.goarch }}.tar.gz" node-stats
           # nfpm runs on the runner → install it for the host arch (not the target).
           GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" \
             go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
           export PKG_ARCH="${{ matrix.goarch }}" PKG_VERSION="${VERSION#v}"
-          mkdir -p dist
           "$(go env GOPATH)/bin/nfpm" package -f packaging/nfpm.yaml -p deb -t dist/
           ls -la dist
       - uses: actions/upload-artifact@v4
@@ -116,6 +123,8 @@ jobs:
             -ldflags "-s -w -X system-stats/internal/version.Version=${VERSION} -X system-stats/internal/version.Commit=${COMMIT} -X system-stats/internal/version.Date=${DATE}" \
             -o node-stats.exe ./cmd/server
           mkdir -p dist
+          # Raw-binary zip for the in-app self-updater (node-stats.exe inside).
+          zip -j "dist/node-stats_${VERSION}_windows_amd64.zip" node-stats.exe
           # File/OutFile resolve relative to the .nsi dir — pass absolute paths.
           makensis -DVERSION="${VERSION#v}" \
             -DEXE="${PWD}/node-stats.exe" \
@@ -152,6 +161,8 @@ jobs:
             -ldflags "-s -w -X system-stats/internal/version.Version=${VERSION} -X system-stats/internal/version.Commit=${COMMIT} -X system-stats/internal/version.Date=${DATE}" \
             -o node-stats ./cmd/server
           mkdir -p dist
+          # Raw-binary tarball for the in-app self-updater (the .dmg is for humans).
+          tar -czf "dist/node-stats_${VERSION}_darwin_arm64.tar.gz" node-stats
           bash packaging/make-macos-dmg.sh "${VERSION}" node-stats "dist/node-stats_${VERSION}_darwin_arm64.dmg"
           ls -la dist
       - uses: actions/upload-artifact@v4
@@ -170,7 +181,15 @@ jobs:
           pattern: installer-*
           merge-multiple: true
           path: dist
-      - run: ls -la dist
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          # Over the release assets only (exclude SHA256SUMS itself). The in-app
+          # self-updater verifies its downloaded archive against this file.
+          sha256sum node-stats_* > SHA256SUMS
+          cat SHA256SUMS
+          ls -la
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_VERSION }}
@@ -183,4 +202,7 @@ jobs:
             dist/*.deb
             dist/*.dmg
             dist/*.exe
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS
           generate_release_notes: true
