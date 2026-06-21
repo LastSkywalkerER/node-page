@@ -52,13 +52,23 @@ func (s *service) BootstrapProxmoxFromEnv(ctx context.Context) {
 		return
 	}
 
-	// Idempotent: never touch an existing Proxmox connector.
+	// Idempotent for a HEALTHY connector: skip if a Proxmox connector already
+	// exists and its stored token still decrypts under the current key. But if the
+	// secret can't be decrypted — the cluster JWT secret rotated (e.g. after a
+	// wipe/recovery), orphaning the AES-GCM ciphertext — fall through and
+	// re-create it from env so it re-encrypts under the current key, instead of
+	// staying permanently auth_failed (which freezes the whole Proxmox topology).
 	if existing, err := s.repo.List(ctx); err == nil {
 		for _, c := range existing {
-			if c.Type == TypeProxmox {
-				s.logger.Debug("proxmox auto-connect: a connector is already configured, skipping")
+			if c.Type != TypeProxmox {
+				continue
+			}
+			if _, derr := s.cipher.Decrypt(c.SecretEnc); derr == nil {
+				s.logger.Debug("proxmox auto-connect: a healthy connector is already configured, skipping")
 				return
 			}
+			s.logger.Warn("proxmox auto-connect: existing connector secret is undecryptable (cluster JWT secret changed?) — re-encrypting it from env")
+			break
 		}
 	}
 

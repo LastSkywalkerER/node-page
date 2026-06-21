@@ -102,15 +102,40 @@ func TestBootstrapProxmoxFromEnv_Idempotent(t *testing.T) {
 	t.Setenv(envProxmoxTokenID, "node-stats@pam!monitor")
 	t.Setenv(envProxmoxSecret, "abcd-secret")
 
-	repo := &fakeRepo{rows: []Connector{{Type: TypeProxmox, Fingerprint: "pve/existing"}}}
+	// Existing connector whose secret decrypts under the CURRENT key → healthy,
+	// so auto-connect must leave it untouched.
+	enc, _ := NewCipher("test-jwt-secret").Encrypt("stored-token")
+	repo := &fakeRepo{rows: []Connector{{Type: TypeProxmox, Fingerprint: "pve/existing", SecretEnc: enc}}}
 	prober := &fakeProber{res: &ProbeResult{Fingerprint: "pve/homelab"}}
 	newBootstrapService(repo, prober).BootstrapProxmoxFromEnv(context.Background())
 
 	if prober.calls != 0 {
-		t.Errorf("prober should not be called when a connector already exists (calls=%d)", prober.calls)
+		t.Errorf("prober should not be called when a healthy connector already exists (calls=%d)", prober.calls)
 	}
 	if repo.upserts != 0 {
 		t.Errorf("no upsert expected, got %d", repo.upserts)
+	}
+}
+
+// When the existing connector's secret can't be decrypted (the cluster JWT
+// secret rotated), auto-connect must RE-CREATE it from env so it re-encrypts
+// under the current key — otherwise the connector is stuck auth_failed forever.
+func TestBootstrapProxmoxFromEnv_HealsUndecryptableSecret(t *testing.T) {
+	t.Setenv(envProxmoxURL, "https://10.0.0.2:8006")
+	t.Setenv(envProxmoxTokenID, "node-stats@pam!monitor")
+	t.Setenv(envProxmoxSecret, "abcd-secret")
+
+	// Secret encrypted under an OLD key the current cipher can't decrypt.
+	stale, _ := NewCipher("old-rotated-secret").Encrypt("stored-token")
+	repo := &fakeRepo{rows: []Connector{{Type: TypeProxmox, Fingerprint: "pve/existing", SecretEnc: stale}}}
+	prober := &fakeProber{res: &ProbeResult{Fingerprint: "pve/homelab"}}
+	newBootstrapService(repo, prober).BootstrapProxmoxFromEnv(context.Background())
+
+	if prober.calls == 0 {
+		t.Error("prober should be called to heal an undecryptable connector")
+	}
+	if repo.upserts != 1 {
+		t.Fatalf("expected 1 re-create upsert to heal, got %d", repo.upserts)
 	}
 }
 
