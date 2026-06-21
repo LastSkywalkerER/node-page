@@ -540,9 +540,18 @@ export function ConfigFormWidget({ initialValues, runningInDocker, machineHints,
 
       {raftEnabled === 'true' && (
         <div className="rounded-md border border-border/50 bg-muted/10 p-3 space-y-3">
+          <FormInputField
+            label="Cluster name"
+            name="raft_cluster_id"
+            register={form.register('raft_cluster_id')}
+            error={form.formState.errors.raft_cluster_id}
+          />
           <p className="text-xs text-slate-400">
-            Cluster name, node ID, port and advertise address are auto-configured. After
-            setup you'll get a one-shot <strong>connect key</strong> to add the next node.
+            Shared by every node in this cluster. Prefilled with a unique default — edit it
+            now for a friendly name (e.g. <code className="text-slate-300">sky-home</code>).
+            It can't be changed later without recreating the cluster, so set it here. Node ID,
+            port and advertise address are auto-configured. After setup you'll get a one-shot{' '}
+            <strong>connect key</strong> to add the next node.
           </p>
 
           {publicUrl.trim() && (
