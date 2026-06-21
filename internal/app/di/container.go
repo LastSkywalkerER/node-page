@@ -439,6 +439,15 @@ func (c *Container) persistRaftIdentityLocked(cfg config.RaftConfig) {
 	if cv == nil {
 		return
 	}
+	// WriteConfigFile validates that JWT_SECRET/REFRESH_SECRET are present (it
+	// re-formats the whole .env). During a runtime cluster join the secrets
+	// arrive over Raft into the DB-backed cluster_config and haven't been
+	// adopted into the env yet, so a write here would fail with "JWT_SECRET is
+	// required". The secret reconciler persists the identity again once the
+	// secrets land, so skip rather than log a spurious error.
+	if strings.TrimSpace(cv.JWTSecret) == "" || strings.TrimSpace(cv.RefreshSecret) == "" {
+		return
+	}
 	changed := false
 	if strings.TrimSpace(cv.RaftClusterID) != cfg.ClusterID {
 		cv.RaftClusterID = cfg.ClusterID
