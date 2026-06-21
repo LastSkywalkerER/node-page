@@ -3,8 +3,8 @@ package bridge
 import (
 	"context"
 	"net/http"
-	"strings"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,12 +43,12 @@ type Picker struct {
 }
 
 type measure struct {
-	URL        string
-	ClusterID  string
-	NodeID     string
-	RTT        time.Duration
-	LastOK     time.Time
-	LastErr    string
+	URL         string
+	ClusterID   string
+	NodeID      string
+	RTT         time.Duration
+	LastOK      time.Time
+	LastErr     string
 	Consecutive int // consecutive successes
 }
 
@@ -65,9 +65,9 @@ func NewPicker(logger *log.Logger, db *gorm.DB, myClusterID string, seeds []stri
 		}
 	}
 	return &Picker{
-		logger:     logger,
-		db:         db,
-		myCluster:  myClusterID,
+		logger:    logger,
+		db:        db,
+		myCluster: myClusterID,
 		// Generous: a hub busy applying batches can take seconds to answer
 		// ping; a timeout here used to mark it unhealthy and stall shipping.
 		httpClient: &http.Client{Timeout: 10 * time.Second},
@@ -240,6 +240,15 @@ func (p *Picker) Snapshot() []Sample {
 func (p *Picker) Pick(peerClusterID string) string {
 	fallback := ""
 	for _, s := range p.Snapshot() {
+		// NEVER ship to a node in our OWN cluster — the bridge targets remote
+		// (hub) clusters only. A stale/mis-tagged catalog row for a same-cluster
+		// peer must not become an uplink target (that POSTs replication batches
+		// at a sibling node, which refuses them). Seeds carry an empty cluster id
+		// and are always kept. Guard on myCluster!="" so an as-yet-unknown local
+		// id can't accidentally drop the (empty-id) seed.
+		if p.myCluster != "" && s.ClusterID == p.myCluster {
+			continue
+		}
 		if peerClusterID != "" && s.ClusterID != peerClusterID {
 			continue
 		}

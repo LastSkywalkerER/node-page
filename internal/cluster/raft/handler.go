@@ -512,6 +512,14 @@ func (h *Handler) RemovePeer(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	// Also drop the node from the replicated URL catalog — otherwise the row
+	// lingers and the bridge picker keeps probing / the write-forwarder keeps
+	// targeting a node that's no longer in the cluster. Best-effort.
+	if h.replicator != nil {
+		if perr := h.replicator.SubmitPeerNodeRemove(c.Request.Context(), h.clusterID, id); perr != nil && h.logger != nil {
+			h.logger.Warn("raft: remove peer URL catalog entry failed", "node_id", id, "error", perr)
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{"removed": id})
 }
 

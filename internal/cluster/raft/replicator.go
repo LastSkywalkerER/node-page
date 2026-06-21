@@ -188,6 +188,21 @@ func (r *Replicator) SubmitPeerNodeAdvertise(ctx context.Context, clusterID, nod
 	return err
 }
 
+// SubmitPeerNodeRemove drops a node from the replicated URL catalog
+// (peer_node_advertise) so it stops being a write-forward target and a bridge
+// picker probe candidate. Used when a peer is removed from the cluster so the
+// removal is complete (the Raft config change alone leaves the catalog row).
+func (r *Replicator) SubmitPeerNodeRemove(ctx context.Context, clusterID, nodeID string) error {
+	if !r.Enabled() {
+		return nil
+	}
+	_, err := SubmitTyped(ctx, r.svc, CmdPeerNodeRemove, PeerNodeRemovePayload{
+		ClusterID: clusterID,
+		NodeID:    nodeID,
+	}, 5*time.Second)
+	return err
+}
+
 // SubmitJoinTokenIssue records a new bootstrap token.
 func (r *Replicator) SubmitJoinTokenIssue(ctx context.Context, tokenHash string, expiresAt time.Time, createdBy uint) error {
 	if !r.Enabled() {
