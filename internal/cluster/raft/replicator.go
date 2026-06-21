@@ -159,6 +159,21 @@ func (r *Replicator) SubmitAuthSecretSet(ctx context.Context, jwtSecret, refresh
 	return err
 }
 
+// SubmitConfigSet replicates a single key/value into the cluster_config table
+// (CmdConfigSet) so every node converges on it. Used to share the cross-cluster
+// bridge uplink config (secret / hub seeds / mode) so each spoke node can ship
+// its OWN metrics to the hub. Never crosses the bridge (see crossClusterDeny).
+func (r *Replicator) SubmitConfigSet(ctx context.Context, key, value string) error {
+	if !r.Enabled() {
+		return nil
+	}
+	_, err := SubmitTyped(ctx, r.svc, CmdConfigSet, ConfigSetPayload{
+		Key:   key,
+		Value: value,
+	}, 5*time.Second)
+	return err
+}
+
 // SubmitPeerNodeAdvertise publishes this node's advertised URL.
 func (r *Replicator) SubmitPeerNodeAdvertise(ctx context.Context, clusterID, nodeID, url string, capabilities []string) error {
 	if !r.Enabled() {

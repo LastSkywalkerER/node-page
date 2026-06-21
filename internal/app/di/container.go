@@ -474,6 +474,7 @@ func (c *Container) startClusterSecretReconcilerLocked(ctx context.Context) {
 			case <-t.C:
 			}
 			c.reconcileClusterSecret(ctx)
+			c.reconcileBridgeConfig(ctx)
 		}
 	}()
 }
@@ -518,6 +519,85 @@ func (c *Container) reconcileClusterSecret(ctx context.Context) {
 			c.logger.Info("raft: seeded cluster-shared auth secret from leader env")
 		}
 	}
+}
+
+// reconcileBridgeConfig converges the cross-cluster bridge UPLINK config across a
+// push spoke so EVERY node ships its own metrics to the hub (metrics ride the
+// off-Raft per-node stream, so each node needs the hub seeds + shared secret —
+// the topology bridge alone, which is leader-only, doesn't carry them). The node
+// where the uplink was configured seeds its local config into cluster_config;
+// every other node adopts it and (re)builds its metric-stream bridge. Scoped to
+// "push" mode — receive (hub) / both (legacy) keep their per-node config.
+func (c *Container) reconcileBridgeConfig(ctx context.Context) {
+	svc := c.GetRaftService()
+	if svc == nil || !svc.Enabled() || c.db == nil {
+		return
+	}
+	rc, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	secret, _ := raftcluster.LookupClusterConfig(rc, c.db, "bridge_shared_secret")
+	seedsCSV, _ := raftcluster.LookupClusterConfig(rc, c.db, "bridge_remote_seeds")
+	mode, _ := raftcluster.LookupClusterConfig(rc, c.db, "bridge_mode")
+
+	if secret != "" && seedsCSV != "" && config.NormalizeBridgeMode(mode) == config.BridgeModePush {
+		desired := config.RaftBridgeConfig{
+			Enabled:      true,
+			SharedSecret: secret,
+			RemoteSeeds:  splitCSVList(seedsCSV),
+			Mode:         config.BridgeModePush,
+		}
+		c.activateMu.Lock()
+		cur := c.raftCfgSnapshot.Bridge
+		c.activateMu.Unlock()
+		if bridgeConfigDiffers(cur, desired) {
+			if err := c.ConfigureBridge(desired, ""); err != nil {
+				c.logger.Warn("raft: apply replicated bridge config failed", "error", err)
+			} else {
+				c.logger.Info("raft: applied replicated bridge uplink config — this node now ships its own metrics to the hub")
+			}
+		}
+		return
+	}
+
+	// Not replicated yet: the node with a locally-configured push uplink seeds it
+	// into cluster_config so every peer adopts it. Idempotent (only while unset).
+	repl := c.GetRaftReplicator()
+	if repl == nil {
+		return
+	}
+	c.activateMu.Lock()
+	local := c.raftCfgSnapshot.Bridge
+	c.activateMu.Unlock()
+	if config.NormalizeBridgeMode(local.Mode) != config.BridgeModePush || local.SharedSecret == "" || len(local.RemoteSeeds) == 0 {
+		return
+	}
+	_ = repl.SubmitConfigSet(rc, "bridge_shared_secret", local.SharedSecret)
+	_ = repl.SubmitConfigSet(rc, "bridge_remote_seeds", strings.Join(local.RemoteSeeds, ","))
+	if err := repl.SubmitConfigSet(rc, "bridge_mode", config.BridgeModePush); err != nil {
+		c.logger.Warn("raft: seed cluster-shared bridge config failed", "error", err)
+	} else {
+		c.logger.Info("raft: seeded cluster-shared bridge uplink config so peers ship their own metrics to the hub")
+	}
+}
+
+// splitCSVList splits a comma-separated list, trimming blanks.
+func splitCSVList(s string) []string {
+	out := []string{}
+	for _, p := range strings.Split(s, ",") {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// bridgeConfigDiffers reports whether the live bridge config differs from the
+// desired one in the fields that matter for uplinking (secret, seeds, mode).
+func bridgeConfigDiffers(cur, desired config.RaftBridgeConfig) bool {
+	return cur.SharedSecret != desired.SharedSecret ||
+		config.NormalizeBridgeMode(cur.Mode) != config.NormalizeBridgeMode(desired.Mode) ||
+		strings.Join(cur.RemoteSeeds, ",") != strings.Join(desired.RemoteSeeds, ",")
 }
 
 // startMembershipManagerLocked launches the single Raft membership manager.
