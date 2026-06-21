@@ -151,6 +151,12 @@ type Container struct {
 	// secretReconcilerStarted guards the single cluster-secret reconciler loop
 	// (startClusterSecretReconcilerLocked) so it is launched at most once.
 	secretReconcilerStarted bool
+	// clusterSecretLogAsserted records that, while leader, we have re-committed
+	// the cluster auth secret into the replicated Raft log this leadership term.
+	// After a wipe-state recovery the DB keeps the secret but the fresh log lacks
+	// it, so without this re-assert a joiner never receives it. Reset when we
+	// lose leadership so a new leader re-asserts. Touched only by the reconciler.
+	clusterSecretLogAsserted bool
 	// bridgeReconcileDiagAt throttles the periodic bridge-reconcile diagnostic
 	// log. Touched only by the single reconciler goroutine, so it needs no lock.
 	bridgeReconcileDiagAt time.Time
@@ -544,6 +550,35 @@ func (c *Container) reconcileClusterSecret(ctx context.Context) {
 	gotJWT, _ := raftcluster.LookupClusterConfig(rc, c.db, "jwt_secret")
 	gotRefresh, _ := raftcluster.LookupClusterConfig(rc, c.db, "refresh_secret")
 
+	isLeader := svc.IsLeader()
+	if !isLeader {
+		c.clusterSecretLogAsserted = false
+	}
+
+	// LEADER: guarantee the auth secret lives in the REPLICATED LOG, not just our
+	// local DB. LookupClusterConfig reads the DB, which survives a wipe-state
+	// recovery — but the fresh Raft log that recovery creates does NOT contain a
+	// CmdAuthSecretSet entry, so a node joining the recovered cluster replicates
+	// the log without ever receiving the secret and falls back to its own env
+	// secret (→ cross-node metric stream + login fail with "signature mismatch").
+	// Re-assert it into the log once per leadership term; the applier upsert is
+	// idempotent, and the entry replicates the secret to every (current + future)
+	// peer. Prefer the DB copy (the cluster's canonical value), else our env.
+	if isLeader && !c.clusterSecretLogAsserted {
+		jwt, refresh := gotJWT, gotRefresh
+		if jwt == "" || refresh == "" {
+			jwt, refresh = c.envJWTSecret, c.envRefreshSecret
+		}
+		if repl := c.GetRaftReplicator(); repl != nil && jwt != "" && refresh != "" {
+			if err := repl.SubmitAuthSecretSet(rc, jwt, refresh); err != nil {
+				c.logger.Warn("raft: re-assert cluster auth secret into log failed", "error", err)
+			} else {
+				c.clusterSecretLogAsserted = true
+				c.logger.Info("raft: re-asserted cluster-shared auth secret into the replicated log (joiners now receive it)")
+			}
+		}
+	}
+
 	if gotJWT != "" && gotRefresh != "" {
 		// Adopt the cluster-shared secret if we're not already on it. This is the
 		// source of truth; the leader's own seeded value adopts as a no-op.
@@ -556,21 +591,6 @@ func (c *Container) reconcileClusterSecret(ctx context.Context) {
 				c.tokenService.SetSecrets(gotJWT, gotRefresh) // cross-node sessions
 			}
 			c.logger.Info("raft: adopted cluster-shared auth secret from cluster_config (metrics + sessions now aligned)")
-		}
-		return
-	}
-
-	// Not seeded yet: the leader publishes its env secret so the cluster
-	// converges. Only the leader can commit; followers wait for replication.
-	if svc.IsLeader() && c.envJWTSecret != "" && c.envRefreshSecret != "" {
-		repl := c.GetRaftReplicator()
-		if repl == nil {
-			return
-		}
-		if err := repl.SubmitAuthSecretSet(rc, c.envJWTSecret, c.envRefreshSecret); err != nil {
-			c.logger.Warn("raft: seed cluster-shared auth secret failed", "error", err)
-		} else {
-			c.logger.Info("raft: seeded cluster-shared auth secret from leader env")
 		}
 	}
 }
