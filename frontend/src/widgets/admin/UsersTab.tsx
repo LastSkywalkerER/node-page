@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { UserPlus, MoreHorizontal, Copy, Check, KeyRound } from 'lucide-react'
 import { PasswordInput } from '@/shared/ui/password-input'
+import { copyToClipboard } from '@/shared/lib/clipboard'
 import { toast } from 'sonner'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -111,12 +112,11 @@ export function UsersTab() {
 
   const handleCopyLink = async () => {
     if (!inviteLink) return
-    try {
-      await navigator.clipboard.writeText(inviteLink)
+    if (await copyToClipboard(inviteLink)) {
       setCopied(true)
       toast.success('Link copied to clipboard')
       setTimeout(() => setCopied(false), 2000)
-    } catch {
+    } else {
       toast.error('Failed to copy')
     }
   }

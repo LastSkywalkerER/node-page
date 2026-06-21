@@ -22,11 +22,16 @@ import (
 // picker doesn't need credentials. Sensitive mutating endpoints stay
 // HMAC-authenticated.
 type Picker struct {
-	logger     *log.Logger
-	db         *gorm.DB
-	myCluster  string
-	httpClient *http.Client
-	probeEvery time.Duration
+	logger    *log.Logger
+	db        *gorm.DB
+	myCluster string
+	// localClusterFn returns the CURRENT local cluster id, read live from the
+	// Raft layer. The constructor-time id can be stale/empty (built before the
+	// layer settled, or after a rename), which let a same-cluster node leak into
+	// the candidate set and become an uplink target. Refreshed each probe.
+	localClusterFn func() string
+	httpClient     *http.Client
+	probeEvery     time.Duration
 	// seeds are operator-provided peer URLs (RAFT_BRIDGE_REMOTE_SEEDS / the
 	// uplink form). They bootstrap the bridge: the replicated catalog cannot
 	// contain a peer cluster's URL before the bridge is up — chicken & egg —
@@ -67,7 +72,7 @@ func NewPicker(logger *log.Logger, db *gorm.DB, myClusterID string, seeds []stri
 	return &Picker{
 		logger:    logger,
 		db:        db,
-		myCluster: myClusterID,
+		myCluster: strings.TrimSpace(myClusterID),
 		// Generous: a hub busy applying batches can take seconds to answer
 		// ping; a timeout here used to mark it unhealthy and stall shipping.
 		httpClient: &http.Client{Timeout: 10 * time.Second},
@@ -76,6 +81,22 @@ func NewPicker(logger *log.Logger, db *gorm.DB, myClusterID string, seeds []stri
 		ownURL:     own,
 		measures:   make(map[string]*measure),
 	}
+}
+
+// WithLocalClusterFn wires a getter for the CURRENT local cluster id (read live
+// from the Raft layer). When set, the picker refreshes its own-cluster filter
+// from it each probe, so a stale/empty constructor-time id can't let a
+// same-cluster node become an uplink target. Returns the picker for chaining.
+func (p *Picker) WithLocalClusterFn(fn func() string) *Picker {
+	p.localClusterFn = fn
+	return p
+}
+
+// localCluster returns the current own-cluster id under the lock.
+func (p *Picker) localCluster() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.myCluster
 }
 
 // Run polls the catalog at probeEvery cadence until ctx is cancelled.
@@ -94,6 +115,16 @@ func (p *Picker) Run(ctx context.Context) {
 }
 
 func (p *Picker) probeOnce(ctx context.Context) {
+	// Refresh our own-cluster id from the live Raft layer so the same-cluster
+	// filter is always correct, even if the constructor-time id was stale/empty.
+	if p.localClusterFn != nil {
+		if id := strings.TrimSpace(p.localClusterFn()); id != "" {
+			p.mu.Lock()
+			p.myCluster = id
+			p.mu.Unlock()
+		}
+	}
+	myCluster := p.localCluster()
 	entries, err := raftcluster.ListPeerAdvertises(ctx, p.db)
 	if err != nil {
 		if p.logger != nil {
@@ -111,7 +142,7 @@ func (p *Picker) probeOnce(ctx context.Context) {
 	}
 	for _, e := range entries {
 		e.URL = strings.TrimSuffix(strings.TrimSpace(e.URL), "/")
-		if e.ClusterID == p.myCluster || e.URL == "" || e.URL == p.ownURL || seen[e.URL] {
+		if (myCluster != "" && e.ClusterID == myCluster) || e.URL == "" || e.URL == p.ownURL || seen[e.URL] {
 			continue
 		}
 		probeList = append(probeList, e)
@@ -238,6 +269,7 @@ func (p *Picker) Snapshot() []Sample {
 // known. peerClusterID restricts the search to a specific peer cluster;
 // pass "" to consider any cluster other than ours.
 func (p *Picker) Pick(peerClusterID string) string {
+	myCluster := p.localCluster()
 	fallback := ""
 	for _, s := range p.Snapshot() {
 		// NEVER ship to a node in our OWN cluster — the bridge targets remote
@@ -246,7 +278,7 @@ func (p *Picker) Pick(peerClusterID string) string {
 		// at a sibling node, which refuses them). Seeds carry an empty cluster id
 		// and are always kept. Guard on myCluster!="" so an as-yet-unknown local
 		// id can't accidentally drop the (empty-id) seed.
-		if p.myCluster != "" && s.ClusterID == p.myCluster {
+		if myCluster != "" && s.ClusterID == myCluster {
 			continue
 		}
 		if peerClusterID != "" && s.ClusterID != peerClusterID {

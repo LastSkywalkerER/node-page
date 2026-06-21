@@ -7,6 +7,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { authService } from '@/shared/lib/auth';
 import { useIssueRaftJoinToken, useRaftStatus } from '@/widgets/raft/useRaft';
 import { useSetupStatus } from './useSetup';
+import { copyToClipboard } from '@/shared/lib/clipboard';
 
 export const SUCCESS_STEP_META = {
   title: 'Setup Complete',
@@ -30,12 +31,9 @@ function CopyButton({ value, label = 'Copy' }: { value: string; label?: string }
       variant="outline"
       size="sm"
       onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(value);
+        if (await copyToClipboard(value)) {
           setCopied(true);
           window.setTimeout(() => setCopied(false), 1500);
-        } catch {
-          /* clipboard blocked — user can select manually */
         }
       }}
       disabled={!value}

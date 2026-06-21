@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { toast } from 'sonner';
 import { Copy, Search, X, ChevronUp, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { copyToClipboard } from '@/shared/lib/clipboard';
 
 const ERROR_RE = /\b(FATA|FATAL|ERRO|ERROR|ERR)\b/;
 const WARN_RE = /\b(WARN|WRN)\b/;
@@ -173,10 +174,9 @@ export function LogViewer({ logs, loading }: LogViewerProps) {
   };
 
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(logs);
+    if (await copyToClipboard(logs)) {
       toast.success('Logs copied to clipboard');
-    } catch {
+    } else {
       toast.error('Copy failed');
     }
   };

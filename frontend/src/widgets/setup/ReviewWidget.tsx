@@ -4,6 +4,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { AdminUserFormData, SetupConfigFormData } from './schemas';
 import { Copy, Check, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { copyToClipboard } from '@/shared/lib/clipboard';
 
 export const REVIEW_STEP_META = {
   title: 'Review',
@@ -77,12 +78,11 @@ export function ReviewWidget({
 
   const handleCopyEnv = async () => {
     if (!envContent) return;
-    try {
-      await navigator.clipboard.writeText(envContent);
+    if (await copyToClipboard(envContent)) {
       setCopied(true);
       toast.success('.env copied to clipboard');
       window.setTimeout(() => setCopied(false), 2000);
-    } catch {
+    } else {
       toast.error('Copy failed — select the text and copy manually');
     }
   };

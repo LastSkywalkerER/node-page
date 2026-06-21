@@ -344,6 +344,12 @@ func (c *Container) activateLocked(ctx context.Context, cfg config.RaftConfig) (
 	c.raftFSM = act.FSM
 	c.raftCfgSnapshot = cfg
 
+	// Persist the cluster identity (id/name + node id) into the env so it is
+	// durable and never regenerated to a fresh random default on a later read /
+	// recovery (wipe-state re-activates with the same id; without this a node
+	// whose id only lived in memory would get a new name on the next restart).
+	c.persistRaftIdentityLocked(cfg)
+
 	// Best-effort metric stream (off-Raft). Built whenever Raft is active: the
 	// intra-cluster P2P path needs only the cluster-shared JWT secret; the
 	// cross-cluster uplink additionally uses the bridge secret (carried in cfg).
@@ -416,6 +422,42 @@ func (c *Container) activateLocked(ctx context.Context, cfg config.RaftConfig) (
 		c.startBridgeGoroutinesLocked()
 	}
 	return act.FSM, cfg, nil
+}
+
+// persistRaftIdentityLocked writes the active cluster id (name) + node id into
+// the env file when they're missing or differ, so the identity is stable across
+// restarts and recovery. Without this, a cluster id that only lived in memory
+// (or got cleared) would be regenerated to a fresh random default on the next
+// config read, so the cluster appears to "rename itself". Best-effort — a write
+// failure is logged, never fatal. activateMu is held by the caller.
+func (c *Container) persistRaftIdentityLocked(cfg config.RaftConfig) {
+	if cfg.ClusterID == "" {
+		return
+	}
+	cw := setupcfg.NewConfigWriter()
+	cv, _ := cw.ReadCurrentConfig()
+	if cv == nil {
+		return
+	}
+	changed := false
+	if strings.TrimSpace(cv.RaftClusterID) != cfg.ClusterID {
+		cv.RaftClusterID = cfg.ClusterID
+		changed = true
+	}
+	if cfg.NodeID != "" && strings.TrimSpace(cv.RaftNodeID) != cfg.NodeID {
+		cv.RaftNodeID = cfg.NodeID
+		changed = true
+	}
+	if strings.ToLower(strings.TrimSpace(cv.RaftEnabled)) != "true" {
+		cv.RaftEnabled = "true"
+		changed = true
+	}
+	if !changed {
+		return
+	}
+	if err := cw.WriteConfigFile(cv); err != nil && c.logger != nil {
+		c.logger.Warn("raft: persist cluster identity to env failed", "error", err)
+	}
 }
 
 // startBridgeGoroutinesLocked spawns picker.Run / sender.Run if they were
@@ -728,7 +770,18 @@ func (c *Container) buildBridgeLocked(bridge config.RaftBridgeConfig, clusterID,
 			WithUplinkOnly(mode == config.BridgeModeReceive)
 	}
 	if mode != config.BridgeModeReceive && fsm != nil {
-		c.bridgePicker = raftbridge.NewPicker(c.logger, c.db, clusterID, bridge.RemoteSeeds, c.raftCfgSnapshot.AdvertiseURL)
+		c.bridgePicker = raftbridge.NewPicker(c.logger, c.db, clusterID, bridge.RemoteSeeds, c.raftCfgSnapshot.AdvertiseURL).
+			WithLocalClusterFn(func() string {
+				// Live own-cluster id from the Raft layer, so the picker never
+				// ships an uplink to a same-cluster node even if the build-time id
+				// was stale/empty.
+				if s := c.GetRaftService(); s != nil && s.Enabled() {
+					if id := s.Status().ClusterID; id != "" {
+						return id
+					}
+				}
+				return c.CurrentRaftConfig().ClusterID
+			})
 		c.bridgeSender = raftbridge.NewSender(c.logger, c.raftSwap, fsm.ApplyEvents(), c.bridgePicker, bridge.SharedSecret, clusterID, nodeID).
 			WithUplinkOnly(mode == config.BridgeModePush)
 		// Reconcile re-publishes ALL local host rows as own-origin entries —

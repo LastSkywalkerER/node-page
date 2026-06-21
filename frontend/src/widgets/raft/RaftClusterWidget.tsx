@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Copy, Check, RefreshCw, Trash2, Download } from 'lucide-react'
 import { toast } from 'sonner'
 import { confirmDialog } from '@/shared/lib/confirmDialog'
+import { copyToClipboard } from '@/shared/lib/clipboard'
 import {
   useRaftStatus,
   useIssueRaftJoinToken,
@@ -61,7 +62,7 @@ const INSTALL_KINDS: { id: InstallKind; label: string }[] = [
 function CopyButton({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false)
   const onCopy = async () => {
-    await navigator.clipboard.writeText(value)
+    await copyToClipboard(value)
     setCopied(true)
     window.setTimeout(() => setCopied(false), 1500)
   }
@@ -313,7 +314,7 @@ export function RaftClusterWidget() {
   const [copiedSecret, setCopiedSecret] = useState(false)
   const onCopySecret = async () => {
     if (!bridgeSecret.trim()) return
-    await navigator.clipboard.writeText(bridgeSecret.trim())
+    await copyToClipboard(bridgeSecret.trim())
     setCopiedSecret(true)
     window.setTimeout(() => setCopiedSecret(false), 1500)
   }
@@ -358,7 +359,7 @@ export function RaftClusterWidget() {
 
   const onCopy = async () => {
     if (!issued) return
-    await navigator.clipboard.writeText(issued.token)
+    await copyToClipboard(issued.token)
     setCopied(true)
     window.setTimeout(() => setCopied(false), 1500)
   }
