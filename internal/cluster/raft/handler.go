@@ -675,13 +675,28 @@ func (h *Handler) Join(c *gin.Context) {
 		}
 	}
 	st := h.svc.Status()
-	c.JSON(http.StatusOK, gin.H{
+	resp := gin.H{
 		"cluster_id":  st.ClusterID,
 		"leader_id":   st.LeaderID,
 		"leader_addr": st.LeaderAddr,
 		"peers":       st.Peers,
 		"applied_idx": st.AppliedIndex,
-	})
+	}
+	// Hand the joiner our cross-cluster uplink (shared secret + hub seeds) so it
+	// turns its own bridge on immediately and ships its metrics to the same hub —
+	// no waiting on the background config reconcile. Gated on having seeds (a
+	// pure receiver/hub has none, so nothing leaks). The endpoint is
+	// join-token-authenticated, so the secret only goes to a trusted joiner.
+	if h.bridgeCfg != nil {
+		if _, secret, seeds, _ := h.bridgeCfg.BridgeSettings(); secret != "" && len(seeds) > 0 {
+			resp["bridge"] = gin.H{
+				"enabled":       true,
+				"shared_secret": secret,
+				"remote_seeds":  seeds,
+			}
+		}
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // SaveBridgeConfigRequest is the body of POST /api/v1/raft/bridge.

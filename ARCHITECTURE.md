@@ -175,7 +175,7 @@ All metric endpoints accept `?hours=<float>` (default `0.0833` ≈ 5 min) and `?
 | `RAFT_BRIDGE_MODE` | `both` | Bridge direction: `push` (spoke — uplink hosts+metrics to a hub, receive nothing), `receive` (hub — accept uplinks from many spokes, ship nothing), `both` (legacy symmetric pair) |
 | `RAFT_BRIDGE_ENABLED` / `RAFT_BRIDGE_SHARED_SECRET` / `RAFT_BRIDGE_REMOTE_SEEDS` | — | Cross-cluster bridge: HMAC secret shared by all sites; seeds = hub URL(s) the spoke POSTs to (outbound-only) |
 
-The setup-wizard "Join an existing cluster" flow writes the resolved `RAFT_*` values to the node's `.env` so the configuration survives restarts/rebuilds.
+The setup-wizard "Join an existing cluster" flow writes the resolved `RAFT_*` values to the node's `.env` so the configuration survives restarts/rebuilds. The leader's `/raft/join` response also carries its cross-cluster **bridge uplink** (shared secret + hub seeds) when configured; the joiner applies it immediately (live `ConfigureBridge` + `.env`) so a freshly-joined node ships its own metrics to the hub right away — no restart, no waiting on the background `reconcileBridgeConfig` (which still self-heals it as a fallback).
 
 ---
 

@@ -1118,6 +1118,18 @@ func (c *Container) SaveBridge(secret string, remoteSeeds []string, advertiseURL
 	return cw.WriteConfigFile(cv)
 }
 
+// ApplyBridgeUplink enables this node's cross-cluster uplink in push mode with
+// the given shared secret + hub seed URLs and persists it to .env. Used by the
+// join flow so a freshly-joined node immediately ships its own metrics to the
+// hub using the leader's bridge config — live, no restart, no waiting on the
+// background reconcile. No-op when secret/seeds are empty.
+func (c *Container) ApplyBridgeUplink(secret string, remoteSeeds []string) error {
+	if strings.TrimSpace(secret) == "" || len(remoteSeeds) == 0 {
+		return nil
+	}
+	return c.SaveBridge(secret, remoteSeeds, "", config.BridgeModePush)
+}
+
 // BridgeSettings returns the currently configured uplink parameters so the
 // admin form can prefill instead of starting blank — re-applying a blank
 // form used to wipe the hub URL (remote seeds) and stall the uplink.

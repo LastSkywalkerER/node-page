@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/log"
 	"github.com/gin-gonic/gin"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -44,6 +45,11 @@ type RaftActivator interface {
 	// AdvertiseSelfNow publishes this node's advertise URL into the catalog
 	// (best-effort, leader-only) so followers can forward writes.
 	AdvertiseSelfNow(ctx context.Context)
+	// ApplyBridgeUplink turns on this node's cross-cluster uplink (push mode)
+	// with the given shared secret + hub seed URLs and persists it to .env.
+	// Used by the join flow so a freshly-joined node immediately ships its own
+	// metrics to the hub using the leader's bridge config.
+	ApplyBridgeUplink(secret string, remoteSeeds []string) error
 }
 
 // ClusterSecretReader looks up the cluster-shared JWT signing keys from
@@ -862,6 +868,30 @@ func (h *Handler) AdminJoinCluster(c *gin.Context) {
 	c.JSON(status, body)
 }
 
+// peerJoinBridge is the cross-cluster uplink config the leader returns from
+// /raft/join so a joiner can immediately ship its own metrics to the hub.
+type peerJoinBridge struct {
+	Enabled      bool     `json:"enabled"`
+	SharedSecret string   `json:"shared_secret"`
+	RemoteSeeds  []string `json:"remote_seeds"`
+}
+
+// parsePeerBridge extracts the leader's bridge uplink from the /raft/join
+// response body, returning nil when absent/disabled/incomplete.
+func parsePeerBridge(respBody []byte) *peerJoinBridge {
+	var wrap struct {
+		Bridge *peerJoinBridge `json:"bridge"`
+	}
+	if err := json.Unmarshal(respBody, &wrap); err != nil || wrap.Bridge == nil {
+		return nil
+	}
+	b := wrap.Bridge
+	if !b.Enabled || strings.TrimSpace(b.SharedSecret) == "" || len(b.RemoteSeeds) == 0 {
+		return nil
+	}
+	return b
+}
+
 // performRaftJoin runs the shared "join an existing cluster" sequence used by
 // both the public setup wizard (JoinRaftCluster) and the authenticated admin
 // action (AdminJoinCluster). It returns the HTTP status and response body to
@@ -1035,6 +1065,28 @@ func (h *Handler) performRaftJoin(ctx context.Context, req JoinRaftClusterReques
 			"code":   "peer_rejected",
 			"error":  fmt.Sprintf("peer returned %s", resp.Status),
 			"detail": string(respBody),
+		}
+	}
+
+	// Pull the leader's cross-cluster bridge uplink out of the join response and
+	// turn it on locally — immediately and durably (live ConfigureBridge + .env)
+	// — so this node ships its OWN metrics to the hub right away, without a
+	// restart or waiting on the background reconcile. The operator's own join
+	// request takes precedence if it carried a bridge config.
+	bridgeSecret := req.BridgeSharedSecret
+	bridgeSeeds := req.BridgeRemoteSeeds
+	if bridgeSecret == "" || len(bridgeSeeds) == 0 {
+		if pb := parsePeerBridge(respBody); pb != nil {
+			bridgeSecret = pb.SharedSecret
+			bridgeSeeds = pb.RemoteSeeds
+		}
+	}
+	if bridgeSecret != "" && len(bridgeSeeds) > 0 {
+		if err := h.raftActivator.ApplyBridgeUplink(bridgeSecret, bridgeSeeds); err != nil {
+			// Best-effort: the background reconcile + a restart still converge.
+			log.Warn("join: applying leader bridge uplink failed", "error", err)
+		} else {
+			log.Info("join: enabled cross-cluster uplink from leader config — this node now ships its own metrics to the hub", "seeds", bridgeSeeds)
 		}
 	}
 
