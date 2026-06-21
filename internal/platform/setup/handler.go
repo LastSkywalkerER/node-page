@@ -959,6 +959,14 @@ func (h *Handler) performRaftJoin(ctx context.Context, req JoinRaftClusterReques
 		}
 	}
 
+	// Derive a public HTTP URL for ourselves when the caller (e.g. agent-join)
+	// didn't supply one, so it lands in the RuntimeConfig + .env and this node
+	// advertises itself into the catalog — required for follower→leader
+	// forwarding, especially once THIS node becomes the leader.
+	if req.AdvertiseURL == "" {
+		req.AdvertiseURL = deriveJoinerHTTPURL(req.AdvertiseAddr, h.addr)
+	}
+
 	// Activate the local Raft node so it can accept replication from
 	// the peer leader. Bootstrap=false — we are joining, not creating.
 	rt := raftcluster.RuntimeConfig{

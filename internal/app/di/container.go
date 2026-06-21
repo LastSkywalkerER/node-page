@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -915,14 +916,43 @@ func (c *Container) SeedClusterSecrets(ctx context.Context, jwtSecret, refreshSe
 
 // AdvertiseSelfNow publishes this node's advertised HTTP URL into the
 // peer-URL catalog (CmdPeerNodeAdvertise) using the currently-active Raft
-// config, so followers can forward writes to it. Best-effort and leader-only;
-// a no-op when no advertise URL is configured (boot re-advertises anyway).
+// config, so followers can forward writes to it. Best-effort; the publish is
+// leader-committed (a follower forwards it).
 func (c *Container) AdvertiseSelfNow(ctx context.Context) {
 	cfg := c.CurrentRaftConfig()
-	if cfg.AdvertiseURL == "" {
+	url := cfg.AdvertiseURL
+	if url == "" {
+		// A node joined via agent-join has no explicit advertise URL, so without
+		// this fallback it never publishes itself into peer_node_advertise — and
+		// once it becomes leader, followers can't forward writes to it ("leader
+		// has not published its HTTP URL yet"). Derive it from the Raft advertise
+		// host + the local HTTP port. An operator can still pin
+		// RAFT_ADVERTISE_PUBLIC_URL to override (e.g. behind a reverse proxy).
+		url = deriveAdvertiseURLFromAddr(cfg.AdvertiseAddr)
+	}
+	if url == "" {
 		return
 	}
-	raftcluster.AdvertiseSelf(ctx, c.logger, c.GetRaftService(), c.GetRaftReplicator(), cfg.ClusterID, cfg.NodeID, cfg.AdvertiseURL)
+	raftcluster.AdvertiseSelf(ctx, c.logger, c.GetRaftService(), c.GetRaftReplicator(), cfg.ClusterID, cfg.NodeID, url)
+}
+
+// deriveAdvertiseURLFromAddr builds an HTTP advertise URL from the Raft advertise
+// host and this process's HTTP listen port (ADDR env, default 8080). Returns ""
+// when the advertise address has no host. Mirrors the join flow's URL derivation
+// so a node advertises the same URL whether it was set explicitly or inferred.
+func deriveAdvertiseURLFromAddr(advertiseAddr string) string {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(advertiseAddr))
+	if err != nil || host == "" {
+		return ""
+	}
+	port := ""
+	if _, p, perr := net.SplitHostPort(strings.TrimSpace(os.Getenv("ADDR"))); perr == nil && p != "" {
+		port = p
+	}
+	if port == "" {
+		port = "8080"
+	}
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 // RaftBootError returns the most recent boot-time activation failure (e.g.
