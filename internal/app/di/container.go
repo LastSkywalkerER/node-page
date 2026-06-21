@@ -161,6 +161,13 @@ type Container struct {
 	// bridgeReconcileDiagAt throttles the periodic bridge-reconcile diagnostic
 	// log. Touched only by the single reconciler goroutine, so it needs no lock.
 	bridgeReconcileDiagAt time.Time
+	// connectorBackfillDone records that local-only connectors (configured
+	// before this node joined the cluster, so never in the Raft log) have been
+	// republished into the replicated log at least once. Set after a successful
+	// pass so the reconciler retries until the leader is reachable, then stops —
+	// avoiding per-cycle CmdConnectorUpsert log churn. Touched only by the
+	// single reconciler goroutine, so it needs no lock.
+	connectorBackfillDone bool
 	// postActivate is fired in a goroutine after every successful
 	// Raft activation. Used by server.Run to (re-)start metrics
 	// collection when the wizard's join branch flips Raft on
@@ -536,8 +543,44 @@ func (c *Container) startClusterSecretReconcilerLocked(ctx context.Context) {
 			}
 			c.reconcileClusterSecret(ctx)
 			c.reconcileBridgeConfig(ctx)
+			c.reconcileConnectorBackfill(ctx)
 		}
 	}()
+}
+
+// reconcileConnectorBackfill republishes connectors that exist only in this
+// node's local SQLite into the replicated Raft log. A connector configured
+// while the node was standalone (or auto-created on the PVE-LXC node before it
+// joined a cluster) never went through the Raft-only persistUpsert path, so it
+// never reached the other peers — leaving the connector pollable only while
+// THIS node leads. Re-submitting each row (forwarded to the leader when we are a
+// follower; the applier dedupes by fingerprint) replicates it everywhere so ANY
+// leader can poll it, without forcing a particular "convenient" node to lead.
+//
+// It is NOT leader-gated and runs until one pass succeeds, then latches off to
+// avoid per-cycle log churn. New connectors added later go through Raft directly
+// (persistUpsert), so they need no backfill.
+func (c *Container) reconcileConnectorBackfill(ctx context.Context) {
+	if c.connectorBackfillDone {
+		return
+	}
+	repl := c.GetRaftReplicator()
+	if repl == nil || !repl.Enabled() || c.connectorRepository == nil {
+		return
+	}
+	rc, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	n, err := repl.BackfillLocalConnectors(rc, c.connectorRepository)
+	if err != nil {
+		// Most likely the leader isn't reachable yet (no published URL / mid
+		// election). Leave connectorBackfillDone false so the next cycle retries.
+		c.logger.Warn("raft: connector backfill failed (will retry)", "submitted", n, "error", err)
+		return
+	}
+	c.connectorBackfillDone = true
+	if n > 0 {
+		c.logger.Info("raft: backfilled local connectors into replicated log", "submitted", n)
+	}
 }
 
 // reconcileClusterSecret performs one convergence pass (see the loop above).

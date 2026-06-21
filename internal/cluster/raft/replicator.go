@@ -335,3 +335,33 @@ func (r *Replicator) BackfillLocalUsers(ctx context.Context, userRepo users.User
 	}
 	return count, nil
 }
+
+// BackfillLocalConnectors walks the local connectors table and republishes every
+// row into the replicated log via CmdConnectorUpsert (forwarded to the leader
+// when this node is a follower). Unlike the user/host backfills this is NOT
+// leader-gated: a connector configured on a node while it was standalone (or
+// that only ever lived in that node's local SQLite — the connector CRUD's
+// persistUpsert is Raft-only once clustered, so a connector created before the
+// cluster formed never entered the log) must reach every peer so ANY node can
+// poll it after a failover. The applier dedupes by fingerprint, so re-running is
+// a harmless no-op on peers that already have the row.
+func (r *Replicator) BackfillLocalConnectors(ctx context.Context, connRepo connectors.Repository) (int, error) {
+	if !r.Enabled() {
+		return 0, nil
+	}
+	rows, err := connRepo.List(ctx)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, c := range rows {
+		if c.Fingerprint == "" {
+			continue
+		}
+		if err := r.SubmitConnectorUpsert(ctx, c); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, nil
+}
