@@ -89,6 +89,7 @@ GET    /disk
 GET    /network
 GET    /docker
 GET    /sensors
+GET    /logs               # admin; this node's recent process logs (in-memory ring; UI: admin → Logs)
 GET    /hosts
 GET    /hosts/current
 POST   /hosts/register

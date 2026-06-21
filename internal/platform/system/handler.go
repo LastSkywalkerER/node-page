@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/gin-gonic/gin"
 
+	"system-stats/internal/app/logbuffer"
 	"system-stats/internal/app/metricshost"
 	hosts "system-stats/internal/cluster/hosts"
 )
@@ -84,4 +85,23 @@ func (h *Handler) HandleCurrentMetrics(c *gin.Context) {
 	}
 	h.logger.Debug("Current metrics response sent successfully")
 	c.JSON(http.StatusOK, metrics)
+}
+
+// HandleLogs returns this process's recent log lines from the in-memory ring
+// buffer so admins can read them in the UI without shell access. Plain text,
+// oldest line first — the frontend LogViewer renders/colourises it.
+//
+// @Summary     Recent application logs
+// @Description Returns the most recent process log lines (bounded in-memory ring). Admin-only.
+// @Tags        system
+// @Produce     json
+// @Success     200  {object}  map[string]interface{}
+// @Failure     401  {object}  map[string]string
+// @Security    BearerAuth
+// @Router      /logs [get]
+func (h *Handler) HandleLogs(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"logs":  logbuffer.Default.String(),
+		"lines": logbuffer.Default.Len(),
+	})
 }

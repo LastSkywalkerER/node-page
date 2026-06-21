@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -32,6 +33,7 @@ import (
 	"system-stats/internal/app/database/configdump"
 	"system-stats/internal/app/di"
 	"system-stats/internal/app/help"
+	"system-stats/internal/app/logbuffer"
 	"system-stats/internal/app/middleware"
 	"system-stats/internal/app/prometheusmetrics"
 	"system-stats/internal/app/retention"
@@ -76,7 +78,10 @@ func Run() {
 		os.Exit(1)
 	}
 
-	logger := log.NewWithOptions(os.Stderr, log.Options{
+	// Tee logs to stderr AND an in-memory ring buffer so the app can show its
+	// own recent logs in the UI (admin → Logs) — handy for native installs
+	// where `docker logs` / journalctl aren't a click away.
+	logger := log.NewWithOptions(io.MultiWriter(os.Stderr, logbuffer.Default), log.Options{
 		// ReportCaller (file:line per line) is useful when debugging but adds
 		// a runtime.Caller cost and noise on every log — only when DEBUG is on.
 		ReportCaller:    cfg.Debug,
@@ -791,6 +796,9 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.GET("/applications/:project/compose", dockerHandler.HandleApplicationCompose)
 		authAPI.GET("/applications/:project/logs", dockerHandler.HandleApplicationLogs)
 		authAPI.GET("/sensors", sensorsHandler.HandleSensors)
+		// This process's own recent logs (in-memory ring) — admin-only; lets
+		// operators read logs in the UI without shell access (esp. native installs).
+		authAPI.GET("/logs", middleware.RequireAdmin(), systemHandler.HandleLogs)
 		authAPI.GET("/hosts", hostHandler.HandleGetAllHosts)
 		authAPI.GET("/hosts/current", hostHandler.HandleGetCurrentHost)
 		authAPI.POST("/hosts/register", hostHandler.HandleRegisterCurrentHost)

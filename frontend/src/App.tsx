@@ -19,6 +19,7 @@ import { AccountTab } from './widgets/admin/AccountTab'
 import { ServerTab } from './widgets/admin/ServerTab'
 import { PrometheusTab } from './widgets/admin/PrometheusTab'
 import { DatabaseTab } from './widgets/admin/DatabaseTab'
+import { LogsTab } from './widgets/admin/LogsTab'
 import { AdminRoute } from './shared/guards/AdminRoute'
 import { CyberBackdrop } from './shared/components/CyberBackdrop'
 import { RestartProgressModal } from './shared/components/RestartProgressModal'
@@ -82,6 +83,7 @@ function App() {
             <Route path="server" element={<ServerTab />} />
             <Route path="database" element={<DatabaseTab />} />
             <Route path="prometheus" element={<PrometheusTab />} />
+            <Route path="logs" element={<LogsTab />} />
             <Route path="account" element={<AccountTab />} />
           </Route>
         </Route>

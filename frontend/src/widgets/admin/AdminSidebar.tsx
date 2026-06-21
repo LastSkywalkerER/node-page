@@ -16,6 +16,7 @@ const TABS: AdminTab[] = [
   { to: '/admin/server', label: 'Server' },
   { to: '/admin/database', label: 'Database' },
   { to: '/admin/prometheus', label: 'Prometheus' },
+  { to: '/admin/logs', label: 'Logs' },
   { to: '/admin/account', label: 'Account' },
 ]
 
