@@ -127,6 +127,22 @@ func (h *Handler) WithFactoryReset(fn func() error) *Handler {
 	return h
 }
 
+// liveClusterID returns the current cluster id from the running Raft layer,
+// falling back to the id captured when the handler was wired. The wired-in
+// h.clusterID is read from the env at process start and can be stale relative
+// to the live layer (e.g. after a cluster rename, or when the env was never
+// updated), so anything that stamps the replicated catalog must use the live
+// value — a stale id there mis-tags a peer's URL row and breaks the bridge
+// own-cluster filter.
+func (h *Handler) liveClusterID() string {
+	if h.svc != nil {
+		if id := strings.TrimSpace(h.svc.Status().ClusterID); id != "" {
+			return id
+		}
+	}
+	return h.clusterID
+}
+
 // Status returns the local Raft view.
 // GET /api/v1/raft/status
 func (h *Handler) Status(c *gin.Context) {
@@ -296,7 +312,7 @@ func (h *Handler) Leave(c *gin.Context) {
 		return
 	}
 	lookupCtx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
-	leaderURL, err := LookupPeerURL(lookupCtx, h.db, h.clusterID, st.LeaderID)
+	leaderURL, err := LookupPeerURL(lookupCtx, h.db, h.liveClusterID(), st.LeaderID)
 	cancel()
 	if err != nil || leaderURL == "" {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "leader URL unknown; cannot leave cleanly (retry shortly, or factory-reset)"})
@@ -516,7 +532,7 @@ func (h *Handler) RemovePeer(c *gin.Context) {
 	// lingers and the bridge picker keeps probing / the write-forwarder keeps
 	// targeting a node that's no longer in the cluster. Best-effort.
 	if h.replicator != nil {
-		if perr := h.replicator.SubmitPeerNodeRemove(c.Request.Context(), h.clusterID, id); perr != nil && h.logger != nil {
+		if perr := h.replicator.SubmitPeerNodeRemove(c.Request.Context(), h.liveClusterID(), id); perr != nil && h.logger != nil {
 			h.logger.Warn("raft: remove peer URL catalog entry failed", "node_id", id, "error", perr)
 		}
 	}
@@ -646,7 +662,7 @@ func (h *Handler) Join(c *gin.Context) {
 	// its own writes (host info etc.) — works once they advertise on
 	// their next post-activate hook.
 	if req.HTTPURL != "" {
-		if perr := h.replicator.SubmitPeerNodeAdvertise(ctx, h.clusterID, req.NodeID, req.HTTPURL, nil); perr != nil && h.logger != nil {
+		if perr := h.replicator.SubmitPeerNodeAdvertise(ctx, h.liveClusterID(), req.NodeID, req.HTTPURL, nil); perr != nil && h.logger != nil {
 			h.logger.Warn("raft join: failed to publish joiner URL", "node_id", req.NodeID, "error", perr)
 		}
 	}

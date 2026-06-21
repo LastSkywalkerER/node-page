@@ -191,16 +191,34 @@ func (p *Picker) probeURL(ctx context.Context, e raftcluster.PeerAdvertise) {
 		p.recordFailure(e, "http "+resp.Status)
 		return
 	}
-	p.recordSuccess(e, rtt)
+	// Trust the LIVE identity the node reports over the catalog's stored one.
+	// The catalog row's cluster_id can be stale (e.g. stamped under the old name
+	// before a cluster rename, or written by a leader whose handler captured a
+	// stale id at startup), which would let a same-cluster node slip past the
+	// own-cluster filter and become an uplink target — the bridge then POSTs
+	// replication batches at a sibling, which refuses them ("bridge receiving is
+	// not enabled"). Ping returns the authoritative current ids, so prefer them.
+	liveCluster := strings.TrimSpace(resp.Header.Get("X-Raft-Cluster-ID"))
+	liveNode := strings.TrimSpace(resp.Header.Get("X-Raft-Node-ID"))
+	p.recordSuccess(e, rtt, liveCluster, liveNode)
 }
 
-func (p *Picker) recordSuccess(e raftcluster.PeerAdvertise, rtt time.Duration) {
+func (p *Picker) recordSuccess(e raftcluster.PeerAdvertise, rtt time.Duration, liveCluster, liveNode string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	m, ok := p.measures[e.URL]
 	if !ok {
 		m = &measure{URL: e.URL, ClusterID: e.ClusterID, NodeID: e.NodeID}
 		p.measures[e.URL] = m
+	}
+	// Override the (possibly stale) catalog identity with the live values the
+	// node just reported over /raft/ping. Falls back to the stored values when a
+	// node is too old to emit the headers.
+	if liveCluster != "" {
+		m.ClusterID = liveCluster
+	}
+	if liveNode != "" {
+		m.NodeID = liveNode
 	}
 	// Exponential moving average to smooth jitter.
 	if m.RTT == 0 {

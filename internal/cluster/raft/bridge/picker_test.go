@@ -33,13 +33,51 @@ func pingServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// pingServerWithID mimics a node whose /raft/ping reports a live cluster/node
+// id via the X-Raft-* headers (as the real handler does).
+func pingServerWithID(t *testing.T, clusterID, nodeID string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Raft-Cluster-ID", clusterID)
+		w.Header().Set("X-Raft-Node-ID", nodeID)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// A catalog row can carry a SAME-cluster peer under a stale cluster id (e.g. the
+// leader stamped it under the pre-rename name at join time). The picker must
+// trust the live cluster id the node reports over /raft/ping, recognise it as
+// our own cluster, and never pick it as an uplink target — otherwise it ships
+// replication batches at a sibling node, which refuses them (404 "bridge
+// receiving is not enabled").
+func TestPickerExcludesSameClusterViaLivePing(t *testing.T) {
+	db := pickerTestDB(t)
+	// Sibling node, fast (would win on RTT), but its catalog row is stale.
+	sibling := pingServerWithID(t, "sky-home", "orangepi5-plus")
+	hub := pingServerWithID(t, "hub-cluster", "hub")
+
+	if err := db.Exec(`INSERT INTO peer_node_advertise (cluster_id, node_id, url) VALUES (?, ?, ?)`,
+		"old-name-ef5fcc", "orangepi5-plus", sibling.URL).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewPicker(nil, db, "sky-home", []string{hub.URL}, "")
+	p.probeOnce(context.Background())
+
+	if got := p.Pick(""); got != hub.URL {
+		t.Fatalf("Pick() = %q, want hub %q (same-cluster sibling must be excluded via live ping id)", got, hub.URL)
+	}
+}
+
 // A stale catalog row can carry THIS node's URL under an old cluster id
 // (cluster rename) — the picker must never probe or pick it, and the hub
 // seed must win instead.
 func TestPickerExcludesOwnURL(t *testing.T) {
 	db := pickerTestDB(t)
-	own := pingServer(t)  // this node — fast, would win on RTT
-	hub := pingServer(t)  // the real uplink target
+	own := pingServer(t) // this node — fast, would win on RTT
+	hub := pingServer(t) // the real uplink target
 
 	// Own URL advertised under the pre-rename cluster id.
 	if err := db.Exec(`INSERT INTO peer_node_advertise (cluster_id, node_id, url) VALUES (?, ?, ?)`,

@@ -51,14 +51,17 @@ func BootstrapClusterSecrets(ctx context.Context, logger *log.Logger, svc Servic
 // AdvertiseSelf publishes this node's advertised URL into the URL catalog
 // (CmdPeerNodeAdvertise). Best-effort: a transient error here is recorded
 // but does not block startup — the catalog updates again on every restart.
+//
+// EVERY node advertises itself (followers forward the write to the leader),
+// using its OWN live cluster id. The leader only ever learns a follower's URL
+// once — at join time — and stamps the row then; if that stamp is wrong (the
+// leader's handler captured a stale cluster id at startup, or the cluster was
+// renamed afterwards) the follower's row stays mis-tagged forever, which breaks
+// the intra-cluster metric fanout (it keys on cluster_id) and the bridge
+// own-cluster filter. Letting each node re-assert its own (cluster_id, node_id,
+// url) keeps the catalog self-correcting without a re-join.
 func AdvertiseSelf(ctx context.Context, logger *log.Logger, svc Service, replicator *Replicator, clusterID, nodeID, advertiseURL string) {
 	if svc == nil || !svc.Enabled() || replicator == nil || advertiseURL == "" {
-		return
-	}
-	if !svc.IsLeader() {
-		// Only the leader writes; followers' identical CmdPeerNodeAdvertise
-		// would race anyway. The leader's submission propagates to all
-		// replicas, including the follower itself.
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
