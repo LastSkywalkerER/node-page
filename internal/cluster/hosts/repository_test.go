@@ -414,6 +414,65 @@ func TestUpsertHostNameMatchDeflectsTakenMAC(t *testing.T) {
 	}
 }
 
+// UpsertLocalHost's UPDATE branch must deflect a MAC already owned by another
+// row instead of writing it (SQLite 2067 / Postgres 23505). Repro of the field
+// incident: a cloned stats.db left id=1 on a FOREIGN identity, while this
+// machine's real NIC MAC was already held by a connector-discovered self-guest
+// row. Every collector tick tried to write the real MAC onto id=1 → unique
+// violation → the whole upsert failed → last_seen froze → card went "offline".
+// After the fix the upsert succeeds (keeping the old MAC) and last_seen advances.
+func TestUpsertLocalHostDeflectsTakenMAC(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+	r := repo.(*hostRepository)
+
+	const realMAC = "bc:24:11:9c:c0:30" // this machine's actual eth0
+	stale := time.Now().Add(-48 * time.Hour).Truncate(time.Second)
+	// id=1 carries stale foreign clone residue (orangepi5-plus / a docker MAC).
+	if err := r.db.Model(&Host{}).Where("id = ?", LocalCollectorHostID).Updates(map[string]interface{}{
+		"name":        "orangepi5-plus",
+		"mac_address": "02:42:0a:00:0c:03",
+		"source":      SourceAgent,
+		"last_seen":   stale,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// The real machine's row, created by its own Proxmox connector as a guest,
+	// already holds the real NIC MAC.
+	guest := &Host{
+		Name: "node-stats", MacAddress: realMAC, Source: MergeSource(SourceAgent, SourceConnector),
+		ExternalID: "proxmox:node/inno-pve/lxc/105", HostType: "lxc",
+	}
+	if err := r.db.Create(guest).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// Local collector tick: reports the real MAC for id=1. Must not collide.
+	got, err := repo.UpsertLocalHost(ctx, HostInfo{Name: "node-stats", MacAddress: realMAC})
+	if err != nil {
+		t.Fatalf("UpsertLocalHost must not collide on the taken MAC: %v", err)
+	}
+	if got.ID != LocalCollectorHostID {
+		t.Fatalf("landed on id=%d, want the reserved local id=%d", got.ID, LocalCollectorHostID)
+	}
+	if got.MacAddress != "02:42:0a:00:0c:03" {
+		t.Fatalf("local MAC overwritten with the colliding real MAC: %q", got.MacAddress)
+	}
+	if !got.LastSeen.After(stale) {
+		t.Fatalf("last_seen did not advance: %v (was %v)", got.LastSeen, stale)
+	}
+	// The guest row keeps the real MAC untouched; still exactly two rows.
+	g, err := repo.GetHostByID(ctx, guest.ID)
+	if err != nil || g.MacAddress != realMAC {
+		t.Fatalf("guest row corrupted: %+v err=%v", g, err)
+	}
+	var count int64
+	r.db.Model(&Host{}).Count(&count)
+	if count != 2 {
+		t.Fatalf("%d rows, want 2 (id=1 + guest)", count)
+	}
+}
+
 // UpsertConnectorHost's connector-owned refresh branch must likewise deflect a
 // MAC already owned by another row instead of writing it (23505). A pure
 // connector-only row keyed by external_id whose incoming MAC now collides with

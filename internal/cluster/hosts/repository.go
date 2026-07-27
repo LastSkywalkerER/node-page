@@ -200,7 +200,21 @@ func (r *hostRepository) UpsertLocalHost(ctx context.Context, hostInfo HostInfo)
 		return nil, err
 	}
 	host.Name = hostInfo.Name
-	host.MacAddress = hostInfo.MacAddress
+	// Defensive MAC deflection (mirrors UpsertHost/UpsertConnectorHost, the only
+	// other upsert paths). mac_address is uniquely indexed, so writing a MAC
+	// already owned by a DIFFERENT row hard-errors (SQLite 2067 / Postgres 23505)
+	// and hot-loops this upsert every collector tick. Because the whole Save then
+	// fails, last_seen never advances and the card flips to "offline" even though
+	// metrics keep streaming. This bites when the reserved local row (id=1) and a
+	// connector-discovered self-guest race for the same NIC MAC, or when a cloned
+	// stats.db leaves id=1 on a foreign identity while this machine's real MAC is
+	// held by another row. Keep the existing MAC in that case — the row (and its
+	// last_seen) still refreshes; identity converges once the duplicate is pruned.
+	if taken, terr := r.macOwnedByOther(ctx, hostInfo.MacAddress, host.ID); terr != nil {
+		return nil, terr
+	} else if !taken {
+		host.MacAddress = hostInfo.MacAddress
+	}
 	host.IPv4 = hostInfo.IPv4
 	host.OS = hostInfo.OS
 	host.Platform = hostInfo.Platform
