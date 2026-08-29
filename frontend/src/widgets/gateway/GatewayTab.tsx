@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
 import { confirmDialog } from '@/shared/lib/confirmDialog'
-import { Globe, Plus, Trash2, Pencil, ExternalLink, ShieldAlert, ShieldCheck, Lock, Activity, X } from 'lucide-react'
+import { Globe, Plus, Trash2, Pencil, ExternalLink, ShieldAlert, ShieldCheck, Lock, Activity, X, ScrollText, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -20,6 +20,7 @@ import {
   useUpdateRoute,
   useDeleteRoute,
   useCheckTarget,
+  useGatewayLogs,
   routeToRequest,
 } from './useGateway'
 import type { GatewayConfig, GatewayRoute, GatewayState, GatewayTarget, RouteRequest, BasicAuthInput } from './schemas'
@@ -326,18 +327,33 @@ function RouteForm({
     else create.mutate(body, opts)
   }
 
-  const runCheck = () => {
-    check.mutate(
-      { host: req.target_host, port: Number(req.target_port) },
-      {
-        onSuccess: (r) =>
-          r.reachable
-            ? toast.success(`${req.target_host}:${req.target_port} is reachable from this node`)
-            : toast.error(`Unreachable from this node: ${r.error ?? 'connection failed'}`),
-        onError: (e) => toast.error(e.message),
-      }
-    )
-  }
+  // Live reachability: re-check (debounced) whenever the target changes.
+  const [reach, setReach] = useState<{ ok: boolean; error?: string; key: string } | null>(null)
+  const checkMutate = check.mutate
+  const reachTimer = useRef<number | null>(null)
+  useEffect(() => {
+    const host = req.target_host.trim()
+    const port = Number(req.target_port)
+    if (!host || !port) {
+      setReach(null)
+      return
+    }
+    const key = `${host}:${port}`
+    if (reachTimer.current) window.clearTimeout(reachTimer.current)
+    reachTimer.current = window.setTimeout(() => {
+      checkMutate(
+        { host, port },
+        {
+          onSuccess: (r) => setReach({ ok: r.reachable, error: r.error, key }),
+          onError: (e) => setReach({ ok: false, error: e.message, key }),
+        }
+      )
+    }, 500)
+    return () => {
+      if (reachTimer.current) window.clearTimeout(reachTimer.current)
+    }
+  }, [req.target_host, req.target_port, checkMutate])
+  const reachCurrent = reach && reach.key === `${req.target_host.trim()}:${Number(req.target_port)}` ? reach : null
 
   const setAuth = (i: number, patch: Partial<BasicAuthInput>) =>
     set({ basic_auth: req.basic_auth.map((a, j) => (j === i ? { ...a, ...patch } : a)) })
@@ -406,12 +422,25 @@ function RouteForm({
               {req.target_scheme}://{req.target_host}:{req.target_port}
             </span>
           ) : (
-            <span>Only ports published on the host are reachable from the gateway node.</span>
+            <span>
+              Pick a detected service or enter an address. Services on the gateway host itself are reached via
+              host.docker.internal automatically.
+            </span>
           )}
           {req.target_host && req.target_port ? (
-            <Button type="button" variant="ghost" size="sm" className="h-6 px-2" onClick={runCheck} disabled={check.isPending}>
-              {check.isPending ? 'checking…' : 'check reachability'}
-            </Button>
+            <span className="inline-flex items-center gap-1.5" title={reachCurrent?.error}>
+              <span
+                className={cn(
+                  'h-2 w-2 rounded-full',
+                  !reachCurrent || check.isPending ? 'bg-zinc-400 animate-pulse' : reachCurrent.ok ? 'bg-emerald-400' : 'bg-red-400'
+                )}
+              />
+              {!reachCurrent || check.isPending
+                ? 'checking from this node…'
+                : reachCurrent.ok
+                  ? 'reachable from this node'
+                  : `unreachable from this node${reachCurrent.error ? ` — ${reachCurrent.error}` : ''}`}
+            </span>
           ) : null}
           {req.target_scheme === 'https' && (
             <label className="inline-flex items-center gap-1.5">
@@ -585,6 +614,69 @@ function RouteRow({ route, onEdit }: { route: GatewayRoute; onEdit: () => void }
 }
 
 // ---------------------------------------------------------------------------
+// Traefik logs (gateway node, managed mode)
+// ---------------------------------------------------------------------------
+
+function LogsCard({ state }: { state: GatewayState }) {
+  const [open, setOpen] = useState(false)
+  const [tail, setTail] = useState(300)
+  const enabled = open && state.status.is_gateway_node && state.config.mode === 'managed'
+  const { data, isFetching, refetch } = useGatewayLogs(enabled, tail)
+  const endRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: 'end' })
+  }, [data?.logs])
+
+  if (!state.config.enabled || !state.status.is_gateway_node || state.config.mode !== 'managed') return null
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <ScrollText className="h-4 w-4" /> Traefik logs
+            </CardTitle>
+            <CardDescription>
+              Service log + access log of the managed Traefik on this node
+              {state.capabilities.manage_kind === 'systemd' ? ' (journalctl)' : ' (docker logs)'}. Refreshes every 5 s.
+            </CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            {open && (
+              <>
+                <select className={cn(selectCls, 'h-8 w-auto')} value={tail} onChange={(e) => setTail(Number(e.target.value))}>
+                  {[100, 300, 1000].map((n) => (
+                    <option key={n} value={n}>
+                      last {n}
+                    </option>
+                  ))}
+                </select>
+                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => refetch()} title="Refresh">
+                  <RefreshCw className={cn('h-4 w-4', isFetching && 'animate-spin')} />
+                </Button>
+              </>
+            )}
+            <Button variant="outline" size="sm" onClick={() => setOpen((o) => !o)}>
+              {open ? 'Hide' : 'Show'}
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      {open && (
+        <CardContent>
+          {data?.error && <div className="mb-2 text-xs text-amber-500">{data.error}</div>}
+          <pre className="max-h-96 overflow-auto rounded-lg border border-border/60 bg-black/80 p-3 font-mono text-[11px] leading-snug text-zinc-200 whitespace-pre-wrap break-all">
+            {data?.logs?.trim() ? data.logs : isFetching ? 'loading…' : 'no output yet'}
+            <div ref={endRef} />
+          </pre>
+        </CardContent>
+      )}
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Tab
 // ---------------------------------------------------------------------------
 
@@ -651,6 +743,8 @@ export function GatewayTab() {
           )}
         </CardContent>
       </Card>
+
+      <LogsCard state={data} />
     </div>
   )
 }

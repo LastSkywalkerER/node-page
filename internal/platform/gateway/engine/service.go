@@ -123,6 +123,8 @@ type Service interface {
 	Targets(ctx context.Context) ([]Target, error)
 	// CheckTarget dials host:port from THIS node (TCP) and reports reachability.
 	CheckTarget(ctx context.Context, host string, port int) error
+	// Logs returns the managed Traefik's recent logs (gateway node only).
+	Logs(ctx context.Context, tail int) (string, error)
 }
 
 // ErrValidation marks a bad request (handler → 400).
@@ -304,6 +306,13 @@ func (s *service) CheckTarget(ctx context.Context, host string, port int) error 
 	}
 	_ = conn.Close()
 	return nil
+}
+
+func (s *service) Logs(ctx context.Context, tail int) (string, error) {
+	if s.mat == nil {
+		return "", fmt.Errorf("%w: logs unavailable", ErrValidation)
+	}
+	return s.mat.Logs(ctx, tail)
 }
 
 // --- internals ---------------------------------------------------------------

@@ -26,6 +26,8 @@ func TestBuildComposeContent_GatewayService(t *testing.T) {
 		`- "8443:443"`,
 		"./data/docker/traefik/dynamic:/etc/traefik/dynamic:ro",
 		"./data/docker/traefik/acme:/letsencrypt",
+		"--accesslog=true",
+		"NODE_STATS_PROJECT=${COMPOSE_PROJECT_NAME:-node-stats}",
 		`["CMD", "traefik", "healthcheck", "--ping", "--ping.entryPoint=ping", "--entrypoints.ping.address=:8082"]`,
 	} {
 		if !strings.Contains(out, want) {

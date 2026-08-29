@@ -177,6 +177,9 @@ func BuildComposeContent(ds DesiredState) string {
 	// Optional display hostname — distinguishes nodes that share a host
 	// (e.g. several instances on one Docker VM, whose OS hostname collides).
 	w("      - NODE_STATS_HOSTNAME=${NODE_STATS_HOSTNAME:-}")
+	// Compose project name, so the app can address sibling services of its own
+	// stack (e.g. the gateway's `traefik` container logs) via compose labels.
+	w("      - NODE_STATS_PROJECT=${COMPOSE_PROJECT_NAME:-node-stats}")
 	// Cap the Go heap below the container mem_limit so the runtime GC's harder
 	// instead of letting the OOM killer reap the app (the hub VPS is 2 CPU/4GB).
 	// Runtime-overridable, so a desired-state / installer env wins over the default.
@@ -291,7 +294,10 @@ func writeTraefikService(w func(string), gw GatewayProvision) {
 	w("      - --ping=true")
 	w("      - --ping.entryPoint=ping")
 	w("      - --api.dashboard=false")
-	w("      - --log.level=${NODE_STATS_TRAEFIK_LOG_LEVEL:-WARN}")
+	w("      - --log.level=${NODE_STATS_TRAEFIK_LOG_LEVEL:-INFO}")
+	// Access log to stdout: visible in the Gateway tab's log panel (json-file
+	// logging below caps disk usage).
+	w("      - --accesslog=true")
 	w("      - --global.sendAnonymousUsage=false")
 	w("      - --global.checkNewVersion=false")
 	if gw.ACMEEnabled {
@@ -303,6 +309,11 @@ func writeTraefikService(w func(string), gw GatewayProvision) {
 			w("      - --certificatesresolvers.le.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory")
 		}
 	}
+	// Targets published on THIS host are addressed as host.docker.internal
+	// (the app rewrites the gateway node's own IP to it), which needs the
+	// host-gateway alias inside the Traefik container too.
+	w("    extra_hosts:")
+	w(`      - "host.docker.internal:host-gateway"`)
 	w("    ports:")
 	w(fmt.Sprintf(`      - "%d:80"`, httpPort))
 	w(fmt.Sprintf(`      - "%d:443"`, httpsPort))

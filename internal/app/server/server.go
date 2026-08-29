@@ -258,6 +258,9 @@ func Run() {
 		DataDir: gatewayDataDir,
 		DBType:  string(cfg.Database.Type),
 		DBDSN:   cfg.Database.DSN,
+		DockerLogs: func(ctx context.Context, project string, tail int) (string, error) {
+			return container.GetDockerService().GetContainerLogs(ctx, docker.ContainerLogRef{Project: project, Service: "traefik"}, tail)
+		},
 	})
 	go gatewayMat.Run(appCtx)
 	gatewaySvc := gatewayengine.NewService(
@@ -864,6 +867,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.PUT("/gateway/config", middleware.RequireAdmin(), gatewayHandler.HandleSetConfig)
 		authAPI.GET("/gateway/targets", middleware.RequireAdmin(), gatewayHandler.HandleTargets)
 		authAPI.POST("/gateway/check", middleware.RequireAdmin(), gatewayHandler.HandleCheck)
+		authAPI.GET("/gateway/logs", middleware.RequireAdmin(), gatewayHandler.HandleLogs)
 		authAPI.POST("/gateway/routes", middleware.RequireAdmin(), gatewayHandler.HandleCreateRoute)
 		authAPI.PUT("/gateway/routes/:route_id", middleware.RequireAdmin(), gatewayHandler.HandleUpdateRoute)
 		authAPI.DELETE("/gateway/routes/:route_id", middleware.RequireAdmin(), gatewayHandler.HandleDeleteRoute)

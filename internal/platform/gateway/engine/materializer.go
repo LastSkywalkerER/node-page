@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -51,6 +52,8 @@ type MaterializerDeps struct {
 	// DataDir is NODE_STATS_DATA_DIR (/app/data) — managed-mode dynamic dir
 	// lives under it (bind-mounted into the Traefik container by compose).
 	DataDir string
+	// DockerLogs fetches the managed Traefik container's logs (docker mode).
+	DockerLogs func(ctx context.Context, project string, tail int) (string, error)
 	// DBType / DBDSN describe the running engine so a freshly created
 	// desired-state keeps the same DB topology (mirrors setup.RequestRecreate).
 	DBType string
@@ -154,6 +157,52 @@ func (m *Materializer) manageKind() (kind, reason string) {
 	return "", why
 }
 
+// localizeTargets rewrites targets that live on the gateway host itself when
+// Traefik runs as a container here: a port published on this host is reached
+// from inside the container as host.docker.internal:<port> (compose adds the
+// host-gateway alias), while the host's own LAN IP may or may not hairpin
+// back through the bridge. Routes keep the real IP in the DB, so moving the
+// gateway to another node renders the routable address again.
+func (m *Materializer) localizeTargets(ctx context.Context, cfg gateway.Config, routes []gateway.Route) []gateway.Route {
+	if cfg.Mode != gateway.ModeManaged || !setup.RunningInDocker() || m.deps.Hosts == nil {
+		return routes
+	}
+	h, err := m.deps.Hosts.GetHostByID(ctx, hosts.LocalCollectorHostID)
+	if err != nil || h == nil {
+		return routes
+	}
+	out := make([]gateway.Route, len(routes))
+	for i, r := range routes {
+		if (r.TargetHostMAC != "" && strings.EqualFold(r.TargetHostMAC, h.MacAddress)) ||
+			(h.IPv4 != "" && r.TargetHost == h.IPv4) || r.TargetHost == "127.0.0.1" || r.TargetHost == "localhost" {
+			r.TargetHost = "host.docker.internal"
+		}
+		out[i] = r
+	}
+	return out
+}
+
+// Logs returns the managed Traefik's recent log output on the gateway node.
+func (m *Materializer) Logs(ctx context.Context, tail int) (string, error) {
+	if tail <= 0 || tail > 2000 {
+		tail = 300
+	}
+	st := m.Status()
+	if !st.IsGatewayNode {
+		return "", errors.New("this node is not the gateway — open the gateway node's dashboard for Traefik logs")
+	}
+	if st.Mode != gateway.ModeManaged {
+		return "", errors.New("external mode: Traefik is operated outside node-stats; check its own logs")
+	}
+	if m.native != nil {
+		return m.native.Logs(ctx, tail)
+	}
+	if m.deps.DockerLogs == nil {
+		return "", errors.New("docker log access is not available on this node")
+	}
+	return m.deps.DockerLogs(ctx, envOr("NODE_STATS_PROJECT", "node-stats"), tail)
+}
+
 // isLocalNode reports whether THIS node is the configured gateway — by the
 // local host row's MAC or (Docker recreates change the NIC MAC) its stable
 // system id / hardware UUID.
@@ -217,7 +266,7 @@ func (m *Materializer) reconcile(ctx context.Context) {
 		}
 		path := filepath.Join(dir, gateway.DynamicFileName)
 		st.FilePath = path
-		content, err := gateway.Render(cfg, routes)
+		content, err := gateway.Render(cfg, m.localizeTargets(rc, cfg, routes))
 		if err != nil {
 			st.LastError = "render: " + err.Error()
 			return

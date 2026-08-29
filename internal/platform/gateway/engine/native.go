@@ -151,6 +151,17 @@ func (n *nativeProvisioner) Disable(ctx context.Context) error {
 	return nil
 }
 
+// Logs returns the unit's recent journal lines (traefik log + access log).
+func (n *nativeProvisioner) Logs(ctx context.Context, tail int) (string, error) {
+	rc, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(rc, "journalctl", "-u", nativeUnitName, "-n", fmt.Sprint(tail), "--no-pager", "-o", "short-iso").CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("journalctl: %w", err)
+	}
+	return string(out), nil
+}
+
 // Health reports the unit state and, when failed, the last journal lines.
 func (n *nativeProvisioner) Health(ctx context.Context) (healthy bool, detail string) {
 	if pingURL(ctx, nativePingURL) {
@@ -199,7 +210,8 @@ func (n *nativeProvisioner) renderStatic(gw setup.GatewayProvision) []byte {
 	w(fmt.Sprintf("    directory: %q", n.dynamicDir()))
 	w("    watch: true")
 	w("api:\n  dashboard: false")
-	w("log:\n  level: " + envOr("NODE_STATS_TRAEFIK_LOG_LEVEL", "WARN"))
+	w("log:\n  level: " + envOr("NODE_STATS_TRAEFIK_LOG_LEVEL", "INFO"))
+	w("accessLog: {}")
 	w("global:\n  sendAnonymousUsage: false\n  checkNewVersion: false")
 	if gw.ACMEEnabled {
 		w("certificatesResolvers:\n  le:\n    acme:")

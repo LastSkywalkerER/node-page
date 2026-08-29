@@ -102,6 +102,15 @@ operator's objects):
 Routes without basic auth / allow list are badged **public** in the UI — one click exposes an
 internal service to the internet, so the form nudges towards adding a user or a CIDR.
 
+**Same-host targets.** When Traefik runs as a container on the gateway node, targets on that very
+host (matched by the host's MAC/IPv4, or `127.0.0.1`/`localhost`) are rendered as
+`host.docker.internal:<port>` — the container can't always hairpin to the host's LAN IP. The
+route keeps the real IP in the DB, so moving the gateway elsewhere renders the routable address.
+
+**Logs.** `GET /gateway/logs?tail=` (admin → Gateway → *Traefik logs*) returns the managed Traefik's
+service + access log (`docker logs` of the compose `traefik` service, or `journalctl -u
+node-stats-traefik` on native) — gateway node only.
+
 **Targets.** The form suggests every container port *published on its host* across the cluster
 (`GET /gateway/targets`, from the replicated docker snapshots): that's what is reachable from the
 gateway node as `<host ipv4>:<published port>`. Unpublished container ports are not reachable

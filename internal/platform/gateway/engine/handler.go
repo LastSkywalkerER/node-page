@@ -3,6 +3,7 @@ package engine
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"system-stats/internal/platform/gateway"
 
 	"github.com/charmbracelet/log"
@@ -169,6 +170,25 @@ func (h *Handler) HandleDeleteRoute(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
+}
+
+// HandleLogs returns the managed Traefik's recent logs (gateway node only).
+//
+// @Summary  Gateway (Traefik) logs
+// @Tags     gateway
+// @Produce  json
+// @Param    tail query integer false "Lines (default 300, max 2000)"
+// @Success  200 {object} map[string]interface{}
+// @Security BearerAuth
+// @Router   /gateway/logs [get]
+func (h *Handler) HandleLogs(c *gin.Context) {
+	tail, _ := strconv.Atoi(c.DefaultQuery("tail", "300"))
+	out, err := h.service.Logs(c.Request.Context(), tail)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"logs": out, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"logs": out})
 }
 
 func (h *Handler) fail(c *gin.Context, err error) {
