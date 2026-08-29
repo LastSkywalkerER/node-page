@@ -13,6 +13,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -35,6 +36,7 @@ type controller struct {
 	appService        string
 	controllerService string // compose service name of this controller sidecar
 	lastApplied       string // hash of the last successfully applied desired state
+	lastState         *setup.DesiredState // the state behind lastApplied (nil after a restart without a persisted copy)
 	selfUpdated       bool   // guards the controller self-update to once per apply
 }
 
@@ -49,6 +51,9 @@ func Run() {
 		controllerService: envOr("NODE_STATS_CONTROLLER_SERVICE", "node-stats-controller"),
 	}
 	c.lastApplied = readAppliedHash(c.dataDir)
+	if prev := readAppliedState(c.dataDir); prev != nil && prev.Hash() == c.lastApplied {
+		c.lastState = prev
+	}
 	log.Info("controller: starting", "stack_dir", c.stackDir, "data_dir", c.dataDir, "project", c.project)
 
 	// Return freed heap to the OS on a slow cadence so the sidecar's RSS stays
@@ -85,6 +90,8 @@ func (c *controller) loop() {
 			case h != c.lastApplied:
 				if c.apply(*ds) {
 					c.lastApplied = h
+					cp := *ds
+					c.lastState = &cp
 				}
 			case c.composeDrifted(*ds):
 				// The file no longer matches an ALREADY-APPLIED state - an
@@ -159,10 +166,39 @@ func (c *controller) apply(ds setup.DesiredState) bool {
 		}
 	}
 
+	// Gateway (managed Traefik): bring it up / tear it down like the db above.
+	// It is NOT a dependency of the app, so the app recreate below never
+	// touches it; --wait blocks on its ping healthcheck so a port clash (80/443
+	// already taken on the host) surfaces here as a controller error.
+	if ds.GatewayEnabled() {
+		if out, err := c.compose("up", "-d", "--wait", "traefik"); err != nil {
+			return c.fail(ds, "start traefik (gateway): "+out, err)
+		}
+	} else {
+		if out, err := c.compose("stop", "traefik"); err != nil {
+			log.Debug("controller: stop traefik (ignored)", "out", out, "error", err)
+		}
+		if out, err := c.compose("rm", "-f", "traefik"); err != nil {
+			log.Debug("controller: rm traefik (ignored)", "out", out, "error", err)
+		}
+	}
+
 	if ds.PullBeforeApply {
 		if out, err := c.compose("pull", c.appService); err != nil {
 			return c.fail(ds, "pull "+c.appService+": "+out, err)
 		}
+	}
+
+	// A change that only touched the gateway section (Traefik on/off, its
+	// ports/ACME) leaves the app's stanza byte-identical — skip the disruptive
+	// app recreate so toggling the gateway never restarts monitoring.
+	if c.lastState != nil && !ds.PullBeforeApply && sameExceptGateway(*c.lastState, ds) {
+		log.Info("controller: gateway-only change — app recreate skipped", "generation", ds.Generation)
+		writeAppliedHash(c.dataDir, ds.Hash())
+		writeAppliedState(c.dataDir, ds)
+		c.writeStatus(setup.ControllerStatus{Generation: ds.Generation, Phase: setup.PhaseApplied,
+			Message: "gateway updated"})
+		return true
 	}
 
 	// Recreate ONLY the app: --no-deps keeps the controller (and db) untouched;
@@ -176,6 +212,7 @@ func (c *controller) apply(ds setup.DesiredState) bool {
 
 	log.Info("controller: applied", "generation", ds.Generation)
 	writeAppliedHash(c.dataDir, ds.Hash())
+	writeAppliedState(c.dataDir, ds)
 	c.writeStatus(setup.ControllerStatus{Generation: ds.Generation, Phase: setup.PhaseApplied,
 		Message: "recreated " + c.appService})
 
@@ -299,6 +336,36 @@ func writeAppliedHash(dir, hash string) {
 	if err := os.WriteFile(tmp, []byte(hash), 0o644); err == nil {
 		_ = os.Rename(tmp, filepath.Join(dir, ".applied-hash"))
 	}
+}
+
+// sameExceptGateway reports whether a and b differ only in Generation and the
+// Gateway section (i.e. the app service's compose stanza is unchanged).
+func sameExceptGateway(a, b setup.DesiredState) bool {
+	a.Generation, b.Generation = 0, 0
+	a.Gateway, b.Gateway = nil, nil
+	return a.Hash() == b.Hash()
+}
+
+// applied-state persistence: the full last-applied descriptor, so a restarted
+// controller can still recognise a gateway-only change (hash alone can't).
+func readAppliedState(dir string) *setup.DesiredState {
+	b, err := os.ReadFile(filepath.Join(dir, ".applied-state.json"))
+	if err != nil {
+		return nil
+	}
+	var ds setup.DesiredState
+	if err := json.Unmarshal(b, &ds); err != nil {
+		return nil
+	}
+	return &ds
+}
+
+func writeAppliedState(dir string, ds setup.DesiredState) {
+	b, err := json.Marshal(ds)
+	if err != nil {
+		return
+	}
+	_ = writeFileAtomic(filepath.Join(dir, ".applied-state.json"), b)
 }
 
 func (c *controller) fail(ds setup.DesiredState, where string, err error) bool {

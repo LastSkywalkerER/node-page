@@ -1,0 +1,453 @@
+package engine
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/charmbracelet/log"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
+
+	hosts "system-stats/internal/cluster/hosts"
+	"system-stats/internal/platform/gateway"
+)
+
+// ConfigStore persists the cluster-wide gateway.Config (cluster_config row; replicated
+// via CmdConfigSet when Raft is on). Implemented in the raft package.
+type ConfigStore interface {
+	Get(ctx context.Context) (string, error)
+	Set(ctx context.Context, value string) error
+}
+
+// Replicator is the subset of the raft replicator the gateway needs (declared
+// here to break the raft → gateway import cycle).
+type Replicator interface {
+	Enabled() bool
+	SubmitGatewayRouteUpsert(ctx context.Context, r gateway.Route) error
+	SubmitGatewayRouteDelete(ctx context.Context, routeID string) error
+}
+
+// TargetSource lists the containers with published host ports across the
+// cluster — the "pick a target" suggestions. Adapted over the docker service.
+type TargetSource interface {
+	Targets(ctx context.Context) ([]Target, error)
+}
+
+// Target is one suggested upstream (a container's published port on a host).
+type Target struct {
+	HostID    uint   `json:"host_id"`
+	HostName  string `json:"host_name"`
+	HostMAC   string `json:"host_mac"`
+	IPv4      string `json:"ipv4"`
+	App       string `json:"app"`
+	Container string `json:"container,omitempty"`
+	Port      int    `json:"port"`
+	// PrivatePort is the in-container port (display only).
+	PrivatePort int    `json:"private_port,omitempty"`
+	Image       string `json:"image,omitempty"`
+}
+
+// BasicAuthInput is a plaintext credential the service hashes (bcrypt) before
+// persisting. Password empty on update = keep the stored hash for that user.
+type BasicAuthInput struct {
+	User     string `json:"user"`
+	Password string `json:"password"`
+}
+
+// RouteRequest is the create/update body.
+type RouteRequest struct {
+	Name                     string           `json:"name"`
+	Domain                   string           `json:"domain"`
+	PathPrefix               string           `json:"path_prefix"`
+	TargetScheme             string           `json:"target_scheme"`
+	TargetHost               string           `json:"target_host"`
+	TargetPort               int              `json:"target_port"`
+	TargetHostMAC            string           `json:"target_host_mac"`
+	TargetLabel              string           `json:"target_label"`
+	TargetInsecureSkipVerify bool             `json:"target_insecure_skip_verify"`
+	TLS                      bool             `json:"tls"`
+	BasicAuth                []BasicAuthInput `json:"basic_auth"`
+	IPAllowList              string           `json:"ip_allow_list"`
+	Enabled                  *bool            `json:"enabled"`
+}
+
+// RouteView is the API shape of a route (hashes stripped, users listed).
+type RouteView struct {
+	gateway.Route
+	BasicAuthUsers []string `json:"basic_auth_users"`
+	PublicURL      string   `json:"public_url"`
+	Protected      bool     `json:"protected"`
+}
+
+// Capabilities tells the UI what this node can do.
+type Capabilities struct {
+	// CanManage: docker deployment with a controller → managed mode possible.
+	CanManage bool `json:"can_manage"`
+	// RunningInDocker / ManagedExternally explain why CanManage is false.
+	RunningInDocker   bool   `json:"running_in_docker"`
+	ManagedExternally bool   `json:"managed_externally"`
+	LocalHostID       uint   `json:"local_host_id"`
+	LocalMAC          string `json:"local_mac"`
+	// ManagedDynamicDir is where this node would render in managed mode.
+	ManagedDynamicDir string `json:"managed_dynamic_dir"`
+}
+
+// State is the GET /gateway response.
+type State struct {
+	Config       gateway.Config `json:"config"`
+	Routes       []RouteView    `json:"routes"`
+	Status       Status         `json:"status"`
+	Capabilities Capabilities   `json:"capabilities"`
+}
+
+// Service is the admin-facing gateway API.
+type Service interface {
+	GetState(ctx context.Context) (*State, error)
+	SetConfig(ctx context.Context, cfg gateway.Config) (*gateway.Config, error)
+	CreateRoute(ctx context.Context, req RouteRequest) (*RouteView, error)
+	UpdateRoute(ctx context.Context, routeID string, req RouteRequest) (*RouteView, error)
+	DeleteRoute(ctx context.Context, routeID string) error
+	Targets(ctx context.Context) ([]Target, error)
+	// CheckTarget dials host:port from THIS node (TCP) and reports reachability.
+	CheckTarget(ctx context.Context, host string, port int) error
+}
+
+// ErrValidation marks a bad request (handler → 400).
+var ErrValidation = errors.New("validation error")
+
+type service struct {
+	logger  *log.Logger
+	repo    gateway.Repository
+	cfg     ConfigStore
+	hosts   hosts.Repository
+	targets TargetSource
+	raft    Replicator
+	mat     *Materializer
+}
+
+// NewService wires the gateway service. mat may be nil (tests).
+func NewService(logger *log.Logger, repo gateway.Repository, cfg ConfigStore, hostRepo hosts.Repository, targets TargetSource, raft Replicator, mat *Materializer) Service {
+	return &service{logger: logger, repo: repo, cfg: cfg, hosts: hostRepo, targets: targets, raft: raft, mat: mat}
+}
+
+// LoadConfig decodes the stored gateway.Config (zero value when unset).
+func LoadConfig(ctx context.Context, store ConfigStore) (gateway.Config, error) {
+	raw, err := store.Get(ctx)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return gateway.Config{}, err
+	}
+	var cfg gateway.Config
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		return gateway.Config{}, fmt.Errorf("gateway: corrupt config: %w", err)
+	}
+	return cfg, nil
+}
+
+func (s *service) GetState(ctx context.Context) (*State, error) {
+	cfg, err := LoadConfig(ctx, s.cfg)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.repo.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	views := make([]RouteView, 0, len(rows))
+	for _, r := range rows {
+		views = append(views, toView(r, cfg))
+	}
+	st := &State{Config: cfg, Routes: views}
+	if s.mat != nil {
+		st.Status = s.mat.Status()
+		st.Capabilities = s.mat.Capabilities(ctx)
+	}
+	return st, nil
+}
+
+func (s *service) SetConfig(ctx context.Context, cfg gateway.Config) (*gateway.Config, error) {
+	cfg.NodeMAC = strings.ToLower(strings.TrimSpace(cfg.NodeMAC))
+	cfg.DynamicDir = strings.TrimSpace(cfg.DynamicDir)
+	cfg.ACMEEmail = strings.TrimSpace(cfg.ACMEEmail)
+	if cfg.Mode == "" {
+		cfg.Mode = gateway.ModeManaged
+	}
+	if cfg.Mode != gateway.ModeManaged && cfg.Mode != gateway.ModeExternal {
+		return nil, fmt.Errorf("%w: mode must be %q or %q", ErrValidation, gateway.ModeManaged, gateway.ModeExternal)
+	}
+	if cfg.Enabled {
+		if cfg.NodeMAC == "" {
+			return nil, fmt.Errorf("%w: pick the gateway node", ErrValidation)
+		}
+		if cfg.Mode == gateway.ModeExternal && cfg.DynamicDir == "" {
+			return nil, fmt.Errorf("%w: external mode needs the Traefik dynamic-config directory", ErrValidation)
+		}
+		if cfg.ACMEEnabled && !strings.Contains(cfg.ACMEEmail, "@") {
+			return nil, fmt.Errorf("%w: Let's Encrypt needs a contact e-mail", ErrValidation)
+		}
+	}
+	if cfg.Mode == gateway.ModeManaged {
+		if cfg.HTTPPort == 0 {
+			cfg.HTTPPort = 80
+		}
+		if cfg.HTTPSPort == 0 {
+			cfg.HTTPSPort = 443
+		}
+		if !validPort(cfg.HTTPPort) || !validPort(cfg.HTTPSPort) || cfg.HTTPPort == cfg.HTTPSPort {
+			return nil, fmt.Errorf("%w: invalid gateway ports", ErrValidation)
+		}
+	}
+	if cfg.NodeMAC != "" && s.hosts != nil {
+		if h, err := s.hosts.GetHostByMacAddress(ctx, cfg.NodeMAC); err == nil && h != nil {
+			cfg.NodeName = h.Name
+		}
+	}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.cfg.Set(ctx, string(raw)); err != nil {
+		return nil, err
+	}
+	s.poke()
+	return &cfg, nil
+}
+
+func (s *service) CreateRoute(ctx context.Context, req RouteRequest) (*RouteView, error) {
+	r := gateway.Route{RouteID: newRouteID(), Enabled: true, CreatedAt: time.Now().UTC()}
+	if err := s.applyRequest(&r, req, nil); err != nil {
+		return nil, err
+	}
+	if err := s.checkDomainConflict(ctx, r); err != nil {
+		return nil, err
+	}
+	if err := s.persist(ctx, r); err != nil {
+		return nil, err
+	}
+	return s.view(ctx, r)
+}
+
+func (s *service) UpdateRoute(ctx context.Context, routeID string, req RouteRequest) (*RouteView, error) {
+	existing, err := s.repo.GetByRouteID(ctx, routeID)
+	if err != nil {
+		return nil, err
+	}
+	r := *existing
+	if err := s.applyRequest(&r, req, existing); err != nil {
+		return nil, err
+	}
+	if err := s.checkDomainConflict(ctx, r); err != nil {
+		return nil, err
+	}
+	if err := s.persist(ctx, r); err != nil {
+		return nil, err
+	}
+	return s.view(ctx, r)
+}
+
+func (s *service) DeleteRoute(ctx context.Context, routeID string) error {
+	if _, err := s.repo.GetByRouteID(ctx, routeID); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	var err error
+	if s.raft != nil && s.raft.Enabled() {
+		err = s.raft.SubmitGatewayRouteDelete(ctx, routeID)
+	} else {
+		err = s.repo.DeleteByRouteID(ctx, routeID)
+	}
+	if err == nil {
+		s.poke()
+	}
+	return err
+}
+
+func (s *service) Targets(ctx context.Context) ([]Target, error) {
+	if s.targets == nil {
+		return []Target{}, nil
+	}
+	t, err := s.targets.Targets(ctx)
+	if t == nil {
+		t = []Target{}
+	}
+	return t, err
+}
+
+func (s *service) CheckTarget(ctx context.Context, host string, port int) error {
+	host = strings.TrimSpace(host)
+	if host == "" || !validPort(port) {
+		return fmt.Errorf("%w: host and port are required", ErrValidation)
+	}
+	d := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	if err != nil {
+		return err
+	}
+	_ = conn.Close()
+	return nil
+}
+
+// --- internals ---------------------------------------------------------------
+
+var domainRe = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$|^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// applyRequest validates req and copies it onto r. prev (update) lets an
+// empty password keep an existing user's hash.
+func (s *service) applyRequest(r *gateway.Route, req RouteRequest, prev *gateway.Route) error {
+	domain := strings.ToLower(strings.TrimSpace(req.Domain))
+	if domain == "" || !domainRe.MatchString(domain) {
+		return fmt.Errorf("%w: domain must be a valid hostname", ErrValidation)
+	}
+	path := strings.TrimSpace(req.PathPrefix)
+	if path == "/" {
+		path = ""
+	}
+	if path != "" && (!strings.HasPrefix(path, "/") || strings.ContainsAny(path, " `\"'")) {
+		return fmt.Errorf("%w: path prefix must start with / and contain no spaces or quotes", ErrValidation)
+	}
+	scheme := strings.ToLower(strings.TrimSpace(req.TargetScheme))
+	if scheme == "" {
+		scheme = gateway.SchemeHTTP
+	}
+	if scheme != gateway.SchemeHTTP && scheme != gateway.SchemeHTTPS {
+		return fmt.Errorf("%w: target scheme must be http or https", ErrValidation)
+	}
+	th := strings.TrimSpace(req.TargetHost)
+	if th == "" || strings.ContainsAny(th, " /`\"'") {
+		return fmt.Errorf("%w: target host is required", ErrValidation)
+	}
+	if !validPort(req.TargetPort) {
+		return fmt.Errorf("%w: target port must be 1-65535", ErrValidation)
+	}
+	allow := strings.TrimSpace(req.IPAllowList)
+	for _, c := range gateway.SplitCSV(allow) {
+		if _, _, err := net.ParseCIDR(c); err != nil {
+			if net.ParseIP(c) == nil {
+				return fmt.Errorf("%w: invalid CIDR %q in IP allow list", ErrValidation, c)
+			}
+		}
+	}
+
+	// Basic auth: hash new passwords; keep the previous hash when the password
+	// is blank for a user that already existed.
+	prevHashes := map[string]string{}
+	if prev != nil {
+		for _, line := range gateway.SplitLines(prev.BasicAuthUsers) {
+			if i := strings.IndexByte(line, ':'); i > 0 {
+				prevHashes[line[:i]] = line
+			}
+		}
+	}
+	var lines []string
+	for _, in := range req.BasicAuth {
+		u := strings.TrimSpace(in.User)
+		if u == "" {
+			continue
+		}
+		if strings.ContainsAny(u, ": \n") {
+			return fmt.Errorf("%w: basic-auth user names cannot contain ':' or spaces", ErrValidation)
+		}
+		if in.Password == "" {
+			if line, ok := prevHashes[u]; ok {
+				lines = append(lines, line)
+				continue
+			}
+			return fmt.Errorf("%w: password required for new basic-auth user %q", ErrValidation, u)
+		}
+		h, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
+		if err != nil {
+			return err
+		}
+		lines = append(lines, u+":"+string(h))
+	}
+
+	r.Name = strings.TrimSpace(req.Name)
+	if r.Name == "" {
+		r.Name = domain
+	}
+	r.Domain = domain
+	r.PathPrefix = path
+	r.TargetScheme = scheme
+	r.TargetHost = th
+	r.TargetPort = req.TargetPort
+	r.TargetHostMAC = strings.ToLower(strings.TrimSpace(req.TargetHostMAC))
+	r.TargetLabel = strings.TrimSpace(req.TargetLabel)
+	r.TargetInsecureSkipVerify = req.TargetInsecureSkipVerify && scheme == gateway.SchemeHTTPS
+	r.TLS = req.TLS
+	r.BasicAuthUsers = strings.Join(lines, "\n")
+	r.IPAllowList = strings.Join(gateway.SplitCSV(allow), ",")
+	if req.Enabled != nil {
+		r.Enabled = *req.Enabled
+	}
+	return nil
+}
+
+// checkDomainConflict rejects a second route on the same domain+path.
+func (s *service) checkDomainConflict(ctx context.Context, r gateway.Route) error {
+	rows, err := s.repo.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, o := range rows {
+		if o.RouteID != r.RouteID && o.Domain == r.Domain && o.PathPrefix == r.PathPrefix {
+			return fmt.Errorf("%w: %s%s is already routed (%s)", ErrValidation, r.Domain, r.PathPrefix, o.Name)
+		}
+	}
+	return nil
+}
+
+func (s *service) persist(ctx context.Context, r gateway.Route) error {
+	var err error
+	if s.raft != nil && s.raft.Enabled() {
+		err = s.raft.SubmitGatewayRouteUpsert(ctx, r)
+	} else {
+		err = s.repo.Upsert(ctx, &r)
+	}
+	if err == nil {
+		s.poke()
+	}
+	return err
+}
+
+func (s *service) view(ctx context.Context, r gateway.Route) (*RouteView, error) {
+	cfg, _ := LoadConfig(ctx, s.cfg)
+	if stored, err := s.repo.GetByRouteID(ctx, r.RouteID); err == nil {
+		r = *stored
+	}
+	v := toView(r, cfg)
+	return &v, nil
+}
+
+func (s *service) poke() {
+	if s.mat != nil {
+		s.mat.Poke()
+	}
+}
+
+func toView(r gateway.Route, cfg gateway.Config) RouteView {
+	users := []string{}
+	for _, line := range gateway.SplitLines(r.BasicAuthUsers) {
+		if i := strings.IndexByte(line, ':'); i > 0 {
+			users = append(users, line[:i])
+		}
+	}
+	return RouteView{Route: r, BasicAuthUsers: users, PublicURL: r.PublicURL(cfg), Protected: r.Protected()}
+}
+
+func validPort(p int) bool { return p > 0 && p <= 65535 }
+
+func newRouteID() string {
+	var b [6]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}

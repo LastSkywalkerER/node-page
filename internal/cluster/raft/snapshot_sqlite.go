@@ -73,6 +73,8 @@ var managedTables = []string{
 	// token secret AES-GCM-encrypted, so a snapshot-joining node inherits
 	// configured integrations. Small and low-churn — safe to snapshot.
 	"connectors",
+	// Gateway routes (CmdGatewayRouteUpsert/Delete) — same profile.
+	"gateway_routes",
 	// NB: cpu/memory/disk/network/docker_metrics and docker_container_entities
 	// are intentionally NOT listed here — see the type doc above. They are
 	// high-churn metric history replicated via CmdMetricBatch; including them

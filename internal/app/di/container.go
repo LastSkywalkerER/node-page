@@ -30,6 +30,7 @@ import (
 	network "system-stats/internal/metrics/network"
 	sensors "system-stats/internal/metrics/sensors"
 	connectors "system-stats/internal/platform/connectors"
+	gateway "system-stats/internal/platform/gateway"
 	health "system-stats/internal/platform/health"
 	history "system-stats/internal/platform/history"
 	setupcfg "system-stats/internal/platform/setup"
@@ -75,6 +76,7 @@ type Container struct {
 	hostRepository    hosts.Repository
 
 	connectorRepository connectors.Repository
+	gatewayRepository   gateway.Repository
 
 	userRepository         users.UserRepository
 	refreshTokenRepository users.RefreshTokenRepository
@@ -168,6 +170,8 @@ type Container struct {
 	// avoiding per-cycle CmdConnectorUpsert log churn. Touched only by the
 	// single reconciler goroutine, so it needs no lock.
 	connectorBackfillDone bool
+	// gatewayBackfillDone: same latch for gateway routes.
+	gatewayBackfillDone bool
 	// postActivate is fired in a goroutine after every successful
 	// Raft activation. Used by server.Run to (re-)start metrics
 	// collection when the wizard's join branch flips Raft on
@@ -233,6 +237,7 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 	container.dockerRepository = docker.NewRepository(db)
 	container.hostRepository = hosts.NewRepository(db)
 	container.connectorRepository = connectors.NewRepository(db)
+	container.gatewayRepository = gateway.NewRepository(db)
 
 	container.userRepository = users.NewUserRepository(db)
 	container.refreshTokenRepository = users.NewRefreshTokenRepository(db)
@@ -348,6 +353,7 @@ func (c *Container) activateLocked(ctx context.Context, cfg config.RaftConfig) (
 		NetworkRepo:      c.networkRepository,
 		DockerRepo:       c.dockerRepository,
 		ConnectorRepo:    c.connectorRepository,
+		GatewayRepo:      c.gatewayRepository,
 		Publish:          c.broker.Publish,
 	}
 	act, err := raftcluster.Activate(ctx, raftcluster.ActivationDeps{
@@ -544,6 +550,7 @@ func (c *Container) startClusterSecretReconcilerLocked(ctx context.Context) {
 			c.reconcileClusterSecret(ctx)
 			c.reconcileBridgeConfig(ctx)
 			c.reconcileConnectorBackfill(ctx)
+			c.reconcileGatewayBackfill(ctx)
 		}
 	}()
 }
@@ -580,6 +587,29 @@ func (c *Container) reconcileConnectorBackfill(ctx context.Context) {
 	c.connectorBackfillDone = true
 	if n > 0 {
 		c.logger.Info("raft: backfilled local connectors into replicated log", "submitted", n)
+	}
+}
+
+// reconcileGatewayBackfill republishes gateway routes that only live in this
+// node's local DB (created while standalone) — see reconcileConnectorBackfill.
+func (c *Container) reconcileGatewayBackfill(ctx context.Context) {
+	if c.gatewayBackfillDone {
+		return
+	}
+	repl := c.GetRaftReplicator()
+	if repl == nil || !repl.Enabled() || c.gatewayRepository == nil {
+		return
+	}
+	rc, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	n, err := repl.BackfillLocalGatewayRoutes(rc, c.gatewayRepository)
+	if err != nil {
+		c.logger.Warn("raft: gateway route backfill failed (will retry)", "submitted", n, "error", err)
+		return
+	}
+	c.gatewayBackfillDone = true
+	if n > 0 {
+		c.logger.Info("raft: backfilled local gateway routes into replicated log", "submitted", n)
 	}
 }
 
@@ -1305,6 +1335,11 @@ func (c *Container) GetHostService() hosts.Service {
 // need read access outside the Service surface (e.g. connector MAC matching).
 func (c *Container) GetHostRepository() hosts.Repository {
 	return c.hostRepository
+}
+
+// GetGatewayRepository returns the gateway route repository.
+func (c *Container) GetGatewayRepository() gateway.Repository {
+	return c.gatewayRepository
 }
 
 // GetConnectorRepository returns the connector registry repository.

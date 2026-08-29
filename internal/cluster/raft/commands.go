@@ -69,6 +69,10 @@ const (
 	// Connectors (external data sources, e.g. the Proxmox API)
 	CmdConnectorUpsert CommandType = 80
 	CmdConnectorDelete CommandType = 81
+
+	// Gateway (ingress) routes — rendered as Traefik config on the gateway node
+	CmdGatewayRouteUpsert CommandType = 90
+	CmdGatewayRouteDelete CommandType = 91
 )
 
 // Command is the envelope persisted in every Raft log entry.

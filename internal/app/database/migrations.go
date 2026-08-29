@@ -17,6 +17,7 @@ import (
 	network "system-stats/internal/metrics/network"
 	appicons "system-stats/internal/platform/appicons"
 	connectors "system-stats/internal/platform/connectors"
+	gateway "system-stats/internal/platform/gateway"
 )
 
 // Migrate performs automatic schema migration for all database entities.
@@ -96,6 +97,10 @@ func Migrate(db *gorm.DB) error {
 
 	if err := raftcluster.AutoMigrate(db); err != nil {
 		return fmt.Errorf("failed to migrate raft cluster tables: %w", err)
+	}
+
+	if err := gateway.AutoMigrate(db); err != nil {
+		return fmt.Errorf("failed to migrate gateway routes: %w", err)
 	}
 
 	if err := raftbridge.AutoMigrate(db); err != nil {

@@ -63,6 +63,31 @@ type ConnectorDeletePayload struct {
 	RemoveHosts bool   `json:"remove_hosts"`
 }
 
+// GatewayRouteUpsertPayload replicates one gateway route, keyed by RouteID (the
+// cluster-stable identity; local autoincrement ids differ per node). Basic-auth
+// entries are already bcrypt hashes.
+type GatewayRouteUpsertPayload struct {
+	RouteID                  string `json:"route_id"`
+	Name                     string `json:"name"`
+	Domain                   string `json:"domain"`
+	PathPrefix               string `json:"path_prefix,omitempty"`
+	TargetScheme             string `json:"target_scheme"`
+	TargetHost               string `json:"target_host"`
+	TargetPort               int    `json:"target_port"`
+	TargetHostMAC            string `json:"target_host_mac,omitempty"`
+	TargetLabel              string `json:"target_label,omitempty"`
+	TargetInsecureSkipVerify bool   `json:"target_insecure_skip_verify"`
+	TLS                      bool   `json:"tls"`
+	BasicAuthUsers           string `json:"basic_auth_users,omitempty"`
+	IPAllowList              string `json:"ip_allow_list,omitempty"`
+	Enabled                  bool   `json:"enabled"`
+}
+
+// GatewayRouteDeletePayload removes a gateway route everywhere.
+type GatewayRouteDeletePayload struct {
+	RouteID string `json:"route_id"`
+}
+
 // HostDeletePayload cascades a host removal (row + all its metrics) across the
 // cluster. It is keyed by MAC — the stable, cluster-wide identity — because the
 // per-node host_id differs on every node (auto-increment, matched by MAC). Each

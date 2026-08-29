@@ -52,6 +52,8 @@ import (
 	sensors "system-stats/internal/metrics/sensors"
 	appicons "system-stats/internal/platform/appicons"
 	connectors "system-stats/internal/platform/connectors"
+	gateway "system-stats/internal/platform/gateway"
+	gatewayengine "system-stats/internal/platform/gateway/engine"
 	health "system-stats/internal/platform/health"
 	history "system-stats/internal/platform/history"
 	"system-stats/internal/platform/runtimetune"
@@ -230,6 +232,35 @@ func Run() {
 		container.GetRaftReplicator(),
 	)
 	wallpaperSvc := wallpaper.NewService(logger, container.GetConnectorRepository(), connCipher, pexelsClient)
+
+	// Gateway (ingress): replicated route table → Traefik dynamic config on the
+	// node the admin picked. The materializer runs on every node and only
+	// renders when this node IS the gateway; in managed mode it also asks the
+	// controller for the Traefik container via desired-state.
+	gatewayDataDir := os.Getenv("NODE_STATS_DATA_DIR")
+	if gatewayDataDir == "" {
+		gatewayDataDir = "/app/data"
+	}
+	gatewayCfgStore := raftcluster.NewClusterConfigStore(container.GetDB(), container.GetRaftReplicator(), gateway.ConfigKey)
+	gatewayMat := gatewayengine.NewMaterializer(gatewayengine.MaterializerDeps{
+		Logger:  logger,
+		Repo:    container.GetGatewayRepository(),
+		Config:  gatewayCfgStore,
+		Hosts:   container.GetHostRepository(),
+		DataDir: gatewayDataDir,
+		DBType:  string(cfg.Database.Type),
+		DBDSN:   cfg.Database.DSN,
+	})
+	go gatewayMat.Run(appCtx)
+	gatewaySvc := gatewayengine.NewService(
+		logger,
+		container.GetGatewayRepository(),
+		gatewayCfgStore,
+		container.GetHostRepository(),
+		gatewayengine.NewDockerTargetSource(container.GetDockerService(), container.GetHostRepository()),
+		container.GetRaftReplicator(),
+		gatewayMat,
+	)
 	pvePoller := proxmox.NewPoller(proxmox.PollerDeps{
 		Logger:     logger,
 		Connectors: container.GetConnectorRepository(),
@@ -461,7 +492,7 @@ func Run() {
 		go startMetrics()
 	}
 
-	router := setupRouter(container, startTime, logger, cfg, onSetupComplete, connectorsSvc, wallpaperSvc, pbsHandler)
+	router := setupRouter(container, startTime, logger, cfg, onSetupComplete, connectorsSvc, wallpaperSvc, pbsHandler, gatewaySvc)
 
 	server := &http.Server{
 		Addr:         cfg.Addr,
@@ -512,7 +543,7 @@ func Run() {
 }
 
 // setupRouter configures the Gin router with all routes, middleware, and handlers.
-func setupRouter(container *di.Container, startTime time.Time, logger *log.Logger, cfg *config.Config, onSetupComplete func(), connectorsSvc connectors.Service, wallpaperSvc *wallpaper.Service, pbsHandler *pbs.Handler) *gin.Engine {
+func setupRouter(container *di.Container, startTime time.Time, logger *log.Logger, cfg *config.Config, onSetupComplete func(), connectorsSvc connectors.Service, wallpaperSvc *wallpaper.Service, pbsHandler *pbs.Handler, gatewaySvc gatewayengine.Service) *gin.Engine {
 	router := gin.New()
 	// TrustedProxies controls whether X-Forwarded-* headers are honored.
 	// Empty list = trust none (ignore X-Forwarded-For/Host/Proto). Safe default.
@@ -572,6 +603,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	sensorsHandler := sensors.NewHandler(logger, container.GetSensorsService(), container.GetHostService())
 	hostHandler := hosts.NewHandler(logger, container.GetHostService())
 	connectorsHandler := connectors.NewHandler(logger, connectorsSvc)
+	gatewayHandler := gatewayengine.NewHandler(logger, gatewaySvc)
 	wallpaperHandler := wallpaper.NewHandler(logger, wallpaperSvc)
 	healthHandler := health.NewHandler(logger, container.GetHealthService())
 	authHandler := users.NewAuthHandler(container.GetUserService(), container.GetTokenService(), cfg.CookieSecure)
@@ -817,6 +849,16 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.PATCH("/connectors/:id", middleware.RequireAdmin(), connectorsHandler.HandleUpdate)
 		authAPI.DELETE("/connectors/:id", middleware.RequireAdmin(), connectorsHandler.HandleDelete)
 		authAPI.POST("/connectors/:id/sync", middleware.RequireAdmin(), connectorsHandler.HandleSync)
+
+		// Gateway / ingress (admin): replicated route table + Traefik on the
+		// chosen node. Config + routes replicate cluster-wide when Raft is on.
+		authAPI.GET("/gateway", middleware.RequireAdmin(), gatewayHandler.HandleGet)
+		authAPI.PUT("/gateway/config", middleware.RequireAdmin(), gatewayHandler.HandleSetConfig)
+		authAPI.GET("/gateway/targets", middleware.RequireAdmin(), gatewayHandler.HandleTargets)
+		authAPI.POST("/gateway/check", middleware.RequireAdmin(), gatewayHandler.HandleCheck)
+		authAPI.POST("/gateway/routes", middleware.RequireAdmin(), gatewayHandler.HandleCreateRoute)
+		authAPI.PUT("/gateway/routes/:route_id", middleware.RequireAdmin(), gatewayHandler.HandleUpdateRoute)
+		authAPI.DELETE("/gateway/routes/:route_id", middleware.RequireAdmin(), gatewayHandler.HandleDeleteRoute)
 
 		// Proxmox Backup Server datastore/backup detail (any signed-in user).
 		authAPI.GET("/pbs", pbsHandler.HandleGet)

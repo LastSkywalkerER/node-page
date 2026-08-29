@@ -35,6 +35,7 @@ var ManagedTables = []string{
 	"peer_node_advertise",
 	"cluster_join_tokens",
 	"connectors",
+	"gateway_routes",
 }
 
 type dumpFile struct {

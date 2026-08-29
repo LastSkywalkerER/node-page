@@ -18,6 +18,7 @@ import (
 	memory "system-stats/internal/metrics/memory"
 	network "system-stats/internal/metrics/network"
 	connectors "system-stats/internal/platform/connectors"
+	gateway "system-stats/internal/platform/gateway"
 )
 
 // AppliersDeps bundles every repository the FSM needs to dispatch into.
@@ -37,6 +38,7 @@ type AppliersDeps struct {
 	NetworkRepo      network.Repository
 	DockerRepo       docker.DockerRepository
 	ConnectorRepo    connectors.Repository
+	GatewayRepo      gateway.Repository
 	// Publish pushes a live SSE envelope (JSON) to this node's stream broker.
 	// Wired so a replicated peer's metrics also stream live to browsers viewing
 	// that peer on this node — uniform SSE for every host. Nil disables it.
@@ -71,6 +73,9 @@ func RegisterAppliers(fsm *FSM, deps AppliersDeps) {
 
 	register(CmdConnectorUpsert, a.applyConnectorUpsert)
 	register(CmdConnectorDelete, a.applyConnectorDelete)
+
+	register(CmdGatewayRouteUpsert, a.applyGatewayRouteUpsert)
+	register(CmdGatewayRouteDelete, a.applyGatewayRouteDelete)
 
 	register(CmdMetricBatch, a.applyMetricBatch)
 
@@ -277,6 +282,54 @@ func (a *appliers) applyConnectorDelete(cmd Command, _ *hraft.Log) error {
 	}
 	return a.deps.HostRepo.UnlinkConnectorHosts(ctx,
 		connectors.ExternalIDPrefix(p.Type, p.Fingerprint), p.RemoveHosts)
+}
+
+func (a *appliers) applyGatewayRouteUpsert(cmd Command, _ *hraft.Log) error {
+	var p GatewayRouteUpsertPayload
+	if err := DecodeTyped(cmd, &p); err != nil {
+		return err
+	}
+	if p.RouteID == "" {
+		return errors.New("raft: GatewayRouteUpsert requires route_id")
+	}
+	if a.deps.GatewayRepo == nil {
+		return nil
+	}
+	ctx, cancel := a.applierCtx()
+	defer cancel()
+	return a.deps.GatewayRepo.Upsert(ctx, &gateway.Route{
+		RouteID:                  p.RouteID,
+		Name:                     p.Name,
+		Domain:                   p.Domain,
+		PathPrefix:               p.PathPrefix,
+		TargetScheme:             p.TargetScheme,
+		TargetHost:               p.TargetHost,
+		TargetPort:               p.TargetPort,
+		TargetHostMAC:            p.TargetHostMAC,
+		TargetLabel:              p.TargetLabel,
+		TargetInsecureSkipVerify: p.TargetInsecureSkipVerify,
+		TLS:                      p.TLS,
+		BasicAuthUsers:           p.BasicAuthUsers,
+		IPAllowList:              p.IPAllowList,
+		Enabled:                  p.Enabled,
+		CreatedAt:                cmd.Timestamp,
+	})
+}
+
+func (a *appliers) applyGatewayRouteDelete(cmd Command, _ *hraft.Log) error {
+	var p GatewayRouteDeletePayload
+	if err := DecodeTyped(cmd, &p); err != nil {
+		return err
+	}
+	if p.RouteID == "" {
+		return errors.New("raft: GatewayRouteDelete requires route_id")
+	}
+	if a.deps.GatewayRepo == nil {
+		return nil
+	}
+	ctx, cancel := a.applierCtx()
+	defer cancel()
+	return a.deps.GatewayRepo.DeleteByRouteID(ctx, p.RouteID)
 }
 
 func (a *appliers) applyHostDelete(cmd Command, _ *hraft.Log) error {

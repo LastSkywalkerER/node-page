@@ -7,6 +7,7 @@ import (
 	users "system-stats/internal/auth/users"
 	hosts "system-stats/internal/cluster/hosts"
 	connectors "system-stats/internal/platform/connectors"
+	gateway "system-stats/internal/platform/gateway"
 )
 
 // Replicator adapts the generic Service to the small, domain-specific
@@ -96,6 +97,62 @@ func (r *Replicator) SubmitConnectorUpsert(ctx context.Context, c connectors.Con
 		Enabled:       c.Enabled,
 	}, 5*time.Second)
 	return err
+}
+
+// SubmitGatewayRouteUpsert replicates a gateway route cluster-wide.
+func (r *Replicator) SubmitGatewayRouteUpsert(ctx context.Context, g gateway.Route) error {
+	if !r.Enabled() {
+		return nil
+	}
+	_, err := SubmitTyped(ctx, r.svc, CmdGatewayRouteUpsert, GatewayRouteUpsertPayload{
+		RouteID:                  g.RouteID,
+		Name:                     g.Name,
+		Domain:                   g.Domain,
+		PathPrefix:               g.PathPrefix,
+		TargetScheme:             g.TargetScheme,
+		TargetHost:               g.TargetHost,
+		TargetPort:               g.TargetPort,
+		TargetHostMAC:            g.TargetHostMAC,
+		TargetLabel:              g.TargetLabel,
+		TargetInsecureSkipVerify: g.TargetInsecureSkipVerify,
+		TLS:                      g.TLS,
+		BasicAuthUsers:           g.BasicAuthUsers,
+		IPAllowList:              g.IPAllowList,
+		Enabled:                  g.Enabled,
+	}, 5*time.Second)
+	return err
+}
+
+// SubmitGatewayRouteDelete removes a gateway route on every node.
+func (r *Replicator) SubmitGatewayRouteDelete(ctx context.Context, routeID string) error {
+	if !r.Enabled() {
+		return nil
+	}
+	_, err := SubmitTyped(ctx, r.svc, CmdGatewayRouteDelete, GatewayRouteDeletePayload{RouteID: routeID}, 5*time.Second)
+	return err
+}
+
+// BackfillLocalGatewayRoutes republishes routes that only live in this node's
+// local DB (created while standalone) — same rationale as BackfillLocalConnectors.
+func (r *Replicator) BackfillLocalGatewayRoutes(ctx context.Context, repo gateway.Repository) (int, error) {
+	if !r.Enabled() {
+		return 0, nil
+	}
+	rows, err := repo.List(ctx)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, g := range rows {
+		if g.RouteID == "" {
+			continue
+		}
+		if err := r.SubmitGatewayRouteUpsert(ctx, g); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, nil
 }
 
 // SubmitConnectorDelete removes a connector (and optionally its

@@ -41,6 +41,49 @@ func RequestPortChange(dataDir, dbType, dbDSN, httpPort, raftPort string) (resta
 	return true, nil
 }
 
+// RequestGatewayState reconciles the desired-state's Gateway section with want.
+// It is idempotent: when the stored section already equals want nothing is
+// written (so the gateway materializer can call it every cycle). Returns
+// changed=true when a new generation was written. No-op on native /
+// managed-externally deployments (no controller). A disabled want on a state
+// that never had a gateway section writes nothing either.
+func RequestGatewayState(dataDir, dbType, dbDSN string, want GatewayProvision) (changed bool, err error) {
+	if !dockerenv.Running() || ManagedExternally() {
+		return false, nil
+	}
+	ds, _ := ReadDesiredState(dataDir)
+	if ds == nil {
+		if !want.Enabled {
+			return false, nil
+		}
+		mode := DBModeSQLite
+		dsn := ""
+		if strings.EqualFold(dbType, "postgres") {
+			mode, dsn = DBModePostgresExternal, dbDSN
+		}
+		ds = &DesiredState{DBMode: mode, DBDSN: dsn}
+	}
+	if !want.Enabled {
+		if ds.Gateway == nil || !ds.Gateway.Enabled {
+			return false, nil
+		}
+		ds.Gateway = &GatewayProvision{Enabled: false}
+	} else {
+		if ds.Gateway != nil && *ds.Gateway == want {
+			return false, nil
+		}
+		gw := want
+		ds.Gateway = &gw
+	}
+	// A gateway-only change must not re-pull the image.
+	ds.PullBeforeApply = false
+	ds.Generation++
+	if err := WriteDesiredState(dataDir, *ds); err != nil {
+		return false, fmt.Errorf("failed to request the gateway state from the controller: %w", err)
+	}
+	return true, nil
+}
+
 // RequestRecreate asks the controller to recreate the app container so it
 // re-reads the freshly written .env (used by post-setup settings changes that
 // only take effect at process start: ports, Prometheus, log level, …).

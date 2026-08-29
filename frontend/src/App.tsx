@@ -15,6 +15,7 @@ import { AdminPage } from './pages/AdminPage'
 import { UsersTab } from './widgets/admin/UsersTab'
 import { NodesTab } from './widgets/admin/NodesTab'
 import { ConnectorsTab } from './widgets/connectors/ConnectorsTab'
+import { GatewayTab } from './widgets/gateway/GatewayTab'
 import { AccountTab } from './widgets/admin/AccountTab'
 import { ServerTab } from './widgets/admin/ServerTab'
 import { PrometheusTab } from './widgets/admin/PrometheusTab'
@@ -80,6 +81,7 @@ function App() {
             <Route path="users" element={<UsersTab />} />
             <Route path="nodes" element={<NodesTab />} />
             <Route path="connectors" element={<ConnectorsTab />} />
+            <Route path="gateway" element={<GatewayTab />} />
             <Route path="server" element={<ServerTab />} />
             <Route path="database" element={<DatabaseTab />} />
             <Route path="prometheus" element={<PrometheusTab />} />

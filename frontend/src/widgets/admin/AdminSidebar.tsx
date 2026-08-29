@@ -13,6 +13,7 @@ const TABS: AdminTab[] = [
   { to: '/admin/users', label: 'Users', end: true },
   { to: '/admin/nodes', label: 'Nodes' },
   { to: '/admin/connectors', label: 'Connectors', hint: true },
+  { to: '/admin/gateway', label: 'Gateway' },
   { to: '/admin/server', label: 'Server' },
   { to: '/admin/database', label: 'Database' },
   { to: '/admin/prometheus', label: 'Prometheus' },

@@ -56,7 +56,30 @@ type DesiredState struct {
 	// Empty leaves the installer-managed values untouched.
 	HTTPPort string `json:"http_port,omitempty"`
 	RaftPort string `json:"raft_port,omitempty"`
+
+	// Gateway, when set and Enabled, injects a Traefik `traefik` service (the
+	// cluster gateway / ingress) on this node. Written by the gateway
+	// materializer on the node the admin picked as gateway.
+	Gateway *GatewayProvision `json:"gateway,omitempty"`
 }
+
+// GatewayProvision configures the managed Traefik container.
+type GatewayProvision struct {
+	Enabled bool `json:"enabled"`
+	// HTTPPort / HTTPSPort are the published host ports (0 → 80 / 443).
+	HTTPPort  int `json:"http_port,omitempty"`
+	HTTPSPort int `json:"https_port,omitempty"`
+	// ACME (Let's Encrypt, HTTP-01 on the web entrypoint).
+	ACMEEnabled bool   `json:"acme_enabled"`
+	ACMEEmail   string `json:"acme_email,omitempty"`
+	ACMEStaging bool   `json:"acme_staging,omitempty"`
+}
+
+// GatewayEnabled reports whether the desired state asks for the Traefik service.
+func (ds DesiredState) GatewayEnabled() bool { return ds.Gateway != nil && ds.Gateway.Enabled }
+
+// DefaultTraefikImage is the gateway image (overridable via NODE_STATS_TRAEFIK_IMAGE).
+const DefaultTraefikImage = "traefik:v3.3"
 
 // DBProvision configures the managed Postgres container.
 type DBProvision struct {
@@ -195,6 +218,11 @@ func BuildComposeContent(ds DesiredState) string {
 		writeLogging(w)
 	}
 
+	// --- gateway: managed Traefik (optional) ----------------------------------
+	if ds.GatewayEnabled() {
+		writeTraefikService(w, *ds.Gateway)
+	}
+
 	// --- controller sidecar --------------------------------------------------
 	w("  node-stats-controller:")
 	w("    image: " + imageRef)
@@ -232,6 +260,62 @@ func BuildComposeContent(ds DesiredState) string {
 	}
 
 	return b.String()
+}
+
+// writeTraefikService emits the managed gateway container. Design:
+//   - file provider only (node-stats renders ./data/docker/traefik/dynamic/
+//     node-stats.yml from the replicated route table; Traefik hot-reloads it);
+//     no docker provider, so Traefik never needs the socket or labels.
+//   - `web` (:80) / `websecure` (:443) entrypoints published on the configured
+//     host ports; `ping` on :8082 (container-internal) feeds the healthcheck and
+//     the app's liveness probe (http://traefik:8082/ping on the compose network).
+//   - ACME HTTP-01 via resolver `le` when enabled; acme.json persists under
+//     ./data/docker/traefik/acme.
+func writeTraefikService(w func(string), gw GatewayProvision) {
+	httpPort, httpsPort := gw.HTTPPort, gw.HTTPSPort
+	if httpPort <= 0 {
+		httpPort = 80
+	}
+	if httpsPort <= 0 {
+		httpsPort = 443
+	}
+	w("  traefik:")
+	w(fmt.Sprintf("    image: ${NODE_STATS_TRAEFIK_IMAGE:-%s}", DefaultTraefikImage))
+	w("    restart: unless-stopped")
+	w("    command:")
+	w("      - --providers.file.directory=/etc/traefik/dynamic")
+	w("      - --providers.file.watch=true")
+	w("      - --entrypoints.web.address=:80")
+	w("      - --entrypoints.websecure.address=:443")
+	w("      - --entrypoints.ping.address=:8082")
+	w("      - --ping=true")
+	w("      - --ping.entryPoint=ping")
+	w("      - --api.dashboard=false")
+	w("      - --log.level=${NODE_STATS_TRAEFIK_LOG_LEVEL:-WARN}")
+	w("      - --global.sendAnonymousUsage=false")
+	w("      - --global.checkNewVersion=false")
+	if gw.ACMEEnabled {
+		w("      - --certificatesresolvers.le.acme.email=" + composeEnvValue(gw.ACMEEmail))
+		w("      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json")
+		w("      - --certificatesresolvers.le.acme.httpchallenge=true")
+		w("      - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web")
+		if gw.ACMEStaging {
+			w("      - --certificatesresolvers.le.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory")
+		}
+	}
+	w("    ports:")
+	w(fmt.Sprintf(`      - "%d:80"`, httpPort))
+	w(fmt.Sprintf(`      - "%d:443"`, httpsPort))
+	w("    volumes:")
+	w("      - ./data/docker/traefik/dynamic:/etc/traefik/dynamic:ro")
+	w("      - ./data/docker/traefik/acme:/letsencrypt")
+	w("    healthcheck:")
+	w(`      test: ["CMD", "traefik", "healthcheck", "--ping"]`)
+	w("      interval: 10s")
+	w("      timeout: 3s")
+	w("      retries: 6")
+	w("    mem_limit: 256m")
+	writeLogging(w)
 }
 
 // writeLogging emits a json-file logging stanza (indented for a service block)
