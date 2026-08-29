@@ -309,8 +309,11 @@ func writeTraefikService(w func(string), gw GatewayProvision) {
 	w("    volumes:")
 	w("      - ./data/docker/traefik/dynamic:/etc/traefik/dynamic:ro")
 	w("      - ./data/docker/traefik/acme:/letsencrypt")
+	// `traefik healthcheck` does not read the running instance's flags — without
+	// the ping entrypoint repeated here it probes :8080 and the container stays
+	// "unhealthy" forever (and `up --wait` fails).
 	w("    healthcheck:")
-	w(`      test: ["CMD", "traefik", "healthcheck", "--ping"]`)
+	w(`      test: ["CMD", "traefik", "healthcheck", "--ping", "--ping.entryPoint=ping", "--entrypoints.ping.address=:8082"]`)
 	w("      interval: 10s")
 	w("      timeout: 3s")
 	w("      retries: 6")

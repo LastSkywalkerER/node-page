@@ -26,7 +26,7 @@ func TestBuildComposeContent_GatewayService(t *testing.T) {
 		`- "8443:443"`,
 		"./data/docker/traefik/dynamic:/etc/traefik/dynamic:ro",
 		"./data/docker/traefik/acme:/letsencrypt",
-		`["CMD", "traefik", "healthcheck", "--ping"]`,
+		`["CMD", "traefik", "healthcheck", "--ping", "--ping.entryPoint=ping", "--entrypoints.ping.address=:8082"]`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("compose missing %q\n%s", want, out)

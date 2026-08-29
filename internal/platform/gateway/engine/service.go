@@ -90,8 +90,12 @@ type RouteView struct {
 
 // Capabilities tells the UI what this node can do.
 type Capabilities struct {
-	// CanManage: docker deployment with a controller → managed mode possible.
-	CanManage bool `json:"can_manage"`
+	// CanManage: this node can run a managed Traefik — via the docker
+	// controller ("docker") or a systemd unit on a native root install
+	// ("systemd"). ManageReason explains a false.
+	CanManage    bool   `json:"can_manage"`
+	ManageKind   string `json:"manage_kind"`
+	ManageReason string `json:"manage_reason,omitempty"`
 	// RunningInDocker / ManagedExternally explain why CanManage is false.
 	RunningInDocker   bool   `json:"running_in_docker"`
 	ManagedExternally bool   `json:"managed_externally"`
@@ -205,9 +209,14 @@ func (s *service) SetConfig(ctx context.Context, cfg gateway.Config) (*gateway.C
 			return nil, fmt.Errorf("%w: invalid gateway ports", ErrValidation)
 		}
 	}
+	cfg.NodeSystemID = ""
 	if cfg.NodeMAC != "" && s.hosts != nil {
 		if h, err := s.hosts.GetHostByMacAddress(ctx, cfg.NodeMAC); err == nil && h != nil {
 			cfg.NodeName = h.Name
+			cfg.NodeSystemID = h.SystemHostID
+			if cfg.NodeSystemID == "" {
+				cfg.NodeSystemID = h.HardwareUUID
+			}
 		}
 	}
 	raw, err := json.Marshal(cfg)

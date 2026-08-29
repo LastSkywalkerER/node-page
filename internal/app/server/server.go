@@ -237,9 +237,17 @@ func Run() {
 	// node the admin picked. The materializer runs on every node and only
 	// renders when this node IS the gateway; in managed mode it also asks the
 	// controller for the Traefik container via desired-state.
+	// Data dir: NODE_STATS_DATA_DIR, else /app/data in Docker, else the process
+	// working directory on native installs (/var/lib/node-stats under systemd).
 	gatewayDataDir := os.Getenv("NODE_STATS_DATA_DIR")
 	if gatewayDataDir == "" {
-		gatewayDataDir = "/app/data"
+		if setup.RunningInDocker() {
+			gatewayDataDir = "/app/data"
+		} else if wd, err := os.Getwd(); err == nil {
+			gatewayDataDir = filepath.Join(wd, "data")
+		} else {
+			gatewayDataDir = "data"
+		}
 	}
 	gatewayCfgStore := raftcluster.NewClusterConfigStore(container.GetDB(), container.GetRaftReplicator(), gateway.ConfigKey)
 	gatewayMat := gatewayengine.NewMaterializer(gatewayengine.MaterializerDeps{

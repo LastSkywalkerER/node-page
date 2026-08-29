@@ -13,6 +13,7 @@
 package gateway
 
 import (
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -55,6 +56,12 @@ type Config struct {
 	NodeMAC string `json:"node_mac"`
 	// NodeName is a display hint (the host's name when the MAC was picked).
 	NodeName string `json:"node_name,omitempty"`
+	// NodeSystemID is the picked host's stable machine identity
+	// (hosts.system_host_id, falling back to hardware_uuid). A Docker
+	// container's NIC MAC changes on every recreate, so the gateway node also
+	// recognises itself by this id — otherwise a controller recreate would make
+	// the node "lose" the gateway role and tear Traefik down.
+	NodeSystemID string `json:"node_system_id,omitempty"`
 	// DynamicDir (external mode) is the Traefik file-provider directory as
 	// seen from the node-stats process on the gateway node.
 	DynamicDir string `json:"dynamic_dir,omitempty"`
@@ -120,6 +127,21 @@ func (Route) TableName() string { return "gateway_routes" }
 // AutoMigrate creates the gateway tables (called from the central migrations).
 func AutoMigrate(db *gorm.DB) error {
 	return db.AutoMigrate(&Route{})
+}
+
+// IsNode reports whether a host row (by MAC / stable system id) is the
+// configured gateway node.
+func (c Config) IsNode(mac, systemID, hardwareUUID string) bool {
+	if c.NodeMAC == "" {
+		return false
+	}
+	if mac != "" && strings.EqualFold(strings.TrimSpace(mac), strings.TrimSpace(c.NodeMAC)) {
+		return true
+	}
+	if c.NodeSystemID == "" {
+		return false
+	}
+	return (systemID != "" && systemID == c.NodeSystemID) || (hardwareUUID != "" && hardwareUUID == c.NodeSystemID)
 }
 
 // Protected reports whether the route has any access-control middleware.

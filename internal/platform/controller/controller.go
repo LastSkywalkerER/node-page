@@ -34,10 +34,11 @@ type controller struct {
 	dataDir           string // shared data volume holding desired/status json
 	project           string // compose -p project name
 	appService        string
-	controllerService string // compose service name of this controller sidecar
-	lastApplied       string // hash of the last successfully applied desired state
+	controllerService string              // compose service name of this controller sidecar
+	lastApplied       string              // hash of the last successfully applied desired state
 	lastState         *setup.DesiredState // the state behind lastApplied (nil after a restart without a persisted copy)
-	selfUpdated       bool   // guards the controller self-update to once per apply
+	preApplyCompose   string              // docker-compose.yml content before the current apply rewrote it
+	selfUpdated       bool                // guards the controller self-update to once per apply
 }
 
 // Run is the controller subcommand entrypoint (cmd/server: `node-stats controller`).
@@ -115,6 +116,10 @@ func (c *controller) apply(ds setup.DesiredState) bool {
 	c.selfUpdated = false // fresh apply — allow at most one self-update below
 
 	compose := setup.BuildComposeContent(ds)
+	c.preApplyCompose = ""
+	if prev, err := os.ReadFile(filepath.Join(c.stackDir, "docker-compose.yml")); err == nil {
+		c.preApplyCompose = string(prev)
+	}
 	if err := writeFileAtomic(filepath.Join(c.stackDir, "docker-compose.yml"), []byte(compose)); err != nil {
 		return c.fail(ds, "write compose", err)
 	}
@@ -172,7 +177,7 @@ func (c *controller) apply(ds setup.DesiredState) bool {
 	// already taken on the host) surfaces here as a controller error.
 	if ds.GatewayEnabled() {
 		if out, err := c.compose("up", "-d", "--wait", "traefik"); err != nil {
-			return c.fail(ds, "start traefik (gateway): "+out, err)
+			return c.fail(ds, "start traefik (gateway): "+tailLines(out, 6), err)
 		}
 	} else {
 		if out, err := c.compose("stop", "traefik"); err != nil {
@@ -192,7 +197,7 @@ func (c *controller) apply(ds setup.DesiredState) bool {
 	// A change that only touched the gateway section (Traefik on/off, its
 	// ports/ACME) leaves the app's stanza byte-identical — skip the disruptive
 	// app recreate so toggling the gateway never restarts monitoring.
-	if c.lastState != nil && !ds.PullBeforeApply && sameExceptGateway(*c.lastState, ds) {
+	if !ds.PullBeforeApply && (c.lastState != nil && sameExceptGateway(*c.lastState, ds) || c.lastState == nil && c.onDiskIsBaselineOf(ds)) {
 		log.Info("controller: gateway-only change — app recreate skipped", "generation", ds.Generation)
 		writeAppliedHash(c.dataDir, ds.Hash())
 		writeAppliedState(c.dataDir, ds)
@@ -338,6 +343,21 @@ func writeAppliedHash(dir, hash string) {
 	}
 }
 
+// onDiskIsBaselineOf reports whether the docker-compose.yml that was on disk
+// BEFORE this apply (the installer's gen-compose output) equals ds with its
+// gateway section stripped — i.e. the very first desired-state ever written is
+// a gateway-only change on top of the running stack. Evaluated against
+// c.preApplyCompose captured at the start of apply.
+func (c *controller) onDiskIsBaselineOf(ds setup.DesiredState) bool {
+	if c.preApplyCompose == "" {
+		return false
+	}
+	base := ds
+	base.Gateway = nil
+	base.Generation = 0
+	return c.preApplyCompose == setup.BuildComposeContent(base)
+}
+
 // sameExceptGateway reports whether a and b differ only in Generation and the
 // Gateway section (i.e. the app service's compose stanza is unchanged).
 func sameExceptGateway(a, b setup.DesiredState) bool {
@@ -418,6 +438,21 @@ func (c *controller) idle() {
 	for {
 		time.Sleep(time.Hour)
 	}
+}
+
+// tailLines keeps the last n non-empty lines of a (possibly huge, pull-
+// progress-laden) compose output for a readable status message.
+func tailLines(s string, n int) string {
+	var lines []string
+	for _, l := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(l); t != "" {
+			lines = append(lines, t)
+		}
+	}
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, " | ")
 }
 
 // firstLine returns the first non-empty line of s, trimmed. `compose ps -q` can

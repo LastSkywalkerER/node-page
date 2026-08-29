@@ -31,7 +31,10 @@ func (f *fakeRepo) GetByRouteID(_ context.Context, id string) (*gateway.Route, e
 	}
 	return &r, nil
 }
-func (f *fakeRepo) Upsert(_ context.Context, r *gateway.Route) error { f.rows[r.RouteID] = *r; return nil }
+func (f *fakeRepo) Upsert(_ context.Context, r *gateway.Route) error {
+	f.rows[r.RouteID] = *r
+	return nil
+}
 func (f *fakeRepo) DeleteByRouteID(_ context.Context, id string) error {
 	delete(f.rows, id)
 	return nil
@@ -39,7 +42,7 @@ func (f *fakeRepo) DeleteByRouteID(_ context.Context, id string) error {
 
 type fakeStore struct{ v string }
 
-func (s *fakeStore) Get(context.Context) (string, error) { return s.v, nil }
+func (s *fakeStore) Get(context.Context) (string, error)   { return s.v, nil }
 func (s *fakeStore) Set(_ context.Context, v string) error { s.v = v; return nil }
 
 type fakeRaft struct {
@@ -82,7 +85,7 @@ func TestCreateRoute_StandaloneWritesRepoAndHashesPassword(t *testing.T) {
 	svc := newSvc(repo, nil)
 	v, err := svc.CreateRoute(context.Background(), RouteRequest{
 		Domain: "Grafana.Example.COM", TargetHost: "10.0.0.5", TargetPort: 3000, TLS: true,
-		BasicAuth: []BasicAuthInput{{User: "admin", Password: "s3cret"}},
+		BasicAuth:   []BasicAuthInput{{User: "admin", Password: "s3cret"}},
 		IPAllowList: "10.0.0.0/8, 1.2.3.4",
 	})
 	if err != nil {

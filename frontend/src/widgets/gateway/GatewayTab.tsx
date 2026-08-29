@@ -106,7 +106,7 @@ function ConfigCard({ state }: { state: GatewayState }) {
           <div className="space-y-1.5">
             <Label>Mode</Label>
             <select className={selectCls} value={cfg.mode} onChange={(e) => update({ mode: e.target.value })}>
-              <option value="managed">Managed — node-stats runs Traefik (Docker installs)</option>
+              <option value="managed">Managed — node-stats runs Traefik (Docker container or systemd service)</option>
               <option value="external">External — write into an existing Traefik's dynamic dir</option>
             </select>
           </div>
@@ -161,15 +161,21 @@ function ConfigCard({ state }: { state: GatewayState }) {
                 </div>
               )}
             </div>
+            {selectedIsLocal && caps.can_manage && (
+              <p className="text-xs text-muted-foreground">
+                On this node Traefik runs as{' '}
+                {caps.manage_kind === 'systemd'
+                  ? 'a systemd service (node-stats downloads the binary and manages the unit)'
+                  : 'a compose service started by the controller sidecar'}
+                .
+              </p>
+            )}
             {selectedIsLocal && !caps.can_manage && (
               <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
                 <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
                 <span>
-                  This node can't run a managed Traefik:{' '}
-                  {!caps.running_in_docker
-                    ? 'it is a native install without the controller sidecar.'
-                    : 'its lifecycle is managed externally (Dokploy / orchestrator).'}{' '}
-                  Use <b>External</b> mode and point at your reverse proxy's dynamic-config directory instead.
+                  This node can't run a managed Traefik: {caps.manage_reason || 'no supported backend.'} Use{' '}
+                  <b>External</b> mode and point at your reverse proxy's dynamic-config directory instead.
                 </span>
               </div>
             )}
@@ -232,7 +238,9 @@ function StatusLine({ state }: { state: GatewayState }) {
           {st.traefik_healthy === true ? (
             <span className="text-emerald-500">healthy</span>
           ) : st.traefik_healthy === false ? (
-            <span className="text-amber-500">{ctrl?.phase === 'applying' ? 'starting…' : 'not responding'}</span>
+            <span className="text-amber-500" title={st.traefik_detail}>
+              {ctrl?.phase === 'applying' ? 'starting…' : st.traefik_detail || 'not responding'}
+            </span>
           ) : (
             'unknown'
           )}

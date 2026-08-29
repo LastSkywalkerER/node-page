@@ -36,8 +36,10 @@ type Status struct {
 	LastError    string     `json:"last_error,omitempty"`
 	// Controller mirrors controller-status.json (managed mode on the gateway node).
 	Controller *setup.ControllerStatus `json:"controller,omitempty"`
-	// TraefikHealthy is the managed container's ping result (nil = not probed).
+	// TraefikHealthy is the managed Traefik's ping result (nil = not probed).
 	TraefikHealthy *bool `json:"traefik_healthy,omitempty"`
+	// TraefikDetail is the systemd unit state / last journal lines (native).
+	TraefikDetail string `json:"traefik_detail,omitempty"`
 }
 
 // MaterializerDeps are the Materializer's collaborators.
@@ -59,8 +61,9 @@ type MaterializerDeps struct {
 // desired-state) from the replicated gateway state. Runs on EVERY node; only
 // the node whose local MAC matches gateway.Config.NodeMAC renders anything.
 type Materializer struct {
-	deps MaterializerDeps
-	poke chan struct{}
+	deps   MaterializerDeps
+	poke   chan struct{}
+	native *nativeProvisioner
 
 	mu     sync.Mutex
 	status Status
@@ -76,6 +79,12 @@ func NewMaterializer(deps MaterializerDeps) *Materializer {
 	}
 	m := &Materializer{deps: deps, poke: make(chan struct{}, 1)}
 	m.lastPath = m.readLastPath()
+	// Managed-mode backends: Docker → controller sidecar (desired-state);
+	// native root install (deb / Proxmox LXC) → node-stats installs Traefik and
+	// drives a systemd unit (native.go). External mode only writes the file.
+	if ok, _ := nativeAvailable(); ok && !setup.RunningInDocker() {
+		m.native = newNativeProvisioner(deps.Logger, deps.DataDir)
+	}
 	return m
 }
 
@@ -107,7 +116,8 @@ func (m *Materializer) Capabilities(ctx context.Context) Capabilities {
 		LocalHostID:       hosts.LocalCollectorHostID,
 		ManagedDynamicDir: m.ManagedDynamicDir(),
 	}
-	caps.CanManage = caps.RunningInDocker && !caps.ManagedExternally
+	caps.ManageKind, caps.ManageReason = m.manageKind()
+	caps.CanManage = caps.ManageKind != ""
 	caps.LocalMAC = m.localMAC(ctx)
 	return caps
 }
@@ -126,6 +136,36 @@ func (m *Materializer) Run(ctx context.Context) {
 		}
 		m.reconcile(ctx)
 	}
+}
+
+// manageKind decides which managed backend this node can drive: "docker"
+// (controller sidecar), "systemd" (native root install), or "" with a reason.
+func (m *Materializer) manageKind() (kind, reason string) {
+	if setup.RunningInDocker() {
+		if setup.ManagedExternally() {
+			return "", "this node's compose stack is managed externally (Dokploy / orchestrator) — node-stats can't add a Traefik service; use external mode"
+		}
+		return "docker", ""
+	}
+	if m.native != nil {
+		return "systemd", ""
+	}
+	_, why := nativeAvailable()
+	return "", why
+}
+
+// isLocalNode reports whether THIS node is the configured gateway — by the
+// local host row's MAC or (Docker recreates change the NIC MAC) its stable
+// system id / hardware UUID.
+func (m *Materializer) isLocalNode(ctx context.Context, cfg gateway.Config) bool {
+	if m.deps.Hosts == nil {
+		return false
+	}
+	h, err := m.deps.Hosts.GetHostByID(ctx, hosts.LocalCollectorHostID)
+	if err != nil || h == nil {
+		return false
+	}
+	return cfg.IsNode(h.MacAddress, h.SystemHostID, h.HardwareUUID)
 }
 
 func (m *Materializer) localMAC(ctx context.Context) string {
@@ -155,8 +195,7 @@ func (m *Materializer) reconcile(ctx context.Context) {
 		st.LastError = err.Error()
 		return
 	}
-	localMAC := m.localMAC(rc)
-	isGW := cfg.Enabled && cfg.NodeMAC != "" && localMAC != "" && strings.EqualFold(cfg.NodeMAC, localMAC)
+	isGW := cfg.Enabled && m.isLocalNode(rc, cfg)
 	st.IsGatewayNode = isGW
 	st.Mode = cfg.Mode
 
@@ -200,7 +239,35 @@ func (m *Materializer) reconcile(ctx context.Context) {
 		m.setLastPath("")
 	}
 
-	// --- controller desired-state (managed mode, docker only) --------------
+	// --- managed backend: systemd (native root install) --------------------
+	if m.native != nil {
+		if isGW && cfg.Mode == gateway.ModeManaged {
+			want := setup.GatewayProvision{Enabled: true, HTTPPort: cfg.HTTPPort, HTTPSPort: cfg.HTTPSPort,
+				ACMEEnabled: cfg.ACMEEnabled, ACMEEmail: cfg.ACMEEmail, ACMEStaging: cfg.ACMEStaging}
+			if restarted, err := m.native.Reconcile(rc, want); err != nil {
+				st.LastError = "traefik (systemd): " + err.Error()
+			} else if restarted && m.deps.Logger != nil {
+				m.deps.Logger.Info("gateway: (re)started native traefik service")
+			}
+			healthy, detail := m.native.Health(rc)
+			st.TraefikHealthy = &healthy
+			st.TraefikDetail = detail
+		} else if err := m.native.Disable(rc); err != nil {
+			st.LastError = "traefik (systemd) disable: " + err.Error()
+		}
+		return
+	}
+
+	// Managed mode requested on a node that can drive no backend at all
+	// (native non-root / no systemd): say so loudly instead of rendering into
+	// a directory nothing reads.
+	if isGW && cfg.Mode == gateway.ModeManaged && !setup.RunningInDocker() {
+		_, why := nativeAvailable()
+		st.LastError = "managed mode unavailable on this node: " + why + " — switch to external mode"
+		return
+	}
+
+	// --- managed backend: docker controller (desired-state) ----------------
 	if setup.RunningInDocker() && !setup.ManagedExternally() {
 		want := setup.GatewayProvision{Enabled: isGW && cfg.Mode == gateway.ModeManaged}
 		if want.Enabled {
@@ -223,7 +290,7 @@ func (m *Materializer) reconcile(ctx context.Context) {
 			if cs, err := setup.ReadControllerStatus(m.deps.DataDir); err == nil && cs != nil {
 				st.Controller = cs
 			}
-			healthy := pingTraefik(rc)
+			healthy := pingURL(rc, traefikPingURL)
 			st.TraefikHealthy = &healthy
 		}
 	}
@@ -283,10 +350,10 @@ func (m *Materializer) setLastPath(p string) {
 	_ = os.WriteFile(m.lastPathFile(), []byte(p+"\n"), 0o644)
 }
 
-func pingTraefik(ctx context.Context) bool {
+func pingURL(ctx context.Context, url string) bool {
 	rc, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(rc, http.MethodGet, traefikPingURL, nil)
+	req, err := http.NewRequestWithContext(rc, http.MethodGet, url, nil)
 	if err != nil {
 		return false
 	}

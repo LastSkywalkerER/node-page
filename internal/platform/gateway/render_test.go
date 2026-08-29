@@ -101,3 +101,22 @@ func TestPublicURL(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestConfigIsNode(t *testing.T) {
+	cfg := Config{NodeMAC: "AA:BB:CC:DD:EE:FF", NodeSystemID: "machine-1"}
+	if !cfg.IsNode("aa:bb:cc:dd:ee:ff", "", "") {
+		t.Error("MAC match (case-insensitive) must identify the node")
+	}
+	if !cfg.IsNode("02:42:ac:11:00:02", "machine-1", "") {
+		t.Error("stable system id must identify the node after a MAC change")
+	}
+	if !cfg.IsNode("02:42:ac:11:00:02", "", "machine-1") {
+		t.Error("hardware uuid must identify the node")
+	}
+	if cfg.IsNode("02:42:ac:11:00:02", "other", "other") {
+		t.Error("unrelated host must not match")
+	}
+	if (Config{}).IsNode("aa:bb:cc:dd:ee:ff", "machine-1", "") {
+		t.Error("unset config must match nobody")
+	}
+}

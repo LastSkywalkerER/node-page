@@ -54,11 +54,14 @@ export const GatewayStatusSchema = z.object({
   last_error: z.string().optional().default(''),
   controller: ControllerStatusSchema.nullable().optional(),
   traefik_healthy: z.boolean().nullable().optional(),
+  traefik_detail: z.string().optional().default(''),
 })
 export type GatewayStatus = z.infer<typeof GatewayStatusSchema>
 
 export const GatewayCapabilitiesSchema = z.object({
   can_manage: z.boolean(),
+  manage_kind: z.string().optional().default(''),
+  manage_reason: z.string().optional().default(''),
   running_in_docker: z.boolean(),
   managed_externally: z.boolean(),
   local_host_id: z.number(),

@@ -201,8 +201,8 @@ type PeerNodeRemovePayload struct {
 // mapping. Timestamp is the origin's collection time so every replica stores
 // the row under the same instant.
 type MetricBatchPayload struct {
-	HostMAC   string          `json:"host_mac"`
-	HostName  string          `json:"host_name,omitempty"`
+	HostMAC  string `json:"host_mac"`
+	HostName string `json:"host_name,omitempty"`
 	// HostExternalID is the stable connector identity (e.g. "pbs:<fp>/<node>"),
 	// used to resolve connector nodes that expose no NIC MAC (PBS) on a remote
 	// cluster, where the synthetic MAC is regenerated and won't match.
