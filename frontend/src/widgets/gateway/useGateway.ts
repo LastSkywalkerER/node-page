@@ -140,16 +140,22 @@ export function useCheckPublic() {
   })
 }
 
+export interface TargetCheck {
+  checked: string
+  reachable: boolean
+  error?: string
+  /** upstream completed a TLS handshake → route must use https */
+  tls: boolean
+  cert_subject?: string
+  cert_trusted: boolean
+}
+
 export function useCheckTarget() {
-  return useMutation<
-    { reachable: boolean; checked?: string; error?: string },
-    Error,
-    { host: string; host_mac?: string; port: number }
-  >({
+  return useMutation<TargetCheck, Error, { host: string; host_mac?: string; port: number }>({
     mutationFn: async (body) => {
       try {
         const { data } = await apiClient.post('/gateway/check', body)
-        return data as { reachable: boolean; checked?: string; error?: string }
+        return data as TargetCheck
       } catch (e) {
         throw apiError(e)
       }

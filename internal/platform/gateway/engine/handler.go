@@ -98,16 +98,12 @@ func (h *Handler) HandleCheck(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "host and port are required"})
 		return
 	}
-	checked, err := h.service.CheckTarget(c.Request.Context(), body.Host, body.HostMAC, body.Port)
+	res, err := h.service.CheckTarget(c.Request.Context(), body.Host, body.HostMAC, body.Port)
 	if err != nil {
-		if errors.Is(err, ErrValidation) {
-			h.fail(c, err)
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"reachable": false, "checked": checked, "error": err.Error()})
+		h.fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"reachable": true, "checked": checked})
+	c.JSON(http.StatusOK, res)
 }
 
 // HandleCreateRoute adds a route.

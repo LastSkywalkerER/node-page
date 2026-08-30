@@ -24,6 +24,7 @@ import {
   useCheckPublic,
   routeToRequest,
   type PublicCheckResult,
+  type TargetCheck,
 } from './useGateway'
 import type { GatewayConfig, GatewayRoute, GatewayState, GatewayTarget, RouteRequest, BasicAuthInput } from './schemas'
 
@@ -454,7 +455,8 @@ function RouteForm({
   }
 
   // Live reachability: re-check (debounced) whenever the target changes.
-  const [reach, setReach] = useState<{ ok: boolean; checked?: string; error?: string; key: string } | null>(null)
+  const [reach, setReach] = useState<(TargetCheck & { key: string }) | null>(null)
+  const [schemeNote, setSchemeNote] = useState<string>('')
   const [reachNonce, setReachNonce] = useState(0)
   const checkMutate = check.mutate
   const reachTimer = useRef<number | null>(null)
@@ -472,8 +474,29 @@ function RouteForm({
       checkMutate(
         { host, host_mac: mac, port },
         {
-          onSuccess: (r) => setReach({ ok: r.reachable, checked: r.checked, error: r.error, key }),
-          onError: (e) => setReach({ ok: false, error: e.message, key }),
+          onSuccess: (r) => {
+            setReach({ ...r, key })
+            // Auto-detect the upstream protocol: a TLS handshake means the
+            // service speaks HTTPS on that port (plain http would get Apache's
+            // "You're speaking plain HTTP to an SSL-enabled server port").
+            setReq((cur) => {
+              if (!r.reachable) return cur
+              if (r.tls && cur.target_scheme !== 'https') {
+                setSchemeNote(
+                  `Upstream speaks HTTPS${r.cert_subject ? ` (cert: ${r.cert_subject})` : ''} — switched the target to https${
+                    r.cert_trusted ? '' : ' and enabled "skip upstream cert verification" (self-signed)'
+                  }.`
+                )
+                return { ...cur, target_scheme: 'https', target_insecure_skip_verify: !r.cert_trusted }
+              }
+              if (!r.tls && cur.target_scheme === 'https') {
+                setSchemeNote('Upstream does not speak TLS on this port — switched the target to http.')
+                return { ...cur, target_scheme: 'http', target_insecure_skip_verify: false }
+              }
+              return cur
+            })
+          },
+          onError: (e) => setReach({ checked: key, reachable: false, tls: false, cert_trusted: false, error: e.message, key }),
         }
       )
     }, 500)
@@ -482,6 +505,7 @@ function RouteForm({
     }
   }, [req.target_host, req.target_host_mac, req.target_port, checkMutate, reachNonce])
   const reachCurrent = reach && reach.key === `${req.target_host.trim()}:${Number(req.target_port)}` ? reach : null
+  useEffect(() => setSchemeNote(''), [req.target_host, req.target_port])
   const storedAddr = `${req.target_host.trim()}:${Number(req.target_port)}`
   const checkedDiffers = !!reachCurrent?.checked && reachCurrent.checked !== storedAddr
 
@@ -588,16 +612,17 @@ function RouteForm({
               <span
                 className={cn(
                   'h-2 w-2 rounded-full',
-                  !reachCurrent || check.isPending ? 'bg-zinc-400 animate-pulse' : reachCurrent.ok ? 'bg-emerald-400' : 'bg-red-400'
+                  !reachCurrent || check.isPending ? 'bg-zinc-400 animate-pulse' : reachCurrent.reachable ? 'bg-emerald-400' : 'bg-red-400'
                 )}
               />
               {!reachCurrent || check.isPending
                 ? 'checking from this node…'
-                : reachCurrent.ok
-                  ? 'reachable from this node'
+                : reachCurrent.reachable
+                  ? `reachable from this node · ${reachCurrent.tls ? `TLS${reachCurrent.cert_trusted ? '' : ' (self-signed)'}` : 'plain http'}`
                   : `unreachable from this node${reachCurrent.error ? ` — ${reachCurrent.error}` : ''}`}
             </button>
           ) : null}
+          {schemeNote && <span className="text-amber-500">{schemeNote}</span>}
 
           {req.target_scheme === 'https' && (
             <label className="inline-flex items-center gap-1.5">

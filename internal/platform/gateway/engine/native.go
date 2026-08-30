@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -180,7 +181,73 @@ func (n *nativeProvisioner) Health(ctx context.Context) (healthy bool, detail st
 	if state == "" {
 		state = "not installed"
 	}
+	if owners := portOwners(ctx, n.lastPorts()); owners != "" {
+		return false, state + " — " + owners
+	}
 	return false, state
+}
+
+// lastPorts returns the entrypoint ports of the last applied provision.
+func (n *nativeProvisioner) lastPorts() []int {
+	if n.installedWant == nil {
+		return []int{80, 443}
+	}
+	hp, sp := n.installedWant.HTTPPort, n.installedWant.HTTPSPort
+	if hp <= 0 {
+		hp = 80
+	}
+	if sp <= 0 {
+		sp = 443
+	}
+	return []int{hp, sp}
+}
+
+// portOwners reports which OTHER processes listen on the given ports (via
+// `ss -ltnp`), e.g. "port 80 is held by nginx (pid 1234)" — the usual reason a
+// managed Traefik fails to start: another reverse proxy already owns :80/:443.
+func portOwners(ctx context.Context, ports []int) string {
+	rc, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(rc, "ss", "-ltnpH").Output()
+	if err != nil {
+		return ""
+	}
+	var msgs []string
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 4 {
+			continue
+		}
+		local := f[3]
+		i := strings.LastIndexByte(local, ':')
+		if i < 0 {
+			continue
+		}
+		p, _ := strconv.Atoi(local[i+1:])
+		for _, want := range ports {
+			if p != want {
+				continue
+			}
+			proc := ""
+			if j := strings.Index(line, "users:(("); j >= 0 {
+				rest := line[j+8:]
+				if k := strings.IndexByte(rest, ')'); k > 0 {
+					proc = strings.ReplaceAll(rest[:k], "\"", "")
+				}
+			}
+			if strings.Contains(proc, "traefik") {
+				continue
+			}
+			if proc == "" {
+				proc = "another process"
+			}
+			msgs = append(msgs, fmt.Sprintf("port %d is already held by %s", p, proc))
+		}
+	}
+	if len(msgs) == 0 {
+		return ""
+	}
+	return strings.Join(msgs, "; ") + " — pick other gateway ports or use external mode with that proxy"
 }
 
 func (n *nativeProvisioner) isActive(ctx context.Context) bool {

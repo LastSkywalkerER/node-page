@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -130,7 +132,7 @@ type Service interface {
 	// CheckTarget dials host:port from THIS node (TCP) — using the address
 	// Traefik would actually be given here (same-host rewrite) — and returns
 	// that checked address.
-	CheckTarget(ctx context.Context, host, hostMAC string, port int) (checked string, err error)
+	CheckTarget(ctx context.Context, host, hostMAC string, port int) (*TargetCheck, error)
 	// Logs returns the managed Traefik's recent logs (gateway node only).
 	Logs(ctx context.Context, tail int) (string, error)
 	// CheckPublic asks an external service whether the gateway's HTTP/HTTPS
@@ -305,22 +307,71 @@ func (s *service) Targets(ctx context.Context) ([]Target, error) {
 	return t, err
 }
 
-func (s *service) CheckTarget(ctx context.Context, host, hostMAC string, port int) (string, error) {
+// TargetCheck is the reachability + protocol probe result for an upstream.
+type TargetCheck struct {
+	Checked   string `json:"checked"`
+	Reachable bool   `json:"reachable"`
+	Error     string `json:"error,omitempty"`
+	// TLS reports whether the upstream completed a TLS handshake (so the route
+	// must use scheme https); CertSubject / CertTrusted describe its cert.
+	TLS         bool   `json:"tls"`
+	CertSubject string `json:"cert_subject,omitempty"`
+	CertTrusted bool   `json:"cert_trusted"`
+}
+
+func (s *service) CheckTarget(ctx context.Context, host, hostMAC string, port int) (*TargetCheck, error) {
 	host = strings.TrimSpace(host)
 	if host == "" || !validPort(port) {
-		return "", fmt.Errorf("%w: host and port are required", ErrValidation)
+		return nil, fmt.Errorf("%w: host and port are required", ErrValidation)
 	}
 	if s.mat != nil {
 		host = s.mat.EffectiveTargetHost(ctx, host, hostMAC)
 	}
-	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	res := &TargetCheck{Checked: net.JoinHostPort(host, strconv.Itoa(port))}
 	d := net.Dialer{Timeout: 3 * time.Second}
-	conn, err := d.DialContext(ctx, "tcp", addr)
+	conn, err := d.DialContext(ctx, "tcp", res.Checked)
 	if err != nil {
-		return addr, err
+		res.Error = err.Error()
+		return res, nil
 	}
 	_ = conn.Close()
-	return addr, nil
+	res.Reachable = true
+	probeUpstreamTLS(ctx, res)
+	return res, nil
+}
+
+// probeUpstreamTLS tries a TLS handshake against a reachable upstream. Success
+// means the service speaks HTTPS on that port (a plain-http route would get
+// "You're speaking plain HTTP to an SSL-enabled server port"); a failure that
+// is not a timeout means plain HTTP.
+func probeUpstreamTLS(ctx context.Context, res *TargetCheck) {
+	rc, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	d := tls.Dialer{NetDialer: &net.Dialer{Timeout: 3 * time.Second}, Config: &tls.Config{InsecureSkipVerify: true}} // #nosec G402 — probe only
+	conn, err := d.DialContext(rc, "tcp", res.Checked)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	tc, ok := conn.(*tls.Conn)
+	if !ok {
+		return
+	}
+	res.TLS = true
+	if certs := tc.ConnectionState().PeerCertificates; len(certs) > 0 {
+		res.CertSubject = certs[0].Subject.CommonName
+		if res.CertSubject == "" && len(certs[0].DNSNames) > 0 {
+			res.CertSubject = certs[0].DNSNames[0]
+		}
+		host, _, _ := net.SplitHostPort(res.Checked)
+		opts := x509.VerifyOptions{DNSName: host, Intermediates: x509.NewCertPool()}
+		for _, c := range certs[1:] {
+			opts.Intermediates.AddCert(c)
+		}
+		if _, err := certs[0].Verify(opts); err == nil {
+			res.CertTrusted = true
+		}
+	}
 }
 
 func (s *service) CheckPublic(ctx context.Context, target string) (*PublicCheckResult, error) {
