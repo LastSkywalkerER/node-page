@@ -308,6 +308,8 @@ func (a *appliers) applyGatewayRouteUpsert(cmd Command, _ *hraft.Log) error {
 		TargetHostMAC:            p.TargetHostMAC,
 		TargetLabel:              p.TargetLabel,
 		TargetInsecureSkipVerify: p.TargetInsecureSkipVerify,
+		Mode:                     p.Mode,
+		TargetHTTPSPort:          p.TargetHTTPSPort,
 		TLS:                      p.TLS,
 		BasicAuthUsers:           p.BasicAuthUsers,
 		IPAllowList:              p.IPAllowList,

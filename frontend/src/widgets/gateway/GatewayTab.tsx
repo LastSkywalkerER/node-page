@@ -391,6 +391,8 @@ const emptyRequest: RouteRequest = {
   target_label: '',
   target_insecure_skip_verify: false,
   tls: true,
+  mode: 'http',
+  target_https_port: 443,
   basic_auth: [],
   ip_allow_list: '',
   enabled: true,
@@ -418,7 +420,7 @@ function RouteForm({
   const gwIP = gatewayHost?.ipv4 ?? ''
   const gwPort = state.config.mode === 'managed' ? state.config.http_port || 80 : 80
   const [req, setReq] = useState<RouteRequest>(initial)
-  const [manual, setManual] = useState(!!initial.target_host && !initial.target_label)
+  const [manual, setManual] = useState((!!initial.target_host && !initial.target_label) || initial.mode === 'passthrough')
   const { data: targets = [] } = useGatewayTargets()
   const create = useCreateRoute()
   const update = useUpdateRoute()
@@ -426,6 +428,7 @@ function RouteForm({
   const pending = create.isPending || update.isPending
 
   const set = (patch: Partial<RouteRequest>) => setReq((r) => ({ ...r, ...patch }))
+  const isPassthrough = req.mode === 'passthrough'
 
   const selectedTarget = targets.find((t) => targetKey(t) === `${req.target_host}:${req.target_port}`)
 
@@ -514,10 +517,40 @@ function RouteForm({
 
   return (
     <div className="space-y-4 rounded-lg border border-border/60 bg-muted/10 p-4">
+      <div className="space-y-1.5">
+        <Label>Route type</Label>
+        <select
+          className={selectCls}
+          value={req.mode}
+          onChange={(e) => {
+            const mode = e.target.value as RouteRequest['mode']
+            set(
+              mode === 'passthrough'
+                ? { mode, tls: false, path_prefix: '', basic_auth: [], ip_allow_list: '', target_scheme: 'http', target_port: req.target_port || 80, target_https_port: req.target_https_port || 443 }
+                : { mode }
+            )
+          }}
+        >
+          <option value="http">Publish a service — this gateway terminates TLS and proxies HTTP</option>
+          <option value="passthrough">Delegate to another reverse proxy — TLS passthrough (it issues its own certificates)</option>
+        </select>
+        {isPassthrough && (
+          <p className="text-xs text-muted-foreground">
+            :443 traffic for the domain is forwarded as raw TLS by SNI to the other proxy (Traefik / Caddy / NPM…) which
+            terminates it and runs its own ACME; :80 is proxied to its http port so its HTTP-01 challenges and redirects
+            work. Use a wildcard (<span className="font-mono">*.apps.example.com</span>) to hand it a whole subdomain
+            space.
+          </p>
+        )}
+      </div>
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-1.5">
           <Label>Domain</Label>
-          <Input placeholder="grafana.example.com" value={req.domain} onChange={(e) => set({ domain: e.target.value })} />
+          <Input
+            placeholder={isPassthrough ? '*.apps.example.com' : 'grafana.example.com'}
+            value={req.domain}
+            onChange={(e) => set({ domain: e.target.value })}
+          />
           <p className="text-xs text-muted-foreground">
             {req.domain ? (
               <>
@@ -544,7 +577,7 @@ function RouteForm({
         </div>
         <div className="space-y-1.5">
           <Label>Path prefix (optional)</Label>
-          <Input placeholder="/" value={req.path_prefix} onChange={(e) => set({ path_prefix: e.target.value })} />
+          <Input placeholder="/" value={req.path_prefix} disabled={isPassthrough} onChange={(e) => set({ path_prefix: e.target.value })} />
         </div>
       </div>
 
@@ -571,6 +604,27 @@ function RouteForm({
             ))}
           </select>
         ) : (
+          isPassthrough ? (
+          <div className="grid gap-2 md:grid-cols-[1fr_140px_140px]">
+            <Input
+              placeholder="other proxy IP or hostname"
+              value={req.target_host}
+              onChange={(e) => set({ target_host: e.target.value, target_label: '', target_host_mac: '' })}
+            />
+            <Input
+              type="number"
+              placeholder="http port (80)"
+              value={req.target_port || ''}
+              onChange={(e) => set({ target_port: Number(e.target.value) })}
+            />
+            <Input
+              type="number"
+              placeholder="https port (443)"
+              value={req.target_https_port || ''}
+              onChange={(e) => set({ target_https_port: Number(e.target.value) })}
+            />
+          </div>
+          ) : (
           <div className="grid gap-2 md:grid-cols-[110px_1fr_120px]">
             <select
               className={selectCls}
@@ -592,6 +646,7 @@ function RouteForm({
               onChange={(e) => set({ target_port: Number(e.target.value) })}
             />
           </div>
+          )
         )}
         <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
           {req.target_host && req.target_port ? (
@@ -642,12 +697,15 @@ function RouteForm({
           <Label>Name (optional)</Label>
           <Input placeholder={req.domain || 'Grafana'} value={req.name} onChange={(e) => set({ name: e.target.value })} />
         </div>
-        <div className="flex items-end gap-2 pb-1">
-          <Switch checked={req.tls} onCheckedChange={(v) => set({ tls: v })} />
-          <span className="text-sm">HTTPS (TLS terminated on the gateway; http redirects)</span>
-        </div>
+        {!isPassthrough && (
+          <div className="flex items-end gap-2 pb-1">
+            <Switch checked={req.tls} onCheckedChange={(v) => set({ tls: v })} />
+            <span className="text-sm">HTTPS (TLS terminated on the gateway; http redirects)</span>
+          </div>
+        )}
       </div>
 
+      {!isPassthrough && (
       <div className="space-y-2 rounded-lg border border-border/60 p-3">
         <div className="flex items-center justify-between">
           <div>
@@ -696,6 +754,7 @@ function RouteForm({
           />
         </div>
       </div>
+      )}
 
       <div className="flex justify-end gap-2">
         <Button type="button" variant="ghost" size="sm" onClick={onDone} disabled={pending}>
@@ -746,12 +805,18 @@ function RouteRow({ route, onEdit }: { route: GatewayRoute; onEdit: () => void }
             <span className={cn('truncate font-medium', !route.enabled && 'text-muted-foreground line-through')}>
               {route.name || route.domain}
             </span>
-            {route.tls ? (
+            {route.mode === 'passthrough' ? (
+              <Badge variant="secondary" className="text-[10px] uppercase" title="TLS passthrough — the other proxy terminates TLS">
+                passthrough
+              </Badge>
+            ) : route.tls ? (
               <Badge variant="secondary" className="text-[10px] uppercase">https</Badge>
             ) : (
               <Badge variant="outline" className="text-[10px] uppercase">http</Badge>
             )}
-            {route.protected ? (
+            {route.mode === 'passthrough' ? (
+              <span className="text-xs text-muted-foreground">TLS + access control handled by the other proxy</span>
+            ) : route.protected ? (
               <span className="inline-flex items-center gap-1 text-xs text-emerald-500" title="basic auth / IP allow list">
                 <ShieldCheck className="h-3.5 w-3.5" /> protected
               </span>
@@ -769,7 +834,9 @@ function RouteRow({ route, onEdit }: { route: GatewayRoute; onEdit: () => void }
           </div>
           {/* 3. where it really goes */}
           <div className="truncate font-mono text-xs text-muted-foreground">
-            → {route.effective_url || route.target_url || `${route.target_scheme}://${route.target_host}:${route.target_port}`}
+            → {route.mode === 'passthrough'
+              ? `${route.target_host}:${route.target_https_port || 443} (tls, sni) · :${route.target_port || 80} (http)`
+              : route.effective_url || route.target_url || `${route.target_scheme}://${route.target_host}:${route.target_port}`}
             {route.rewritten ? (
               <span
                 className="font-sans"

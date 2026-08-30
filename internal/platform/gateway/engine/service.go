@@ -67,19 +67,23 @@ type BasicAuthInput struct {
 
 // RouteRequest is the create/update body.
 type RouteRequest struct {
-	Name                     string           `json:"name"`
-	Domain                   string           `json:"domain"`
-	PathPrefix               string           `json:"path_prefix"`
-	TargetScheme             string           `json:"target_scheme"`
-	TargetHost               string           `json:"target_host"`
-	TargetPort               int              `json:"target_port"`
-	TargetHostMAC            string           `json:"target_host_mac"`
-	TargetLabel              string           `json:"target_label"`
-	TargetInsecureSkipVerify bool             `json:"target_insecure_skip_verify"`
-	TLS                      bool             `json:"tls"`
-	BasicAuth                []BasicAuthInput `json:"basic_auth"`
-	IPAllowList              string           `json:"ip_allow_list"`
-	Enabled                  *bool            `json:"enabled"`
+	Name                     string `json:"name"`
+	Domain                   string `json:"domain"`
+	PathPrefix               string `json:"path_prefix"`
+	TargetScheme             string `json:"target_scheme"`
+	TargetHost               string `json:"target_host"`
+	TargetPort               int    `json:"target_port"`
+	TargetHostMAC            string `json:"target_host_mac"`
+	TargetLabel              string `json:"target_label"`
+	TargetInsecureSkipVerify bool   `json:"target_insecure_skip_verify"`
+	TLS                      bool   `json:"tls"`
+	// Mode: "http" (default) or "passthrough" (delegate TLS to another proxy at
+	// TargetHost — TargetPort = its http port, TargetHTTPSPort = its tls port).
+	Mode            string           `json:"mode"`
+	TargetHTTPSPort int              `json:"target_https_port"`
+	BasicAuth       []BasicAuthInput `json:"basic_auth"`
+	IPAllowList     string           `json:"ip_allow_list"`
+	Enabled         *bool            `json:"enabled"`
 }
 
 // RouteView is the API shape of a route (hashes stripped, users listed).
@@ -399,14 +403,36 @@ func (s *service) Logs(ctx context.Context, tail int) (string, error) {
 
 // --- internals ---------------------------------------------------------------
 
-var domainRe = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$|^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+var domainRe = regexp.MustCompile(`^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$|^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 // applyRequest validates req and copies it onto r. prev (update) lets an
 // empty password keep an existing user's hash.
 func (s *service) applyRequest(r *gateway.Route, req RouteRequest, prev *gateway.Route) error {
 	domain := strings.ToLower(strings.TrimSpace(req.Domain))
 	if domain == "" || !domainRe.MatchString(domain) {
-		return fmt.Errorf("%w: domain must be a valid hostname", ErrValidation)
+		return fmt.Errorf("%w: domain must be a valid hostname (optionally *.wildcard)", ErrValidation)
+	}
+	mode := strings.ToLower(strings.TrimSpace(req.Mode))
+	if mode == "" {
+		mode = gateway.RouteModeHTTP
+	}
+	if mode != gateway.RouteModeHTTP && mode != gateway.RouteModePassthrough {
+		return fmt.Errorf("%w: mode must be http or passthrough", ErrValidation)
+	}
+	wildcard := strings.HasPrefix(domain, "*.")
+	if wildcard && mode == gateway.RouteModeHTTP && req.TLS {
+		return fmt.Errorf("%w: a wildcard domain can't get a certificate via HTTP-01 — use passthrough mode (the other proxy issues certs) or turn HTTPS off", ErrValidation)
+	}
+	if mode == gateway.RouteModePassthrough {
+		if req.TargetHTTPSPort != 0 && !validPort(req.TargetHTTPSPort) {
+			return fmt.Errorf("%w: target https port must be 1-65535", ErrValidation)
+		}
+		if strings.TrimSpace(req.PathPrefix) != "" && strings.TrimSpace(req.PathPrefix) != "/" {
+			return fmt.Errorf("%w: passthrough routes can't have a path prefix (TLS is routed by SNI only)", ErrValidation)
+		}
+		if len(req.BasicAuth) > 0 || strings.TrimSpace(req.IPAllowList) != "" {
+			return fmt.Errorf("%w: passthrough routes can't carry basic auth / IP allow lists — the traffic is encrypted end-to-end; configure access control on the other proxy", ErrValidation)
+		}
 	}
 	path := strings.TrimSpace(req.PathPrefix)
 	if path == "/" {
@@ -425,6 +451,9 @@ func (s *service) applyRequest(r *gateway.Route, req RouteRequest, prev *gateway
 	th := strings.TrimSpace(req.TargetHost)
 	if th == "" || strings.ContainsAny(th, " /`\"'") {
 		return fmt.Errorf("%w: target host is required", ErrValidation)
+	}
+	if req.TargetPort == 0 && mode == gateway.RouteModePassthrough {
+		req.TargetPort = 80
 	}
 	if !validPort(req.TargetPort) {
 		return fmt.Errorf("%w: target port must be 1-65535", ErrValidation)
@@ -474,6 +503,17 @@ func (s *service) applyRequest(r *gateway.Route, req RouteRequest, prev *gateway
 	r.Name = strings.TrimSpace(req.Name)
 	if r.Name == "" {
 		r.Name = domain
+	}
+	r.Mode = mode
+	r.TargetHTTPSPort = 0
+	if mode == gateway.RouteModePassthrough {
+		r.TargetHTTPSPort = req.TargetHTTPSPort
+		if r.TargetHTTPSPort == 0 {
+			r.TargetHTTPSPort = 443
+		}
+		if req.TargetPort == 0 {
+			req.TargetPort = 80
+		}
 	}
 	r.Domain = domain
 	r.PathPrefix = path

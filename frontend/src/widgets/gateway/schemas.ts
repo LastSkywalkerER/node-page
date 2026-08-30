@@ -22,6 +22,8 @@ export const GatewayRouteSchema = z.object({
   target_scheme: z.string(),
   target_host: z.string(),
   target_port: z.number(),
+  target_https_port: z.number().optional().default(0),
+  mode: z.string().optional().default('http'),
   target_host_mac: z.string().optional().default(''),
   target_label: z.string().optional().default(''),
   target_insecure_skip_verify: z.boolean().default(false),
@@ -109,6 +111,8 @@ export interface RouteRequest {
   target_label: string
   target_insecure_skip_verify: boolean
   tls: boolean
+  mode: 'http' | 'passthrough'
+  target_https_port: number
   basic_auth: BasicAuthInput[]
   ip_allow_list: string
   enabled?: boolean

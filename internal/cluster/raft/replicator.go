@@ -115,6 +115,8 @@ func (r *Replicator) SubmitGatewayRouteUpsert(ctx context.Context, g gateway.Rou
 		TargetHostMAC:            g.TargetHostMAC,
 		TargetLabel:              g.TargetLabel,
 		TargetInsecureSkipVerify: g.TargetInsecureSkipVerify,
+		Mode:                     g.Mode,
+		TargetHTTPSPort:          g.TargetHTTPSPort,
 		TLS:                      g.TLS,
 		BasicAuthUsers:           g.BasicAuthUsers,
 		IPAllowList:              g.IPAllowList,

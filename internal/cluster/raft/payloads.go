@@ -77,6 +77,8 @@ type GatewayRouteUpsertPayload struct {
 	TargetHostMAC            string `json:"target_host_mac,omitempty"`
 	TargetLabel              string `json:"target_label,omitempty"`
 	TargetInsecureSkipVerify bool   `json:"target_insecure_skip_verify"`
+	Mode                     string `json:"mode,omitempty"`
+	TargetHTTPSPort          int    `json:"target_https_port,omitempty"`
 	TLS                      bool   `json:"tls"`
 	BasicAuthUsers           string `json:"basic_auth_users,omitempty"`
 	IPAllowList              string `json:"ip_allow_list,omitempty"`

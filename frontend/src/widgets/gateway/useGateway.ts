@@ -176,6 +176,8 @@ export function routeToRequest(r: GatewayRoute): RouteRequest {
     target_label: r.target_label,
     target_insecure_skip_verify: r.target_insecure_skip_verify,
     tls: r.tls,
+    mode: r.mode === 'passthrough' ? 'passthrough' : 'http',
+    target_https_port: r.target_https_port || 443,
     basic_auth: r.basic_auth_users.map((u) => ({ user: u, password: '' })),
     ip_allow_list: r.ip_allow_list,
     enabled: r.enabled,

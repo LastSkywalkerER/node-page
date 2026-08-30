@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -12,6 +13,36 @@ import (
 // emit). Field names follow Traefik's YAML exactly.
 type traefikDynamic struct {
 	HTTP traefikHTTP `yaml:"http"`
+	TCP  *traefikTCP `yaml:"tcp,omitempty"`
+}
+
+// TCP section — used for TLS passthrough routes (SNI-routed raw TLS).
+type traefikTCP struct {
+	Routers  map[string]traefikTCPRouter  `yaml:"routers,omitempty"`
+	Services map[string]traefikTCPService `yaml:"services,omitempty"`
+}
+
+type traefikTCPRouter struct {
+	Rule        string         `yaml:"rule"`
+	Service     string         `yaml:"service"`
+	EntryPoints []string       `yaml:"entryPoints"`
+	TLS         *traefikTCPTLS `yaml:"tls,omitempty"`
+}
+
+type traefikTCPTLS struct {
+	Passthrough bool `yaml:"passthrough"`
+}
+
+type traefikTCPService struct {
+	LoadBalancer traefikTCPLoadBalancer `yaml:"loadBalancer"`
+}
+
+type traefikTCPLoadBalancer struct {
+	Servers []traefikTCPServer `yaml:"servers"`
+}
+
+type traefikTCPServer struct {
+	Address string `yaml:"address"`
 }
 
 type traefikHTTP struct {
@@ -107,6 +138,10 @@ func Render(cfg Config, routes []Route) ([]byte, error) {
 			continue
 		}
 		base := namePrefix + r.RouteID
+		if r.IsPassthrough() {
+			renderPassthrough(&doc, base, r)
+			continue
+		}
 		svcName := base
 		scheme := r.TargetScheme
 		if scheme == "" {
@@ -122,7 +157,7 @@ func Render(cfg Config, routes []Route) ([]byte, error) {
 		}
 		doc.HTTP.Services[svcName] = traefikService{LoadBalancer: lb}
 
-		rule := fmt.Sprintf("Host(`%s`)", r.Domain)
+		rule := hostRule(r.Domain)
 		if p := strings.TrimSpace(r.PathPrefix); p != "" && p != "/" {
 			rule += fmt.Sprintf(" && PathPrefix(`%s`)", p)
 		}
@@ -162,10 +197,13 @@ func Render(cfg Config, routes []Route) ([]byte, error) {
 		}
 	}
 
+	if doc.TCP != nil && len(doc.TCP.Routers) == 0 {
+		doc.TCP = nil
+	}
 	// No enabled routes: return nil so the materializer REMOVES the file. A file
 	// with an empty `http: {}` makes Traefik's file provider log
 	// "http cannot be a standalone element" on every reload.
-	if len(doc.HTTP.Routers) == 0 {
+	if len(doc.HTTP.Routers) == 0 && doc.TCP == nil {
 		return nil, nil
 	}
 
@@ -198,6 +236,55 @@ func Render(cfg Config, routes []Route) ([]byte, error) {
 }
 
 // SplitCSV splits a comma list, trimming blanks.
+// hostRule builds the HTTP router rule for a domain: Host() for an exact name,
+// HostRegexp() for a "*." wildcard (direct subdomains).
+func hostRule(domain string) string {
+	if strings.HasPrefix(domain, "*.") {
+		return fmt.Sprintf("HostRegexp(`^[^.]+\\.%s$`)", regexp.QuoteMeta(domain[2:]))
+	}
+	return fmt.Sprintf("Host(`%s`)", domain)
+}
+
+// hostSNIRule is the TCP-router counterpart of hostRule.
+func hostSNIRule(domain string) string {
+	if strings.HasPrefix(domain, "*.") {
+		return fmt.Sprintf("HostSNIRegexp(`^[^.]+\\.%s$`)", regexp.QuoteMeta(domain[2:]))
+	}
+	return fmt.Sprintf("HostSNI(`%s`)", domain)
+}
+
+// renderPassthrough emits the two halves of a delegation route: a TCP
+// passthrough router on websecure (the other proxy terminates TLS itself) and a
+// plain HTTP router on web to its http port (ACME HTTP-01 + redirects).
+func renderPassthrough(doc *traefikDynamic, base string, r Route) {
+	httpPort := r.TargetPort
+	if httpPort <= 0 {
+		httpPort = 80
+	}
+	httpsPort := r.TargetHTTPSPort
+	if httpsPort <= 0 {
+		httpsPort = 443
+	}
+	if doc.TCP == nil {
+		doc.TCP = &traefikTCP{Routers: map[string]traefikTCPRouter{}, Services: map[string]traefikTCPService{}}
+	}
+	tcpName := base + "-tls"
+	doc.TCP.Services[tcpName] = traefikTCPService{LoadBalancer: traefikTCPLoadBalancer{
+		Servers: []traefikTCPServer{{Address: fmt.Sprintf("%s:%d", r.TargetHost, httpsPort)}},
+	}}
+	doc.TCP.Routers[tcpName] = traefikTCPRouter{
+		Rule: hostSNIRule(r.Domain), Service: tcpName, EntryPoints: []string{entryPointWebSecure},
+		TLS: &traefikTCPTLS{Passthrough: true},
+	}
+	httpName := base + "-http"
+	doc.HTTP.Services[httpName] = traefikService{LoadBalancer: traefikLoadBalancer{
+		Servers: []traefikServer{{URL: fmt.Sprintf("http://%s:%d", r.TargetHost, httpPort)}},
+	}}
+	doc.HTTP.Routers[httpName] = traefikRouter{
+		Rule: hostRule(r.Domain), Service: httpName, EntryPoints: []string{entryPointWeb},
+	}
+}
+
 func SplitCSV(s string) []string {
 	var out []string
 	for _, p := range strings.Split(s, ",") {

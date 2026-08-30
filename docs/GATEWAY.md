@@ -89,6 +89,16 @@ A route is provider-neutral (`gateway.Route`): `domain` (+ optional `path_prefix
 target_host:target_port`, flags `tls`, `target_insecure_skip_verify`, access control (`basic_auth`
 users — bcrypt-hashed server-side, never returned — and an `ip_allow_list` of CIDRs), `enabled`.
 
+**Passthrough routes (delegating to another reverse proxy).** `mode: passthrough` hands a hostname —
+typically a wildcard like `*.apps.example.com` — to another proxy (a Dokploy/Coolify Traefik, Caddy,
+NPM…) that terminates TLS and runs its own ACME: the gateway renders a **TCP router** on
+`websecure` with `HostSNI`/`HostSNIRegexp` + `tls.passthrough: true` → `target_host:target_https_port`
+(raw TLS, untouched), plus an **HTTP router** on `web` with `Host`/`HostRegexp` → `http://target_host:
+target_port` (so the other proxy's HTTP-01 challenges and http→https redirects work). No certificate,
+basic auth or IP list is applied here — the traffic is encrypted end-to-end; configure those on the
+other proxy. Wildcards in plain `http` mode are allowed only with HTTPS off (HTTP-01 can't issue
+wildcard certificates).
+
 Rendered per route (`gateway.Render`, names prefixed `ns-<route_id>` to never collide with the
 operator's objects):
 

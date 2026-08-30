@@ -45,6 +45,19 @@ const (
 	SchemeHTTPS = "https"
 )
 
+// Route modes.
+const (
+	// ModeHTTP (default): the gateway terminates TLS and reverse-proxies HTTP to
+	// the target.
+	RouteModeHTTP = "http"
+	// RouteModePassthrough delegates a hostname (typically a wildcard) to
+	// ANOTHER reverse proxy: :443 traffic is forwarded as raw TLS by SNI
+	// (passthrough — that proxy terminates TLS and runs its own ACME) and :80
+	// traffic is proxied as HTTP to its http port (so its HTTP-01 challenges and
+	// redirects work).
+	RouteModePassthrough = "passthrough"
+)
+
 // Config is the cluster-wide gateway configuration (stored as one JSON value
 // in cluster_config so it replicates with CmdConfigSet).
 type Config struct {
@@ -85,8 +98,12 @@ type Route struct {
 	RouteID string `json:"route_id" gorm:"uniqueIndex;size:32;not null"`
 	Name    string `json:"name" gorm:"size:128"`
 
-	// Domain is the public hostname (lower-case FQDN). PathPrefix optionally
-	// narrows the match (e.g. "/grafana").
+	// Mode is RouteModeHTTP (default) or RouteModePassthrough.
+	Mode string `json:"mode" gorm:"size:16"`
+
+	// Domain is the public hostname (lower-case FQDN). A leading "*." makes it
+	// a wildcard (all direct subdomains; matched with HostRegexp/HostSNIRegexp).
+	// PathPrefix optionally narrows the match (e.g. "/grafana"; http mode only).
 	Domain     string `json:"domain" gorm:"index;size:253;not null"`
 	PathPrefix string `json:"path_prefix,omitempty" gorm:"size:255"`
 
@@ -95,11 +112,13 @@ type Route struct {
 	// other machines). TargetHostMAC optionally links the target to a hosts
 	// row for display / re-resolution; TargetLabel is a display hint
 	// ("nextcloud · app").
-	TargetScheme  string `json:"target_scheme" gorm:"size:8;not null"`
-	TargetHost    string `json:"target_host" gorm:"size:253;not null"`
-	TargetPort    int    `json:"target_port" gorm:"not null"`
-	TargetHostMAC string `json:"target_host_mac,omitempty" gorm:"index;size:64"`
-	TargetLabel   string `json:"target_label,omitempty" gorm:"size:255"`
+	TargetScheme string `json:"target_scheme" gorm:"size:8;not null"`
+	TargetHost   string `json:"target_host" gorm:"size:253;not null"`
+	TargetPort   int    `json:"target_port" gorm:"not null"`
+	// TargetHTTPSPort (passthrough mode) is the other proxy's TLS port (443).
+	TargetHTTPSPort int    `json:"target_https_port,omitempty"`
+	TargetHostMAC   string `json:"target_host_mac,omitempty" gorm:"index;size:64"`
+	TargetLabel     string `json:"target_label,omitempty" gorm:"size:255"`
 	// TargetInsecureSkipVerify disables upstream cert verification for https
 	// targets (self-signed admin UIs).
 	TargetInsecureSkipVerify bool `json:"target_insecure_skip_verify"`
@@ -128,6 +147,12 @@ func AutoMigrate(db *gorm.DB) error {
 	return db.AutoMigrate(&Route{})
 }
 
+// IsWildcard reports whether the domain is a "*.example.com" wildcard.
+func (r Route) IsWildcard() bool { return strings.HasPrefix(r.Domain, "*.") }
+
+// IsPassthrough reports whether the route delegates TLS to another proxy.
+func (r Route) IsPassthrough() bool { return r.Mode == RouteModePassthrough }
+
 // IsNode reports whether a host row (by MAC / stable system id) is the
 // configured gateway node.
 func (c Config) IsNode(mac, systemID, hardwareUUID string) bool {
@@ -152,7 +177,7 @@ func (r Route) Protected() bool {
 func (r Route) PublicURL(cfg Config) string {
 	scheme := SchemeHTTP
 	port := ""
-	if r.TLS {
+	if r.TLS || r.IsPassthrough() {
 		scheme = SchemeHTTPS
 		if cfg.Mode == ModeManaged && cfg.HTTPSPort != 0 && cfg.HTTPSPort != 443 {
 			port = ":" + itoa(cfg.HTTPSPort)

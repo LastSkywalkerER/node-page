@@ -124,3 +124,45 @@ func TestConfigIsNode(t *testing.T) {
 		t.Error("unset config must match nobody")
 	}
 }
+
+func TestRender_PassthroughWildcard(t *testing.T) {
+	cfg := Config{Enabled: true, Mode: ModeManaged, ACMEEnabled: true}
+	routes := []Route{{
+		RouteID: "pt1", Mode: RouteModePassthrough, Domain: "*.apps.example.com",
+		TargetHost: "10.0.0.20", TargetPort: 80, TargetHTTPSPort: 443, Enabled: true,
+	}}
+	out, err := Render(cfg, routes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc traefikDynamic
+	if err := yaml.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("yaml: %v\n%s", err, out)
+	}
+	if doc.TCP == nil {
+		t.Fatalf("tcp section missing:\n%s", out)
+	}
+	tr, ok := doc.TCP.Routers["ns-pt1-tls"]
+	if !ok || tr.Rule != "HostSNIRegexp(`^[^.]+\\.apps\\.example\\.com$`)" || tr.EntryPoints[0] != "websecure" || tr.TLS == nil || !tr.TLS.Passthrough {
+		t.Errorf("tcp router: %+v", tr)
+	}
+	if got := doc.TCP.Services["ns-pt1-tls"].LoadBalancer.Servers[0].Address; got != "10.0.0.20:443" {
+		t.Errorf("tcp service address %q", got)
+	}
+	hr, ok := doc.HTTP.Routers["ns-pt1-http"]
+	if !ok || hr.Rule != "HostRegexp(`^[^.]+\\.apps\\.example\\.com$`)" || hr.EntryPoints[0] != "web" || hr.TLS != nil {
+		t.Errorf("http router: %+v", hr)
+	}
+	if got := doc.HTTP.Services["ns-pt1-http"].LoadBalancer.Servers[0].URL; got != "http://10.0.0.20:80" {
+		t.Errorf("http service url %q", got)
+	}
+	if _, ok := doc.HTTP.Routers["ns-pt1"]; ok {
+		t.Error("passthrough must not emit a terminating https router")
+	}
+	// Exact-name passthrough uses HostSNI/Host.
+	routes[0].Domain = "cloud.example.com"
+	out, _ = Render(cfg, routes)
+	if !strings.Contains(string(out), "HostSNI(`cloud.example.com`)") {
+		t.Errorf("exact passthrough rule missing:\n%s", out)
+	}
+}

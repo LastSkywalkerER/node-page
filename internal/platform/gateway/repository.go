@@ -50,8 +50,8 @@ func (r *gormRepository) Upsert(ctx context.Context, in *Route) error {
 	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "route_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"name", "domain", "path_prefix",
-			"target_scheme", "target_host", "target_port", "target_host_mac", "target_label",
+			"name", "mode", "domain", "path_prefix",
+			"target_scheme", "target_host", "target_port", "target_https_port", "target_host_mac", "target_label",
 			"target_insecure_skip_verify", "tls", "basic_auth_users", "ip_allow_list",
 			"enabled", "updated_at",
 		}),
