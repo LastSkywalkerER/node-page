@@ -598,16 +598,11 @@ function RouteRow({ route, onEdit }: { route: GatewayRoute; onEdit: () => void }
     <div className="px-4 py-3 transition-colors hover:bg-muted/20">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
+          {/* 1. name + badges */}
           <div className="flex flex-wrap items-center gap-2">
-            <a
-              href={route.public_url}
-              target="_blank"
-              rel="noreferrer"
-              className={cn('truncate font-medium hover:underline', !route.enabled && 'text-muted-foreground line-through')}
-              title={route.public_url}
-            >
-              {route.public_url.replace(/^https?:\/\//, '')}
-            </a>
+            <span className={cn('truncate font-medium', !route.enabled && 'text-muted-foreground line-through')}>
+              {route.name || route.domain}
+            </span>
             {route.tls ? (
               <Badge variant="secondary" className="text-[10px] uppercase">https</Badge>
             ) : (
@@ -623,6 +618,13 @@ function RouteRow({ route, onEdit }: { route: GatewayRoute; onEdit: () => void }
               </span>
             )}
           </div>
+          {/* 2. the public address as configured (scheme + domain + gateway port) */}
+          <div className="truncate font-mono text-xs">
+            <a href={route.public_url} target="_blank" rel="noreferrer" className="hover:underline">
+              {route.public_url}
+            </a>
+          </div>
+          {/* 3. where it really goes */}
           <div className="truncate font-mono text-xs text-muted-foreground">
             → {route.effective_url || route.target_url || `${route.target_scheme}://${route.target_host}:${route.target_port}`}
             {route.rewritten ? (
@@ -635,7 +637,6 @@ function RouteRow({ route, onEdit }: { route: GatewayRoute; onEdit: () => void }
               </span>
             ) : null}
             {route.target_label ? <span className="font-sans"> · {route.target_label}</span> : null}
-            {route.name && route.name !== route.domain ? <span className="font-sans"> · {route.name}</span> : null}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
