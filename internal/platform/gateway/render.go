@@ -162,6 +162,13 @@ func Render(cfg Config, routes []Route) ([]byte, error) {
 		}
 	}
 
+	// No enabled routes: return nil so the materializer REMOVES the file. A file
+	// with an empty `http: {}` makes Traefik's file provider log
+	// "http cannot be a standalone element" on every reload.
+	if len(doc.HTTP.Routers) == 0 {
+		return nil, nil
+	}
+
 	// yaml.v2 emits `{}` for empty maps; drop them for a tidy file.
 	if len(doc.HTTP.Middlewares) == 0 {
 		doc.HTTP.Middlewares = nil
@@ -169,11 +176,6 @@ func Render(cfg Config, routes []Route) ([]byte, error) {
 	if len(doc.HTTP.ServersTransports) == 0 {
 		doc.HTTP.ServersTransports = nil
 	}
-	if len(doc.HTTP.Routers) == 0 {
-		doc.HTTP.Routers = nil
-		doc.HTTP.Services = nil
-	}
-
 	body, err := yaml.Marshal(doc)
 	if err != nil {
 		return nil, err

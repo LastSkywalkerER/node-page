@@ -123,11 +123,15 @@ export function useGatewayLogs(enabled: boolean, tail = 300) {
 }
 
 export function useCheckTarget() {
-  return useMutation<{ reachable: boolean; error?: string }, Error, { host: string; port: number }>({
+  return useMutation<
+    { reachable: boolean; checked?: string; error?: string },
+    Error,
+    { host: string; host_mac?: string; port: number }
+  >({
     mutationFn: async (body) => {
       try {
         const { data } = await apiClient.post('/gateway/check', body)
-        return data as { reachable: boolean; error?: string }
+        return data as { reachable: boolean; checked?: string; error?: string }
       } catch (e) {
         throw apiError(e)
       }

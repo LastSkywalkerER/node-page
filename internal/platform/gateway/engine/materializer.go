@@ -191,6 +191,20 @@ func (m *Materializer) effectiveRoute(cfg gateway.Config, local *hosts.Host, r g
 	return r
 }
 
+// EffectiveTargetHost applies the same-host rewrite to a bare host (+ optional
+// host MAC) the way the renderer would for a route with those fields.
+func (m *Materializer) EffectiveTargetHost(ctx context.Context, host, hostMAC string) string {
+	cfg, err := LoadConfig(ctx, m.deps.Config)
+	if err != nil || m.deps.Hosts == nil {
+		return host
+	}
+	h, err := m.deps.Hosts.GetHostByID(ctx, hosts.LocalCollectorHostID)
+	if err != nil || h == nil {
+		return host
+	}
+	return m.effectiveRoute(cfg, h, gateway.Route{TargetHost: host, TargetHostMAC: hostMAC}).TargetHost
+}
+
 // EffectiveTargetURL reports the upstream URL Traefik is given on this node
 // for the route, and whether it differs from the stored target. Only
 // meaningful on the gateway node; elsewhere it echoes the stored target.
@@ -307,7 +321,15 @@ func (m *Materializer) reconcile(ctx context.Context) {
 		if m.lastPath != "" && m.lastPath != path {
 			m.removeOwned(m.lastPath)
 		}
-		if err := writeIfChanged(path, content); err != nil {
+		if content == nil {
+			// Nothing to serve: no file at all (Traefik rejects an empty http
+			// section). Keep the dir so the managed container's bind mount holds.
+			m.removeOwned(path)
+			_ = os.MkdirAll(filepath.Dir(path), 0o755)
+			now := time.Now().UTC()
+			st.LastRenderAt = &now
+			m.setLastPath(path)
+		} else if err := writeIfChanged(path, content); err != nil {
 			st.LastError = "write " + path + ": " + err.Error()
 		} else {
 			now := time.Now().UTC()

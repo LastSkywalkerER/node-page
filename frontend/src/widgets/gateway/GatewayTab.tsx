@@ -328,7 +328,8 @@ function RouteForm({
   }
 
   // Live reachability: re-check (debounced) whenever the target changes.
-  const [reach, setReach] = useState<{ ok: boolean; error?: string; key: string } | null>(null)
+  const [reach, setReach] = useState<{ ok: boolean; checked?: string; error?: string; key: string } | null>(null)
+  const [reachNonce, setReachNonce] = useState(0)
   const checkMutate = check.mutate
   const reachTimer = useRef<number | null>(null)
   useEffect(() => {
@@ -339,12 +340,13 @@ function RouteForm({
       return
     }
     const key = `${host}:${port}`
+    const mac = req.target_host_mac
     if (reachTimer.current) window.clearTimeout(reachTimer.current)
     reachTimer.current = window.setTimeout(() => {
       checkMutate(
-        { host, port },
+        { host, host_mac: mac, port },
         {
-          onSuccess: (r) => setReach({ ok: r.reachable, error: r.error, key }),
+          onSuccess: (r) => setReach({ ok: r.reachable, checked: r.checked, error: r.error, key }),
           onError: (e) => setReach({ ok: false, error: e.message, key }),
         }
       )
@@ -352,8 +354,10 @@ function RouteForm({
     return () => {
       if (reachTimer.current) window.clearTimeout(reachTimer.current)
     }
-  }, [req.target_host, req.target_port, checkMutate])
+  }, [req.target_host, req.target_host_mac, req.target_port, checkMutate, reachNonce])
   const reachCurrent = reach && reach.key === `${req.target_host.trim()}:${Number(req.target_port)}` ? reach : null
+  const storedAddr = `${req.target_host.trim()}:${Number(req.target_port)}`
+  const checkedDiffers = !!reachCurrent?.checked && reachCurrent.checked !== storedAddr
 
   const setAuth = (i: number, patch: Partial<BasicAuthInput>) =>
     set({ basic_auth: req.basic_auth.map((a, j) => (j === i ? { ...a, ...patch } : a)) })
@@ -425,7 +429,12 @@ function RouteForm({
             <span>Pick a detected service or enter an address reachable from the gateway node.</span>
           )}
           {req.target_host && req.target_port ? (
-            <span className="inline-flex items-center gap-1.5" title={reachCurrent?.error}>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 text-left hover:text-foreground"
+              title={(reachCurrent?.error ? reachCurrent.error + ' · ' : '') + 'click to re-check'}
+              onClick={() => setReachNonce((n) => n + 1)}
+            >
               <span
                 className={cn(
                   'h-2 w-2 rounded-full',
@@ -435,10 +444,16 @@ function RouteForm({
               {!reachCurrent || check.isPending
                 ? 'checking from this node…'
                 : reachCurrent.ok
-                  ? 'reachable from this node'
-                  : `unreachable from this node${reachCurrent.error ? ` — ${reachCurrent.error}` : ''}`}
-            </span>
+                  ? `reachable from this node${checkedDiffers ? ` as ${reachCurrent.checked}` : ''}`
+                  : `unreachable from this node${checkedDiffers ? ` (checked ${reachCurrent.checked})` : ''}${reachCurrent.error ? ` — ${reachCurrent.error}` : ''}`}
+            </button>
           ) : null}
+          {checkedDiffers && (
+            <span className="text-amber-500">
+              on this gateway Traefik will use <span className="font-mono">{reachCurrent?.checked}</span> (target is on the
+              gateway host itself)
+            </span>
+          )}
           {req.target_scheme === 'https' && (
             <label className="inline-flex items-center gap-1.5">
               <input

@@ -86,8 +86,12 @@ func TestRender_EmptyProducesNoRouters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(out), "routers") {
-		t.Errorf("empty render should have no routers section:\n%s", out)
+	if out != nil {
+		t.Errorf("empty render must return nil (file gets removed), got:\n%s", out)
+	}
+	out, _ = Render(Config{}, []Route{{RouteID: "a", Domain: "a.example.com", TargetHost: "h", TargetPort: 1, Enabled: false}})
+	if out != nil {
+		t.Error("only-disabled routes must also render nil")
 	}
 }
 

@@ -90,22 +90,24 @@ func (h *Handler) HandleTargets(c *gin.Context) {
 // @Router   /gateway/check [post]
 func (h *Handler) HandleCheck(c *gin.Context) {
 	var body struct {
-		Host string `json:"host"`
-		Port int    `json:"port"`
+		Host    string `json:"host"`
+		HostMAC string `json:"host_mac"`
+		Port    int    `json:"port"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "host and port are required"})
 		return
 	}
-	if err := h.service.CheckTarget(c.Request.Context(), body.Host, body.Port); err != nil {
+	checked, err := h.service.CheckTarget(c.Request.Context(), body.Host, body.HostMAC, body.Port)
+	if err != nil {
 		if errors.Is(err, ErrValidation) {
 			h.fail(c, err)
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"reachable": false, "error": err.Error()})
+		c.JSON(http.StatusOK, gin.H{"reachable": false, "checked": checked, "error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"reachable": true})
+	c.JSON(http.StatusOK, gin.H{"reachable": true, "checked": checked})
 }
 
 // HandleCreateRoute adds a route.

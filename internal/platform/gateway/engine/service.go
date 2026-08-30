@@ -127,8 +127,10 @@ type Service interface {
 	UpdateRoute(ctx context.Context, routeID string, req RouteRequest) (*RouteView, error)
 	DeleteRoute(ctx context.Context, routeID string) error
 	Targets(ctx context.Context) ([]Target, error)
-	// CheckTarget dials host:port from THIS node (TCP) and reports reachability.
-	CheckTarget(ctx context.Context, host string, port int) error
+	// CheckTarget dials host:port from THIS node (TCP) — using the address
+	// Traefik would actually be given here (same-host rewrite) — and returns
+	// that checked address.
+	CheckTarget(ctx context.Context, host, hostMAC string, port int) (checked string, err error)
 	// Logs returns the managed Traefik's recent logs (gateway node only).
 	Logs(ctx context.Context, tail int) (string, error)
 }
@@ -300,18 +302,22 @@ func (s *service) Targets(ctx context.Context) ([]Target, error) {
 	return t, err
 }
 
-func (s *service) CheckTarget(ctx context.Context, host string, port int) error {
+func (s *service) CheckTarget(ctx context.Context, host, hostMAC string, port int) (string, error) {
 	host = strings.TrimSpace(host)
 	if host == "" || !validPort(port) {
-		return fmt.Errorf("%w: host and port are required", ErrValidation)
+		return "", fmt.Errorf("%w: host and port are required", ErrValidation)
 	}
+	if s.mat != nil {
+		host = s.mat.EffectiveTargetHost(ctx, host, hostMAC)
+	}
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	d := net.Dialer{Timeout: 3 * time.Second}
-	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return err
+		return addr, err
 	}
 	_ = conn.Close()
-	return nil
+	return addr, nil
 }
 
 func (s *service) Logs(ctx context.Context, tail int) (string, error) {
