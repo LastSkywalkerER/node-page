@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { Boxes } from 'lucide-react'
+import { Boxes, ExternalLink } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { OSIcon } from '@/shared/components/OSIcon'
@@ -45,6 +45,8 @@ function GuestRow({ guest, compact }: { guest: Host; compact: boolean }) {
   // Live cpu/ram from the page's single SSE subscription — every host's
   // snapshot flows through the stream, so guest rows cost no extra requests.
   const gauge = useHostGaugesStore((st) => st.gauges[guest.id])
+  // node-stats running on the guest itself (local node → this origin).
+  const dashboardURL = guest.id === 1 ? window.location.origin : guest.dashboard_url
   const gaugeFresh =
     gauge && Date.now() - gauge.at < GAUGE_STALE_MS && (state === 'online' || state === 'running')
 
@@ -83,6 +85,21 @@ function GuestRow({ guest, compact }: { guest: Host; compact: boolean }) {
         {s.label}
         {state === 'running' && <span className="hidden text-muted-foreground/70 md:inline">(no agent)</span>}
       </span>
+      {dashboardURL && (
+        // <button>, not <a>: the row itself is a <Link>.
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            window.open(dashboardURL, '_blank', 'noopener,noreferrer')
+          }}
+          title={`Open node-stats on this machine (${dashboardURL})`}
+          className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
+        >
+          <ExternalLink className={compact ? 'h-3 w-3' : 'h-3.5 w-3.5'} />
+        </button>
+      )}
     </Link>
   )
 }
