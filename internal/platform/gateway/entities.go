@@ -72,9 +72,8 @@ type Config struct {
 	// ACMEEnabled turns on Let's Encrypt (HTTP-01) for routers with TLS.
 	ACMEEnabled bool   `json:"acme_enabled"`
 	ACMEEmail   string `json:"acme_email,omitempty"`
-	// ACMEStaging points the resolver at the LE staging CA (rate-limit-safe
-	// while testing; issues untrusted certs).
-	ACMEStaging bool `json:"acme_staging,omitempty"`
+	// (The Let's Encrypt staging CA is a developer-only knob —
+	// NODE_STATS_ACME_STAGING=1 on the gateway node — not part of the config.)
 }
 
 // Route is one published hostname. Provider-neutral: the Traefik renderer is

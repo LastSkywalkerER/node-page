@@ -250,6 +250,42 @@ func (m *Materializer) Logs(ctx context.Context, tail int) (string, error) {
 	return m.deps.DockerLogs(ctx, envOr("NODE_STATS_PROJECT", "node-stats"), tail)
 }
 
+// acmeStagingEnv: developer-only switch to Let's Encrypt's staging CA
+// (rate-limit-free, untrusted certs). Never exposed in the UI.
+func acmeStagingEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("NODE_STATS_ACME_STAGING"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// resetACMEStateIfCAChanged wipes acme.json when the CA (staging ↔ production)
+// differs from the one the store was created with: Traefik keeps serving the
+// old certificates otherwise. The CA in use is recorded next to the store.
+func (m *Materializer) resetACMEStateIfCAChanged(want setup.GatewayProvision) {
+	if !want.ACMEEnabled {
+		return
+	}
+	acmeDir := filepath.Join(m.deps.DataDir, "traefik", "acme")
+	marker := filepath.Join(acmeDir, ".ca")
+	ca := "production"
+	if want.ACMEStaging {
+		ca = "staging"
+	}
+	prev, err := os.ReadFile(marker)
+	if err == nil && strings.TrimSpace(string(prev)) == ca {
+		return
+	}
+	if err == nil { // marker exists with a different CA → stale store
+		if rmErr := os.Remove(filepath.Join(acmeDir, "acme.json")); rmErr == nil && m.deps.Logger != nil {
+			m.deps.Logger.Info("gateway: ACME CA changed — reset acme.json", "from", strings.TrimSpace(string(prev)), "to", ca)
+		}
+	}
+	_ = os.MkdirAll(acmeDir, 0o700)
+	_ = os.WriteFile(marker, []byte(ca+"\n"), 0o600)
+}
+
 // isLocalNode reports whether THIS node is the configured gateway — by the
 // local host row's MAC or (Docker recreates change the NIC MAC) its stable
 // system id / hardware UUID.
@@ -347,7 +383,8 @@ func (m *Materializer) reconcile(ctx context.Context) {
 	if m.native != nil {
 		if isGW && cfg.Mode == gateway.ModeManaged {
 			want := setup.GatewayProvision{Enabled: true, HTTPPort: cfg.HTTPPort, HTTPSPort: cfg.HTTPSPort,
-				ACMEEnabled: cfg.ACMEEnabled, ACMEEmail: cfg.ACMEEmail, ACMEStaging: cfg.ACMEStaging}
+				ACMEEnabled: cfg.ACMEEnabled, ACMEEmail: cfg.ACMEEmail, ACMEStaging: acmeStagingEnv()}
+			m.resetACMEStateIfCAChanged(want)
 			if restarted, err := m.native.Reconcile(rc, want); err != nil {
 				st.LastError = "traefik (systemd): " + err.Error()
 			} else if restarted && m.deps.Logger != nil {
@@ -379,7 +416,8 @@ func (m *Materializer) reconcile(ctx context.Context) {
 			want.HTTPSPort = cfg.HTTPSPort
 			want.ACMEEnabled = cfg.ACMEEnabled
 			want.ACMEEmail = cfg.ACMEEmail
-			want.ACMEStaging = cfg.ACMEStaging
+			want.ACMEStaging = acmeStagingEnv()
+			m.resetACMEStateIfCAChanged(want)
 		}
 		if want.Enabled {
 			_ = os.MkdirAll(m.ManagedDynamicDir(), 0o755)

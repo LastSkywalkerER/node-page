@@ -10,7 +10,6 @@ export const GatewayConfigSchema = z.object({
   https_port: z.number().optional().default(0),
   acme_enabled: z.boolean().default(false),
   acme_email: z.string().optional().default(''),
-  acme_staging: z.boolean().optional().default(false),
 })
 export type GatewayConfig = z.infer<typeof GatewayConfigSchema>
 

@@ -23,6 +23,7 @@ import {
   useGatewayLogs,
   useCheckPublic,
   routeToRequest,
+  type PublicCheckResult,
 } from './useGateway'
 import type { GatewayConfig, GatewayRoute, GatewayState, GatewayTarget, RouteRequest, BasicAuthInput } from './schemas'
 
@@ -61,6 +62,7 @@ function ConfigCard({ state }: { state: GatewayState }) {
     () => (hostsData?.hosts ?? []).filter((h) => h.mac_address && h.source !== 'connector'),
     [hostsData]
   )
+  const [publicResult, setPublicResult] = useState<PublicCheckResult | null>(null)
   const caps = state.capabilities
   const selectedIsLocal = cfg.node_mac !== '' && cfg.node_mac.toLowerCase() === caps.local_mac.toLowerCase()
 
@@ -156,9 +158,20 @@ function ConfigCard({ state }: { state: GatewayState }) {
                       onChange={(e) => update({ acme_email: e.target.value })}
                     />
                   </div>
-                  <div className="flex items-end gap-2 pb-1">
-                    <Switch checked={!!cfg.acme_staging} onCheckedChange={(v) => update({ acme_staging: v })} />
-                    <span className="text-sm">Staging CA (testing; untrusted certs, no rate limits)</span>
+                  <div className="flex items-end pb-1 text-xs text-muted-foreground">
+                    {publicResult == null ? (
+                      <span>
+                        Before enabling, run <b>Check from the internet</b> below — Let's Encrypt has strict limits on
+                        failed attempts (5/hour per domain), so make sure :80 is open first.
+                      </span>
+                    ) : publicResult.ports.find((p) => p.port === (cfg.http_port || 80))?.reachable ? (
+                      <span className="text-emerald-500">:{cfg.http_port || 80} is open from the internet — HTTP-01 can succeed.</span>
+                    ) : (
+                      <span className="text-red-400">
+                        :{cfg.http_port || 80} is NOT reachable from the internet — Let's Encrypt will fail and burn its
+                        rate limit. Open / forward the port first.
+                      </span>
+                    )}
                   </div>
                 </div>
               )}
@@ -206,7 +219,7 @@ function ConfigCard({ state }: { state: GatewayState }) {
             {save.isPending ? 'Saving…' : 'Save'}
           </Button>
         </div>
-        {state.config.enabled && state.status.is_gateway_node && <PublicCheck />}
+        {state.config.enabled && state.status.is_gateway_node && <PublicCheck onResult={setPublicResult} />}
       </CardContent>
     </Card>
   )
@@ -219,7 +232,7 @@ function ConfigCard({ state }: { state: GatewayState }) {
  */
 const PUBLIC_TARGET_KEY = 'gateway.publicCheckTarget'
 
-function PublicCheck() {
+function PublicCheck({ onResult }: { onResult?: (r: PublicCheckResult) => void }) {
   const check = useCheckPublic()
   const r = check.data
   const [target, setTarget] = useState<string>(() => {
@@ -235,7 +248,10 @@ function PublicCheck() {
     } catch {
       /* ignore */
     }
-    check.mutate({ target: target.trim() }, { onError: (e) => toast.error(e.message) })
+    check.mutate(
+      { target: target.trim() },
+      { onSuccess: (r) => onResult?.(r), onError: (e) => toast.error(e.message) }
+    )
   }
   return (
     <div className="rounded-lg border border-border/60 p-3 text-xs">

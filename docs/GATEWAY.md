@@ -74,7 +74,7 @@ native root install with systemd, the materializer:
 
 Disabling the gateway or moving it to another node runs `systemctl disable --now` and removes the
 unit; the binary and `acme.json` are kept so re-enabling is instant and keeps its certificates.
-`GET /gateway` → `capabilities.manage_kind` is `"docker"`, `"systemd"` or `""` with
+`NODE_STATS_ACME_STAGING=1` on the gateway node switches the resolver to the Let's Encrypt staging CA (developer knob, not in the UI; acme.json is reset automatically when the CA changes). `GET /gateway` → `capabilities.manage_kind` is `"docker"`, `"systemd"` or `""` with
 `manage_reason` (not root / no systemd / managed externally) — the UI shows it when that node is
 selected as gateway from its own dashboard.
 
