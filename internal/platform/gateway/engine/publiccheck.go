@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -16,8 +17,20 @@ import (
 // connect to <public ip>:<port> from a few of its nodes. Triggered by an admin
 // button only — it hands the node's public IP + ports to a third party.
 
+// publicIPServices are queried in parallel and the majority answer wins. One
+// service is not enough: with domain-based VPN/proxy routing some destinations
+// leave through a tunnel and others directly (observed: ipify/ipinfo → VPS IP,
+// everything else → the real ISP address). check-host.net/ip is listed first
+// so the detected address is consistent with the probe provider.
+var publicIPServices = []string{
+	"https://check-host.net/ip",
+	"https://checkip.amazonaws.com",
+	"https://icanhazip.com",
+	"https://ifconfig.me/ip",
+	"https://api4.ipify.org",
+}
+
 const (
-	ipifyURL         = "https://api.ipify.org?format=json"
 	checkHostBase    = "https://check-host.net"
 	checkHostNodes   = 3
 	checkHostTimeout = 20 * time.Second
@@ -28,10 +41,14 @@ type PublicCheckResult struct {
 	PublicIP string `json:"public_ip"`
 	// Detected is true when PublicIP was auto-detected (this node's egress IP)
 	// rather than supplied by the admin.
-	Detected bool              `json:"detected"`
-	Ports    []PublicPortCheck `json:"ports"`
-	Provider string            `json:"provider"`
-	Error    string            `json:"error,omitempty"`
+	Detected bool `json:"detected"`
+	// Candidates lists what each IP-echo service answered (auto-detect only);
+	// disagreement means the node's traffic leaves through different paths
+	// (VPN / proxy with per-destination routing).
+	Candidates map[string]string `json:"candidates,omitempty"`
+	Ports      []PublicPortCheck `json:"ports"`
+	Provider   string            `json:"provider"`
+	Error      string            `json:"error,omitempty"`
 }
 
 // PublicPortCheck is one port's verdict across probe locations.
@@ -61,7 +78,7 @@ func PublicCheck(ctx context.Context, target string, ports []int) PublicCheckRes
 	res.Detected = false
 	if ip == "" {
 		var err error
-		ip, err = publicIP(ctx)
+		ip, res.Candidates, err = publicIPConsensus(ctx)
 		if err != nil {
 			res.Error = "could not determine this node's public IP: " + err.Error()
 			return res
@@ -82,18 +99,54 @@ func PublicCheck(ctx context.Context, target string, ports []int) PublicCheckRes
 	return res
 }
 
-func publicIP(ctx context.Context) (string, error) {
-	b, err := getJSON(ctx, ipifyURL, "")
-	if err != nil {
-		return "", err
+// publicIPConsensus asks every echo service in parallel and returns the most
+// common answer (ties → the first service in publicIPServices order).
+func publicIPConsensus(ctx context.Context) (string, map[string]string, error) {
+	type ans struct{ svc, ip string }
+	ch := make(chan ans, len(publicIPServices))
+	for _, svc := range publicIPServices {
+		go func(svc string) {
+			b, err := getJSON(ctx, svc, "text/plain")
+			ip := ""
+			if err == nil {
+				ip = strings.TrimSpace(string(b))
+				if net.ParseIP(ip) == nil {
+					ip = ""
+				}
+			}
+			ch <- ans{svc, ip}
+		}(svc)
 	}
-	var v struct {
-		IP string `json:"ip"`
+	got := map[string]string{}
+	for range publicIPServices {
+		a := <-ch
+		if a.ip != "" {
+			got[shortHost(a.svc)] = a.ip
+		}
 	}
-	if err := json.Unmarshal(b, &v); err != nil || v.IP == "" {
-		return "", fmt.Errorf("unexpected ipify response")
+	if len(got) == 0 {
+		return "", nil, fmt.Errorf("no IP echo service answered")
 	}
-	return v.IP, nil
+	count := map[string]int{}
+	for _, ip := range got {
+		count[ip]++
+	}
+	best, bestN := "", 0
+	for _, svc := range publicIPServices {
+		ip := got[shortHost(svc)]
+		if ip != "" && count[ip] > bestN {
+			best, bestN = ip, count[ip]
+		}
+	}
+	return best, got, nil
+}
+
+func shortHost(u string) string {
+	u = strings.TrimPrefix(strings.TrimPrefix(u, "https://"), "http://")
+	if i := strings.IndexByte(u, '/'); i > 0 {
+		u = u[:i]
+	}
+	return u
 }
 
 // checkHostTCP submits a check-tcp request and polls its result.

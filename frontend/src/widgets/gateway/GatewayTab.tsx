@@ -268,8 +268,15 @@ function PublicCheck() {
               <div className="text-muted-foreground">
                 {r.detected ? 'Detected public IP' : 'Probed'}{' '}
                 <span className="font-mono text-foreground">{r.public_ip}</span>
-                {r.detected && (
-                  <span> — this is the address the node's outgoing traffic shows; behind a VPN it may not be your gateway</span>
+                {r.detected && r.candidates && new Set(Object.values(r.candidates)).size > 1 && (
+                  <div className="mt-0.5 text-amber-500">
+                    IP echo services disagree — this node's traffic leaves through different paths (VPN / proxy with
+                    per-destination routing):{' '}
+                    {Object.entries(r.candidates)
+                      .map(([svc, ip]) => `${svc} → ${ip}`)
+                      .join(', ')}
+                    . If the probed address isn't your gateway, enter the right one above.
+                  </div>
                 )}
               </div>
               {r.ports.map((p) => (
