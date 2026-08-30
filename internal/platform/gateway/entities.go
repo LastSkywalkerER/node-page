@@ -116,7 +116,7 @@ type Route struct {
 	TargetHost   string `json:"target_host" gorm:"size:253;not null"`
 	TargetPort   int    `json:"target_port" gorm:"not null"`
 	// TargetHTTPSPort (passthrough mode) is the other proxy's TLS port (443).
-	TargetHTTPSPort int    `json:"target_https_port,omitempty"`
+	TargetHTTPSPort int    `json:"target_https_port,omitempty" gorm:"column:target_https_port"`
 	TargetHostMAC   string `json:"target_host_mac,omitempty" gorm:"index;size:64"`
 	TargetLabel     string `json:"target_label,omitempty" gorm:"size:255"`
 	// TargetInsecureSkipVerify disables upstream cert verification for https
