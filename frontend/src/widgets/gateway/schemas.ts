@@ -32,6 +32,9 @@ export const GatewayRouteSchema = z.object({
   basic_auth_users: z.array(z.string()).default([]),
   public_url: z.string(),
   protected: z.boolean(),
+  target_url: z.string().optional().default(''),
+  effective_url: z.string().optional().default(''),
+  rewritten: z.boolean().optional().default(false),
   created_at: z.string(),
   updated_at: z.string(),
 })

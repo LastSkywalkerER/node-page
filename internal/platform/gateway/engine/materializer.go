@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -173,13 +174,45 @@ func (m *Materializer) localizeTargets(ctx context.Context, cfg gateway.Config, 
 	}
 	out := make([]gateway.Route, len(routes))
 	for i, r := range routes {
-		if (r.TargetHostMAC != "" && strings.EqualFold(r.TargetHostMAC, h.MacAddress)) ||
-			(h.IPv4 != "" && r.TargetHost == h.IPv4) || r.TargetHost == "127.0.0.1" || r.TargetHost == "localhost" {
-			r.TargetHost = "host.docker.internal"
-		}
-		out[i] = r
+		out[i] = m.effectiveRoute(cfg, h, r)
 	}
 	return out
+}
+
+// effectiveRoute returns the route as it is actually rendered on THIS node.
+func (m *Materializer) effectiveRoute(cfg gateway.Config, local *hosts.Host, r gateway.Route) gateway.Route {
+	if cfg.Mode != gateway.ModeManaged || !setup.RunningInDocker() || local == nil {
+		return r
+	}
+	if (r.TargetHostMAC != "" && strings.EqualFold(r.TargetHostMAC, local.MacAddress)) ||
+		(local.IPv4 != "" && r.TargetHost == local.IPv4) || r.TargetHost == "127.0.0.1" || r.TargetHost == "localhost" {
+		r.TargetHost = "host.docker.internal"
+	}
+	return r
+}
+
+// EffectiveTargetURL reports the upstream URL Traefik is given on this node
+// for the route, and whether it differs from the stored target. Only
+// meaningful on the gateway node; elsewhere it echoes the stored target.
+func (m *Materializer) EffectiveTargetURL(ctx context.Context, cfg gateway.Config, r gateway.Route) (url string, rewritten bool) {
+	stored := targetURL(r)
+	if !m.Status().IsGatewayNode || m.deps.Hosts == nil {
+		return stored, false
+	}
+	h, err := m.deps.Hosts.GetHostByID(ctx, hosts.LocalCollectorHostID)
+	if err != nil || h == nil {
+		return stored, false
+	}
+	eff := targetURL(m.effectiveRoute(cfg, h, r))
+	return eff, eff != stored
+}
+
+func targetURL(r gateway.Route) string {
+	scheme := r.TargetScheme
+	if scheme == "" {
+		scheme = gateway.SchemeHTTP
+	}
+	return scheme + "://" + r.TargetHost + ":" + strconv.Itoa(r.TargetPort)
 }
 
 // Logs returns the managed Traefik's recent log output on the gateway node.

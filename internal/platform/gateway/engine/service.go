@@ -86,6 +86,12 @@ type RouteView struct {
 	BasicAuthUsers []string `json:"basic_auth_users"`
 	PublicURL      string   `json:"public_url"`
 	Protected      bool     `json:"protected"`
+	// TargetURL is the stored upstream; EffectiveURL is what Traefik on THIS
+	// gateway node is actually given (e.g. host.docker.internal for a target on
+	// the gateway host itself). Rewritten flags a difference.
+	TargetURL    string `json:"target_url"`
+	EffectiveURL string `json:"effective_url"`
+	Rewritten    bool   `json:"rewritten"`
 }
 
 // Capabilities tells the UI what this node can do.
@@ -169,7 +175,7 @@ func (s *service) GetState(ctx context.Context) (*State, error) {
 	}
 	views := make([]RouteView, 0, len(rows))
 	for _, r := range rows {
-		views = append(views, toView(r, cfg))
+		views = append(views, s.toView(ctx, r, cfg))
 	}
 	st := &State{Config: cfg, Routes: views}
 	if s.mat != nil {
@@ -442,7 +448,7 @@ func (s *service) view(ctx context.Context, r gateway.Route) (*RouteView, error)
 	if stored, err := s.repo.GetByRouteID(ctx, r.RouteID); err == nil {
 		r = *stored
 	}
-	v := toView(r, cfg)
+	v := s.toView(ctx, r, cfg)
 	return &v, nil
 }
 
@@ -452,14 +458,19 @@ func (s *service) poke() {
 	}
 }
 
-func toView(r gateway.Route, cfg gateway.Config) RouteView {
+func (s *service) toView(ctx context.Context, r gateway.Route, cfg gateway.Config) RouteView {
 	users := []string{}
 	for _, line := range gateway.SplitLines(r.BasicAuthUsers) {
 		if i := strings.IndexByte(line, ':'); i > 0 {
 			users = append(users, line[:i])
 		}
 	}
-	return RouteView{Route: r, BasicAuthUsers: users, PublicURL: r.PublicURL(cfg), Protected: r.Protected()}
+	v := RouteView{Route: r, BasicAuthUsers: users, PublicURL: r.PublicURL(cfg), Protected: r.Protected(), TargetURL: targetURL(r)}
+	v.EffectiveURL = v.TargetURL
+	if s.mat != nil {
+		v.EffectiveURL, v.Rewritten = s.mat.EffectiveTargetURL(ctx, cfg, r)
+	}
+	return v
 }
 
 func validPort(p int) bool { return p > 0 && p <= 65535 }

@@ -422,10 +422,7 @@ function RouteForm({
               {req.target_scheme}://{req.target_host}:{req.target_port}
             </span>
           ) : (
-            <span>
-              Pick a detected service or enter an address. Services on the gateway host itself are reached via
-              host.docker.internal automatically.
-            </span>
+            <span>Pick a detected service or enter an address reachable from the gateway node.</span>
           )}
           {req.target_host && req.target_port ? (
             <span className="inline-flex items-center gap-1.5" title={reachCurrent?.error}>
@@ -585,7 +582,16 @@ function RouteRow({ route, onEdit }: { route: GatewayRoute; onEdit: () => void }
             )}
           </div>
           <div className="truncate font-mono text-xs text-muted-foreground">
-            → {route.target_scheme}://{route.target_host}:{route.target_port}
+            → {route.target_url || `${route.target_scheme}://${route.target_host}:${route.target_port}`}
+            {route.rewritten ? (
+              <span
+                className="font-sans text-amber-500"
+                title="This target is on the gateway host itself; from inside the Traefik container it is reached via host.docker.internal. The stored address is kept so the route still works if the gateway moves."
+              >
+                {' '}
+                · Traefik uses <span className="font-mono">{route.effective_url}</span>
+              </span>
+            ) : null}
             {route.target_label ? <span className="font-sans"> · {route.target_label}</span> : null}
             {route.name && route.name !== route.domain ? <span className="font-sans"> · {route.name}</span> : null}
           </div>
