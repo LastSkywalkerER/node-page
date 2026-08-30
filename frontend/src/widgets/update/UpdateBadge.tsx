@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowUpCircle } from 'lucide-react'
+import { ArrowUpCircle, RefreshCw } from 'lucide-react'
 import { Switch } from '@/shared/ui/switch'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -97,6 +97,27 @@ export function UpdateBadge() {
                   {' · '}Latest <span className="font-mono text-foreground">{v.latest}</span>
                 </>
               )}
+              <div className="mt-1 flex items-center justify-between gap-2">
+                <span>
+                  {v.checked_at
+                    ? `checked ${(() => {
+                        const d = new Date(v.checked_at)
+                        return isNaN(d.getTime()) ? '' : d.toLocaleTimeString()
+                      })()}`
+                    : 'not checked yet'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => refresh.mutate()}
+                  disabled={refresh.isPending}
+                  title="Re-check GitHub releases now (rate-limited to once a minute)"
+                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-foreground/80 hover:bg-foreground/10 disabled:opacity-50"
+                >
+                  <RefreshCw className={cn('h-3 w-3', refresh.isPending && 'animate-spin')} />
+                  {refresh.isPending ? 'checking…' : 'Check now'}
+                </button>
+              </div>
+              {refresh.isError && <div className="mt-1 text-red-400">check failed: {refresh.error.message}</div>}
             </div>
 
             {hasUpdate && canApply && (
