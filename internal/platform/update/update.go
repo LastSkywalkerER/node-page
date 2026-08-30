@@ -756,12 +756,35 @@ func (s *Service) fetchGitHub(ctx context.Context, url string, list bool) (*ghRe
 	if err := json.NewDecoder(resp.Body).Decode(&rels); err != nil {
 		return nil, err
 	}
+	return newestRelease(rels), nil
+}
+
+// newestRelease picks the highest-versioned non-draft release. GitHub's
+// /releases list is NOT ordered by version (it follows tag creation order and
+// happily lists beta.9 above beta.10/beta.11), so "first entry" silently pinned
+// the beta channel to an older prerelease. Non-semver tags never win over a
+// semver one; among non-semver-only lists the first non-draft is returned.
+func newestRelease(rels []ghRelease) *ghRelease {
+	var best *ghRelease
 	for i := range rels {
-		if !rels[i].Draft {
-			return &rels[i], nil
+		r := &rels[i]
+		if r.Draft {
+			continue
+		}
+		if best == nil {
+			best = r
+			continue
+		}
+		_, bestSemver := parseSemver(best.TagName)
+		_, rSemver := parseSemver(r.TagName)
+		switch {
+		case rSemver && !bestSemver:
+			best = r
+		case rSemver && bestSemver && newerAvailable(best.TagName, r.TagName):
+			best = r
 		}
 	}
-	return nil, nil
+	return best
 }
 
 // ---- semver compare ----

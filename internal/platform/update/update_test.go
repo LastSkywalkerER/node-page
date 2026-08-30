@@ -235,3 +235,26 @@ func TestStableUpdateAvailable(t *testing.T) {
 		}
 	}
 }
+
+func TestNewestRelease_PicksHighestVersionNotListOrder(t *testing.T) {
+	rels := []ghRelease{
+		{TagName: "v0.8.13-beta.9", Prerelease: true},
+		{TagName: "v0.8.13-beta.8", Prerelease: true},
+		{TagName: "v0.8.13-beta.11", Prerelease: true},
+		{TagName: "v0.8.13-beta.10", Prerelease: true},
+		{TagName: "v0.8.13-beta.12", Prerelease: true, Draft: true},
+		{TagName: "v0.8.12"},
+	}
+	got := newestRelease(rels)
+	if got == nil || got.TagName != "v0.8.13-beta.11" {
+		t.Fatalf("want v0.8.13-beta.11, got %+v", got)
+	}
+	// A full release of the same base outranks its prereleases.
+	rels = append(rels, ghRelease{TagName: "v0.8.13"})
+	if got := newestRelease(rels); got == nil || got.TagName != "v0.8.13" {
+		t.Fatalf("want v0.8.13, got %+v", got)
+	}
+	if newestRelease(nil) != nil || newestRelease([]ghRelease{{TagName: "x", Draft: true}}) != nil {
+		t.Fatal("empty / drafts-only must yield nil")
+	}
+}
