@@ -762,3 +762,33 @@ func TestUpsertHostDoesNotMistakeForeignDockerMACForLocalRow(t *testing.T) {
 		t.Errorf("own registration must map to id=1, got %d", self.ID)
 	}
 }
+
+// The node-stats URL a host's own node advertises (shipped in its metric batch)
+// must persist on the row and survive the next agent upsert — it is the only
+// way a bridged hub, with no Raft-peer view of the spoke, can link to it.
+func TestUpdateDashboardURLPersistsAcrossUpsert(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+
+	h, err := repo.UpsertHost(ctx, HostInfo{Name: "spoke", MacAddress: "aa:bb:cc:dd:ee:01", IPv4: "10.0.0.5"})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := repo.UpdateDashboardURL(ctx, h.ID, "http://10.0.0.5:9090"); err != nil {
+		t.Fatalf("update dashboard url: %v", err)
+	}
+	// Idempotent when unchanged.
+	if err := repo.UpdateDashboardURL(ctx, h.ID, "http://10.0.0.5:9090"); err != nil {
+		t.Fatalf("update dashboard url (same): %v", err)
+	}
+	if _, err := repo.UpsertHost(ctx, HostInfo{Name: "spoke", MacAddress: "aa:bb:cc:dd:ee:01", IPv4: "10.0.0.5"}); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	got, err := repo.GetHostByID(ctx, h.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.DashboardURL != "http://10.0.0.5:9090" {
+		t.Fatalf("dashboard_url = %q, want persisted URL", got.DashboardURL)
+	}
+}

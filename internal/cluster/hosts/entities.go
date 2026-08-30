@@ -123,10 +123,11 @@ type Host struct {
 	// UI uses it for the machine card title; when empty, the card omits the title for host id 1.
 	DisplayName string `json:"display_name,omitempty" gorm:"-"`
 	// DashboardURL is the node-stats dashboard of this machine when it runs a
-	// node in the cluster (advertised HTTP URL matched by IPv4). Read-time only;
-	// empty for the local node (the UI uses its own origin) and for agent-less
-	// hosts.
-	DashboardURL string `json:"dashboard_url,omitempty" gorm:"-"`
+	// node. Persisted from the node's own metric batch (so a bridged hub, which
+	// has no Raft-peer view of the spoke, still knows it); GET /hosts overrides
+	// it with the live Raft peer catalog when that resolves. Empty for the local
+	// node (the UI uses its own origin) and for agent-less hosts.
+	DashboardURL string `json:"dashboard_url,omitempty" gorm:"column:dashboard_url"`
 
 	// CreatedAt indicates when this host record was created
 	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`

@@ -208,13 +208,18 @@ type MetricBatchPayload struct {
 	// HostExternalID is the stable connector identity (e.g. "pbs:<fp>/<node>"),
 	// used to resolve connector nodes that expose no NIC MAC (PBS) on a remote
 	// cluster, where the synthetic MAC is regenerated and won't match.
-	HostExternalID string          `json:"host_external_id,omitempty"`
-	Timestamp      time.Time       `json:"ts"`
-	CPU            json.RawMessage `json:"cpu,omitempty"`
-	Memory         json.RawMessage `json:"memory,omitempty"`
-	Disk           json.RawMessage `json:"disk,omitempty"`
-	Network        json.RawMessage `json:"network,omitempty"`
-	Docker         json.RawMessage `json:"docker,omitempty"`
+	HostExternalID string `json:"host_external_id,omitempty"`
+	// DashboardURL is the advertised HTTP URL of the node-stats instance running
+	// ON this host (set only by a node's own batch). It lets a receiver that has
+	// no Raft-peer view of the sender — a bridged hub cluster — still offer the
+	// "open node-stats on this machine" link; persisted on the hosts row.
+	DashboardURL string          `json:"dashboard_url,omitempty"`
+	Timestamp    time.Time       `json:"ts"`
+	CPU          json.RawMessage `json:"cpu,omitempty"`
+	Memory       json.RawMessage `json:"memory,omitempty"`
+	Disk         json.RawMessage `json:"disk,omitempty"`
+	Network      json.RawMessage `json:"network,omitempty"`
+	Docker       json.RawMessage `json:"docker,omitempty"`
 	// PBS carries a Proxmox Backup Server detail snapshot (datastores/backup
 	// groups/health) for this host, so non-polling nodes and bridged hub
 	// clusters can serve GET /pbs. Opaque JSON (the pbs.Status entity).

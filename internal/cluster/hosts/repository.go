@@ -52,6 +52,9 @@ type Repository interface {
 	UpdateLastSeenAndAgentSession(ctx context.Context, hostID uint, lastSeen time.Time, agentSessionStarted *time.Time) error
 	// UpdateHostLabelsFromAgentPush updates name and/or ipv4 from cluster agent push (non-empty values only). Skips local collector id.
 	UpdateHostLabelsFromAgentPush(ctx context.Context, hostID uint, name, ipv4 string) error
+	// UpdateDashboardURL stores the node-stats URL advertised by the node running
+	// on this host (from its metric batch). No-op when unchanged.
+	UpdateDashboardURL(ctx context.Context, hostID uint, url string) error
 	// DeleteHostCascade removes a host row, node credentials, and all stored metrics scoped to that host_id.
 	DeleteHostCascade(ctx context.Context, hostID uint) error
 	// UpsertConnectorHost creates/updates a connector-fed host row (hypervisor
@@ -887,4 +890,11 @@ func (r *hostRepository) DeleteHostCascade(ctx context.Context, hostID uint) err
 		return fmt.Errorf("cascade delete host %d (hosts row): %w", hostID, err)
 	}
 	return nil
+}
+
+// UpdateDashboardURL implements Repository.
+func (r *hostRepository) UpdateDashboardURL(ctx context.Context, hostID uint, url string) error {
+	return r.db.WithContext(ctx).Model(&Host{}).
+		Where("id = ? AND (dashboard_url IS NULL OR dashboard_url <> ?)", hostID, url).
+		Update("dashboard_url", url).Error
 }

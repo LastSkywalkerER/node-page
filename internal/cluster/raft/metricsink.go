@@ -106,6 +106,15 @@ func (s *MetricSink) Ingest(ctx context.Context, p MetricBatchPayload, origin st
 	}
 	ts := p.Timestamp
 
+	// Remember where this host's own node-stats lives (the sender's advertised
+	// URL) so the machine card can link to it even where no Raft peer view of
+	// the sender exists (bridged hub).
+	if p.DashboardURL != "" && host.DashboardURL != p.DashboardURL {
+		if err := s.hostRepo.UpdateDashboardURL(ctx, host.ID, p.DashboardURL); err != nil && s.logger != nil {
+			s.logger.Warn("metric sink: dashboard url", "host_id", host.ID, "error", err)
+		}
+	}
+
 	save := func(module string, fn func() error) {
 		if err := fn(); err != nil && s.logger != nil {
 			s.logger.Warn("metric sink: save", "module", module, "host_id", host.ID, "error", err)

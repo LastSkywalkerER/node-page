@@ -111,7 +111,11 @@ func (h *Handler) HandleGetAllHosts(c *gin.Context) {
 
 	if h.dashboardURLs != nil {
 		for i := range hosts {
-			hosts[i].DashboardURL = h.dashboardURLs.DashboardURL(c.Request.Context(), hosts[i])
+			// Live Raft peer catalog wins; otherwise keep the URL persisted from
+			// the host's own metric batch (the only source on a bridged hub).
+			if u := h.dashboardURLs.DashboardURL(c.Request.Context(), hosts[i]); u != "" {
+				hosts[i].DashboardURL = u
+			}
 		}
 	}
 

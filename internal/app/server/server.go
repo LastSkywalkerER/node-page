@@ -387,6 +387,9 @@ func Run() {
 					HostName:  host.Name,
 					Timestamp: time.Now().UTC(),
 				}
+				if rs := container.GetRaftService(); rs != nil && rs.Enabled() {
+					batch.DashboardURL = strings.TrimRight(strings.TrimSpace(rs.Status().AdvertiseURL), "/")
+				}
 				if v := metrics["cpu"]; v != nil {
 					if b, e := json.Marshal(v); e == nil {
 						batch.CPU = b
