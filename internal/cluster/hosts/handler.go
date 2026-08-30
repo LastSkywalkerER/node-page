@@ -1,6 +1,7 @@
 package hosts
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -11,8 +12,9 @@ import (
 
 // Handler handles HTTP requests for host information.
 type Handler struct {
-	logger  *log.Logger
-	service Service
+	logger        *log.Logger
+	service       Service
+	dashboardURLs DashboardURLSource
 }
 
 // NewHandler creates a new HTTP handler for host endpoints.
@@ -22,6 +24,15 @@ func NewHandler(logger *log.Logger, service Service) *Handler {
 		service: service,
 	}
 }
+
+// DashboardURLSource resolves a host's node-stats dashboard URL (cluster peer
+// catalog). Optional — wired from the raft layer via SetDashboardURLSource.
+type DashboardURLSource interface {
+	DashboardURL(ctx context.Context, h Host) string
+}
+
+// SetDashboardURLSource enables dashboard_url enrichment on GET /hosts.
+func (h *Handler) SetDashboardURLSource(src DashboardURLSource) { h.dashboardURLs = src }
 
 // HandleRegisterCurrentHost registers or updates the current host information.
 //
@@ -96,6 +107,12 @@ func (h *Handler) HandleGetAllHosts(c *gin.Context) {
 		h.logger.Error("Failed to get all hosts", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	if h.dashboardURLs != nil {
+		for i := range hosts {
+			hosts[i].DashboardURL = h.dashboardURLs.DashboardURL(c.Request.Context(), hosts[i])
+		}
 	}
 
 	h.logger.Debug("All hosts information retrieved successfully", "count", len(hosts))

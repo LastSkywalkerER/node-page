@@ -122,6 +122,11 @@ type Host struct {
 	// DisplayName is set for the local collector row when NODE_STATS_HOSTNAME is set (not a DB column).
 	// UI uses it for the machine card title; when empty, the card omits the title for host id 1.
 	DisplayName string `json:"display_name,omitempty" gorm:"-"`
+	// DashboardURL is the node-stats dashboard of this machine when it runs a
+	// node in the cluster (advertised HTTP URL matched by IPv4). Read-time only;
+	// empty for the local node (the UI uses its own origin) and for agent-less
+	// hosts.
+	DashboardURL string `json:"dashboard_url,omitempty" gorm:"-"`
 
 	// CreatedAt indicates when this host record was created
 	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`

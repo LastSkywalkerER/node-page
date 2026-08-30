@@ -622,6 +622,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	dockerHandler := docker.NewHandler(logger, container.GetDockerService(), container.GetHostService())
 	sensorsHandler := sensors.NewHandler(logger, container.GetSensorsService(), container.GetHostService())
 	hostHandler := hosts.NewHandler(logger, container.GetHostService())
+	hostHandler.SetDashboardURLSource(raftcluster.NewDashboardURLSource(container.GetDB(), container.GetRaftService()))
 	connectorsHandler := connectors.NewHandler(logger, connectorsSvc)
 	gatewayHandler := gatewayengine.NewHandler(logger, gatewaySvc)
 	wallpaperHandler := wallpaper.NewHandler(logger, wallpaperSvc)

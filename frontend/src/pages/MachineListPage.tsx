@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 import { AreaChart, Area } from 'recharts'
-import { Server, Wifi, WifiOff, Zap, Clock, MonitorDot } from 'lucide-react'
+import { Server, Wifi, WifiOff, Zap, Clock, MonitorDot, ExternalLink } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ChartContainer, type ChartConfig } from '@/components/ui/chart'
@@ -328,13 +328,36 @@ function HostCard({ host, guests = [], live }: { host: Host; guests?: Host[]; li
                   )}
                 </div>
               </div>
-              <span
-                className={cn(
-                  'mt-0.5 shrink-0 transition-colors duration-200',
-                  isConnected ? 'text-cyan-400 drop-shadow-[0_0_8px_oklch(0.72_0.16_195/0.6)]' : 'text-red-400'
-                )}
-              >
-                {isConnected ? <Wifi className="h-4 w-4" /> : <WifiOff className="h-4 w-4" />}
+              <span className="flex shrink-0 items-center gap-1.5">
+                {/* Jump to the node-stats dashboard served by THIS machine (its own
+                    node). Local node → this origin; cluster peers → advertised URL. */}
+                {(() => {
+                  const url = host.id === 1 ? window.location.origin : host.dashboard_url
+                  if (!url) return null
+                  return (
+                    // A <button>, not <a>: the whole card is already a <Link>.
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        window.open(url, '_blank', 'noopener,noreferrer')
+                      }}
+                      title={`Open node-stats on this machine (${url})`}
+                      className="mt-0.5 rounded p-0.5 text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </button>
+                  )
+                })()}
+                <span
+                  className={cn(
+                    'mt-0.5 transition-colors duration-200',
+                    isConnected ? 'text-cyan-400 drop-shadow-[0_0_8px_oklch(0.72_0.16_195/0.6)]' : 'text-red-400'
+                  )}
+                >
+                  {isConnected ? <Wifi className="h-4 w-4" /> : <WifiOff className="h-4 w-4" />}
+                </span>
               </span>
             </div>
 
