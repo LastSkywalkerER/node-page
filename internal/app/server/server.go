@@ -107,7 +107,11 @@ func Run() {
 	startTime := time.Now()
 
 	logger.Info("Initializing dependency injection container...", "db_type", cfg.Database.Type, "db_dsn", config.MaskDSN(cfg.Database.DSN))
-	container, err := di.NewContainer(logger, cfg.Database, cfg.JWTSecret, cfg.RefreshSecret, startTime, cfg.Raft, cfg.TraefikDynamicDirs, cfg.NginxDynamicDirs)
+	// The gateway's own managed Traefik dynamic dir feeds the Applications
+	// view's public-URL discovery too (routes we render show up on app cards).
+	traefikDirs := append([]string(nil), cfg.TraefikDynamicDirs...)
+	traefikDirs = append(traefikDirs, filepath.Join(gatewayDataDirFor(cfg), "traefik", "dynamic"))
+	container, err := di.NewContainer(logger, cfg.Database, cfg.JWTSecret, cfg.RefreshSecret, startTime, cfg.Raft, traefikDirs, cfg.NginxDynamicDirs)
 	if err != nil {
 		logger.Fatal("Failed to initialize DI container", "error", err)
 	}
@@ -237,18 +241,7 @@ func Run() {
 	// node the admin picked. The materializer runs on every node and only
 	// renders when this node IS the gateway; in managed mode it also asks the
 	// controller for the Traefik container via desired-state.
-	// Data dir: NODE_STATS_DATA_DIR, else /app/data in Docker, else the process
-	// working directory on native installs (/var/lib/node-stats under systemd).
-	gatewayDataDir := os.Getenv("NODE_STATS_DATA_DIR")
-	if gatewayDataDir == "" {
-		if setup.RunningInDocker() {
-			gatewayDataDir = "/app/data"
-		} else if wd, err := os.Getwd(); err == nil {
-			gatewayDataDir = filepath.Join(wd, "data")
-		} else {
-			gatewayDataDir = "data"
-		}
-	}
+	gatewayDataDir := gatewayDataDirFor(cfg)
 	gatewayCfgStore := raftcluster.NewClusterConfigStore(container.GetDB(), container.GetRaftReplicator(), gateway.ConfigKey)
 	gatewayMat := gatewayengine.NewMaterializer(gatewayengine.MaterializerDeps{
 		Logger:  logger,
@@ -551,6 +544,22 @@ func Run() {
 	} else {
 		logger.Info("Server exited gracefully")
 	}
+}
+
+// gatewayDataDirFor resolves the gateway data dir: NODE_STATS_DATA_DIR, else
+// /app/data in Docker, else <cwd>/data on native installs (/var/lib/node-stats
+// under the packaged systemd unit).
+func gatewayDataDirFor(_ *config.Config) string {
+	if d := os.Getenv("NODE_STATS_DATA_DIR"); d != "" {
+		return d
+	}
+	if setup.RunningInDocker() {
+		return "/app/data"
+	}
+	if wd, err := os.Getwd(); err == nil {
+		return filepath.Join(wd, "data")
+	}
+	return "data"
 }
 
 // setupRouter configures the Gin router with all routes, middleware, and handlers.

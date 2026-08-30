@@ -285,11 +285,19 @@ function RouteForm({
   initial,
   routeId,
   onDone,
+  state,
 }: {
   initial: RouteRequest
   routeId?: string
   onDone: () => void
+  state: GatewayState
 }) {
+  const { data: hostsData } = useHosts()
+  const gatewayHost = (hostsData?.hosts ?? []).find(
+    (h) => h.mac_address && h.mac_address.toLowerCase() === state.config.node_mac.toLowerCase()
+  )
+  const gwIP = gatewayHost?.ipv4 ?? ''
+  const gwPort = state.config.mode === 'managed' ? state.config.http_port || 80 : 80
   const [req, setReq] = useState<RouteRequest>(initial)
   const [manual, setManual] = useState(!!initial.target_host && !initial.target_label)
   const { data: targets = [] } = useGatewayTargets()
@@ -368,6 +376,29 @@ function RouteForm({
         <div className="space-y-1.5">
           <Label>Domain</Label>
           <Input placeholder="grafana.example.com" value={req.domain} onChange={(e) => set({ domain: e.target.value })} />
+          <p className="text-xs text-muted-foreground">
+            {req.domain ? (
+              <>
+                Public URL: <span className="font-mono">{`${req.tls ? 'https' : 'http'}://${req.domain.trim()}${
+                  req.tls ? (state.config.mode === 'managed' && (state.config.https_port || 443) !== 443 ? `:${state.config.https_port}` : '') : gwPort !== 80 ? `:${gwPort}` : ''
+                }${req.path_prefix.trim() && req.path_prefix.trim() !== '/' ? req.path_prefix.trim() : ''}`}</span>
+                {' — '}
+              </>
+            ) : null}
+            its DNS must point at the gateway node
+            {gwIP ? <> (<span className="font-mono">{gwIP}</span>)</> : null}.
+            {gwIP ? (
+              <>
+                {' '}
+                No DNS yet? Use the gateway IP itself as the domain to test:{' '}
+                <button type="button" className="font-mono underline" onClick={() => set({ domain: gwIP })}>
+                  {gwIP}
+                </button>{' '}
+                → http://{gwIP}
+                {gwPort !== 80 ? `:${gwPort}` : ''}
+              </>
+            ) : null}
+          </p>
         </div>
         <div className="space-y-1.5">
           <Label>Path prefix (optional)</Label>
@@ -423,7 +454,8 @@ function RouteForm({
         <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
           {req.target_host && req.target_port ? (
             <span className="font-mono">
-              {req.target_scheme}://{req.target_host}:{req.target_port}
+              → {req.target_scheme}://{checkedDiffers && reachCurrent?.checked ? reachCurrent.checked : `${req.target_host}:${req.target_port}`}
+              {checkedDiffers ? <span className="font-sans text-muted-foreground"> (stored as {req.target_host}:{req.target_port})</span> : null}
             </span>
           ) : (
             <span>Pick a detected service or enter an address reachable from the gateway node.</span>
@@ -444,16 +476,11 @@ function RouteForm({
               {!reachCurrent || check.isPending
                 ? 'checking from this node…'
                 : reachCurrent.ok
-                  ? `reachable from this node${checkedDiffers ? ` as ${reachCurrent.checked}` : ''}`
-                  : `unreachable from this node${checkedDiffers ? ` (checked ${reachCurrent.checked})` : ''}${reachCurrent.error ? ` — ${reachCurrent.error}` : ''}`}
+                  ? 'reachable from this node'
+                  : `unreachable from this node${reachCurrent.error ? ` — ${reachCurrent.error}` : ''}`}
             </button>
           ) : null}
-          {checkedDiffers && (
-            <span className="text-amber-500">
-              on this gateway Traefik will use <span className="font-mono">{reachCurrent?.checked}</span> (target is on the
-              gateway host itself)
-            </span>
-          )}
+
           {req.target_scheme === 'https' && (
             <label className="inline-flex items-center gap-1.5">
               <input
@@ -577,9 +604,9 @@ function RouteRow({ route, onEdit }: { route: GatewayRoute; onEdit: () => void }
               target="_blank"
               rel="noreferrer"
               className={cn('truncate font-medium hover:underline', !route.enabled && 'text-muted-foreground line-through')}
+              title={route.public_url}
             >
-              {route.domain}
-              {route.path_prefix}
+              {route.public_url.replace(/^https?:\/\//, '')}
             </a>
             {route.tls ? (
               <Badge variant="secondary" className="text-[10px] uppercase">https</Badge>
@@ -597,14 +624,14 @@ function RouteRow({ route, onEdit }: { route: GatewayRoute; onEdit: () => void }
             )}
           </div>
           <div className="truncate font-mono text-xs text-muted-foreground">
-            → {route.target_url || `${route.target_scheme}://${route.target_host}:${route.target_port}`}
+            → {route.effective_url || route.target_url || `${route.target_scheme}://${route.target_host}:${route.target_port}`}
             {route.rewritten ? (
               <span
-                className="font-sans text-amber-500"
-                title="This target is on the gateway host itself; from inside the Traefik container it is reached via host.docker.internal. The stored address is kept so the route still works if the gateway moves."
+                className="font-sans"
+                title="The target lives on the gateway host itself, so Traefik (a container there) reaches it via host.docker.internal. The stored address is what gets rendered if the gateway moves to another node."
               >
                 {' '}
-                · Traefik uses <span className="font-mono">{route.effective_url}</span>
+                (stored as <span className="font-mono">{route.target_url}</span>)
               </span>
             ) : null}
             {route.target_label ? <span className="font-sans"> · {route.target_label}</span> : null}
@@ -742,7 +769,7 @@ export function GatewayTab() {
         <CardContent className="space-y-4 p-0">
           {adding && (
             <div className="px-4 pb-2">
-              <RouteForm initial={emptyRequest} onDone={() => setAdding(false)} />
+              <RouteForm initial={emptyRequest} onDone={() => setAdding(false)} state={data} />
             </div>
           )}
           {data.routes.length === 0 && !adding ? (
@@ -754,7 +781,7 @@ export function GatewayTab() {
               {data.routes.map((r) =>
                 editing === r.route_id ? (
                   <div key={r.route_id} className="p-4">
-                    <RouteForm initial={routeToRequest(r)} routeId={r.route_id} onDone={() => setEditing(null)} />
+                    <RouteForm initial={routeToRequest(r)} routeId={r.route_id} onDone={() => setEditing(null)} state={data} />
                   </div>
                 ) : (
                   <RouteRow key={r.route_id} route={r} onEdit={() => { setEditing(r.route_id); setAdding(false) }} />

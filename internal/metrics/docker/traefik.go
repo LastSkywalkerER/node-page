@@ -25,7 +25,10 @@ type traefikRoute struct {
 	Host         string // public hostname from the Host(`…`) rule / server_name
 	Scheme       string // http | https
 	UpstreamHost string // service/container the router forwards to (tasks. stripped)
-	UpstreamPort int    // upstream port: the container's INTERNAL port for a named
+	// PublicPort is the entrypoint's published port when known (node-stats
+	// gateway header hint); 0 = default for the scheme.
+	PublicPort   int
+	UpstreamPort int // upstream port: the container's INTERNAL port for a named
 	// upstream, or the host's PUBLISHED port when UpstreamIsIP (NPM "IP:port").
 	// UpstreamIsIP marks an upstream addressed by IP literal rather than a
 	// service/container name (the NPM "forward to 192.168.1.5:8080" case): it is
@@ -42,7 +45,27 @@ func (r traefikRoute) URL() string {
 	if scheme == "" {
 		scheme = "http"
 	}
-	return scheme + "://" + r.Host
+	u := scheme + "://" + r.Host
+	if r.PublicPort > 0 && !((scheme == "http" && r.PublicPort == 80) || (scheme == "https" && r.PublicPort == 443)) {
+		u += ":" + strconv.Itoa(r.PublicPort)
+	}
+	return u
+}
+
+// gatewayPortHint matches the header the node-stats gateway renderer writes so
+// this parser can build public URLs with the gateway's non-default ports.
+var gatewayPortHint = regexp.MustCompile(`(?m)^# node-stats-gateway: http_port=(\d+) https_port=(\d+)`)
+
+// gatewayPorts extracts the (http, https) public ports from a generated file
+// header; zeros when the file isn't ours.
+func gatewayPorts(data []byte) (int, int) {
+	m := gatewayPortHint.FindSubmatch(data)
+	if m == nil {
+		return 0, 0
+	}
+	h, _ := strconv.Atoi(string(m[1]))
+	s, _ := strconv.Atoi(string(m[2]))
+	return h, s
 }
 
 // defaultTraefikDirs are well-known Traefik file-provider dynamic-config
@@ -148,6 +171,7 @@ func expandTraefikDirs(dirs []string) []string {
 func parseTraefikDirs(dirs []string) []traefikRoute {
 	routers := map[string]traefikRouterSpec{}
 	services := map[string]traefikServiceSpec{}
+	routerPorts := map[string][2]int{} // router → (http, https) public ports from a gateway header
 	dirHasACME := false
 
 	dirs = expandTraefikDirs(dirs)
@@ -176,8 +200,12 @@ func parseTraefikDirs(dirs []string) []traefikRoute {
 			if yaml.Unmarshal(data, &doc) != nil {
 				continue
 			}
+			httpPort, httpsPort := gatewayPorts(data)
 			for k, v := range doc.HTTP.Routers {
 				routers[k] = v
+				if httpPort > 0 || httpsPort > 0 {
+					routerPorts[k] = [2]int{httpPort, httpsPort}
+				}
 			}
 			for k, v := range doc.HTTP.Services {
 				services[k] = v
@@ -186,7 +214,7 @@ func parseTraefikDirs(dirs []string) []traefikRoute {
 	}
 
 	var out []traefikRoute
-	for _, rt := range routers {
+	for name, rt := range routers {
 		hosts := hostsFromRule(rt.Rule)
 		if len(hosts) == 0 {
 			continue
@@ -203,12 +231,20 @@ func parseTraefikDirs(dirs []string) []traefikRoute {
 		// One route per hostname — a single router can carry several domains
 		// (Host(`a`) || Host(`b`), or Host(`a`, `b`)) and none may be dropped.
 		for _, host := range hosts {
-			out = append(out, traefikRoute{
+			r := traefikRoute{
 				Host:         host,
 				Scheme:       traefikScheme(rt.EntryPoints, rt.TLS != nil, dirHasACME, host),
 				UpstreamHost: upstreamHost,
 				UpstreamPort: upstreamPort,
-			})
+			}
+			if pp, ok := routerPorts[name]; ok {
+				if r.Scheme == "https" {
+					r.PublicPort = pp[1]
+				} else {
+					r.PublicPort = pp[0]
+				}
+			}
+			out = append(out, r)
 		}
 	}
 	return out
@@ -336,7 +372,7 @@ func routeMatchesContainer(r traefikRoute, c *DockerContainer) bool {
 	if h == "" {
 		return false
 	}
-	if r.UpstreamIsIP {
+	if r.UpstreamIsIP || upstreamIsThisHost(h) {
 		// A host port is bound by at most one container, so matching by published
 		// port is unambiguous. Port 0 (unknown) can't be resolved → no match.
 		if r.UpstreamPort == 0 {
@@ -369,6 +405,17 @@ func routeMatchesContainer(r traefikRoute, c *DockerContainer) bool {
 // target port isn't listed — or already carries a DIFFERENT domain (several
 // routers can front one upstream, e.g. two domains → one service:3000) — a
 // synthetic unpublished port row is appended so no domain is ever dropped.
+// upstreamIsThisHost reports whether an upstream hostname denotes the docker
+// host itself (the gateway renders same-host targets as host.docker.internal),
+// in which case the port is a PUBLISHED host port like for an IP literal.
+func upstreamIsThisHost(h string) bool {
+	switch strings.ToLower(h) {
+	case "host.docker.internal", "localhost", "127.0.0.1", "gateway.docker.internal":
+		return true
+	}
+	return false
+}
+
 func attachRouteURL(c *DockerContainer, r traefikRoute) {
 	u := r.URL()
 	for i := range c.Ports {
@@ -381,7 +428,7 @@ func attachRouteURL(c *DockerContainer, r traefikRoute) {
 		// IP-literal upstream targets the PUBLISHED (host) port.
 		portMatch := r.UpstreamPort == 0
 		if !portMatch {
-			if r.UpstreamIsIP {
+			if r.UpstreamIsIP || upstreamIsThisHost(r.UpstreamHost) {
 				portMatch = c.Ports[i].PublicPort == r.UpstreamPort
 			} else {
 				portMatch = c.Ports[i].PrivatePort == r.UpstreamPort
