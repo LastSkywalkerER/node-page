@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { FormInputField, FormPasswordField } from '@/components/ui/form-field';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Loader2 } from 'lucide-react';
+import { apiErrorMessage } from '@/shared/lib/api';
 import { useLogin } from './useLogin';
 import { loginSchema, LoginFormData } from './schemas';
 
@@ -26,7 +27,9 @@ export function LoginWidget() {
       setError(null);
       await loginMutation.mutateAsync(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed');
+      // The server's own message ("Invalid email or password") beats axios'
+      // "Request failed with status code 401".
+      setError(apiErrorMessage(err, 'Login failed'));
     }
   };
 

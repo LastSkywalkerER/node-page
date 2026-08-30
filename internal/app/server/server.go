@@ -575,6 +575,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	}
 	router.Use(gin.Recovery())
 	router.Use(middleware.SecurityHeaders(cfg.CookieSecure))
+	router.Use(middleware.CacheControl())
 	router.Use(middleware.ErrorHandler(cfg.Debug))
 	// gzip compresses JSON history payloads; SSE and Prometheus paths must NOT be buffered.
 	router.Use(gzip.Gzip(
