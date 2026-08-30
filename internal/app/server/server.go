@@ -256,6 +256,7 @@ func Run() {
 		},
 	})
 	go gatewayMat.Run(appCtx)
+	docker.RegisterProxyRouteSource(gatewayengine.NewProxyRouteSource(logger, container.GetGatewayRepository(), gatewayCfgStore))
 	gatewaySvc := gatewayengine.NewService(
 		logger,
 		container.GetGatewayRepository(),

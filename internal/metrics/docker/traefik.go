@@ -52,6 +52,33 @@ func (r traefikRoute) URL() string {
 	return u
 }
 
+// ProxyRoute is the exported name of a resolved reverse-proxy route, for
+// external route sources (the cluster gateway's replicated route table).
+type ProxyRoute = traefikRoute
+
+// ProxyRouteSource yields extra routes to attach during collection.
+type ProxyRouteSource func(ctx context.Context) []ProxyRoute
+
+var (
+	proxyRouteSourceMu sync.RWMutex
+	proxyRouteSourceFn ProxyRouteSource
+)
+
+// RegisterProxyRouteSource installs the gateway route source (wired once at
+// startup in server.go; the collector is constructed inside DI without access
+// to the gateway layer, hence a package-level hook).
+func RegisterProxyRouteSource(fn ProxyRouteSource) {
+	proxyRouteSourceMu.Lock()
+	defer proxyRouteSourceMu.Unlock()
+	proxyRouteSourceFn = fn
+}
+
+func proxyRouteSource() ProxyRouteSource {
+	proxyRouteSourceMu.RLock()
+	defer proxyRouteSourceMu.RUnlock()
+	return proxyRouteSourceFn
+}
+
 // gatewayPortHint matches the header the node-stats gateway renderer writes so
 // this parser can build public URLs with the gateway's non-default ports.
 var gatewayPortHint = regexp.MustCompile(`(?m)^# node-stats-gateway: http_port=(\d+) https_port=(\d+)`)

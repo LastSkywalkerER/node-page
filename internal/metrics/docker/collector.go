@@ -582,6 +582,12 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 	// Also read nginx/NPM configs straight from the proxy container — works when
 	// the config lives on a host mount /host can't reach (separate data disks).
 	enrichWithProxyRoutes(&metric, c.nginxRoutesFromContainers(ctx, containers), c.logger)
+	// Cluster gateway routes (Raft-replicated table): the rendered Traefik file
+	// exists only on the gateway node, but the apps it publishes may run on THIS
+	// node — so read the routes from the DB-backed source instead of the disk.
+	if src := proxyRouteSource(); src != nil {
+		enrichWithProxyRoutes(&metric, src(ctx), c.logger)
+	}
 
 	return metric, nil
 }
