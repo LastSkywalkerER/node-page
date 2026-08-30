@@ -101,4 +101,3 @@ func RequireRole(requiredRole string) gin.HandlerFunc {
 func RequireAdmin() gin.HandlerFunc {
 	return RequireRole("ADMIN")
 }
-

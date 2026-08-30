@@ -144,7 +144,7 @@ func (Route) TableName() string { return "gateway_routes" }
 
 // AutoMigrate creates the gateway tables (called from the central migrations).
 func AutoMigrate(db *gorm.DB) error {
-	return db.AutoMigrate(&Route{})
+	return db.AutoMigrate(&Route{}, &Block{})
 }
 
 // IsWildcard reports whether the domain is a "*.example.com" wildcard.

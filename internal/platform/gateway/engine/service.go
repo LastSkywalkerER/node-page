@@ -36,6 +36,8 @@ type Replicator interface {
 	Enabled() bool
 	SubmitGatewayRouteUpsert(ctx context.Context, r gateway.Route) error
 	SubmitGatewayRouteDelete(ctx context.Context, routeID string) error
+	SubmitGatewayBlockUpsert(ctx context.Context, b gateway.Block) error
+	SubmitGatewayBlockDelete(ctx context.Context, blockID string) error
 }
 
 // TargetSource lists the containers with published host ports across the
@@ -142,6 +144,17 @@ type Service interface {
 	// CheckPublic asks an external service whether the gateway's HTTP/HTTPS
 	// ports are reachable from the internet (from THIS node's public IP).
 	CheckPublic(ctx context.Context, target string) (*PublicCheckResult, error)
+	// Connections returns live connection stats (gateway node only; elsewhere
+	// Available=false with reason "not_gateway" and the handler proxies).
+	Connections(ctx context.Context, topN, recentN int) (*ConnectionsView, error)
+	// GatewayNodeURL is the gateway node's dashboard URL for that proxying.
+	GatewayNodeURL(ctx context.Context) string
+	// Client blocks (IP/CIDR deny list rendered above every route).
+	ListBlocks(ctx context.Context) ([]gateway.Block, error)
+	CreateBlock(ctx context.Context, req BlockRequest) (*gateway.Block, error)
+	DeleteBlock(ctx context.Context, blockID string) error
+	// RunBlockExpiry sweeps expired blocks (call as a goroutine).
+	RunBlockExpiry(ctx context.Context)
 }
 
 // ErrValidation marks a bad request (handler → 400).
@@ -150,6 +163,7 @@ var ErrValidation = errors.New("validation error")
 type service struct {
 	logger  *log.Logger
 	repo    gateway.Repository
+	blocks  gateway.BlockRepository
 	cfg     ConfigStore
 	hosts   hosts.Repository
 	targets TargetSource
@@ -158,8 +172,8 @@ type service struct {
 }
 
 // NewService wires the gateway service. mat may be nil (tests).
-func NewService(logger *log.Logger, repo gateway.Repository, cfg ConfigStore, hostRepo hosts.Repository, targets TargetSource, raft Replicator, mat *Materializer) Service {
-	return &service{logger: logger, repo: repo, cfg: cfg, hosts: hostRepo, targets: targets, raft: raft, mat: mat}
+func NewService(logger *log.Logger, repo gateway.Repository, blocks gateway.BlockRepository, cfg ConfigStore, hostRepo hosts.Repository, targets TargetSource, raft Replicator, mat *Materializer) Service {
+	return &service{logger: logger, repo: repo, blocks: blocks, cfg: cfg, hosts: hostRepo, targets: targets, raft: raft, mat: mat}
 }
 
 // LoadConfig decodes the stored gateway.Config (zero value when unset).

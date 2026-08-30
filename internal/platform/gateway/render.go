@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v2"
 )
@@ -26,6 +27,7 @@ type traefikTCPRouter struct {
 	Rule        string         `yaml:"rule"`
 	Service     string         `yaml:"service"`
 	EntryPoints []string       `yaml:"entryPoints"`
+	Priority    int            `yaml:"priority,omitempty"`
 	TLS         *traefikTCPTLS `yaml:"tls,omitempty"`
 }
 
@@ -122,7 +124,7 @@ const (
 //   - a router on `websecure` (tls) or `web` (plain)
 //   - for TLS routes an extra `web` router redirecting to https
 //   - optional basicAuth / ipAllowList middlewares
-func Render(cfg Config, routes []Route) ([]byte, error) {
+func Render(cfg Config, routes []Route, blocks []Block) ([]byte, error) {
 	doc := traefikDynamic{HTTP: traefikHTTP{
 		Routers:           map[string]traefikRouter{},
 		Services:          map[string]traefikService{},
@@ -197,6 +199,8 @@ func Render(cfg Config, routes []Route) ([]byte, error) {
 		}
 	}
 
+	renderBlocks(&doc, blocks)
+
 	if doc.TCP != nil && len(doc.TCP.Routers) == 0 {
 		doc.TCP = nil
 	}
@@ -233,6 +237,71 @@ func Render(cfg Config, routes []Route) ([]byte, error) {
 		header += fmt.Sprintf("# node-stats-gateway: http_port=%d https_port=%d\n", hp, sp)
 	}
 	return append([]byte(header), body...), nil
+}
+
+// blockRouterPriority puts the deny routers above every route router (Traefik
+// otherwise ranks by rule length, and a long Host rule could shadow the block).
+const blockRouterPriority = 1_000_000
+
+// renderBlocks emits the blocklist: catch-all routers (one per entrypoint)
+// matching the blocked ClientIPs, rejected with 403 by an ipAllowList that can
+// never match, so the request dies before any route middleware or upstream.
+// Only rendered when at least one route exists — an empty gateway serves
+// nothing anyway. TCP passthrough connections from blocked IPs are routed to a
+// blackhole (connection reset) since raw TLS can't carry a 403.
+func renderBlocks(doc *traefikDynamic, blocks []Block) {
+	if len(doc.HTTP.Routers) == 0 {
+		return
+	}
+	now := time.Now().UTC()
+	var denied []string
+	seen := map[string]struct{}{}
+	for _, b := range blocks {
+		if b.Expired(now) || b.CIDR == "" {
+			continue
+		}
+		if _, dup := seen[b.CIDR]; dup {
+			continue
+		}
+		seen[b.CIDR] = struct{}{}
+		denied = append(denied, b.CIDR)
+	}
+	if len(denied) == 0 {
+		return
+	}
+	sort.Strings(denied)
+	if len(denied) > MaxBlocks {
+		denied = denied[:MaxBlocks]
+	}
+	parts := make([]string, len(denied))
+	for i, c := range denied {
+		parts[i] = fmt.Sprintf("ClientIP(`%s`)", c)
+	}
+	rule := strings.Join(parts, " || ")
+
+	deny := namePrefix + "blocked"
+	bh := namePrefix + "blackhole"
+	doc.HTTP.Middlewares[deny] = traefikMiddleware{IPAllowList: &traefikIPAllowList{SourceRange: []string{"255.255.255.255/32"}}}
+	// Never dialed: the middleware rejects first. Port 9 = discard.
+	doc.HTTP.Services[bh] = traefikService{LoadBalancer: traefikLoadBalancer{Servers: []traefikServer{{URL: "http://127.0.0.1:9"}}}}
+	doc.HTTP.Routers[namePrefix+"blocklist-http"] = traefikRouter{
+		Rule: rule, Service: bh, EntryPoints: []string{entryPointWeb},
+		Middlewares: []string{deny}, Priority: blockRouterPriority,
+	}
+	doc.HTTP.Routers[namePrefix+"blocklist-https"] = traefikRouter{
+		Rule: rule, Service: bh, EntryPoints: []string{entryPointWebSecure},
+		Middlewares: []string{deny}, Priority: blockRouterPriority, TLS: &traefikTLS{},
+	}
+	if doc.TCP != nil && len(doc.TCP.Routers) > 0 {
+		doc.TCP.Services[bh] = traefikTCPService{LoadBalancer: traefikTCPLoadBalancer{
+			Servers: []traefikTCPServer{{Address: "127.0.0.1:9"}},
+		}}
+		doc.TCP.Routers[namePrefix+"blocklist"] = traefikTCPRouter{
+			Rule: "HostSNI(`*`) && (" + rule + ")", Service: bh,
+			EntryPoints: []string{entryPointWebSecure}, Priority: blockRouterPriority,
+			TLS: &traefikTCPTLS{Passthrough: true},
+		}
+	}
 }
 
 // SplitCSV splits a comma list, trimming blanks.

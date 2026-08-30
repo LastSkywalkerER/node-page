@@ -2,8 +2,11 @@ package engine
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
+	"time"
+
 	"system-stats/internal/platform/gateway"
 
 	"github.com/charmbracelet/log"
@@ -208,6 +211,138 @@ func (h *Handler) HandleLogs(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"logs": out})
+}
+
+// forwardedHeader guards against proxy loops between nodes.
+const forwardedHeader = "X-NS-Gateway-Forwarded"
+
+// connProxyClient forwards /gateway/connections to the gateway node.
+var connProxyClient = &http.Client{
+	Timeout:   6 * time.Second,
+	Transport: &http.Transport{MaxIdleConns: 2, IdleConnTimeout: 30 * time.Second},
+}
+
+// HandleConnections returns the gateway's live connection stats. When this
+// node is not the gateway it proxies the call (with the caller's credentials —
+// the JWT secret is cluster-shared) to the gateway node's dashboard URL.
+//
+// @Summary  Gateway connection stats
+// @Tags     gateway
+// @Produce  json
+// @Param    top query integer false "Top clients (default 50)"
+// @Param    recent query integer false "Recent requests (default 100)"
+// @Success  200 {object} ConnectionsView
+// @Security BearerAuth
+// @Router   /gateway/connections [get]
+func (h *Handler) HandleConnections(c *gin.Context) {
+	topN, _ := strconv.Atoi(c.DefaultQuery("top", "50"))
+	recentN, _ := strconv.Atoi(c.DefaultQuery("recent", "100"))
+	v, err := h.service.Connections(c.Request.Context(), topN, recentN)
+	if err != nil {
+		h.fail(c, err)
+		return
+	}
+	if !v.Available && v.Reason == "not_gateway" && c.GetHeader(forwardedHeader) == "" {
+		if url := h.service.GatewayNodeURL(c.Request.Context()); url != "" {
+			if h.proxyConnections(c, url) {
+				return
+			}
+			v.Reason = "the gateway node (" + url + ") did not answer — open its dashboard directly"
+		} else {
+			v.Reason = "stats live on the gateway node — open its dashboard (its URL is not known here yet)"
+		}
+	}
+	c.JSON(http.StatusOK, v)
+}
+
+// proxyConnections relays the request to the gateway node; false = fall back.
+func (h *Handler) proxyConnections(c *gin.Context, baseURL string) bool {
+	url := baseURL + "/api/v1/gateway/connections"
+	if q := c.Request.URL.RawQuery; q != "" {
+		url += "?" + q
+	}
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set(forwardedHeader, "1")
+	if v := c.GetHeader("Authorization"); v != "" {
+		req.Header.Set("Authorization", v)
+	}
+	if v := c.GetHeader("Cookie"); v != "" {
+		req.Header.Set("Cookie", v)
+	}
+	resp, err := connProxyClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	c.Status(http.StatusOK)
+	c.Header("Content-Type", "application/json")
+	_, _ = io.Copy(c.Writer, io.LimitReader(resp.Body, 4<<20))
+	return true
+}
+
+// HandleListBlocks lists the blocked clients (replicated — served anywhere).
+//
+// @Summary  Gateway client blocks
+// @Tags     gateway
+// @Produce  json
+// @Success  200 {object} map[string]interface{}
+// @Security BearerAuth
+// @Router   /gateway/blocks [get]
+func (h *Handler) HandleListBlocks(c *gin.Context) {
+	rows, err := h.service.ListBlocks(c.Request.Context())
+	if err != nil {
+		h.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"blocks": rows})
+}
+
+// HandleCreateBlock blocks a client IP/CIDR.
+//
+// @Summary  Block a client IP/CIDR on the gateway
+// @Tags     gateway
+// @Accept   json
+// @Produce  json
+// @Success  201 {object} map[string]interface{}
+// @Security BearerAuth
+// @Router   /gateway/blocks [post]
+func (h *Handler) HandleCreateBlock(c *gin.Context) {
+	var req BlockRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "validation_error", "error": "invalid block body"})
+		return
+	}
+	req.AdminIP = c.ClientIP()
+	req.AdminEmail = c.GetString("userEmail")
+	b, err := h.service.CreateBlock(c.Request.Context(), req)
+	if err != nil {
+		h.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"block": b})
+}
+
+// HandleDeleteBlock unblocks a client.
+//
+// @Summary  Remove a gateway client block
+// @Tags     gateway
+// @Produce  json
+// @Param    block_id path string true "gateway.Block ID"
+// @Success  200 {object} map[string]interface{}
+// @Security BearerAuth
+// @Router   /gateway/blocks/{block_id} [delete]
+func (h *Handler) HandleDeleteBlock(c *gin.Context) {
+	if err := h.service.DeleteBlock(c.Request.Context(), c.Param("block_id")); err != nil {
+		h.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }
 
 func (h *Handler) fail(c *gin.Context, err error) {

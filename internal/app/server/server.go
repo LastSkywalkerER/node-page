@@ -249,6 +249,7 @@ func Run() {
 		Config:  gatewayCfgStore,
 		Hosts:   container.GetHostRepository(),
 		DataDir: gatewayDataDir,
+		Blocks:  container.GetGatewayBlockRepository(),
 		DBType:  string(cfg.Database.Type),
 		DBDSN:   cfg.Database.DSN,
 		DockerLogs: func(ctx context.Context, project string, tail int) (string, error) {
@@ -260,12 +261,15 @@ func Run() {
 	gatewaySvc := gatewayengine.NewService(
 		logger,
 		container.GetGatewayRepository(),
+		container.GetGatewayBlockRepository(),
 		gatewayCfgStore,
 		container.GetHostRepository(),
 		gatewayengine.NewDockerTargetSource(container.GetDockerService(), container.GetHostRepository()),
 		container.GetRaftReplicator(),
 		gatewayMat,
 	)
+	// Expired client blocks are swept by the gateway node (replicated deletes).
+	go gatewaySvc.RunBlockExpiry(appCtx)
 	pvePoller := proxmox.NewPoller(proxmox.PollerDeps{
 		Logger:     logger,
 		Connectors: container.GetConnectorRepository(),
@@ -889,6 +893,10 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.POST("/gateway/routes", middleware.RequireAdmin(), gatewayHandler.HandleCreateRoute)
 		authAPI.PUT("/gateway/routes/:route_id", middleware.RequireAdmin(), gatewayHandler.HandleUpdateRoute)
 		authAPI.DELETE("/gateway/routes/:route_id", middleware.RequireAdmin(), gatewayHandler.HandleDeleteRoute)
+		authAPI.GET("/gateway/connections", middleware.RequireAdmin(), gatewayHandler.HandleConnections)
+		authAPI.GET("/gateway/blocks", middleware.RequireAdmin(), gatewayHandler.HandleListBlocks)
+		authAPI.POST("/gateway/blocks", middleware.RequireAdmin(), gatewayHandler.HandleCreateBlock)
+		authAPI.DELETE("/gateway/blocks/:block_id", middleware.RequireAdmin(), gatewayHandler.HandleDeleteBlock)
 
 		// Proxmox Backup Server datastore/backup detail (any signed-in user).
 		authAPI.GET("/pbs", pbsHandler.HandleGet)

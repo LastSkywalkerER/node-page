@@ -39,6 +39,7 @@ type AppliersDeps struct {
 	DockerRepo       docker.DockerRepository
 	ConnectorRepo    connectors.Repository
 	GatewayRepo      gateway.Repository
+	GatewayBlockRepo gateway.BlockRepository
 	// Publish pushes a live SSE envelope (JSON) to this node's stream broker.
 	// Wired so a replicated peer's metrics also stream live to browsers viewing
 	// that peer on this node — uniform SSE for every host. Nil disables it.
@@ -76,6 +77,8 @@ func RegisterAppliers(fsm *FSM, deps AppliersDeps) {
 
 	register(CmdGatewayRouteUpsert, a.applyGatewayRouteUpsert)
 	register(CmdGatewayRouteDelete, a.applyGatewayRouteDelete)
+	register(CmdGatewayBlockUpsert, a.applyGatewayBlockUpsert)
+	register(CmdGatewayBlockDelete, a.applyGatewayBlockDelete)
 
 	register(CmdMetricBatch, a.applyMetricBatch)
 
@@ -633,4 +636,44 @@ func (a *appliers) applyBridgeAck(cmd Command, _ *hraft.Log) error {
 		fmt.Sprintf("%d", p.LastOriginIndex),
 		cmd.Timestamp,
 	)
+}
+
+func (a *appliers) applyGatewayBlockUpsert(cmd Command, _ *hraft.Log) error {
+	var p GatewayBlockUpsertPayload
+	if err := DecodeTyped(cmd, &p); err != nil {
+		return err
+	}
+	if p.BlockID == "" {
+		return errors.New("raft: GatewayBlockUpsert requires block_id")
+	}
+	if a.deps.GatewayBlockRepo == nil {
+		return nil
+	}
+	ctx, cancel := a.applierCtx()
+	defer cancel()
+	return a.deps.GatewayBlockRepo.UpsertBlock(ctx, &gateway.Block{
+		BlockID:   p.BlockID,
+		CIDR:      p.CIDR,
+		Reason:    p.Reason,
+		Source:    p.Source,
+		CreatedBy: p.CreatedBy,
+		ExpiresAt: p.ExpiresAt,
+		CreatedAt: cmd.Timestamp,
+	})
+}
+
+func (a *appliers) applyGatewayBlockDelete(cmd Command, _ *hraft.Log) error {
+	var p GatewayBlockDeletePayload
+	if err := DecodeTyped(cmd, &p); err != nil {
+		return err
+	}
+	if p.BlockID == "" {
+		return errors.New("raft: GatewayBlockDelete requires block_id")
+	}
+	if a.deps.GatewayBlockRepo == nil {
+		return nil
+	}
+	ctx, cancel := a.applierCtx()
+	defer cancel()
+	return a.deps.GatewayBlockRepo.DeleteBlockByBlockID(ctx, p.BlockID)
 }

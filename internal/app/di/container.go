@@ -75,8 +75,9 @@ type Container struct {
 	dockerRepository  docker.DockerRepository
 	hostRepository    hosts.Repository
 
-	connectorRepository connectors.Repository
-	gatewayRepository   gateway.Repository
+	connectorRepository    connectors.Repository
+	gatewayRepository      gateway.Repository
+	gatewayBlockRepository gateway.BlockRepository
 
 	userRepository         users.UserRepository
 	refreshTokenRepository users.RefreshTokenRepository
@@ -238,6 +239,7 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 	container.hostRepository = hosts.NewRepository(db)
 	container.connectorRepository = connectors.NewRepository(db)
 	container.gatewayRepository = gateway.NewRepository(db)
+	container.gatewayBlockRepository = gateway.NewBlockRepository(db)
 
 	container.userRepository = users.NewUserRepository(db)
 	container.refreshTokenRepository = users.NewRefreshTokenRepository(db)
@@ -354,6 +356,7 @@ func (c *Container) activateLocked(ctx context.Context, cfg config.RaftConfig) (
 		DockerRepo:       c.dockerRepository,
 		ConnectorRepo:    c.connectorRepository,
 		GatewayRepo:      c.gatewayRepository,
+		GatewayBlockRepo: c.gatewayBlockRepository,
 		Publish:          c.broker.Publish,
 	}
 	act, err := raftcluster.Activate(ctx, raftcluster.ActivationDeps{
@@ -1335,6 +1338,11 @@ func (c *Container) GetHostService() hosts.Service {
 // need read access outside the Service surface (e.g. connector MAC matching).
 func (c *Container) GetHostRepository() hosts.Repository {
 	return c.hostRepository
+}
+
+// GetGatewayBlockRepository returns the gateway client-block repository.
+func (c *Container) GetGatewayBlockRepository() gateway.BlockRepository {
+	return c.gatewayBlockRepository
 }
 
 // GetGatewayRepository returns the gateway route repository.

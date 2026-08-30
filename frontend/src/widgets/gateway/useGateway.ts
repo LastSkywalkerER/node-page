@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { isAxiosError } from 'axios'
 import { apiClient } from '@/shared/lib/api'
 import {
+  ConnectionsViewSchema,
+  GatewayBlockSchema,
   GatewayStateSchema,
   GatewayTargetSchema,
   GatewayConfigSchema,
@@ -11,6 +13,9 @@ import {
   type GatewayConfig,
   type GatewayRoute,
   type RouteRequest,
+  type ConnectionsView,
+  type GatewayBlock,
+  type BlockRequest,
 } from './schemas'
 import { z } from 'zod'
 
@@ -182,4 +187,66 @@ export function routeToRequest(r: GatewayRoute): RouteRequest {
     ip_allow_list: r.ip_allow_list,
     enabled: r.enabled,
   }
+}
+
+/** Live connection stats — served by (or proxied to) the gateway node. */
+export function useGatewayConnections(enabled: boolean) {
+  return useQuery<ConnectionsView>({
+    queryKey: [...KEY, 'connections'],
+    queryFn: async () => {
+      const { data } = await apiClient.get('/gateway/connections')
+      return ConnectionsViewSchema.parse(data)
+    },
+    enabled,
+    refetchInterval: 5000,
+    staleTime: 2000,
+  })
+}
+
+/** Blocked clients (replicated deny list — served by any node). */
+export function useGatewayBlocks(enabled: boolean) {
+  return useQuery<GatewayBlock[]>({
+    queryKey: [...KEY, 'blocks'],
+    queryFn: async () => {
+      const { data } = await apiClient.get('/gateway/blocks')
+      return z.array(GatewayBlockSchema).parse(data.blocks ?? [])
+    },
+    enabled,
+    refetchInterval: 10000,
+  })
+}
+
+export function useCreateBlock() {
+  const qc = useQueryClient()
+  return useMutation<GatewayBlock, Error, BlockRequest>({
+    mutationFn: async (req) => {
+      try {
+        const { data } = await apiClient.post('/gateway/blocks', req)
+        return GatewayBlockSchema.parse(data.block)
+      } catch (e) {
+        throw apiError(e)
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: [...KEY, 'blocks'] })
+      qc.invalidateQueries({ queryKey: [...KEY, 'connections'] })
+    },
+  })
+}
+
+export function useDeleteBlock() {
+  const qc = useQueryClient()
+  return useMutation<void, Error, string>({
+    mutationFn: async (blockId) => {
+      try {
+        await apiClient.delete(`/gateway/blocks/${blockId}`)
+      } catch (e) {
+        throw apiError(e)
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: [...KEY, 'blocks'] })
+      qc.invalidateQueries({ queryKey: [...KEY, 'connections'] })
+    },
+  })
 }

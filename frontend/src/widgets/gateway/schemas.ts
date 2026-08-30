@@ -117,3 +117,80 @@ export interface RouteRequest {
   ip_allow_list: string
   enabled?: boolean
 }
+
+export const ConnEventSchema = z.object({
+  ts: z.number(),
+  ip: z.string(),
+  host: z.string().optional().default(''),
+  method: z.string().optional().default(''),
+  path: z.string().optional().default(''),
+  status: z.number().default(0),
+  route_id: z.string().optional().default(''),
+  blocked: z.boolean().optional().default(false),
+  dur_ms: z.number().optional().default(0),
+  ua: z.string().optional().default(''),
+  tls: z.boolean().optional().default(false),
+})
+export type ConnEvent = z.infer<typeof ConnEventSchema>
+
+export const ConnIPSchema = z.object({
+  ip: z.string(),
+  count: z.number(),
+  s2xx: z.number().default(0),
+  s4xx: z.number().default(0),
+  s5xx: z.number().default(0),
+  no_route: z.number().default(0),
+  scanner_hits: z.number().default(0),
+  blocked: z.number().default(0),
+  first_seen: z.number().default(0),
+  last_seen: z.number().default(0),
+  last_path: z.string().optional().default(''),
+  last_host: z.string().optional().default(''),
+  last_ua: z.string().optional().default(''),
+  hosts: z.number().default(0),
+  suspicion: z.number().default(0),
+  is_blocked: z.boolean().optional().default(false),
+})
+export type ConnIP = z.infer<typeof ConnIPSchema>
+
+export const RatePointSchema = z.object({
+  ts: z.number(),
+  total: z.number().default(0),
+  e4xx: z.number().default(0),
+  e5xx: z.number().default(0),
+  blocked: z.number().default(0),
+})
+
+export const ConnectionsViewSchema = z.object({
+  available: z.boolean(),
+  reason: z.string().optional().default(''),
+  since_ts: z.number().optional().default(0),
+  total: z.number().default(0),
+  no_route: z.number().default(0),
+  blocked_total: z.number().default(0),
+  unique_ips: z.number().default(0),
+  minutes: z.array(RatePointSchema).default([]),
+  hours: z.array(RatePointSchema).default([]),
+  top: z.array(ConnIPSchema).default([]),
+  recent: z.array(ConnEventSchema).default([]),
+})
+export type ConnectionsView = z.infer<typeof ConnectionsViewSchema>
+
+export const GatewayBlockSchema = z.object({
+  id: z.number().optional().default(0),
+  block_id: z.string(),
+  cidr: z.string(),
+  reason: z.string().optional().default(''),
+  source: z.string().optional().default('manual'),
+  created_by: z.string().optional().default(''),
+  expires_at: z.string().nullable().optional(),
+  created_at: z.string().optional().default(''),
+})
+export type GatewayBlock = z.infer<typeof GatewayBlockSchema>
+
+export interface BlockRequest {
+  cidr: string
+  reason: string
+  ttl_hours: number
+  force?: boolean
+}

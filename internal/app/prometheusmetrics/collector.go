@@ -14,9 +14,9 @@ import (
 )
 
 var (
-	descCPUUsage    = prometheus.NewDesc("system_cpu_usage_percent", "Current CPU utilization percentage.", nil, nil)
-	descCPULoadAvg1 = prometheus.NewDesc("system_cpu_load_avg_1", "System load average over 1 minute.", nil, nil)
-	descCPULoadAvg5 = prometheus.NewDesc("system_cpu_load_avg_5", "System load average over 5 minutes.", nil, nil)
+	descCPUUsage     = prometheus.NewDesc("system_cpu_usage_percent", "Current CPU utilization percentage.", nil, nil)
+	descCPULoadAvg1  = prometheus.NewDesc("system_cpu_load_avg_1", "System load average over 1 minute.", nil, nil)
+	descCPULoadAvg5  = prometheus.NewDesc("system_cpu_load_avg_5", "System load average over 5 minutes.", nil, nil)
 	descCPULoadAvg15 = prometheus.NewDesc("system_cpu_load_avg_15", "System load average over 15 minutes.", nil, nil)
 
 	descMemUsage = prometheus.NewDesc("system_memory_usage_percent", "Current memory utilization percentage.", nil, nil)

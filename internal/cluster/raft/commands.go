@@ -73,6 +73,9 @@ const (
 	// Gateway (ingress) routes — rendered as Traefik config on the gateway node
 	CmdGatewayRouteUpsert CommandType = 90
 	CmdGatewayRouteDelete CommandType = 91
+	// Gateway client blocks (IP/CIDR deny list rendered above every route).
+	CmdGatewayBlockUpsert CommandType = 92
+	CmdGatewayBlockDelete CommandType = 93
 )
 
 // Command is the envelope persisted in every Raft log entry.

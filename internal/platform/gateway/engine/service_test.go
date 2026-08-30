@@ -72,12 +72,18 @@ func (r *fakeRaft) SubmitGatewayRouteDelete(ctx context.Context, id string) erro
 	return nil
 }
 
+func (r *fakeRaft) SubmitGatewayBlockUpsert(ctx context.Context, b gateway.Block) error {
+	return nil
+}
+
+func (r *fakeRaft) SubmitGatewayBlockDelete(ctx context.Context, blockID string) error { return nil }
+
 func newSvc(repo *fakeRepo, raft *fakeRaft) Service {
 	var repl Replicator
 	if raft != nil {
 		repl = raft
 	}
-	return NewService(log.New(nil), repo, &fakeStore{}, nil, nil, repl, nil)
+	return NewService(log.New(nil), repo, nil, &fakeStore{}, nil, nil, repl, nil)
 }
 
 func TestCreateRoute_StandaloneWritesRepoAndHashesPassword(t *testing.T) {
@@ -201,7 +207,7 @@ func TestUpdateRoute_BlankPasswordKeepsHash(t *testing.T) {
 
 func TestSetConfig_Validation(t *testing.T) {
 	store := &fakeStore{}
-	svc := NewService(log.New(nil), newFakeRepo(), store, nil, nil, nil, nil)
+	svc := NewService(log.New(nil), newFakeRepo(), nil, store, nil, nil, nil, nil)
 	ctx := context.Background()
 	if _, err := svc.SetConfig(ctx, gateway.Config{Enabled: true}); !errors.Is(err, ErrValidation) {
 		t.Error("enabled without node must fail")

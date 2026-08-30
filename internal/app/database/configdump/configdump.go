@@ -36,6 +36,7 @@ var ManagedTables = []string{
 	"cluster_join_tokens",
 	"connectors",
 	"gateway_routes",
+	"gateway_blocks",
 }
 
 type dumpFile struct {

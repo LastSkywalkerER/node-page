@@ -90,6 +90,22 @@ type GatewayRouteDeletePayload struct {
 	RouteID string `json:"route_id"`
 }
 
+// GatewayBlockUpsertPayload replicates one blocked client IP/CIDR, keyed by
+// BlockID (the cluster-stable identity).
+type GatewayBlockUpsertPayload struct {
+	BlockID   string     `json:"block_id"`
+	CIDR      string     `json:"cidr"`
+	Reason    string     `json:"reason,omitempty"`
+	Source    string     `json:"source,omitempty"`
+	CreatedBy string     `json:"created_by,omitempty"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+// GatewayBlockDeletePayload removes a gateway block everywhere.
+type GatewayBlockDeletePayload struct {
+	BlockID string `json:"block_id"`
+}
+
 // HostDeletePayload cascades a host removal (row + all its metrics) across the
 // cluster. It is keyed by MAC — the stable, cluster-wide identity — because the
 // per-node host_id differs on every node (auto-increment, matched by MAC). Each

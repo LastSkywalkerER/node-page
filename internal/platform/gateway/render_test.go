@@ -14,7 +14,7 @@ func TestRender_TLSRouteEmitsRedirectAndResolver(t *testing.T) {
 		TargetHost: "10.0.0.5", TargetPort: 3000, TLS: true, Enabled: true,
 		IPAllowList: "10.0.0.0/8, 192.168.1.0/24", BasicAuthUsers: "admin:$2a$10$hash",
 	}}
-	out, err := Render(cfg, routes)
+	out, err := Render(cfg, routes, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,8 +58,8 @@ func TestRender_PlainRouteSkipsDisabledAndIsDeterministic(t *testing.T) {
 		{RouteID: "a", Domain: "a.example.com", TargetHost: "h", TargetPort: 81, Enabled: false},
 		{RouteID: "c", Domain: "c.example.com", TargetHost: "h", TargetPort: 8443, Enabled: true, TargetScheme: "https", TargetInsecureSkipVerify: true},
 	}
-	out1, _ := Render(cfg, routes)
-	out2, _ := Render(cfg, []Route{routes[2], routes[0], routes[1]})
+	out1, _ := Render(cfg, routes, nil)
+	out2, _ := Render(cfg, []Route{routes[2], routes[0], routes[1]}, nil)
 	if string(out1) != string(out2) {
 		t.Fatal("render is not order-independent")
 	}
@@ -82,14 +82,14 @@ func TestRender_PlainRouteSkipsDisabledAndIsDeterministic(t *testing.T) {
 }
 
 func TestRender_EmptyProducesNoRouters(t *testing.T) {
-	out, err := Render(Config{}, nil)
+	out, err := Render(Config{}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if out != nil {
 		t.Errorf("empty render must return nil (file gets removed), got:\n%s", out)
 	}
-	out, _ = Render(Config{}, []Route{{RouteID: "a", Domain: "a.example.com", TargetHost: "h", TargetPort: 1, Enabled: false}})
+	out, _ = Render(Config{}, []Route{{RouteID: "a", Domain: "a.example.com", TargetHost: "h", TargetPort: 1, Enabled: false}}, nil)
 	if out != nil {
 		t.Error("only-disabled routes must also render nil")
 	}
@@ -131,7 +131,7 @@ func TestRender_PassthroughWildcard(t *testing.T) {
 		RouteID: "pt1", Mode: RouteModePassthrough, Domain: "*.apps.example.com",
 		TargetHost: "10.0.0.20", TargetPort: 80, TargetHTTPSPort: 443, Enabled: true,
 	}}
-	out, err := Render(cfg, routes)
+	out, err := Render(cfg, routes, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestRender_PassthroughWildcard(t *testing.T) {
 	}
 	// Exact-name passthrough uses HostSNI/Host.
 	routes[0].Domain = "cloud.example.com"
-	out, _ = Render(cfg, routes)
+	out, _ = Render(cfg, routes, nil)
 	if !strings.Contains(string(out), "HostSNI(`cloud.example.com`)") {
 		t.Errorf("exact passthrough rule missing:\n%s", out)
 	}

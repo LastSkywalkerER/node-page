@@ -134,6 +134,31 @@ func (r *Replicator) SubmitGatewayRouteDelete(ctx context.Context, routeID strin
 	return err
 }
 
+// SubmitGatewayBlockUpsert replicates a gateway client block cluster-wide.
+func (r *Replicator) SubmitGatewayBlockUpsert(ctx context.Context, b gateway.Block) error {
+	if !r.Enabled() {
+		return nil
+	}
+	_, err := SubmitTyped(ctx, r.svc, CmdGatewayBlockUpsert, GatewayBlockUpsertPayload{
+		BlockID:   b.BlockID,
+		CIDR:      b.CIDR,
+		Reason:    b.Reason,
+		Source:    b.Source,
+		CreatedBy: b.CreatedBy,
+		ExpiresAt: b.ExpiresAt,
+	}, 5*time.Second)
+	return err
+}
+
+// SubmitGatewayBlockDelete removes a gateway block on every node.
+func (r *Replicator) SubmitGatewayBlockDelete(ctx context.Context, blockID string) error {
+	if !r.Enabled() {
+		return nil
+	}
+	_, err := SubmitTyped(ctx, r.svc, CmdGatewayBlockDelete, GatewayBlockDeletePayload{BlockID: blockID}, 5*time.Second)
+	return err
+}
+
 // BackfillLocalGatewayRoutes republishes routes that only live in this node's
 // local DB (created while standalone) — same rationale as BackfillLocalConnectors.
 func (r *Replicator) BackfillLocalGatewayRoutes(ctx context.Context, repo gateway.Repository) (int, error) {

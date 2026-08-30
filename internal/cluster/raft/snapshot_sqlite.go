@@ -75,6 +75,7 @@ var managedTables = []string{
 	"connectors",
 	// Gateway routes (CmdGatewayRouteUpsert/Delete) — same profile.
 	"gateway_routes",
+	"gateway_blocks",
 	// NB: cpu/memory/disk/network/docker_metrics and docker_container_entities
 	// are intentionally NOT listed here — see the type doc above. They are
 	// high-churn metric history replicated via CmdMetricBatch; including them

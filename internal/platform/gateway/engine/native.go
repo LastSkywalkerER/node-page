@@ -99,6 +99,9 @@ func (n *nativeProvisioner) Reconcile(ctx context.Context, want setup.GatewayPro
 	if err := os.MkdirAll(n.acmeDir(), 0o700); err != nil {
 		return false, err
 	}
+	if err := os.MkdirAll(filepath.Join(n.dir(), "logs"), 0o755); err != nil {
+		return false, err
+	}
 	if err := n.ensureBinary(ctx); err != nil {
 		return false, fmt.Errorf("install traefik: %w", err)
 	}
@@ -278,7 +281,10 @@ func (n *nativeProvisioner) renderStatic(gw setup.GatewayProvision) []byte {
 	w("    watch: true")
 	w("api:\n  dashboard: false")
 	w("log:\n  level: " + envOr("NODE_STATS_TRAEFIK_LOG_LEVEL", "INFO"))
-	w("accessLog: {}")
+	w("accessLog:")
+	w(fmt.Sprintf("  filePath: %q", filepath.Join(n.dir(), "logs", "access.log")))
+	w("  format: json")
+	w("  fields:\n    headers:\n      names:\n        User-Agent: keep")
 	w("global:\n  sendAnonymousUsage: false\n  checkNewVersion: false")
 	if gw.ACMEEnabled {
 		w("certificatesResolvers:\n  le:\n    acme:")

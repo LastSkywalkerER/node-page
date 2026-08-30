@@ -162,3 +162,36 @@ DELETE /gateway/routes/:route_id
 - Runtime status (file path, controller phase, Traefik health) and `manage_kind` are only visible on
   the gateway node's own UI; other nodes show where it is rendered. Picking a node that can't run
   managed Traefik from *another* node's UI is only reported on the target node.
+
+## Connection tracking & client blocking
+
+The **Connections** card (admin → Gateway) shows live traffic hitting the gateway: request rate
+(per-minute chart), unique clients, no-route probes (scanners hitting the bare IP / unknown hosts),
+a live feed of recent requests and a **top clients** table with a suspicion score (scanner paths like
+`/.env`, `/wp-login.php`; high 4xx/5xx ratio; no-route hits; host spraying).
+
+How it works — and why it is cheap:
+
+- The managed Traefik (docker + systemd backends) writes a **JSON access log** to
+  `<data-dir>/traefik/logs/access.log`. The gateway node's node-stats tails that file and keeps
+  **all statistics in bounded RAM** (a ring of the last ~600 requests, per-IP counters capped at
+  4096 entries with eviction, fixed minute/hour rate buckets). Nothing is written to the database;
+  the log file itself is truncated at 16 MB once read, so disk stays bounded too. A restart starts
+  the stats over ("since …" is shown in the UI).
+- Opening the Gateway tab on any other node transparently **proxies** `/gateway/connections` to the
+  gateway node's dashboard URL (same cluster-shared JWT).
+- **External mode**: node-stats does not control the external Traefik's config. Point
+  `NODE_STATS_GATEWAY_ACCESSLOG` at its JSON access log (`--accesslog.format=json`) on the gateway
+  node to get the same stats (the file is never truncated in this mode — rotation stays yours).
+
+**Blocking**: the Block button (top clients / live feed) or a manual entry in **Blocked clients**
+adds an IP or CIDR to the Raft-replicated `gateway_blocks` table (optional TTL: 1h / 24h / 7d /
+permanent). The renderer emits a top-priority `ClientIP(...)` router that answers **403** on both
+entrypoints before any route middleware (and a TCP blackhole for passthrough SNI traffic), so a
+block applies within ~a second, survives restarts, and never puts node-stats on the request path.
+Safety rails: ranges wider than /8 are rejected, and blocking a range that covers **your own IP**
+requires an explicit force. Expired blocks stop matching immediately and are swept from the table
+by the gateway node.
+
+Behind Cloudflare or another fronting proxy the client IP seen by Traefik is the proxy's — don't
+block it. (Trusted-proxy forwarding of the real client IP is not wired up yet.)

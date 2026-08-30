@@ -59,15 +59,21 @@ type MaterializerDeps struct {
 	// desired-state keeps the same DB topology (mirrors setup.RequestRecreate).
 	DBType string
 	DBDSN  string
+	// Blocks lists the replicated client blocks rendered into the deny router.
+	Blocks gateway.BlockRepository
 }
 
 // Materializer reconciles on-disk reality (Traefik dynamic file, controller
 // desired-state) from the replicated gateway state. Runs on EVERY node; only
 // the node whose local MAC matches gateway.Config.NodeMAC renders anything.
 type Materializer struct {
-	deps   MaterializerDeps
-	poke   chan struct{}
-	native *nativeProvisioner
+	deps    MaterializerDeps
+	poke    chan struct{}
+	native  *nativeProvisioner
+	tracker *ConnTracker
+	// runCtx is Run's lifetime context — the tracker's tail goroutine must
+	// outlive one reconcile pass, so Ensure gets this, never the pass context.
+	runCtx context.Context
 
 	mu     sync.Mutex
 	status Status
@@ -82,6 +88,7 @@ func NewMaterializer(deps MaterializerDeps) *Materializer {
 		deps.DataDir = "/app/data"
 	}
 	m := &Materializer{deps: deps, poke: make(chan struct{}, 1)}
+	m.tracker = NewConnTracker(deps.Logger)
 	m.lastPath = m.readLastPath()
 	// Managed-mode backends: Docker → controller sidecar (desired-state);
 	// native root install (deb / Proxmox LXC) → node-stats installs Traefik and
@@ -126,8 +133,51 @@ func (m *Materializer) Capabilities(ctx context.Context) Capabilities {
 	return caps
 }
 
+// Tracker is the connection tracker (running only while this node is the
+// gateway with an access log to tail).
+func (m *Materializer) Tracker() *ConnTracker { return m.tracker }
+
+// AccessLogPath is the managed Traefik's JSON access log location (shared
+// data dir — the same file inside the app and the Traefik container/unit).
+func (m *Materializer) AccessLogPath() string {
+	return filepath.Join(m.deps.DataDir, "traefik", "logs", "access.log")
+}
+
+// listBlocks loads the replicated client blocks (empty when no repo is wired).
+func (m *Materializer) listBlocks(ctx context.Context) ([]gateway.Block, error) {
+	if m.deps.Blocks == nil {
+		return nil, nil
+	}
+	return m.deps.Blocks.ListBlocks(ctx)
+}
+
+// reconcileTracker starts/stops the access-log tail to match the gateway role.
+func (m *Materializer) reconcileTracker(isGW bool, cfg gateway.Config) {
+	if m.runCtx == nil {
+		return
+	}
+	switch {
+	case isGW && cfg.Mode == gateway.ModeManaged:
+		_ = os.MkdirAll(filepath.Dir(m.AccessLogPath()), 0o755)
+		m.tracker.Ensure(m.runCtx, m.AccessLogPath(), true)
+	case isGW && cfg.Mode == gateway.ModeExternal && externalAccessLogPath() != "":
+		// External Traefik: the operator can point us at its JSON access log
+		// (read-only — never truncated, rotation is theirs).
+		m.tracker.Ensure(m.runCtx, externalAccessLogPath(), false)
+	default:
+		m.tracker.Stop()
+	}
+}
+
+// externalAccessLogPath: operator-provided JSON access log of an external
+// Traefik (NODE_STATS_GATEWAY_ACCESSLOG).
+func externalAccessLogPath() string {
+	return strings.TrimSpace(os.Getenv("NODE_STATS_GATEWAY_ACCESSLOG"))
+}
+
 // Run loops until ctx is done.
 func (m *Materializer) Run(ctx context.Context) {
+	m.runCtx = ctx
 	t := time.NewTicker(reconcileInterval)
 	defer t.Stop()
 	m.reconcile(ctx)
@@ -330,6 +380,7 @@ func (m *Materializer) reconcile(ctx context.Context) {
 	isGW := cfg.Enabled && m.isLocalNode(rc, cfg)
 	st.IsGatewayNode = isGW
 	st.Mode = cfg.Mode
+	m.reconcileTracker(isGW, cfg)
 
 	// --- dynamic file ------------------------------------------------------
 	if isGW {
@@ -349,7 +400,12 @@ func (m *Materializer) reconcile(ctx context.Context) {
 		}
 		path := filepath.Join(dir, gateway.DynamicFileName)
 		st.FilePath = path
-		content, err := gateway.Render(cfg, m.localizeTargets(rc, cfg, routes))
+		blocks, err := m.listBlocks(rc)
+		if err != nil {
+			st.LastError = err.Error()
+			return
+		}
+		content, err := gateway.Render(cfg, m.localizeTargets(rc, cfg, routes), blocks)
 		if err != nil {
 			st.LastError = "render: " + err.Error()
 			return

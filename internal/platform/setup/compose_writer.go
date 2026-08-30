@@ -295,9 +295,13 @@ func writeTraefikService(w func(string), gw GatewayProvision) {
 	w("      - --ping.entryPoint=ping")
 	w("      - --api.dashboard=false")
 	w("      - --log.level=${NODE_STATS_TRAEFIK_LOG_LEVEL:-INFO}")
-	// Access log to stdout: visible in the Gateway tab's log panel (json-file
-	// logging below caps disk usage).
+	// JSON access log to a file on the shared data volume: the app tails it for
+	// the Gateway tab's connection stats (and truncates it at a size cap, so
+	// disk stays bounded). Docker stdout keeps the plain traefik log only.
 	w("      - --accesslog=true")
+	w("      - --accesslog.format=json")
+	w("      - --accesslog.filepath=/var/log/traefik/access.log")
+	w("      - --accesslog.fields.headers.names.User-Agent=keep")
 	w("      - --global.sendAnonymousUsage=false")
 	w("      - --global.checkNewVersion=false")
 	if gw.ACMEEnabled {
@@ -320,6 +324,7 @@ func writeTraefikService(w func(string), gw GatewayProvision) {
 	w("    volumes:")
 	w("      - ./data/docker/traefik/dynamic:/etc/traefik/dynamic:ro")
 	w("      - ./data/docker/traefik/acme:/letsencrypt")
+	w("      - ./data/docker/traefik/logs:/var/log/traefik")
 	// `traefik healthcheck` does not read the running instance's flags — without
 	// the ping entrypoint repeated here it probes :8080 and the container stays
 	// "unhealthy" forever (and `up --wait` fails).
