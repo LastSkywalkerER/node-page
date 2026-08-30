@@ -25,7 +25,10 @@ const (
 
 // PublicCheckResult is the POST /gateway/check-public response.
 type PublicCheckResult struct {
-	PublicIP string            `json:"public_ip"`
+	PublicIP string `json:"public_ip"`
+	// Detected is true when PublicIP was auto-detected (this node's egress IP)
+	// rather than supplied by the admin.
+	Detected bool              `json:"detected"`
 	Ports    []PublicPortCheck `json:"ports"`
 	Provider string            `json:"provider"`
 	Error    string            `json:"error,omitempty"`
@@ -49,12 +52,23 @@ type PublicProbeNode struct {
 
 var publicHTTP = &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
 
-// PublicCheck runs the external probe for the given ports.
-func PublicCheck(ctx context.Context, ports []int) PublicCheckResult {
+// PublicCheck runs the external probe for the given ports. target overrides
+// the auto-detected public IP (an IP or a hostname) — the node's egress may go
+// through a VPN/tunnel whose address is not where the gateway is published.
+func PublicCheck(ctx context.Context, target string, ports []int) PublicCheckResult {
 	res := PublicCheckResult{Provider: "check-host.net"}
-	ip, err := publicIP(ctx)
-	if err != nil {
-		res.Error = "could not determine this node's public IP: " + err.Error()
+	ip := strings.TrimSpace(target)
+	res.Detected = false
+	if ip == "" {
+		var err error
+		ip, err = publicIP(ctx)
+		if err != nil {
+			res.Error = "could not determine this node's public IP: " + err.Error()
+			return res
+		}
+		res.Detected = true
+	} else if strings.ContainsAny(ip, " /?#") {
+		res.Error = "target must be an IP address or hostname"
 		return res
 	}
 	res.PublicIP = ip

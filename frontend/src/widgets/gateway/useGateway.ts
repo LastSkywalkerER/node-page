@@ -124,14 +124,14 @@ export function useGatewayLogs(enabled: boolean, tail = 300) {
 
 export interface PublicProbe { node: string; location?: string; ok: boolean; time_ms?: number; error?: string }
 export interface PublicPortCheck { port: number; reachable: boolean; probes: PublicProbe[] }
-export interface PublicCheckResult { public_ip: string; ports: PublicPortCheck[]; provider: string; error?: string }
+export interface PublicCheckResult { public_ip: string; detected: boolean; ports: PublicPortCheck[]; provider: string; error?: string }
 
 /** Ask an external service (check-host.net) whether the gateway ports are open from the internet. */
 export function useCheckPublic() {
-  return useMutation<PublicCheckResult, Error, void>({
-    mutationFn: async () => {
+  return useMutation<PublicCheckResult, Error, { target?: string }>({
+    mutationFn: async (body) => {
       try {
-        const { data } = await apiClient.post('/gateway/check-public', {}, { timeout: 60000 })
+        const { data } = await apiClient.post('/gateway/check-public', body ?? {}, { timeout: 60000 })
         return data as PublicCheckResult
       } catch (e) {
         throw apiError(e)

@@ -35,7 +35,7 @@ const checkInterval = time.Hour
 
 // forcedCheckMinInterval rate-limits operator-triggered re-checks
 // (GET /version?refresh=1) so the public endpoint can't hammer the GitHub API.
-const forcedCheckMinInterval = time.Minute
+const forcedCheckMinInterval = 10 * time.Second
 
 // dateFallbackMargin guards the build-date update heuristic for non-semver
 // builds: a release published within this window after the running build was

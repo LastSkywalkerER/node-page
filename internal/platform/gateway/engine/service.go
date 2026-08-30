@@ -135,7 +135,7 @@ type Service interface {
 	Logs(ctx context.Context, tail int) (string, error)
 	// CheckPublic asks an external service whether the gateway's HTTP/HTTPS
 	// ports are reachable from the internet (from THIS node's public IP).
-	CheckPublic(ctx context.Context) (*PublicCheckResult, error)
+	CheckPublic(ctx context.Context, target string) (*PublicCheckResult, error)
 }
 
 // ErrValidation marks a bad request (handler → 400).
@@ -323,7 +323,7 @@ func (s *service) CheckTarget(ctx context.Context, host, hostMAC string, port in
 	return addr, nil
 }
 
-func (s *service) CheckPublic(ctx context.Context) (*PublicCheckResult, error) {
+func (s *service) CheckPublic(ctx context.Context, target string) (*PublicCheckResult, error) {
 	cfg, err := LoadConfig(ctx, s.cfg)
 	if err != nil {
 		return nil, err
@@ -335,7 +335,7 @@ func (s *service) CheckPublic(ctx context.Context) (*PublicCheckResult, error) {
 	if sp == 0 {
 		sp = 443
 	}
-	res := PublicCheck(ctx, []int{hp, sp})
+	res := PublicCheck(ctx, target, []int{hp, sp})
 	return &res, nil
 }
 

@@ -217,26 +217,47 @@ function ConfigCard({ state }: { state: GatewayState }) {
  * this node's public IP on the HTTP/HTTPS ports from a few locations. Explicit
  * button (it hands the public IP + ports to a third party).
  */
+const PUBLIC_TARGET_KEY = 'gateway.publicCheckTarget'
+
 function PublicCheck() {
   const check = useCheckPublic()
   const r = check.data
+  const [target, setTarget] = useState<string>(() => {
+    try {
+      return localStorage.getItem(PUBLIC_TARGET_KEY) ?? ''
+    } catch {
+      return ''
+    }
+  })
+  const run = () => {
+    try {
+      localStorage.setItem(PUBLIC_TARGET_KEY, target.trim())
+    } catch {
+      /* ignore */
+    }
+    check.mutate({ target: target.trim() }, { onError: (e) => toast.error(e.message) })
+  }
   return (
     <div className="rounded-lg border border-border/60 p-3 text-xs">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-muted-foreground">
-          <span className="font-medium text-foreground">Reachable from the internet?</span> Probes the gateway's HTTP/HTTPS
-          ports on this node's public IP from external locations (via check-host.net). Needed for Let's Encrypt and for
-          anyone outside your network.
-        </div>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => check.mutate(undefined, { onError: (e) => toast.error(e.message) })}
-          disabled={check.isPending}
-        >
+      <div className="text-muted-foreground">
+        <span className="font-medium text-foreground">Reachable from the internet?</span> Probes the gateway's HTTP/HTTPS
+        ports from external locations (via check-host.net). Needed for Let's Encrypt and for anyone outside your network.
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <Input
+          className="h-8 max-w-xs font-mono text-xs"
+          placeholder="auto-detect this node's public IP"
+          value={target}
+          onChange={(e) => setTarget(e.target.value)}
+        />
+        <Button size="sm" variant="outline" onClick={run} disabled={check.isPending}>
           <Radar className={cn('mr-1 h-3.5 w-3.5', check.isPending && 'animate-spin')} />
           {check.isPending ? 'Probing… (~10 s)' : 'Check from the internet'}
         </Button>
+        <span className="text-muted-foreground">
+          Leave empty to use the IP this node goes out with; enter your real public IP or a route's domain if the node's
+          traffic leaves through a VPN / tunnel.
+        </span>
       </div>
       {r && (
         <div className="mt-3 space-y-2">
@@ -245,7 +266,11 @@ function PublicCheck() {
           ) : (
             <>
               <div className="text-muted-foreground">
-                Public IP <span className="font-mono text-foreground">{r.public_ip}</span>
+                {r.detected ? 'Detected public IP' : 'Probed'}{' '}
+                <span className="font-mono text-foreground">{r.public_ip}</span>
+                {r.detected && (
+                  <span> — this is the address the node's outgoing traffic shows; behind a VPN it may not be your gateway</span>
+                )}
               </div>
               {r.ports.map((p) => (
                 <div key={p.port}>

@@ -183,7 +183,11 @@ func (h *Handler) HandleDeleteRoute(c *gin.Context) {
 // @Security BearerAuth
 // @Router   /gateway/check-public [post]
 func (h *Handler) HandleCheckPublic(c *gin.Context) {
-	res, err := h.service.CheckPublic(c.Request.Context())
+	var body struct {
+		Target string `json:"target"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	res, err := h.service.CheckPublic(c.Request.Context(), body.Target)
 	if err != nil {
 		h.fail(c, err)
 		return

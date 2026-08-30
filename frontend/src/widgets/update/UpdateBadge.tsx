@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowUpCircle, RefreshCw } from 'lucide-react'
+import { toast } from 'sonner'
 import { Switch } from '@/shared/ui/switch'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -108,7 +109,15 @@ export function UpdateBadge() {
                 </span>
                 <button
                   type="button"
-                  onClick={() => refresh.mutate()}
+                  onClick={() =>
+                    refresh.mutate(undefined, {
+                      onSuccess: (d) =>
+                        toast[d.update_available ? 'info' : 'success'](
+                          d.update_available ? `Update available: ${d.latest}` : `Up to date (${d.current}); latest ${d.latest || '—'}`
+                        ),
+                      onError: (e) => toast.error('Check failed: ' + e.message),
+                    })
+                  }
                   disabled={refresh.isPending}
                   title="Re-check GitHub releases now (rate-limited to once a minute)"
                   className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-foreground/80 hover:bg-foreground/10 disabled:opacity-50"
