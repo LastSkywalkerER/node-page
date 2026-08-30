@@ -256,7 +256,7 @@ jobs:
         if: needs.version.outputs.prerelease == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          KEEP: '10'
+          KEEP: '3'
         run: |
           set -euo pipefail
           gh release list --repo "$GITHUB_REPOSITORY" --limit 200 \
