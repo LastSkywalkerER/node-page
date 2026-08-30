@@ -19,6 +19,7 @@ import (
 	"os"
 
 	"system-stats/internal/app/server"
+	"system-stats/internal/auth/users"
 	"system-stats/internal/platform/controller"
 	"system-stats/internal/platform/setup"
 	"system-stats/internal/platform/update"
@@ -41,6 +42,11 @@ func main() {
 				DBMode: setup.DBModeSQLite,
 				Image:  os.Getenv("NODE_STATS_IMAGE"),
 			}))
+			return
+		case "reset-password":
+			// Break-glass admin password reset via the running server's loopback
+			// endpoint (goes through Raft, so it sticks across restarts).
+			users.RunResetPasswordCLI(os.Args[2:])
 			return
 		case "update":
 			// Native self-update from the latest GitHub release. `--check` only

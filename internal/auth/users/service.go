@@ -334,12 +334,13 @@ func (s *userService) setPassword(ctx context.Context, user *User, newPassword s
 	if err != nil {
 		return fmt.Errorf("failed to hash password: %w", err)
 	}
-	if err := s.userRepo.UpdatePassword(ctx, user.ID, hash); err != nil {
-		return fmt.Errorf("failed to update password: %w", err)
-	}
-
-	// Replicate to the cluster so the new password authenticates on every node.
-	// Best-effort with a short not-leader retry, mirroring Register.
+	// With Raft on, the password MUST go through the log: the FSM applier
+	// writes it on every node (this one included) and it survives a restart.
+	// A direct DB write here used to be "the" write with replication as a
+	// best-effort afterthought — when replication failed, the row diverged
+	// from the FSM and the next start (snapshot restore + log replay) rolled the
+	// password back, which looked like "my password keeps resetting". Fail loudly
+	// instead so the admin knows the change did not stick.
 	if s.raft != nil && s.raft.Enabled() {
 		deadline := time.Now().Add(5 * time.Second)
 		var lastErr error
@@ -358,8 +359,10 @@ func (s *userService) setPassword(ctx context.Context, user *User, newPassword s
 			break
 		}
 		if lastErr != nil {
-			fmt.Printf("users.setPassword: raft replication for %q failed: %v\n", user.Email, lastErr)
+			return fmt.Errorf("failed to replicate the password change (nothing was changed): %w", lastErr)
 		}
+	} else if err := s.userRepo.UpdatePassword(ctx, user.ID, hash); err != nil {
+		return fmt.Errorf("failed to update password: %w", err)
 	}
 
 	// Invalidate existing sessions so a stolen/old credential can't keep a

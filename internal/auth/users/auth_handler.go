@@ -1,9 +1,9 @@
 package users
 
 import (
-	"time"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/gin-gonic/gin"

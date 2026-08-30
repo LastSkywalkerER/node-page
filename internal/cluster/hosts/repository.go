@@ -214,6 +214,10 @@ func (r *hostRepository) UpsertLocalHost(ctx context.Context, hostInfo HostInfo)
 		return nil, terr
 	} else if !taken {
 		host.MacAddress = hostInfo.MacAddress
+	} else if merged, merr := r.absorbSelfDuplicate(ctx, &host, hostInfo); merr != nil {
+		return nil, merr
+	} else if merged {
+		host.MacAddress = hostInfo.MacAddress
 	}
 	host.IPv4 = hostInfo.IPv4
 	host.OS = hostInfo.OS
@@ -230,6 +234,57 @@ func (r *hostRepository) UpsertLocalHost(ctx context.Context, hostInfo HostInfo)
 	host.LastSeen = now
 	host.UpdatedAt = now
 	return &host, r.db.WithContext(ctx).Save(&host).Error
+}
+
+// absorbSelfDuplicate handles the case where THIS machine's real MAC is held by
+// another row that is provably the same machine (machine-id / SMBIOS UUID
+// agree) — a connector-discovered self-guest, or the replicated copy of our own
+// registration that landed in a MAC-keyed row while id=1 was stuck on a stale
+// (e.g. docker-bridge) MAC. Left alone, id=1 keeps the stale MAC forever, which
+// then collides with any other docker agent deriving the same 02:42:… address
+// and swallows that machine's identity. Merge the duplicate's topology into
+// id=1 and drop it so the local row can take its real MAC. Returns true when a
+// merge happened.
+func (r *hostRepository) absorbSelfDuplicate(ctx context.Context, local *Host, info HostInfo) (bool, error) {
+	var holder Host
+	err := r.db.WithContext(ctx).Where("mac_address = ? AND id != ?", info.MacAddress, local.ID).First(&holder).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !sameMachineIdentity(&holder, info) && !(holder.SystemHostID == "" && holder.HardwareUUID == "" && strings.Contains(holder.Source, SourceConnector)) {
+		return false, nil
+	}
+	if holder.HostType != "" {
+		local.HostType = holder.HostType
+	}
+	if holder.ParentMAC != "" {
+		local.ParentMAC = holder.ParentMAC
+	}
+	if holder.ExternalID != "" {
+		local.ExternalID = holder.ExternalID
+	}
+	if holder.GuestStatus != "" {
+		local.GuestStatus = holder.GuestStatus
+	}
+	local.Source = MergeSource(local.Source, holder.Source)
+	// Keep the duplicate's history: re-home its metric rows onto id=1 (tables
+	// that don't exist yet — fresh/partial schemas — are skipped), then drop
+	// the row itself.
+	for _, table := range []string{"docker_container_entities", "docker_metrics", "cpu_metrics", "memory_metrics", "disk_metrics", "network_metrics"} {
+		if !r.db.Migrator().HasTable(table) {
+			continue
+		}
+		if err := r.db.WithContext(ctx).Exec(fmt.Sprintf("UPDATE %s SET host_id = ? WHERE host_id = ?", table), local.ID, holder.ID).Error; err != nil {
+			return false, fmt.Errorf("re-home %s of duplicate host %d: %w", table, holder.ID, err)
+		}
+	}
+	if err := r.db.WithContext(ctx).Delete(&Host{}, holder.ID).Error; err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Host, error) {
@@ -325,9 +380,18 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		Where("id = ? AND (mac_address = ? OR name = ?)", LocalCollectorHostID, hostInfo.MacAddress, hostInfo.Name).
 		First(&localHost).Error
 	if err == nil {
-		return &localHost, nil
-	}
-	if err != gorm.ErrRecordNotFound {
+		// Only trust the MAC/name coincidence when the stable machine identity
+		// agrees (or neither side has one). Docker-bridge agents on DIFFERENT
+		// machines derive identical 02:42:… MACs, and a node that used to run in
+		// docker can keep such a MAC on its id=1 row — without this check the
+		// other machine's registration is silently treated as "us" and it never
+		// gets a row here (its metrics then land on our own card).
+		if sameMachineIdentity(&localHost, hostInfo) ||
+			(hostInfo.HostID == "" && hostInfo.HardwareUUID == "") ||
+			(localHost.SystemHostID == "" && localHost.HardwareUUID == "") {
+			return &localHost, nil
+		}
+	} else if err != gorm.ErrRecordNotFound {
 		return nil, err
 	}
 
@@ -337,10 +401,19 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 	if nerr != nil {
 		return nil, nerr
 	}
+	// The MAC may still be held by another row (a foreign machine's colliding
+	// docker-bridge MAC, or our own id=1 stuck on it): mac_address is unique, so
+	// fall back to a stable synthetic MAC derived from the machine identity.
+	mac := hostInfo.MacAddress
+	if taken, terr := r.macOwnedByOther(ctx, mac, 0); terr != nil {
+		return nil, terr
+	} else if taken {
+		mac = syntheticMAC("agent", firstNonEmpty(hostInfo.HostID, hostInfo.HardwareUUID, hostInfo.Name), hostInfo.OriginCluster)
+	}
 	now := time.Now()
 	host = Host{
 		Name:                 freeName,
-		MacAddress:           hostInfo.MacAddress,
+		MacAddress:           mac,
 		IPv4:                 hostInfo.IPv4,
 		OS:                   hostInfo.OS,
 		Platform:             hostInfo.Platform,
@@ -371,6 +444,15 @@ func sameMachineIdentity(existing *Host, info HostInfo) bool {
 		return true
 	}
 	return false
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // macTail is a short, human-readable disambiguation suffix ("a0:56").

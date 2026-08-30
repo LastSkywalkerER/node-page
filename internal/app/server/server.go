@@ -768,6 +768,8 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 			auth.POST("/login", authRL, authHandler.Login)
 			auth.POST("/refresh", authRL, authHandler.Refresh)
 			auth.POST("/logout", middleware.AuthJWT(container.GetTokenService()), authHandler.Logout)
+			// Loopback-only break-glass reset (`node-stats reset-password`), see users.LocalReset.
+			auth.POST("/local-reset", authRL, authHandler.LocalReset)
 		}
 
 		// User management routes (protected)

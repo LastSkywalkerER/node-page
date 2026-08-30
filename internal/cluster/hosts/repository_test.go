@@ -2,6 +2,7 @@ package hosts
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -447,7 +448,10 @@ func TestUpsertLocalHostDeflectsTakenMAC(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Local collector tick: reports the real MAC for id=1. Must not collide.
+	// Local collector tick: reports the real MAC for id=1. Must not collide —
+	// and since the guest row is provably this same machine (connector-only,
+	// our NIC MAC), it is absorbed: id=1 takes the real MAC + the topology, the
+	// duplicate disappears, the stale docker MAC is released.
 	got, err := repo.UpsertLocalHost(ctx, HostInfo{Name: "node-stats", MacAddress: realMAC})
 	if err != nil {
 		t.Fatalf("UpsertLocalHost must not collide on the taken MAC: %v", err)
@@ -455,21 +459,22 @@ func TestUpsertLocalHostDeflectsTakenMAC(t *testing.T) {
 	if got.ID != LocalCollectorHostID {
 		t.Fatalf("landed on id=%d, want the reserved local id=%d", got.ID, LocalCollectorHostID)
 	}
-	if got.MacAddress != "02:42:0a:00:0c:03" {
-		t.Fatalf("local MAC overwritten with the colliding real MAC: %q", got.MacAddress)
+	if got.MacAddress != realMAC {
+		t.Fatalf("id=1 must take its real MAC after absorbing the self-guest, got %q", got.MacAddress)
+	}
+	if got.HostType != "lxc" || got.ExternalID != "proxmox:node/inno-pve/lxc/105" || got.Source != SourceAgentConnector {
+		t.Fatalf("self-guest topology not merged: %+v", got)
 	}
 	if !got.LastSeen.After(stale) {
 		t.Fatalf("last_seen did not advance: %v (was %v)", got.LastSeen, stale)
 	}
-	// The guest row keeps the real MAC untouched; still exactly two rows.
-	g, err := repo.GetHostByID(ctx, guest.ID)
-	if err != nil || g.MacAddress != realMAC {
-		t.Fatalf("guest row corrupted: %+v err=%v", g, err)
+	if _, err := repo.GetHostByID(ctx, guest.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("guest duplicate must be gone, err=%v", err)
 	}
 	var count int64
 	r.db.Model(&Host{}).Count(&count)
-	if count != 2 {
-		t.Fatalf("%d rows, want 2 (id=1 + guest)", count)
+	if count != 1 {
+		t.Fatalf("%d rows, want 1 (merged into id=1)", count)
 	}
 }
 
@@ -682,5 +687,78 @@ func TestGetHostByOriginAndName(t *testing.T) {
 	}
 	if _, err := repo.GetHostByOriginAndName(ctx, "", "dokploy"); err == nil {
 		t.Fatal("empty origin must not match")
+	}
+}
+
+// A node that migrated from docker to native keeps a docker-bridge MAC on its
+// id=1 row while the connector's self-guest row holds the real NIC MAC. The
+// local upsert must absorb that duplicate and take the real MAC — otherwise the
+// stale 02:42:… MAC collides with another docker agent (below).
+func TestUpsertLocalHostAbsorbsSelfDuplicateHoldingRealMAC(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+	// id=1 stuck on a stale docker-bridge MAC.
+	if _, err := repo.UpsertLocalHost(ctx, HostInfo{Name: "node-stats", MacAddress: "02:42:0a:00:0c:03", IPv4: "192.168.0.49", HostID: "lxc-machine-id"}); err != nil {
+		t.Fatal(err)
+	}
+	// Connector-discovered self-guest with the real MAC (same machine id).
+	dup, err := repo.UpsertConnectorHost(ctx, ConnectorHostInfo{HostInfo: HostInfo{Name: "node-stats", MacAddress: "bc:24:11:9c:c0:30", IPv4: "192.168.0.49"}, HostType: HostTypeLXC, ParentMAC: "pve-mac", ExternalID: "proxmox:x/lxc/101"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dup.ID == LocalCollectorHostID {
+		t.Fatalf("test setup: connector row should be a separate row, got id=1")
+	}
+	// Now the real collector reports the real MAC.
+	local, err := repo.UpsertLocalHost(ctx, HostInfo{Name: "node-stats", MacAddress: "bc:24:11:9c:c0:30", IPv4: "192.168.0.49", HostID: "lxc-machine-id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if local.MacAddress != "bc:24:11:9c:c0:30" {
+		t.Fatalf("id=1 must take its real MAC, got %s", local.MacAddress)
+	}
+	if local.HostType != HostTypeLXC || local.ExternalID != "proxmox:x/lxc/101" || local.Source != SourceAgentConnector {
+		t.Errorf("topology not merged into id=1: %+v", local)
+	}
+	if _, err := repo.GetHostByID(ctx, dup.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Errorf("duplicate row must be gone, err=%v", err)
+	}
+	// The stale docker MAC is free again → another docker agent with that MAC
+	// gets its own row instead of being swallowed by id=1.
+	other, err := repo.UpsertHost(ctx, HostInfo{Name: "orangepi5-plus", MacAddress: "02:42:0a:00:0c:03", IPv4: "192.168.0.111", HostID: "orangepi-machine-id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.ID == LocalCollectorHostID || other.Name != "orangepi5-plus" || other.MacAddress != "02:42:0a:00:0c:03" {
+		t.Errorf("foreign docker agent must get its own row: %+v", other)
+	}
+}
+
+// While id=1 still holds a colliding docker-bridge MAC, a DIFFERENT machine
+// registering with that MAC must not be mistaken for "us": it gets its own row
+// (with a synthetic MAC, since the real one is taken) instead of vanishing.
+func TestUpsertHostDoesNotMistakeForeignDockerMACForLocalRow(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+	if _, err := repo.UpsertLocalHost(ctx, HostInfo{Name: "node-stats", MacAddress: "02:42:0a:00:0c:03", IPv4: "192.168.0.49", HostID: "lxc-machine-id"}); err != nil {
+		t.Fatal(err)
+	}
+	other, err := repo.UpsertHost(ctx, HostInfo{Name: "orangepi5-plus", MacAddress: "02:42:0a:00:0c:03", IPv4: "192.168.0.111", HostID: "orangepi-machine-id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.ID == LocalCollectorHostID {
+		t.Fatal("foreign machine merged into the local row")
+	}
+	if other.MacAddress == "02:42:0a:00:0c:03" || other.MacAddress == "" {
+		t.Errorf("colliding MAC must be deflected to a synthetic one, got %q", other.MacAddress)
+	}
+	// Our own replicated registration (same machine id) still resolves to id=1.
+	self, err := repo.UpsertHost(ctx, HostInfo{Name: "node-stats", MacAddress: "02:42:0a:00:0c:03", IPv4: "192.168.0.49", HostID: "lxc-machine-id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if self.ID != LocalCollectorHostID {
+		t.Errorf("own registration must map to id=1, got %d", self.ID)
 	}
 }
