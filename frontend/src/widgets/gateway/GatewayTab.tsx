@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
 import { confirmDialog } from '@/shared/lib/confirmDialog'
-import { Globe, Plus, Trash2, Pencil, ExternalLink, ShieldAlert, ShieldCheck, Lock, Activity, X, ScrollText, RefreshCw } from 'lucide-react'
+import { Globe, Plus, Trash2, Pencil, ExternalLink, ShieldAlert, ShieldCheck, Lock, Activity, X, ScrollText, RefreshCw, Radar } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -21,6 +21,7 @@ import {
   useDeleteRoute,
   useCheckTarget,
   useGatewayLogs,
+  useCheckPublic,
   routeToRequest,
 } from './useGateway'
 import type { GatewayConfig, GatewayRoute, GatewayState, GatewayTarget, RouteRequest, BasicAuthInput } from './schemas'
@@ -205,8 +206,77 @@ function ConfigCard({ state }: { state: GatewayState }) {
             {save.isPending ? 'Saving…' : 'Save'}
           </Button>
         </div>
+        {state.config.enabled && state.status.is_gateway_node && <PublicCheck />}
       </CardContent>
     </Card>
+  )
+}
+
+/**
+ * "Can the internet reach my gateway?" — asks check-host.net to TCP-connect to
+ * this node's public IP on the HTTP/HTTPS ports from a few locations. Explicit
+ * button (it hands the public IP + ports to a third party).
+ */
+function PublicCheck() {
+  const check = useCheckPublic()
+  const r = check.data
+  return (
+    <div className="rounded-lg border border-border/60 p-3 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-muted-foreground">
+          <span className="font-medium text-foreground">Reachable from the internet?</span> Probes the gateway's HTTP/HTTPS
+          ports on this node's public IP from external locations (via check-host.net). Needed for Let's Encrypt and for
+          anyone outside your network.
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => check.mutate(undefined, { onError: (e) => toast.error(e.message) })}
+          disabled={check.isPending}
+        >
+          <Radar className={cn('mr-1 h-3.5 w-3.5', check.isPending && 'animate-spin')} />
+          {check.isPending ? 'Probing… (~10 s)' : 'Check from the internet'}
+        </Button>
+      </div>
+      {r && (
+        <div className="mt-3 space-y-2">
+          {r.error ? (
+            <div className="text-red-400">{r.error}</div>
+          ) : (
+            <>
+              <div className="text-muted-foreground">
+                Public IP <span className="font-mono text-foreground">{r.public_ip}</span>
+              </div>
+              {r.ports.map((p) => (
+                <div key={p.port}>
+                  <div className="flex items-center gap-1.5">
+                    <span className={cn('h-2 w-2 rounded-full', p.reachable ? 'bg-emerald-400' : 'bg-red-400')} />
+                    <span className="font-mono">:{p.port}</span>
+                    <span className={p.reachable ? 'text-emerald-500' : 'text-red-400'}>
+                      {p.reachable ? 'open from the internet' : 'not reachable from the internet'}
+                    </span>
+                  </div>
+                  <div className="ml-3.5 mt-0.5 flex flex-wrap gap-x-4 gap-y-0.5 text-muted-foreground">
+                    {p.probes.map((pr) => (
+                      <span key={pr.node} title={pr.error}>
+                        {pr.location || pr.node}: {pr.ok ? `ok ${pr.time_ms ? Math.round(pr.time_ms) + ' ms' : ''}` : pr.error || 'failed'}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {r.ports.some((p) => !p.reachable) && (
+                <div className="text-amber-500">
+                  Closed ports usually mean a missing port-forward on the router / firewall rule, or a provider
+                  blocking inbound traffic. If the public IP above isn't your gateway's (VPN, CGNAT), the probe hit the
+                  wrong address.
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 

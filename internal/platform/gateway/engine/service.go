@@ -133,6 +133,9 @@ type Service interface {
 	CheckTarget(ctx context.Context, host, hostMAC string, port int) (checked string, err error)
 	// Logs returns the managed Traefik's recent logs (gateway node only).
 	Logs(ctx context.Context, tail int) (string, error)
+	// CheckPublic asks an external service whether the gateway's HTTP/HTTPS
+	// ports are reachable from the internet (from THIS node's public IP).
+	CheckPublic(ctx context.Context) (*PublicCheckResult, error)
 }
 
 // ErrValidation marks a bad request (handler → 400).
@@ -318,6 +321,22 @@ func (s *service) CheckTarget(ctx context.Context, host, hostMAC string, port in
 	}
 	_ = conn.Close()
 	return addr, nil
+}
+
+func (s *service) CheckPublic(ctx context.Context) (*PublicCheckResult, error) {
+	cfg, err := LoadConfig(ctx, s.cfg)
+	if err != nil {
+		return nil, err
+	}
+	hp, sp := cfg.HTTPPort, cfg.HTTPSPort
+	if hp == 0 {
+		hp = 80
+	}
+	if sp == 0 {
+		sp = 443
+	}
+	res := PublicCheck(ctx, []int{hp, sp})
+	return &res, nil
 }
 
 func (s *service) Logs(ctx context.Context, tail int) (string, error) {

@@ -174,6 +174,23 @@ func (h *Handler) HandleDeleteRoute(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }
 
+// HandleCheckPublic probes the gateway ports from the internet via check-host.net.
+//
+// @Summary  Check gateway ports from the internet
+// @Tags     gateway
+// @Produce  json
+// @Success  200 {object} PublicCheckResult
+// @Security BearerAuth
+// @Router   /gateway/check-public [post]
+func (h *Handler) HandleCheckPublic(c *gin.Context) {
+	res, err := h.service.CheckPublic(c.Request.Context())
+	if err != nil {
+		h.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}
+
 // HandleLogs returns the managed Traefik's recent logs (gateway node only).
 //
 // @Summary  Gateway (Traefik) logs
