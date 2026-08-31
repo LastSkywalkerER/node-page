@@ -386,6 +386,10 @@ func (c *Container) activateLocked(ctx context.Context, cfg config.RaftConfig) (
 	c.metricSender = metricstream.NewSender(c.logger, c.db, cfg.ClusterID, cfg.NodeID, c.jwtSecret, cfg.Bridge)
 	c.metricReceiver = metricstream.NewReceiver(c.logger, c.metricSink, cfg.ClusterID, c.jwtSecret, cfg.Bridge)
 
+	// Wire the forward-signing secret provider onto the live node so
+	// follower→leader command forwards are HMAC-authenticated (see forwardauth.go).
+	act.Node.SetForwardSecretProvider(c.CurrentClusterHMACSecret)
+
 	// Tell the host repository which cluster id is OURS so its connector
 	// cross-site guard only deflects rows from a genuinely DIFFERENT cluster.
 	// Without this, this node's own Proxmox connector polling THIS machine
@@ -1507,6 +1511,15 @@ func (c *Container) GetMetricSender() *metricstream.Sender {
 // (cross-node metrics never sync). Idempotent and a no-op for an empty key or
 // when nothing changed. Also updates any sender/receiver rebuilt on a later
 // (re)activation by remembering the new value on c.jwtSecret.
+// CurrentClusterHMACSecret returns the cluster-shared secret (the JWT secret)
+// used to sign/verify off-Raft peer traffic (metric stream + command forwards).
+// Read live so a secret discovered after a join is picked up without rebuilds.
+func (c *Container) CurrentClusterHMACSecret() string {
+	c.activateMu.Lock()
+	defer c.activateMu.Unlock()
+	return c.jwtSecret
+}
+
 func (c *Container) SetClusterHMACSecret(jwtSecret string) {
 	if jwtSecret == "" {
 		return

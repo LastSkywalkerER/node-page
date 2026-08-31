@@ -714,6 +714,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		WithHTTPAddr(cfg.Addr)
 	raftHandler := raftcluster.NewHandler(container.GetRaftService()).
 		WithDeps(container.GetRaftReplicator(), container.GetDB(), logger, cfg.Raft.ClusterID).
+		WithForwardSecret(container.CurrentClusterHMACSecret).
 		WithBridgeConfigurator(container).
 		WithBootError(container.RaftBootError).
 		WithResetConfig(container.ResetRaftConfig).

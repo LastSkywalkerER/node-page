@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -45,6 +46,14 @@ type Node struct {
 	closeMu sync.Mutex
 	closed  bool
 
+	// forwardSecretFn returns the current cluster-shared secret used to sign
+	// follower→leader command forwards (see forwardauth.go). Set after
+	// construction; nil leaves forwards unsigned (rejected by an
+	// HMAC-enforcing leader — so the provider must be wired for forwarding to
+	// work at all once Raft is active).
+	forwardSecretMu sync.RWMutex
+	forwardSecretFn func() string
+
 	// Cached result of the leader-reachability probe (see leaderReachable).
 	// Status() is polled every ~5s by the admin UI, so the actual TCP dial
 	// is rate-limited to leaderProbeTTL to keep the status handler cheap.
@@ -63,6 +72,27 @@ const leaderProbeTTL = 4 * time.Second
 // URLs. Safe to call after construction; must be called before
 // SubmitCommand is used on a follower.
 func (n *Node) SetDB(db *gorm.DB) { n.db = db }
+
+// SetForwardSecretProvider wires the source of the cluster-shared secret used
+// to HMAC-sign follower→leader command forwards. The provider is read on every
+// forward so a live secret swap (a joined node discovering the real cluster
+// key) takes effect without rebuilding the node.
+func (n *Node) SetForwardSecretProvider(fn func() string) {
+	n.forwardSecretMu.Lock()
+	n.forwardSecretFn = fn
+	n.forwardSecretMu.Unlock()
+}
+
+// forwardSecret returns the current forward-signing secret, or "".
+func (n *Node) forwardSecret() string {
+	n.forwardSecretMu.RLock()
+	fn := n.forwardSecretFn
+	n.forwardSecretMu.RUnlock()
+	if fn == nil {
+		return ""
+	}
+	return fn()
+}
 
 // NewNode constructs (but does not start) a Raft node. Call Start to actually
 // open stores, bind the transport and bootstrap or join the cluster.
@@ -311,6 +341,13 @@ func (n *Node) forwardToLeader(ctx context.Context, cmd Command, timeout time.Du
 		return SubmitResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Authenticate the forward: sign the body with the cluster-shared secret so
+	// the leader only applies commands from genuine cluster peers, not from
+	// anyone who can reach its HTTP port.
+	ts := time.Now().UnixNano()
+	req.Header.Set(ForwardTimestampHeader, strconv.FormatInt(ts, 10))
+	req.Header.Set(ForwardClusterHeader, n.cfg.ClusterID)
+	req.Header.Set(ForwardSignatureHeader, signForward(n.forwardSecret(), ts, body))
 	resp, err := (&http.Client{Timeout: timeout + 2*time.Second}).Do(req)
 	if err != nil {
 		return SubmitResult{}, fmt.Errorf("raft: forward to %s: %w", url, err)

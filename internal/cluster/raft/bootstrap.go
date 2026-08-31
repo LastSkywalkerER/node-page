@@ -66,7 +66,10 @@ func AdvertiseSelf(ctx context.Context, logger *log.Logger, svc Service, replica
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := replicator.SubmitPeerNodeAdvertise(ctx, clusterID, nodeID, advertiseURL, nil); err != nil {
+	// Advertise CapForwardHMAC so the leader learns this node signs its command
+	// forwards; once EVERY voter carries it, the leader auto-enforces signatures.
+	caps := []string{CapForwardHMAC}
+	if err := replicator.SubmitPeerNodeAdvertise(ctx, clusterID, nodeID, advertiseURL, caps); err != nil {
 		if logger != nil {
 			logger.Warn("raft: peer advertise failed", "error", err)
 		}

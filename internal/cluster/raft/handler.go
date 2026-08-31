@@ -5,12 +5,15 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -40,6 +43,15 @@ type Handler struct {
 	resetCfg     func() error
 	wipeState    func() error
 	factoryReset func() error
+
+	// forwardSecret returns the cluster-shared secret used to verify signed
+	// command forwards. nil disables verification entirely (Raft off).
+	forwardSecret func() string
+	// forwardStrict caches the "all voters advertise CapForwardHMAC" decision so
+	// Forward doesn't hit the DB on every call.
+	forwardStrictMu  sync.Mutex
+	forwardStrictAt  time.Time
+	forwardStrictVal bool
 }
 
 // NewHandler wires the Service. The Replicator and DB are required for the
@@ -54,6 +66,15 @@ func (h *Handler) WithDeps(replicator *Replicator, db *gorm.DB, logger *log.Logg
 	h.db = db
 	h.logger = logger
 	h.clusterID = clusterID
+	return h
+}
+
+// WithForwardSecret wires the provider of the cluster-shared secret used to
+// verify signed follower→leader command forwards. Read on every Forward so a
+// live secret swap (a joined node discovering the real cluster key) is picked
+// up without rebuilding the handler.
+func (h *Handler) WithForwardSecret(fn func() string) *Handler {
+	h.forwardSecret = fn
 	return h
 }
 
@@ -394,8 +415,25 @@ func (h *Handler) Forward(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "not the leader; retry against the cluster leader"})
 		return
 	}
+
+	// Authenticate the forward. /raft/forward applies an arbitrary Command, so
+	// without this anyone able to reach the leader's HTTP port could submit
+	// CmdUserUpsert{Role:ADMIN} etc. Signatures are verified whenever present;
+	// an UNSIGNED forward is rejected only once every voter advertises
+	// CapForwardHMAC (so a mixed-version rolling upgrade / bridge cluster stays
+	// writable, then auto-enforces once fully upgraded).
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "read body: " + err.Error()})
+		return
+	}
+	if code, msg := h.authenticateForward(c, body); code != 0 {
+		c.JSON(code, gin.H{"error": msg})
+		return
+	}
+
 	var cmd Command
-	if err := c.ShouldBindJSON(&cmd); err != nil {
+	if err := json.Unmarshal(body, &cmd); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -409,6 +447,109 @@ func (h *Handler) Forward(c *gin.Context) {
 	// JSON — send the JSON-safe wire form so the forwarding follower can
 	// decode it.
 	c.JSON(http.StatusOK, res.ToWire())
+}
+
+// authenticateForward verifies a forward's HMAC. Returns (0, "") to accept, or
+// (httpStatus, message) to reject. A present signature is ALWAYS verified; a
+// missing one is tolerated only while the cluster is not yet fully upgraded
+// (some voter hasn't advertised CapForwardHMAC), logged as a throttled warning.
+func (h *Handler) authenticateForward(c *gin.Context, body []byte) (int, string) {
+	secret := ""
+	if h.forwardSecret != nil {
+		secret = h.forwardSecret()
+	}
+	sig := c.GetHeader(ForwardSignatureHeader)
+	// A cluster id, when sent, must name THIS cluster: /raft/forward is always
+	// intra-cluster (cross-cluster replication rides the separately-keyed bridge).
+	localCluster := h.liveClusterID()
+	if clu := c.GetHeader(ForwardClusterHeader); clu != "" && localCluster != "" && clu != localCluster {
+		return http.StatusUnauthorized, "forward from a foreign cluster is not accepted here"
+	}
+	if sig != "" {
+		ts, err := strconv.ParseInt(c.GetHeader(ForwardTimestampHeader), 10, 64)
+		if err != nil {
+			return http.StatusBadRequest, "invalid forward timestamp header"
+		}
+		if err := verifyForward(secret, sig, ts, body); err != nil {
+			return http.StatusUnauthorized, err.Error()
+		}
+		return 0, ""
+	}
+	// Unsigned forward (a not-yet-upgraded peer, or an attacker).
+	if h.forwardStrict() {
+		return http.StatusUnauthorized, "unsigned command forward rejected"
+	}
+	if h.logger != nil {
+		h.logger.Warn("raft: accepting UNSIGNED command forward — cluster not fully upgraded to signed forwarding",
+			"client_ip", c.ClientIP())
+	}
+	return 0, ""
+}
+
+// forwardStrictTTL bounds how often forwardStrict recomputes from the DB.
+const forwardStrictTTL = 15 * time.Second
+
+// forwardStrict reports whether every voter in the current Raft configuration
+// advertises CapForwardHMAC — i.e. the whole cluster signs its forwards, so the
+// leader can safely reject unsigned ones. Cached for forwardStrictTTL. Fails
+// SAFE for availability (returns false — permissive) on any uncertainty (no DB,
+// status unavailable, lookup error): a rolling upgrade must never wedge writes.
+func (h *Handler) forwardStrict() bool {
+	h.forwardStrictMu.Lock()
+	if time.Since(h.forwardStrictAt) < forwardStrictTTL {
+		v := h.forwardStrictVal
+		h.forwardStrictMu.Unlock()
+		return v
+	}
+	h.forwardStrictMu.Unlock()
+
+	v := h.computeForwardStrict()
+
+	h.forwardStrictMu.Lock()
+	h.forwardStrictAt = time.Now()
+	h.forwardStrictVal = v
+	h.forwardStrictMu.Unlock()
+	return v
+}
+
+func (h *Handler) computeForwardStrict() bool {
+	if h.db == nil || h.svc == nil {
+		return false
+	}
+	st := h.svc.Status()
+	if len(st.Peers) == 0 {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	advs, err := ListPeerAdvertises(ctx, h.db)
+	if err != nil {
+		return false
+	}
+	localCluster := h.liveClusterID()
+	caps := make(map[string]map[string]bool, len(advs))
+	for _, a := range advs {
+		if a.ClusterID != localCluster {
+			continue
+		}
+		set := make(map[string]bool, len(a.Capabilities))
+		for _, cp := range a.Capabilities {
+			set[cp] = true
+		}
+		caps[a.NodeID] = set
+	}
+	// Every VOTER must be known to advertise the capability. A voter with no
+	// advertise row yet (just joined, hasn't published) counts as not-capable →
+	// permissive, which is the safe choice.
+	for _, p := range st.Peers {
+		if p.Suffrage != "voter" {
+			continue
+		}
+		if !caps[p.ID][CapForwardHMAC] {
+			return false
+		}
+	}
+	return true
 }
 
 // ProbeVoter TCP-dials the given Raft voter address from THIS server,
