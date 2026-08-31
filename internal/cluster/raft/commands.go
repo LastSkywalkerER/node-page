@@ -31,6 +31,12 @@ const (
 	// CmdConnectorHostUpsert feeds connector-discovered hosts (hypervisor
 	// nodes / agent-less guests) incl. topology fields.
 	CmdConnectorHostUpsert CommandType = 13
+	// Frozen host-identity proposals (connector-detected rename/MAC change on
+	// an existing row, parked for admin approval): upsert/reject a proposal,
+	// delete it (source reverted), apply it (admin approved).
+	CmdHostPendingUpsert CommandType = 14
+	CmdHostPendingDelete CommandType = 15
+	CmdHostPendingApply  CommandType = 16
 
 	// Metrics
 	CmdMetricBatch           CommandType = 20

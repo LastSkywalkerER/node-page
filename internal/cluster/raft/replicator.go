@@ -81,6 +81,42 @@ func (r *Replicator) SubmitConnectorHostUpsert(ctx context.Context, info hosts.C
 	return err
 }
 
+// SubmitHostPendingUpsert replicates a frozen host-identity proposal (or its
+// rejected status), keyed by ChangeID.
+func (r *Replicator) SubmitHostPendingUpsert(ctx context.Context, ch hosts.HostPendingChange) error {
+	if !r.Enabled() {
+		return nil
+	}
+	_, err := SubmitTyped(ctx, r.svc, CmdHostPendingUpsert, HostPendingUpsertPayload{
+		ChangeID:    ch.ChangeID,
+		HostMAC:     ch.HostMAC,
+		HostName:    ch.HostName,
+		Source:      ch.Source,
+		Changes:     []byte(ch.Changes),
+		Fingerprint: ch.Fingerprint,
+		Status:      ch.Status,
+	}, 5*time.Second)
+	return err
+}
+
+// SubmitHostPendingDelete removes a proposal on every node.
+func (r *Replicator) SubmitHostPendingDelete(ctx context.Context, changeID string) error {
+	if !r.Enabled() {
+		return nil
+	}
+	_, err := SubmitTyped(ctx, r.svc, CmdHostPendingDelete, HostPendingDeletePayload{ChangeID: changeID}, 5*time.Second)
+	return err
+}
+
+// SubmitHostPendingApply applies an approved proposal on every node.
+func (r *Replicator) SubmitHostPendingApply(ctx context.Context, changeID string) error {
+	if !r.Enabled() {
+		return nil
+	}
+	_, err := SubmitTyped(ctx, r.svc, CmdHostPendingApply, HostPendingApplyPayload{ChangeID: changeID}, 5*time.Second)
+	return err
+}
+
 // SubmitConnectorUpsert replicates a configured connector cluster-wide.
 func (r *Replicator) SubmitConnectorUpsert(ctx context.Context, c connectors.Connector) error {
 	if !r.Enabled() {

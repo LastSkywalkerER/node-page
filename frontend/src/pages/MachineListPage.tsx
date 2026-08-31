@@ -6,6 +6,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { ChartContainer, type ChartConfig } from '@/components/ui/chart'
 import { cn } from '@/lib/utils'
 import { useHosts } from '@/widgets/hosts/useHosts'
+import { usePendingChanges } from '@/widgets/hosts/usePendingChanges'
 import { useHostGaugesStream } from '@/shared/hooks/useEventSource'
 import { useConnectionStatus } from '@/widgets/connection-status/useConnectionStatus'
 import { useCPU } from '@/widgets/cpu/useCPU'
@@ -246,7 +247,17 @@ function HostCardSkeleton() {
   )
 }
 
-function HostCard({ host, guests = [], live }: { host: Host; guests?: Host[]; live: boolean }) {
+function HostCard({
+  host,
+  guests = [],
+  live,
+  hasPendingChange = false,
+}: {
+  host: Host
+  guests?: Host[]
+  live: boolean
+  hasPendingChange?: boolean
+}) {
   // A card is one consistent entity: gather every query it needs (metrics,
   // health, PBS backups) and hold a skeleton until they've all loaded once, so
   // the card pops in whole instead of charts/fields/backups arriving piecemeal.
@@ -329,6 +340,14 @@ function HostCard({ host, guests = [], live }: { host: Host; guests?: Host[]; li
                 </div>
               </div>
               <span className="flex shrink-0 items-center gap-1.5">
+                {/* Admin-only: a connector proposed an identity change for this
+                    machine (or a nested guest) — review in Admin → Nodes. */}
+                {hasPendingChange && (
+                  <span
+                    className="mt-1 h-2 w-2 shrink-0 rounded-full bg-amber-400 shadow-[0_0_8px_oklch(0.8_0.14_85/0.7)]"
+                    title="Pending identity change — review in Admin → Nodes"
+                  />
+                )}
                 {/* Jump to the node-stats dashboard served by THIS machine (its own
                     node). Local node → this origin; cluster peers → advertised URL. */}
                 {(() => {
@@ -412,6 +431,15 @@ export function MachineListPage() {
   // One SSE subscription feeds every host's gauges AND metric caches; cards
   // update live from it. Only when SSE is down do cards fall back to a slow poll.
   const { connected: sseConnected } = useHostGaugesStream()
+  // Admin-only (query disabled otherwise): MACs with a parked identity change,
+  // surfaced as an amber dot on the machine card.
+  const { data: pendingChanges = [] } = usePendingChanges()
+  const pendingMACs = new Set(
+    pendingChanges.filter((c) => c.status === 'pending').map((c) => c.host_mac.toLowerCase())
+  )
+  const cardHasPending = (host: Host, cardGuests: Host[]) =>
+    pendingMACs.has(host.mac_address.toLowerCase()) ||
+    cardGuests.some((g) => pendingMACs.has(g.mac_address.toLowerCase()))
 
   // Topology grouping: guests (parent resolved) nest inside their hypervisor's
   // card and leave the top-level grid — the no-duplication rule.
@@ -457,7 +485,13 @@ export function MachineListPage() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {topLevel.map((host) => (
-              <HostCard key={host.id} host={host} guests={guestsByParent.get(host.id) ?? []} live={sseConnected} />
+              <HostCard
+                key={host.id}
+                host={host}
+                guests={guestsByParent.get(host.id) ?? []}
+                live={sseConnected}
+                hasPendingChange={cardHasPending(host, guestsByParent.get(host.id) ?? [])}
+              />
             ))}
           </div>
         )}

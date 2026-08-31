@@ -14,17 +14,13 @@ import (
 )
 
 // hostUpsertHeartbeat is how often a UNCHANGED local host record is still
-// pushed through Raft just to refresh last_seen, so peers keep us online with
-// a comfortable margin below HostOfflineThreshold. Computed as
-// max(15s, HostOfflineThreshold/3): with a 45s threshold that's 15s, leaving
-// ~3 heartbeats of slack before a peer would flip us offline. The collector
-// ticks every ~5s, so most ticks now skip the consensus round entirely.
-var hostUpsertHeartbeat = func() time.Duration {
-	if d := HostOfflineThreshold / 3; d > 15*time.Second {
-		return d
-	}
-	return 15 * time.Second
-}()
+// re-published through Raft — a SAFETY RESYNC only, not liveness. Liveness
+// (last_seen) rides the best-effort metric stream: every received batch bumps
+// the sender's row (MetricSink.Ingest), so peers keep a streaming host online
+// without any consensus rounds. The rare resync just heals a peer that missed
+// the original upsert (joined mid-outage, dropped entry), keeping steady-state
+// durable-log traffic proportional to real record changes, not wall-clock.
+var hostUpsertHeartbeat = 10 * time.Minute
 
 // ErrCannotRemoveLocalHost is returned when a caller tries to remove this
 // node's own collector row (id=1). Use the Raft "leave cluster" flow instead.
@@ -39,6 +35,12 @@ type RaftReplicator interface {
 	// SubmitHostDelete cascades a host removal (row + metrics) cluster-wide,
 	// keyed by MAC.
 	SubmitHostDelete(ctx context.Context, mac string) error
+	// SubmitHostPendingUpsert replicates a frozen-identity proposal (or its
+	// rejected status), keyed by ChangeID.
+	SubmitHostPendingUpsert(ctx context.Context, ch HostPendingChange) error
+	// SubmitHostPendingApply applies an approved proposal on every node and
+	// removes it.
+	SubmitHostPendingApply(ctx context.Context, changeID string) error
 }
 
 // HostStatics is a host's static hardware identity, read at response time from
@@ -71,6 +73,14 @@ type Service interface {
 	// the removal is replicated cluster-wide (by MAC); otherwise it is local.
 	// Removing the local collector row (id=1) is rejected.
 	RemoveHost(ctx context.Context, id uint) error
+	// ListPendingChanges returns every parked identity proposal.
+	ListPendingChanges(ctx context.Context) ([]HostPendingChange, error)
+	// ApprovePendingChange applies a proposal onto its host row (replicated
+	// cluster-wide when Raft is on) and removes it.
+	ApprovePendingChange(ctx context.Context, changeID string) error
+	// RejectPendingChange marks a proposal rejected; its fingerprint keeps the
+	// connector from re-proposing the same value until it changes again.
+	RejectPendingChange(ctx context.Context, changeID string) error
 }
 
 type service struct {
@@ -172,6 +182,10 @@ func (s *service) RegisterOrUpdateCurrentHost(ctx context.Context) (*Host, error
 	if s.raft != nil && s.raft.Enabled() && s.shouldSubmitUpsert(hostInfo, time.Now()) {
 		if rerr := s.raft.SubmitHostUpsert(ctx, hostInfo); rerr != nil {
 			s.logger.Warn("Raft host upsert failed", "error", rerr)
+			// The throttle recorded this submission before we knew it failed
+			// (e.g. no leader yet during a join). Reset it so the next tick
+			// retries instead of waiting out the whole resync heartbeat.
+			s.resetUpsertThrottle()
 		}
 	}
 
@@ -212,6 +226,16 @@ func hostInfoFingerprint(info HostInfo) [sha256.Size]byte {
 // hostUpsertHeartbeat has elapsed (a liveness refresh so peers keep us online).
 // Mutex-protected because the collection loop and any concurrent register call
 // can both reach here.
+// resetUpsertThrottle forgets the last recorded submission so the next tick
+// re-submits. Called when a submit failed after shouldSubmitUpsert had already
+// recorded it — otherwise a transient failure (leaderless join window) would
+// leave peers without this host's record until the resync heartbeat.
+func (s *service) resetUpsertThrottle() {
+	s.upsertMu.Lock()
+	s.haveUpserted = false
+	s.upsertMu.Unlock()
+}
+
 func (s *service) shouldSubmitUpsert(info HostInfo, now time.Time) bool {
 	fp := hostInfoFingerprint(info)
 
@@ -323,4 +347,35 @@ func (s *service) GetCurrentHost(ctx context.Context) (*Host, error) {
 
 func (s *service) GetCurrentHostInfo(ctx context.Context) (HostInfo, error) {
 	return s.collector.CollectHostInfo(ctx)
+}
+
+func (s *service) ListPendingChanges(ctx context.Context) ([]HostPendingChange, error) {
+	return s.hostRepository.ListPendingChanges(ctx)
+}
+
+func (s *service) ApprovePendingChange(ctx context.Context, changeID string) error {
+	// Resolve first so a bad id 404s instead of submitting a no-op command.
+	if _, err := s.hostRepository.GetPendingChange(ctx, changeID); err != nil {
+		return err
+	}
+	if s.raft != nil && s.raft.Enabled() {
+		s.logger.Info("Approving host pending change cluster-wide", "change_id", changeID)
+		return s.raft.SubmitHostPendingApply(ctx, changeID)
+	}
+	s.logger.Info("Approving host pending change locally", "change_id", changeID)
+	return s.hostRepository.ApplyPendingChange(ctx, changeID)
+}
+
+func (s *service) RejectPendingChange(ctx context.Context, changeID string) error {
+	row, err := s.hostRepository.GetPendingChange(ctx, changeID)
+	if err != nil {
+		return err
+	}
+	row.Status = PendingStatusRejected
+	if s.raft != nil && s.raft.Enabled() {
+		s.logger.Info("Rejecting host pending change cluster-wide", "change_id", changeID)
+		return s.raft.SubmitHostPendingUpsert(ctx, *row)
+	}
+	s.logger.Info("Rejecting host pending change locally", "change_id", changeID)
+	return s.hostRepository.UpsertPendingChange(ctx, row)
 }

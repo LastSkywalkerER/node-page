@@ -38,6 +38,7 @@ func Migrate(db *gorm.DB) error {
 		&docker.HistoricalDockerMetric{},
 		&docker.DockerContainerEntity{},
 		&hosts.Host{},
+		&hosts.HostPendingChange{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate historical metrics: %w", err)

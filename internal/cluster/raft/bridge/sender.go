@@ -110,6 +110,12 @@ var uplinkTypes = map[raftcluster.CommandType]bool{
 var crossClusterDeny = map[raftcluster.CommandType]bool{
 	raftcluster.CmdConnectorUpsert: true,
 	raftcluster.CmdConnectorDelete: true,
+	// Host-identity approval workflow is cluster-local governance: the hub has
+	// no way to approve a spoke's proposal (its apply would only commit in its
+	// own cluster), so proposals never cross the bridge.
+	raftcluster.CmdHostPendingUpsert: true,
+	raftcluster.CmdHostPendingDelete: true,
+	raftcluster.CmdHostPendingApply:  true,
 }
 
 // shouldShip decides whether a locally-applied command is exported over the

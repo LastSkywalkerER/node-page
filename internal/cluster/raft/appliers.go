@@ -71,6 +71,9 @@ func RegisterAppliers(fsm *FSM, deps AppliersDeps) {
 	register(CmdHostDelete, a.applyHostDelete)
 	register(CmdHostLastSeen, a.applyHostLastSeen)
 	register(CmdConnectorHostUpsert, a.applyConnectorHostUpsert)
+	register(CmdHostPendingUpsert, a.applyHostPendingUpsert)
+	register(CmdHostPendingDelete, a.applyHostPendingDelete)
+	register(CmdHostPendingApply, a.applyHostPendingApply)
 
 	register(CmdConnectorUpsert, a.applyConnectorUpsert)
 	register(CmdConnectorDelete, a.applyConnectorDelete)
@@ -364,6 +367,53 @@ func (a *appliers) applyHostDelete(cmd Command, _ *hraft.Log) error {
 		return nil
 	}
 	return a.deps.HostRepo.DeleteHostCascade(ctx, host.ID)
+}
+
+func (a *appliers) applyHostPendingUpsert(cmd Command, _ *hraft.Log) error {
+	var p HostPendingUpsertPayload
+	if err := DecodeTyped(cmd, &p); err != nil {
+		return err
+	}
+	if p.ChangeID == "" {
+		return errors.New("raft: HostPendingUpsert requires change_id")
+	}
+	ctx, cancel := a.applierCtx()
+	defer cancel()
+	return a.deps.HostRepo.UpsertPendingChange(ctx, &hosts.HostPendingChange{
+		ChangeID:    p.ChangeID,
+		HostMAC:     p.HostMAC,
+		HostName:    p.HostName,
+		Source:      p.Source,
+		Changes:     string(p.Changes),
+		Fingerprint: p.Fingerprint,
+		Status:      p.Status,
+	})
+}
+
+func (a *appliers) applyHostPendingDelete(cmd Command, _ *hraft.Log) error {
+	var p HostPendingDeletePayload
+	if err := DecodeTyped(cmd, &p); err != nil {
+		return err
+	}
+	if p.ChangeID == "" {
+		return nil
+	}
+	ctx, cancel := a.applierCtx()
+	defer cancel()
+	return a.deps.HostRepo.DeletePendingChange(ctx, p.ChangeID)
+}
+
+func (a *appliers) applyHostPendingApply(cmd Command, _ *hraft.Log) error {
+	var p HostPendingApplyPayload
+	if err := DecodeTyped(cmd, &p); err != nil {
+		return err
+	}
+	if p.ChangeID == "" {
+		return nil
+	}
+	ctx, cancel := a.applierCtx()
+	defer cancel()
+	return a.deps.HostRepo.ApplyPendingChange(ctx, p.ChangeID)
 }
 
 func (a *appliers) applyHostLastSeen(cmd Command, _ *hraft.Log) error {

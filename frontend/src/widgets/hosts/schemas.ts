@@ -55,7 +55,33 @@ export const HostHealthSchema = z.object({
   last_seen: z.string(),
 });
 
+// Connector-proposed identity update (rename / MAC change) on an existing
+// host row, frozen for admin approval instead of being auto-applied.
+export const PendingFieldChangeSchema = z.object({
+  field: z.string(), // 'name' | 'mac_address'
+  old: z.string().optional().default(''),
+  new: z.string().optional().default(''),
+});
+
+export const HostPendingChangeSchema = z.object({
+  change_id: z.string(),
+  host_mac: z.string(),
+  host_name: z.string().optional().default(''),
+  source: z.string().optional().default(''), // 'proxmox' | 'pbs'
+  changes: z.array(PendingFieldChangeSchema).nullish().transform((v) => v ?? []),
+  status: z.string(), // 'pending' | 'rejected'
+  created_at: z.string().optional().default(''),
+  updated_at: z.string().optional().default(''),
+});
+
+export const PendingChangesResponseSchema = z.object({
+  changes: z.array(HostPendingChangeSchema),
+});
+
 export type Host = z.infer<typeof HostSchema>;
 export type HostsResponse = z.infer<typeof HostsResponseSchema>;
 export type CurrentHostResponse = z.infer<typeof CurrentHostResponseSchema>;
 export type HostHealth = z.infer<typeof HostHealthSchema>;
+export type PendingFieldChange = z.infer<typeof PendingFieldChangeSchema>;
+export type HostPendingChange = z.infer<typeof HostPendingChangeSchema>;
+export type PendingChangesResponse = z.infer<typeof PendingChangesResponseSchema>;

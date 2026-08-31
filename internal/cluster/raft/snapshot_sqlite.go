@@ -76,6 +76,10 @@ var managedTables = []string{
 	// Gateway routes (CmdGatewayRouteUpsert/Delete) — same profile.
 	"gateway_routes",
 	"gateway_blocks",
+	// Parked host-identity proposals (CmdHostPendingUpsert/Delete/Apply) —
+	// small, low-churn, and a snapshot-joining node must see the same
+	// approval queue as its peers.
+	"host_pending_changes",
 	// NB: cpu/memory/disk/network/docker_metrics and docker_container_entities
 	// are intentionally NOT listed here — see the type doc above. They are
 	// high-churn metric history replicated via CmdMetricBatch; including them

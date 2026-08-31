@@ -19,7 +19,7 @@ func newTestRepo(t *testing.T) Repository {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&Host{}); err != nil {
+	if err := db.AutoMigrate(&Host{}, &HostPendingChange{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	// Real deployments always own id=1 (the local collector row, written by

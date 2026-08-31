@@ -1,10 +1,15 @@
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { confirmDialog } from '@/shared/lib/confirmDialog'
-import { Trash2, LogOut, ExternalLink } from 'lucide-react'
+import { Trash2, LogOut, ExternalLink, ArrowRight, Check, X } from 'lucide-react'
 import { OSIcon } from '@/shared/components/OSIcon'
 import { apiClient } from '@/shared/lib/api'
 import { useHosts, useDeleteHost } from '@/widgets/hosts/useHosts'
+import {
+  usePendingChanges,
+  useApprovePendingChange,
+  useRejectPendingChange,
+} from '@/widgets/hosts/usePendingChanges'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -57,6 +62,32 @@ export function NodesTab() {
   const deleteHost = useDeleteHost()
   const leaveCluster = useLeaveRaftCluster()
   const factoryReset = useFactoryResetRaft()
+
+  // Frozen host-identity proposals (connector-detected rename / MAC change on
+  // an existing host), parked for approval instead of overwriting the row.
+  const { data: pendingChanges = [] } = usePendingChanges()
+  const approveChange = useApprovePendingChange()
+  const rejectChange = useRejectPendingChange()
+
+  const onApproveChange = async (changeId: string, hostName: string) => {
+    const { confirmed } = await confirmDialog({
+      title: 'Apply this identity change?',
+      description: `Apply the proposed identity change to "${hostName}"? The host row is updated cluster-wide.`,
+      confirmText: 'Apply',
+    })
+    if (!confirmed) return
+    approveChange.mutate(changeId, {
+      onSuccess: () => toast.success(`Change applied to "${hostName}"`),
+      onError: (e) => toast.error('Apply failed: ' + e.message),
+    })
+  }
+
+  const onRejectChange = (changeId: string, hostName: string) => {
+    rejectChange.mutate(changeId, {
+      onSuccess: () => toast.success(`Change for "${hostName}" rejected`),
+      onError: (e) => toast.error('Reject failed: ' + e.message),
+    })
+  }
 
   const onRemoveHost = async (id: number, name: string) => {
     const { confirmed } = await confirmDialog({
@@ -114,7 +145,11 @@ export function NodesTab() {
   // before we know the node isn't already in a cluster.
   const formClusterVisible = Boolean(raftStatus) && !raftPanelVisible
 
+  const pendingOnly = pendingChanges.filter((c) => c.status === 'pending')
+  const rejectedChanges = pendingChanges.filter((c) => c.status === 'rejected')
+
   const accordionDefault = [
+    ...(pendingOnly.length > 0 ? ['pending-changes'] : []),
     ...(hosts.length > 0 ? ['hosts'] : []),
     ...(raftPanelVisible ? ['raft'] : []),
     ...(formClusterVisible ? ['form-cluster'] : []),
@@ -131,11 +166,91 @@ export function NodesTab() {
       </CardHeader>
       <CardContent className="pt-0">
         <Accordion
-          key={`${hosts.length}-${raftPanelVisible}-${formClusterVisible}`}
+          key={`${hosts.length}-${raftPanelVisible}-${formClusterVisible}-${pendingOnly.length > 0}`}
           multiple
           defaultValue={accordionDefault}
           className="w-full"
         >
+          {pendingChanges.length > 0 && (
+            <AccordionItem value="pending-changes" className="border-border/50 dark:border-white/10">
+              <AccordionTrigger className={nodeAccordionTrigger}>
+                Pending identity changes
+                {pendingOnly.length > 0 && (
+                  <span className="ml-2 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] font-normal text-amber-500 tabular-nums dark:text-amber-300">
+                    {pendingOnly.length}
+                  </span>
+                )}
+              </AccordionTrigger>
+              <AccordionContent className="pb-4">
+                <p className="mb-2 text-xs text-muted-foreground">
+                  A connector (Proxmox / PBS) reports a different identity for these machines. The
+                  rows are frozen until you apply or reject the change — nothing is overwritten
+                  automatically.
+                </p>
+                <div className="divide-y divide-border/60 rounded-lg border border-border/60 dark:divide-white/10 dark:border-white/10">
+                  {[...pendingOnly, ...rejectedChanges].map((ch) => (
+                    <div key={ch.change_id} className="px-4 py-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <span className="flex items-center gap-2">
+                            <span className="truncate font-medium">{ch.host_name || ch.host_mac}</span>
+                            <span className="rounded border border-border/60 px-1 font-mono text-[10px] uppercase text-muted-foreground">
+                              {ch.source}
+                            </span>
+                            {ch.status === 'rejected' && (
+                              <span className="rounded border border-rose-500/40 bg-rose-500/10 px-1 font-mono text-[10px] uppercase text-rose-400">
+                                rejected
+                              </span>
+                            )}
+                          </span>
+                          <div className="mt-1 space-y-0.5">
+                            {ch.changes.map((fc) => (
+                              <div
+                                key={fc.field}
+                                className="flex flex-wrap items-center gap-1.5 font-mono text-xs text-muted-foreground"
+                              >
+                                <span className="text-[10px] uppercase tracking-wider">{fc.field}</span>
+                                <span className="truncate text-foreground/70 line-through decoration-muted-foreground/50">
+                                  {fc.old || '—'}
+                                </span>
+                                <ArrowRight className="h-3 w-3 shrink-0 text-amber-500" />
+                                <span className="truncate text-foreground">{fc.new}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 gap-1 border-emerald-500/40 px-2 text-[11px] text-emerald-500 hover:bg-emerald-500/10 hover:text-emerald-400"
+                            disabled={approveChange.isPending}
+                            onClick={() => onApproveChange(ch.change_id, ch.host_name || ch.host_mac)}
+                            title="Apply this change to the host row (cluster-wide)"
+                          >
+                            <Check className="h-3 w-3" /> Apply
+                          </Button>
+                          {ch.status !== 'rejected' && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 gap-1 px-2 text-[11px] text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                              disabled={rejectChange.isPending}
+                              onClick={() => onRejectChange(ch.change_id, ch.host_name || ch.host_mac)}
+                              title="Reject — the connector stops proposing this value until it changes again"
+                            >
+                              <X className="h-3 w-3" /> Reject
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+          )}
+
           {hosts.length > 0 && (
             <AccordionItem value="hosts" className="border-border/50 dark:border-white/10">
               <AccordionTrigger className={nodeAccordionTrigger}>

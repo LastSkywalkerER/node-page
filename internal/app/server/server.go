@@ -336,6 +336,11 @@ func Run() {
 	// Wire SSE broker into the after-collect hook (harmless before collection starts).
 	broker := container.GetBroker()
 	systemSvc := container.GetSystemService()
+	// Docker payload wire gate: the static-heavy container inventory rides the
+	// peer batch only when it changed, or every 30s as a resync (which also
+	// bounds remote stat staleness and self-heals dropped batches). Local SSE
+	// (broker.Publish above) is unaffected — this gates only the cluster wire.
+	dockerWireGate := docker.NewWireGate(30 * time.Second)
 	historicalMetricsService = history.WithAfterCollect(historicalMetricsService, func() {
 		collectCtx, collectCancel := context.WithTimeout(appCtx, 10*time.Second)
 		defer collectCancel()
@@ -415,7 +420,7 @@ func Run() {
 					}
 				}
 				if v := metrics["docker"]; v != nil {
-					if b, e := json.Marshal(v); e == nil {
+					if b, e := json.Marshal(v); e == nil && dockerWireGate.ShouldSend(b, time.Now()) {
 						batch.Docker = b
 					}
 				}
@@ -868,6 +873,12 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.POST("/hosts/register", hostHandler.HandleRegisterCurrentHost)
 		// Remove a registered host + its metrics (admin; cluster-wide when Raft on)
 		authAPI.DELETE("/hosts/:id", middleware.RequireAdmin(), hostHandler.HandleDeleteHost)
+		// Frozen host-identity proposals (admin): connector-detected renames /
+		// MAC changes on existing rows, parked for approval instead of being
+		// auto-applied (and re-replicated) every poll cycle.
+		authAPI.GET("/hosts/pending-changes", middleware.RequireAdmin(), hostHandler.HandleListPendingChanges)
+		authAPI.POST("/hosts/pending-changes/:change_id/approve", middleware.RequireAdmin(), hostHandler.HandleApprovePendingChange)
+		authAPI.POST("/hosts/pending-changes/:change_id/reject", middleware.RequireAdmin(), hostHandler.HandleRejectPendingChange)
 		authAPI.GET("/stream", streamHandler.HandleStream)
 
 		// Connectors (admin): environment-detection hints + external data

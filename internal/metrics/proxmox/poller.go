@@ -30,12 +30,13 @@ const (
 	// identityTTL bounds the per-guest config / per-node network calls that
 	// resolve MACs — topology changes slowly.
 	identityTTL = 5 * time.Minute
-	// hostUpsertHeartbeat is how often an UNCHANGED guest/node host row is still
-	// pushed through Raft just to refresh last_seen so peers keep it online.
-	// Proxmox guests change slowly, so we use a comfortable 60s — well below
-	// HostOfflineThreshold — instead of firing a consensus round on every ~10s
-	// poll. Mirrors internal/cluster/hosts.shouldSubmitUpsert.
-	hostUpsertHeartbeat = 60 * time.Second
+	// hostUpsertHeartbeat is how often an UNCHANGED guest/node host row is
+	// still re-published through Raft — a SAFETY RESYNC only, not liveness.
+	// Liveness comes from the metric stream (each broadcast guest batch bumps
+	// last_seen on receiving peers) plus a direct local last_seen bump on the
+	// polling node, so an unchanged guest costs zero consensus rounds between
+	// resyncs. Mirrors internal/cluster/hosts.hostUpsertHeartbeat.
+	hostUpsertHeartbeat = 10 * time.Minute
 )
 
 // PollerDeps bundles everything the Proxmox poller needs. When Raft is active
@@ -83,6 +84,10 @@ type Poller struct {
 	// each host (keyed by external_id), so an unchanged guest/node doesn't fire
 	// a consensus round on every ~10s poll. See shouldSubmitHostUpsert.
 	upsertState map[string]hostUpsertState
+	// pendingFP is the last pending-change fingerprint reconciled per host
+	// (keyed by external_id; "" = none) so the identity-freeze queue costs no
+	// DB reads or Raft rounds in steady state. See reconcilePending.
+	pendingFP map[string]string
 }
 
 type hostUpsertState struct {
@@ -117,6 +122,7 @@ func NewPoller(deps PollerDeps) *Poller {
 		guestCfg:    map[string]cachedGuestConfig{},
 		netPrev:     map[string]netSample{},
 		upsertState: map[string]hostUpsertState{},
+		pendingFP:   map[string]string{},
 	}
 }
 
@@ -288,6 +294,11 @@ func (p *Poller) evictDisconnected(liveConnPrefixes, livePrefixes map[string]str
 			delete(p.upsertState, k)
 		}
 	}
+	for k := range p.pendingFP {
+		if !hasAny(k, livePrefixes) {
+			delete(p.pendingFP, k)
+		}
+	}
 	p.upsertMu.Unlock()
 }
 
@@ -438,6 +449,13 @@ func (p *Poller) evictStale(connID uint, prefix string, liveConnKeys, liveExtern
 		if strings.HasPrefix(k, prefix) {
 			if _, ok := liveExternalIDs[k]; !ok {
 				delete(p.upsertState, k)
+			}
+		}
+	}
+	for k := range p.pendingFP {
+		if strings.HasPrefix(k, prefix) {
+			if _, ok := liveExternalIDs[k]; !ok {
+				delete(p.pendingFP, k)
 			}
 		}
 	}
@@ -939,19 +957,39 @@ func (p *Poller) guestRuntimeIPv4(ctx context.Context, client *Client, r Resourc
 // upsertHost routes the host write through Raft (replicated) or directly.
 // Returns the local row (resolved post-apply) or nil on failure.
 //
+// Identity freeze: an EXISTING connector-owned row past the discovery grace
+// window never has its name/MAC rewritten in place — the diff is parked as a
+// HostPendingChange for admin approval (see hosts.FreezeIdentity), which also
+// structurally breaks writer flip-flop wars: the disagreeing side queues
+// instead of overwriting.
+//
 // The Raft path is THROTTLED per host (see shouldSubmitHostUpsert): a guest/node
-// whose identity, topology and status haven't changed and was submitted within
-// the last hostUpsertHeartbeat is skipped — no consensus round — while the row
-// is still resolved and returned so metrics keep flowing and last_seen stays
-// fresh via the periodic heartbeat. Status transitions (guest_status) are part
-// of the fingerprint, so a stop/start replicates on the very next poll.
+// whose (frozen) identity, topology and status haven't changed is skipped — no
+// consensus round — while the row is still resolved and returned so metrics
+// keep flowing. Liveness is maintained by a direct local last_seen bump here
+// plus the metric stream on peers; the rare heartbeat is only a record resync.
+// Status transitions (guest_status) are part of the fingerprint, so a
+// stop/start replicates on the very next poll.
 func (p *Poller) upsertHost(ctx context.Context, info hosts.ConnectorHostInfo) *hosts.Host {
+	existing := p.resolveExistingRow(ctx, info)
+	frozen, changes := hosts.FreezeIdentity(existing, info, time.Now())
+	if existing != nil {
+		p.reconcilePending(ctx, existing, frozen.ExternalID, changes)
+	}
+	info = frozen
+
+	submitted := false
 	if p.deps.Raft != nil && p.deps.Raft.Enabled() {
 		if p.shouldSubmitHostUpsert(info, time.Now()) {
 			if err := p.deps.Raft.SubmitConnectorHostUpsert(ctx, info); err != nil {
 				p.deps.Logger.Warn("proxmox: replicate host upsert", "host", info.Name, "error", err)
+				// The throttle recorded this submission before the failure —
+				// forget it so the next poll retries instead of waiting out
+				// the resync heartbeat.
+				p.resetUpsertThrottle(info)
 				return nil
 			}
+			submitted = true
 		}
 	} else {
 		if _, err := p.deps.HostRepo.UpsertConnectorHost(ctx, info); err != nil {
@@ -966,7 +1004,128 @@ func (p *Poller) upsertHost(ctx context.Context, info hosts.ConnectorHostInfo) *
 		}
 		return nil
 	}
+	// Replicated record upserts are now a rare resync, so keep the local row's
+	// liveness fresh directly while the source reports the machine powered on
+	// (peers get theirs from this guest's metric-stream batches).
+	if !submitted && hosts.ConnectorHostAlive(info.GuestStatus) {
+		if err := p.deps.HostRepo.UpdateLastSeen(ctx, host.ID); err != nil {
+			p.deps.Logger.Debug("proxmox: bump last_seen", "host", info.Name, "error", err)
+		}
+	}
 	return host
+}
+
+// resolveExistingRow finds the row this connector info would land on —
+// external_id first (the connector-side identity), then MAC — for the
+// identity-freeze comparison. nil means the upsert would CREATE.
+func (p *Poller) resolveExistingRow(ctx context.Context, info hosts.ConnectorHostInfo) *hosts.Host {
+	if info.ExternalID != "" {
+		if h, err := p.deps.HostRepo.GetHostByExternalID(ctx, info.ExternalID); err == nil {
+			return h
+		}
+	}
+	if info.MacAddress != "" {
+		if h, err := p.deps.HostRepo.GetHostByMacAddress(ctx, info.MacAddress); err == nil {
+			return h
+		}
+	}
+	return nil
+}
+
+// reconcilePending keeps the replicated pending-change queue in sync with the
+// diffs the identity freeze detected this cycle: parks a new/changed proposal,
+// leaves an identical (pending or rejected) one untouched, and clears the
+// proposal when the source reverted. RAM-cached per host so the steady state
+// costs nothing.
+func (p *Poller) reconcilePending(ctx context.Context, existing *hosts.Host, externalID string, changes []hosts.PendingFieldChange) {
+	if existing == nil || existing.MacAddress == "" {
+		return
+	}
+	fp := ""
+	if len(changes) > 0 {
+		fp = hosts.PendingChangesFingerprint(changes)
+	}
+	key := externalID
+	if key == "" {
+		key = existing.MacAddress
+	}
+	p.upsertMu.Lock()
+	last, known := p.pendingFP[key]
+	p.upsertMu.Unlock()
+	if known && last == fp {
+		return
+	}
+
+	changeID := hosts.PendingChangeID(existing.MacAddress, connectors.TypeProxmox)
+	if fp == "" {
+		// Source matches the row again — clear any parked proposal.
+		if _, err := p.deps.HostRepo.GetPendingChange(ctx, changeID); err == nil {
+			p.submitPendingDelete(ctx, changeID)
+		}
+		p.setPendingFP(key, "")
+		return
+	}
+	// A stored proposal with this exact fingerprint (pending or rejected)
+	// already exists — never resubmit it.
+	if row, err := p.deps.HostRepo.GetPendingChange(ctx, changeID); err == nil && row.Fingerprint == fp {
+		p.setPendingFP(key, fp)
+		return
+	}
+	b, err := json.Marshal(changes)
+	if err != nil {
+		return
+	}
+	row := hosts.HostPendingChange{
+		ChangeID:    changeID,
+		HostMAC:     existing.MacAddress,
+		HostName:    existing.Name,
+		Source:      connectors.TypeProxmox,
+		Changes:     string(b),
+		Fingerprint: fp,
+		Status:      hosts.PendingStatusPending,
+	}
+	p.deps.Logger.Info("proxmox: parking identity change for admin approval",
+		"host", existing.Name, "change_id", changeID, "changes", string(b))
+	if p.deps.Raft != nil && p.deps.Raft.Enabled() {
+		if err := p.deps.Raft.SubmitHostPendingUpsert(ctx, row); err != nil {
+			p.deps.Logger.Warn("proxmox: replicate pending change", "host", existing.Name, "error", err)
+			return
+		}
+	} else if err := p.deps.HostRepo.UpsertPendingChange(ctx, &row); err != nil {
+		p.deps.Logger.Warn("proxmox: park pending change", "host", existing.Name, "error", err)
+		return
+	}
+	p.setPendingFP(key, fp)
+}
+
+func (p *Poller) setPendingFP(key, fp string) {
+	p.upsertMu.Lock()
+	p.pendingFP[key] = fp
+	p.upsertMu.Unlock()
+}
+
+// resetUpsertThrottle forgets the recorded submission for this host so the
+// next poll retries a failed replicate.
+func (p *Poller) resetUpsertThrottle(info hosts.ConnectorHostInfo) {
+	key := info.ExternalID
+	if key == "" {
+		key = info.MacAddress
+	}
+	p.upsertMu.Lock()
+	delete(p.upsertState, key)
+	p.upsertMu.Unlock()
+}
+
+func (p *Poller) submitPendingDelete(ctx context.Context, changeID string) {
+	if p.deps.Raft != nil && p.deps.Raft.Enabled() {
+		if err := p.deps.Raft.SubmitHostPendingDelete(ctx, changeID); err != nil {
+			p.deps.Logger.Warn("proxmox: replicate pending change delete", "change_id", changeID, "error", err)
+		}
+		return
+	}
+	if err := p.deps.HostRepo.DeletePendingChange(ctx, changeID); err != nil {
+		p.deps.Logger.Warn("proxmox: delete pending change", "change_id", changeID, "error", err)
+	}
 }
 
 // connectorHostFingerprint hashes every identity/topology/status field of a

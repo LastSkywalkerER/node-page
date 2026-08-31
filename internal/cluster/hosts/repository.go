@@ -97,6 +97,20 @@ type Repository interface {
 	// empty string (standalone) leaves the guard keyed purely on a non-empty
 	// origin, as before.
 	SetLocalClusterID(id string)
+
+	// UpsertPendingChange creates/updates a frozen-identity proposal, keyed by
+	// its cluster-stable ChangeID (repeat proposals converge onto one row).
+	UpsertPendingChange(ctx context.Context, ch *HostPendingChange) error
+	// GetPendingChange resolves a proposal by its ChangeID.
+	GetPendingChange(ctx context.Context, changeID string) (*HostPendingChange, error)
+	// ListPendingChanges returns every stored proposal (pending + rejected).
+	ListPendingChanges(ctx context.Context) ([]HostPendingChange, error)
+	// DeletePendingChange removes a proposal by ChangeID. Idempotent.
+	DeletePendingChange(ctx context.Context, changeID string) error
+	// ApplyPendingChange applies an approved proposal onto its host row
+	// (respecting name/MAC uniqueness) and deletes the proposal. Idempotent:
+	// a missing proposal or missing host row is a no-op.
+	ApplyPendingChange(ctx context.Context, changeID string) error
 }
 
 type hostRepository struct {
@@ -466,11 +480,16 @@ func macTail(mac string) string {
 	return mac
 }
 
-// connectorHostAlive reports whether a connector-fed row should have its
-// last_seen refreshed: the hypervisor says the machine is powered on.
-func connectorHostAlive(status string) bool {
+// ConnectorHostAlive reports whether a connector-fed row should have its
+// last_seen refreshed: the hypervisor says the machine is powered on. Exported
+// for the connector pollers, which bump last_seen directly between (rare)
+// replicated record upserts.
+func ConnectorHostAlive(status string) bool {
 	return status == "running" || status == "online"
 }
+
+// connectorHostAlive is the internal alias used by the upsert paths.
+func connectorHostAlive(status string) bool { return ConnectorHostAlive(status) }
 
 // resolveFreeName returns desired if no OTHER row holds it, otherwise a
 // deterministic suffixed variant (hosts.name is unique; a PVE guest may share
@@ -885,7 +904,21 @@ func (r *hostRepository) DeleteHostCascade(ctx context.Context, hostID uint) err
 		}
 	}
 
-	// 3) Finally the host row itself.
+	// 3) Any parked identity proposals for this host (keyed by its MAC).
+	if r.db.Migrator().HasTable(&HostPendingChange{}) {
+		var macs []string
+		if err := r.db.WithContext(ctx).Model(&Host{}).
+			Where("id = ?", hostID).Limit(1).
+			Pluck("mac_address", &macs).Error; err == nil && len(macs) > 0 && macs[0] != "" {
+			if err := r.db.WithContext(ctx).
+				Where("host_mac = ?", strings.ToLower(macs[0])).
+				Delete(&HostPendingChange{}).Error; err != nil {
+				return fmt.Errorf("cascade delete host %d (pending changes): %w", hostID, err)
+			}
+		}
+	}
+
+	// 4) Finally the host row itself.
 	if err := r.db.WithContext(ctx).Exec("DELETE FROM hosts WHERE id = ?", hostID).Error; err != nil {
 		return fmt.Errorf("cascade delete host %d (hosts row): %w", hostID, err)
 	}
@@ -897,4 +930,124 @@ func (r *hostRepository) UpdateDashboardURL(ctx context.Context, hostID uint, ur
 	return r.db.WithContext(ctx).Model(&Host{}).
 		Where("id = ? AND (dashboard_url IS NULL OR dashboard_url <> ?)", hostID, url).
 		Update("dashboard_url", url).Error
+}
+
+// UpsertPendingChange implements Repository (upsert keyed by ChangeID).
+func (r *hostRepository) UpsertPendingChange(ctx context.Context, ch *HostPendingChange) error {
+	if ch == nil || ch.ChangeID == "" {
+		return errors.New("pending change requires a change_id")
+	}
+	now := time.Now()
+	row := HostPendingChange{
+		ChangeID:    ch.ChangeID,
+		HostMAC:     strings.ToLower(ch.HostMAC),
+		HostName:    ch.HostName,
+		Source:      ch.Source,
+		Changes:     ch.Changes,
+		Fingerprint: ch.Fingerprint,
+		Status:      ch.Status,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	return r.db.WithContext(ctx).
+		Where("change_id = ?", ch.ChangeID).
+		Assign(map[string]any{
+			"host_mac":    row.HostMAC,
+			"host_name":   row.HostName,
+			"source":      row.Source,
+			"changes":     row.Changes,
+			"fingerprint": row.Fingerprint,
+			"status":      row.Status,
+			"updated_at":  now,
+		}).
+		FirstOrCreate(&row).Error
+}
+
+// GetPendingChange implements Repository.
+func (r *hostRepository) GetPendingChange(ctx context.Context, changeID string) (*HostPendingChange, error) {
+	var row HostPendingChange
+	err := r.db.WithContext(ctx).Where("change_id = ?", changeID).First(&row).Error
+	if err != nil {
+		return nil, err
+	}
+	row.DecodeFieldChanges()
+	return &row, nil
+}
+
+// ListPendingChanges implements Repository.
+func (r *hostRepository) ListPendingChanges(ctx context.Context) ([]HostPendingChange, error) {
+	var rows []HostPendingChange
+	err := r.db.WithContext(ctx).Order("created_at ASC, id ASC").Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		rows[i].DecodeFieldChanges()
+	}
+	return rows, nil
+}
+
+// DeletePendingChange implements Repository.
+func (r *hostRepository) DeletePendingChange(ctx context.Context, changeID string) error {
+	if changeID == "" {
+		return nil
+	}
+	return r.db.WithContext(ctx).Where("change_id = ?", changeID).Delete(&HostPendingChange{}).Error
+}
+
+// ApplyPendingChange implements Repository. Runs identically on every replica
+// (same DB state at the same log index), so uniqueness resolution is
+// deterministic cluster-wide.
+func (r *hostRepository) ApplyPendingChange(ctx context.Context, changeID string) error {
+	row, err := r.GetPendingChange(ctx, changeID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil // already applied/cleared here
+	}
+	if err != nil {
+		return err
+	}
+	host, err := r.GetHostByMacAddress(ctx, row.HostMAC)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// The host row is gone (deleted meanwhile) — drop the orphan proposal.
+		return r.DeletePendingChange(ctx, changeID)
+	}
+	if err != nil {
+		return err
+	}
+
+	updates := map[string]any{}
+	for _, ch := range row.FieldChanges {
+		switch ch.Field {
+		case "name":
+			if ch.New == "" {
+				continue
+			}
+			name, nerr := r.resolveFreeName(ctx, ch.New, host.ID, host.ExternalID)
+			if nerr != nil {
+				return nerr
+			}
+			updates["name"] = name
+		case "mac_address":
+			mac := strings.ToLower(ch.New)
+			if mac == "" {
+				continue
+			}
+			// mac_address is uniquely indexed — skip (rather than fail) when
+			// another row holds it; the host keeps its current MAC.
+			if taken, terr := r.macOwnedByOther(ctx, mac, host.ID); terr != nil {
+				return terr
+			} else if !taken {
+				updates["mac_address"] = mac
+			}
+		}
+	}
+	if len(updates) > 0 {
+		updates["updated_at"] = time.Now()
+		if err := r.db.WithContext(ctx).Model(&Host{}).
+			Where("id = ?", host.ID).
+			Updates(updates).Error; err != nil {
+			return err
+		}
+	}
+	return r.DeletePendingChange(ctx, changeID)
 }

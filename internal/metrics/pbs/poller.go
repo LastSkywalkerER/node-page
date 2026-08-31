@@ -22,8 +22,12 @@ import (
 )
 
 const (
-	pollInterval        = 10 * time.Second
-	hostUpsertHeartbeat = 60 * time.Second
+	pollInterval = 10 * time.Second
+	// hostUpsertHeartbeat is a SAFETY RESYNC cadence, not liveness: last_seen
+	// rides the metric stream (peers) + a direct local bump (this node), so an
+	// unchanged PBS record costs zero consensus rounds between resyncs.
+	// Mirrors the Proxmox poller / hosts service.
+	hostUpsertHeartbeat = 10 * time.Minute
 	// recentTaskCap bounds the backup-health task summary kept per PBS host.
 	recentTaskCap = 8
 )
@@ -37,12 +41,12 @@ type PollerDeps struct {
 	Cipher     *connectors.Cipher
 	HostRepo   hosts.Repository
 
-	Raft    *raftcluster.Replicator
-	RaftSvc raftcluster.Service
-	CPURepo cpu.Repository
-	MemRepo memory.Repository
-	DiskRepo disk.Repository
-	Publish func([]byte)
+	Raft             *raftcluster.Replicator
+	RaftSvc          raftcluster.Service
+	CPURepo          cpu.Repository
+	MemRepo          memory.Repository
+	DiskRepo         disk.Repository
+	Publish          func([]byte)
 	BroadcastMetrics func(context.Context, raftcluster.MetricBatchPayload)
 }
 
@@ -105,10 +109,11 @@ type Poller struct {
 	deps   PollerDeps
 	syncCh chan struct{}
 
-	mu          sync.Mutex
-	status      map[uint]Status            // host id → latest detail snapshot (locally polled)
-	remoteStatus map[uint]Status           // host id → snapshot received over the metric stream (peers/hub)
-	upsertState map[string]hostUpsertState // external_id → throttle state
+	mu           sync.Mutex
+	status       map[uint]Status            // host id → latest detail snapshot (locally polled)
+	remoteStatus map[uint]Status            // host id → snapshot received over the metric stream (peers/hub)
+	upsertState  map[string]hostUpsertState // external_id → throttle state
+	pendingFP    map[string]string          // external_id → last reconciled pending-change fingerprint
 }
 
 type hostUpsertState struct {
@@ -124,6 +129,7 @@ func NewPoller(deps PollerDeps) *Poller {
 		status:       map[uint]Status{},
 		remoteStatus: map[uint]Status{},
 		upsertState:  map[string]hostUpsertState{},
+		pendingFP:    map[string]string{},
 	}
 }
 
@@ -435,14 +441,30 @@ func (p *Poller) setStatus(ctx context.Context, id uint, status, msg string) {
 }
 
 // upsertHost routes the host write through Raft (replicated) or directly,
-// throttled per host (unchanged identity within the heartbeat skips a round).
+// throttled per host (unchanged identity within the resync heartbeat skips a
+// round). Identity freeze: an existing row past the discovery grace window
+// never has its name/MAC rewritten — the diff parks as a HostPendingChange for
+// admin approval (see hosts.FreezeIdentity). Liveness is a direct local
+// last_seen bump here plus the metric stream on peers.
 func (p *Poller) upsertHost(ctx context.Context, info hosts.ConnectorHostInfo) *hosts.Host {
+	existing := p.resolveExistingRow(ctx, info)
+	frozen, changes := hosts.FreezeIdentity(existing, info, time.Now())
+	if existing != nil {
+		p.reconcilePending(ctx, existing, frozen.ExternalID, changes)
+	}
+	info = frozen
+
+	submitted := false
 	if p.deps.Raft != nil && p.deps.Raft.Enabled() {
 		if p.shouldSubmitHostUpsert(info, time.Now()) {
 			if err := p.deps.Raft.SubmitConnectorHostUpsert(ctx, info); err != nil {
 				p.deps.Logger.Warn("pbs: replicate host upsert", "host", info.Name, "error", err)
+				// Forget the recorded submission so the next poll retries
+				// instead of waiting out the resync heartbeat.
+				p.resetUpsertThrottle(info)
 				return nil
 			}
+			submitted = true
 		}
 	} else {
 		if _, err := p.deps.HostRepo.UpsertConnectorHost(ctx, info); err != nil {
@@ -454,7 +476,119 @@ func (p *Poller) upsertHost(ctx context.Context, info hosts.ConnectorHostInfo) *
 	if err != nil {
 		return nil
 	}
+	if !submitted && hosts.ConnectorHostAlive(info.GuestStatus) {
+		if err := p.deps.HostRepo.UpdateLastSeen(ctx, host.ID); err != nil {
+			p.deps.Logger.Debug("pbs: bump last_seen", "host", info.Name, "error", err)
+		}
+	}
 	return host
+}
+
+// resolveExistingRow finds the row this connector info would land on
+// (external_id first, then MAC) for the identity-freeze comparison.
+func (p *Poller) resolveExistingRow(ctx context.Context, info hosts.ConnectorHostInfo) *hosts.Host {
+	if info.ExternalID != "" {
+		if h, err := p.deps.HostRepo.GetHostByExternalID(ctx, info.ExternalID); err == nil {
+			return h
+		}
+	}
+	if info.MacAddress != "" {
+		if h, err := p.deps.HostRepo.GetHostByMacAddress(ctx, info.MacAddress); err == nil {
+			return h
+		}
+	}
+	return nil
+}
+
+// reconcilePending mirrors the Proxmox poller: park a new/changed identity
+// proposal, keep an identical (pending or rejected) one untouched, clear it
+// when the source reverted. RAM-cached so the steady state costs nothing.
+func (p *Poller) reconcilePending(ctx context.Context, existing *hosts.Host, externalID string, changes []hosts.PendingFieldChange) {
+	if existing == nil || existing.MacAddress == "" {
+		return
+	}
+	fp := ""
+	if len(changes) > 0 {
+		fp = hosts.PendingChangesFingerprint(changes)
+	}
+	key := externalID
+	if key == "" {
+		key = existing.MacAddress
+	}
+	p.mu.Lock()
+	last, known := p.pendingFP[key]
+	p.mu.Unlock()
+	if known && last == fp {
+		return
+	}
+
+	changeID := hosts.PendingChangeID(existing.MacAddress, connectors.TypePBS)
+	if fp == "" {
+		if _, err := p.deps.HostRepo.GetPendingChange(ctx, changeID); err == nil {
+			p.submitPendingDelete(ctx, changeID)
+		}
+		p.setPendingFP(key, "")
+		return
+	}
+	if row, err := p.deps.HostRepo.GetPendingChange(ctx, changeID); err == nil && row.Fingerprint == fp {
+		p.setPendingFP(key, fp)
+		return
+	}
+	b, err := json.Marshal(changes)
+	if err != nil {
+		return
+	}
+	row := hosts.HostPendingChange{
+		ChangeID:    changeID,
+		HostMAC:     existing.MacAddress,
+		HostName:    existing.Name,
+		Source:      connectors.TypePBS,
+		Changes:     string(b),
+		Fingerprint: fp,
+		Status:      hosts.PendingStatusPending,
+	}
+	p.deps.Logger.Info("pbs: parking identity change for admin approval",
+		"host", existing.Name, "change_id", changeID, "changes", string(b))
+	if p.deps.Raft != nil && p.deps.Raft.Enabled() {
+		if err := p.deps.Raft.SubmitHostPendingUpsert(ctx, row); err != nil {
+			p.deps.Logger.Warn("pbs: replicate pending change", "host", existing.Name, "error", err)
+			return
+		}
+	} else if err := p.deps.HostRepo.UpsertPendingChange(ctx, &row); err != nil {
+		p.deps.Logger.Warn("pbs: park pending change", "host", existing.Name, "error", err)
+		return
+	}
+	p.setPendingFP(key, fp)
+}
+
+func (p *Poller) setPendingFP(key, fp string) {
+	p.mu.Lock()
+	p.pendingFP[key] = fp
+	p.mu.Unlock()
+}
+
+// resetUpsertThrottle forgets the recorded submission for this host so the
+// next poll retries a failed replicate.
+func (p *Poller) resetUpsertThrottle(info hosts.ConnectorHostInfo) {
+	key := info.ExternalID
+	if key == "" {
+		key = info.MacAddress
+	}
+	p.mu.Lock()
+	delete(p.upsertState, key)
+	p.mu.Unlock()
+}
+
+func (p *Poller) submitPendingDelete(ctx context.Context, changeID string) {
+	if p.deps.Raft != nil && p.deps.Raft.Enabled() {
+		if err := p.deps.Raft.SubmitHostPendingDelete(ctx, changeID); err != nil {
+			p.deps.Logger.Warn("pbs: replicate pending change delete", "change_id", changeID, "error", err)
+		}
+		return
+	}
+	if err := p.deps.HostRepo.DeletePendingChange(ctx, changeID); err != nil {
+		p.deps.Logger.Warn("pbs: delete pending change", "change_id", changeID, "error", err)
+	}
 }
 
 func (p *Poller) shouldSubmitHostUpsert(info hosts.ConnectorHostInfo, now time.Time) bool {

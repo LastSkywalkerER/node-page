@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // Handler handles HTTP requests for host information.
@@ -161,4 +162,82 @@ func (h *Handler) HandleDeleteHost(c *gin.Context) {
 
 	h.logger.Info("Host removed", "host_id", hostID)
 	c.JSON(http.StatusOK, gin.H{"removed": hostID})
+}
+
+// HandleListPendingChanges returns every parked host-identity proposal.
+//
+// @Summary     List pending host identity changes
+// @Description Connector-proposed identity updates (rename, MAC change) frozen for admin approval. Admin only.
+// @Tags        hosts
+// @Produce     json
+// @Success     200  {object} map[string]interface{}
+// @Failure     401  {object} map[string]string
+// @Failure     500  {object} map[string]string
+// @Security    BearerAuth
+// @Router      /hosts/pending-changes [get]
+func (h *Handler) HandleListPendingChanges(c *gin.Context) {
+	changes, err := h.service.ListPendingChanges(c.Request.Context())
+	if err != nil {
+		h.logger.Error("Failed to list pending host changes", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if changes == nil {
+		changes = []HostPendingChange{}
+	}
+	c.JSON(http.StatusOK, gin.H{"changes": changes})
+}
+
+// HandleApprovePendingChange applies a parked identity proposal.
+//
+// @Summary     Approve a pending host identity change
+// @Description Applies the proposal onto the host row (cluster-wide when Raft is enabled) and removes it. Admin only.
+// @Tags        hosts
+// @Produce     json
+// @Param       change_id  path  string  true  "Change ID"
+// @Success     200  {object} map[string]interface{}
+// @Failure     404  {object} map[string]string
+// @Failure     500  {object} map[string]string
+// @Security    BearerAuth
+// @Router      /hosts/pending-changes/{change_id}/approve [post]
+func (h *Handler) HandleApprovePendingChange(c *gin.Context) {
+	changeID := c.Param("change_id")
+	if err := h.service.ApprovePendingChange(c.Request.Context(), changeID); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "pending change not found"})
+			return
+		}
+		h.logger.Error("Failed to approve pending host change", "error", err, "change_id", changeID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	h.logger.Info("Pending host change approved", "change_id", changeID)
+	c.JSON(http.StatusOK, gin.H{"applied": changeID})
+}
+
+// HandleRejectPendingChange marks a parked identity proposal rejected.
+//
+// @Summary     Reject a pending host identity change
+// @Description Marks the proposal rejected; the connector stops re-proposing the same value until it changes at the source. Admin only.
+// @Tags        hosts
+// @Produce     json
+// @Param       change_id  path  string  true  "Change ID"
+// @Success     200  {object} map[string]interface{}
+// @Failure     404  {object} map[string]string
+// @Failure     500  {object} map[string]string
+// @Security    BearerAuth
+// @Router      /hosts/pending-changes/{change_id}/reject [post]
+func (h *Handler) HandleRejectPendingChange(c *gin.Context) {
+	changeID := c.Param("change_id")
+	if err := h.service.RejectPendingChange(c.Request.Context(), changeID); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "pending change not found"})
+			return
+		}
+		h.logger.Error("Failed to reject pending host change", "error", err, "change_id", changeID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	h.logger.Info("Pending host change rejected", "change_id", changeID)
+	c.JSON(http.StatusOK, gin.H{"rejected": changeID})
 }

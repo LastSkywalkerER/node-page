@@ -114,6 +114,31 @@ type HostDeletePayload struct {
 	HostMAC string `json:"host_mac"`
 }
 
+// HostPendingUpsertPayload replicates a frozen host-identity proposal (or its
+// rejected status), keyed by the cluster-stable ChangeID.
+type HostPendingUpsertPayload struct {
+	ChangeID    string          `json:"change_id"`
+	HostMAC     string          `json:"host_mac"`
+	HostName    string          `json:"host_name,omitempty"`
+	Source      string          `json:"source,omitempty"`
+	Changes     json.RawMessage `json:"changes,omitempty"`
+	Fingerprint string          `json:"fingerprint,omitempty"`
+	Status      string          `json:"status,omitempty"`
+}
+
+// HostPendingDeletePayload removes a proposal everywhere (the source reverted,
+// or the target host is gone).
+type HostPendingDeletePayload struct {
+	ChangeID string `json:"change_id"`
+}
+
+// HostPendingApplyPayload applies an approved proposal on every node: each
+// replica resolves its local pending row by ChangeID, updates the host row,
+// and deletes the proposal.
+type HostPendingApplyPayload struct {
+	ChangeID string `json:"change_id"`
+}
+
 // HostLastSeenPayload mirrors hosts.Repository.UpdateLastSeenAndAgentSession.
 // AgentSessionStartedAt is optional (nil when push gap < threshold).
 type HostLastSeenPayload struct {

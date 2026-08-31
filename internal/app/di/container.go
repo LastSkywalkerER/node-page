@@ -821,10 +821,19 @@ func (c *Container) startSelfAdvertiseLoopLocked(ctx context.Context) {
 	}
 	c.selfAdvertiseStarted = true
 	go func() {
+		// selfAdvertiseResync is how often an UNCHANGED advertise URL is still
+		// re-published — a safety resync only (heals a dropped catalog write /
+		// a peer that wiped its DB). The catalog row is replicated state: every
+		// joiner receives it via snapshot/log replay, so a periodic re-publish
+		// is not what keeps peers discoverable. Each re-publish is a consensus
+		// round (forwarded by followers), so, like the host-record heartbeat,
+		// it must not run on a tight wall-clock cadence.
+		const selfAdvertiseResync = 10 * time.Minute
 		t := time.NewTicker(3 * time.Second)
 		defer t.Stop()
 		wasLeader := false
-		ticks := 0
+		lastURL := ""
+		var lastAt time.Time
 		for {
 			select {
 			case <-ctx.Done():
@@ -834,17 +843,31 @@ func (c *Container) startSelfAdvertiseLoopLocked(ctx context.Context) {
 			svc := c.GetRaftService()
 			enabled := svc != nil && svc.Enabled()
 			isLeader := enabled && svc.IsLeader()
-			// Advertise self when: we just gained leadership (so the leader URL
-			// lands ASAP and followers can forward), OR every ~30s for every node
-			// (covers a dropped catalog write, a restarted node, and keeps all
-			// peers discoverable for the metric fanout).
-			if enabled && ((!wasLeader && isLeader) || ticks%10 == 0) {
-				c.AdvertiseSelfNow(ctx)
+			if enabled {
+				url := c.currentAdvertiseURL()
+				// Advertise when: we just gained leadership (so the leader URL
+				// lands ASAP and followers can forward), the URL changed, or the
+				// rare resync elapsed.
+				if (!wasLeader && isLeader) || (url != "" && url != lastURL) || time.Since(lastAt) >= selfAdvertiseResync {
+					c.AdvertiseSelfNow(ctx)
+					lastURL = url
+					lastAt = time.Now()
+				}
 			}
 			wasLeader = isLeader
-			ticks++
 		}
 	}()
+}
+
+// currentAdvertiseURL resolves the URL AdvertiseSelfNow would publish (explicit
+// config, or derived from the Raft advertise host), so the advertise loop can
+// gate on it actually changing.
+func (c *Container) currentAdvertiseURL() string {
+	cfg := c.CurrentRaftConfig()
+	if cfg.AdvertiseURL != "" {
+		return cfg.AdvertiseURL
+	}
+	return deriveAdvertiseURLFromAddr(cfg.AdvertiseAddr)
 }
 
 // ActivateRaft hot-initialises the Raft layer from a runtime config

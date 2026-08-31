@@ -35,14 +35,24 @@ func (f *fakeRepo) DeleteHostCascade(_ context.Context, id uint) error {
 }
 
 type fakeReplicator struct {
-	enabled     bool
-	deletedMACs []string
+	enabled        bool
+	deletedMACs    []string
+	pendingUpserts []HostPendingChange
+	pendingApplies []string
 }
 
 func (f *fakeReplicator) Enabled() bool                                    { return f.enabled }
 func (f *fakeReplicator) SubmitHostUpsert(context.Context, HostInfo) error { return nil }
 func (f *fakeReplicator) SubmitHostDelete(_ context.Context, m string) error {
 	f.deletedMACs = append(f.deletedMACs, m)
+	return nil
+}
+func (f *fakeReplicator) SubmitHostPendingUpsert(_ context.Context, ch HostPendingChange) error {
+	f.pendingUpserts = append(f.pendingUpserts, ch)
+	return nil
+}
+func (f *fakeReplicator) SubmitHostPendingApply(_ context.Context, id string) error {
+	f.pendingApplies = append(f.pendingApplies, id)
 	return nil
 }
 
@@ -146,6 +156,23 @@ func TestShouldSubmitUpsert_SendsOnRecordChange(t *testing.T) {
 	// The changed record is now the baseline → an immediate repeat is throttled.
 	if s.shouldSubmitUpsert(changed, base.Add(2*time.Second)) {
 		t.Fatalf("repeat of the changed record within the window must be throttled")
+	}
+}
+
+func TestResetUpsertThrottleRetriesNextTick(t *testing.T) {
+	s := newTestService(&fakeRepo{}, nil)
+	info := HostInfo{Name: "n", MacAddress: "aa:bb:cc:dd:ee:ff"}
+	now := time.Now()
+	if !s.shouldSubmitUpsert(info, now) {
+		t.Fatal("first call must submit")
+	}
+	if s.shouldSubmitUpsert(info, now.Add(5*time.Second)) {
+		t.Fatal("unchanged record within the heartbeat must be throttled")
+	}
+	// A failed submit resets the throttle — the very next tick retries.
+	s.resetUpsertThrottle()
+	if !s.shouldSubmitUpsert(info, now.Add(10*time.Second)) {
+		t.Fatal("after a reset the next tick must submit again")
 	}
 }
 
