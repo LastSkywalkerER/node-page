@@ -123,6 +123,23 @@ func TestConfigIsNode(t *testing.T) {
 	if (Config{}).IsNode("aa:bb:cc:dd:ee:ff", "machine-1", "") {
 		t.Error("unset config must match nobody")
 	}
+	// Docker bridge MACs collide across machines: a MAC match alone must NOT
+	// make another host (with its own stable id) the gateway.
+	bridge := Config{NodeMAC: "02:42:ac:11:00:02", NodeSystemID: "vps-machine"}
+	if bridge.IsNode("02:42:ac:11:00:02", "orangepi-machine", "") {
+		t.Error("same docker-bridge MAC on a different machine must not match")
+	}
+	if !bridge.IsNode("02:42:ac:11:00:02", "vps-machine", "") || !bridge.IsNode("aa:aa:aa:aa:aa:aa", "", "vps-machine") {
+		t.Error("the real node must match by stable id regardless of MAC")
+	}
+	// Host without any stable id: MAC is all there is.
+	if !bridge.IsNode("02:42:ac:11:00:02", "", "") {
+		t.Error("MAC fallback when the host has no stable id")
+	}
+	// Config without a stable id (picked host had none): MAC decides.
+	if !(Config{NodeMAC: "aa:bb:cc:dd:ee:ff"}).IsNode("aa:bb:cc:dd:ee:ff", "whatever", "") {
+		t.Error("MAC fallback when the config has no stable id")
+	}
 }
 
 func TestRender_PassthroughWildcard(t *testing.T) {

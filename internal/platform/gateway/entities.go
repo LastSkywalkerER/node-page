@@ -79,6 +79,12 @@ type Config struct {
 	// recognises itself by this id — otherwise a controller recreate would make
 	// the node "lose" the gateway role and tear Traefik down.
 	NodeSystemID string `json:"node_system_id,omitempty"`
+	// NodeHostID is a request-only hint: the hosts.id (on the node serving the
+	// UI) of the picked gateway host. SetConfig resolves MAC + stable id from
+	// that row instead of looking the row up by MAC — with Docker bridge MACs
+	// colliding across machines, a MAC lookup returns whatever local row holds
+	// that MAC. Never persisted (zeroed before save).
+	NodeHostID uint `json:"node_host_id,omitempty"`
 	// DynamicDir (external mode) is the Traefik file-provider directory as
 	// seen from the node-stats process on the gateway node.
 	DynamicDir string `json:"dynamic_dir,omitempty"`
@@ -219,17 +225,22 @@ func (c Config) EffectiveRequestReadTimeoutSeconds() int {
 
 // IsNode reports whether a host row (by MAC / stable system id) is the
 // configured gateway node.
+//
+// The stable id wins whenever both sides have one: a MAC is NOT unique across
+// machines for Docker bridge containers (every host derives the same
+// 02:42:ac:11:00:02 from the same bridge IP), so a MAC-first check made a
+// second Docker node believe it was the gateway too — it rendered the file,
+// asked its controller for a Traefik and showed "this node is the gateway".
+// MAC is only the fallback when the config or the host has no stable id.
 func (c Config) IsNode(mac, systemID, hardwareUUID string) bool {
 	if c.NodeMAC == "" {
 		return false
 	}
-	if mac != "" && strings.EqualFold(strings.TrimSpace(mac), strings.TrimSpace(c.NodeMAC)) {
-		return true
+	systemID, hardwareUUID = strings.TrimSpace(systemID), strings.TrimSpace(hardwareUUID)
+	if c.NodeSystemID != "" && (systemID != "" || hardwareUUID != "") {
+		return systemID == c.NodeSystemID || hardwareUUID == c.NodeSystemID
 	}
-	if c.NodeSystemID == "" {
-		return false
-	}
-	return (systemID != "" && systemID == c.NodeSystemID) || (hardwareUUID != "" && hardwareUUID == c.NodeSystemID)
+	return mac != "" && strings.EqualFold(strings.TrimSpace(mac), strings.TrimSpace(c.NodeMAC))
 }
 
 // Protected reports whether the route has any access-control middleware.

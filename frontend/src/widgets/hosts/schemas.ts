@@ -14,6 +14,7 @@ export const HostSchema = z.object({
   virtualization_system: z.string().optional().default(''),
   virtualization_role: z.string().optional().default(''),
   system_host_id: z.string().optional().default(''),
+  hardware_uuid: z.string().optional().default(''),
   // Virtualization topology (filled by connectors, e.g. Proxmox):
   // '' | 'hypervisor' | 'vm' | 'lxc'
   host_type: z.string().optional().default(''),

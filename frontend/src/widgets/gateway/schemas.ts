@@ -5,6 +5,8 @@ export const GatewayConfigSchema = z.object({
   mode: z.string().default('managed'),
   node_mac: z.string().default(''),
   node_name: z.string().optional().default(''),
+  node_system_id: z.string().optional().default(''),
+  node_host_id: z.number().optional(),
   dynamic_dir: z.string().optional().default(''),
   http_port: z.number().optional().default(0),
   https_port: z.number().optional().default(0),

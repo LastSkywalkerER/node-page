@@ -68,7 +68,30 @@ function ConfigCard({ state }: { state: GatewayState }) {
   )
   const [publicResult, setPublicResult] = useState<PublicCheckResult | null>(null)
   const caps = state.capabilities
-  const selectedIsLocal = cfg.node_mac !== '' && cfg.node_mac.toLowerCase() === caps.local_mac.toLowerCase()
+  // Identity is by stable machine id first, MAC second: Docker bridge
+  // containers share 02:42:… MACs across machines, so MAC alone can point the
+  // select (and "this node") at the wrong host.
+  const localHost = (hostsData?.hosts ?? []).find((h) => h.id === caps.local_host_id)
+  const isLocalHost = (h: { id: number; mac_address: string }) =>
+    localHost ? h.id === localHost.id : h.mac_address.toLowerCase() === caps.local_mac.toLowerCase()
+  const selectedHost = useMemo(() => {
+    if (cfg.node_host_id) return candidates.find((h) => h.id === cfg.node_host_id)
+    if (cfg.node_system_id) {
+      const byId = candidates.find((h) => h.system_host_id === cfg.node_system_id || h.hardware_uuid === cfg.node_system_id)
+      if (byId) return byId
+    }
+    return cfg.node_mac ? candidates.find((h) => h.mac_address.toLowerCase() === cfg.node_mac.toLowerCase()) : undefined
+  }, [candidates, cfg.node_host_id, cfg.node_system_id, cfg.node_mac])
+  // Pre-save: trust the selection; otherwise trust the backend's verdict.
+  const selectedIsLocal = !!selectedHost && isLocalHost(selectedHost) && (dirty || state.status.is_gateway_node)
+  const pickNode = (id: string) => {
+    const h = candidates.find((x) => String(x.id) === id)
+    if (!h) {
+      update({ node_mac: '', node_host_id: undefined, node_system_id: '', node_name: '' })
+      return
+    }
+    update({ node_mac: h.mac_address, node_host_id: h.id, node_system_id: h.system_host_id || h.hardware_uuid || '', node_name: h.name })
+  }
 
   const onSave = () => {
     save.mutate(cfg, {
@@ -100,13 +123,13 @@ function ConfigCard({ state }: { state: GatewayState }) {
         <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-1.5">
             <Label>Gateway node</Label>
-            <select className={selectCls} value={cfg.node_mac} onChange={(e) => update({ node_mac: e.target.value })}>
+            <select className={selectCls} value={selectedHost ? String(selectedHost.id) : ''} onChange={(e) => pickNode(e.target.value)}>
               <option value="">— pick a node —</option>
               {candidates.map((h) => (
-                <option key={h.id} value={h.mac_address}>
+                <option key={h.id} value={String(h.id)}>
                   {h.display_name || h.name}
                   {h.ipv4 ? ` (${h.ipv4})` : ''}
-                  {h.mac_address.toLowerCase() === caps.local_mac.toLowerCase() ? ' · this node' : ''}
+                  {isLocalHost(h) ? ' · this node' : ''}
                 </option>
               ))}
             </select>

@@ -262,8 +262,23 @@ func (s *service) SetConfig(ctx context.Context, cfg gateway.Config) (*gateway.C
 		return nil, fmt.Errorf("%w: request read timeout must be -1 (unlimited), 0 (default 24h) or up to %d seconds", ErrValidation, gateway.MaxRequestReadTimeoutSeconds)
 	}
 	cfg.NodeSystemID = ""
-	if cfg.NodeMAC != "" && s.hosts != nil {
-		if h, err := s.hosts.GetHostByMacAddress(ctx, cfg.NodeMAC); err == nil && h != nil {
+	if s.hosts != nil {
+		var h *hosts.Host
+		if cfg.NodeHostID != 0 {
+			// Preferred: the exact row the admin picked (ids are local to the
+			// node serving the UI, which is the node handling this request).
+			row, err := s.hosts.GetHostByID(ctx, cfg.NodeHostID)
+			if err != nil || row == nil {
+				return nil, fmt.Errorf("%w: gateway node (host %d) not found", ErrValidation, cfg.NodeHostID)
+			}
+			h = row
+			cfg.NodeMAC = strings.ToLower(strings.TrimSpace(h.MacAddress))
+		} else if cfg.NodeMAC != "" {
+			if row, err := s.hosts.GetHostByMacAddress(ctx, cfg.NodeMAC); err == nil && row != nil {
+				h = row
+			}
+		}
+		if h != nil {
 			cfg.NodeName = h.Name
 			cfg.NodeSystemID = h.SystemHostID
 			if cfg.NodeSystemID == "" {
@@ -271,6 +286,7 @@ func (s *service) SetConfig(ctx context.Context, cfg gateway.Config) (*gateway.C
 			}
 		}
 	}
+	cfg.NodeHostID = 0
 	raw, err := json.Marshal(cfg)
 	if err != nil {
 		return nil, err
