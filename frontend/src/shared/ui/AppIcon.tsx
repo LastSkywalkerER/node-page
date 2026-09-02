@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Boxes } from 'lucide-react';
 import { iconCandidates } from '@/shared/lib/appIcons';
 import { cn } from '@/lib/utils';
@@ -13,20 +13,39 @@ interface AppIconProps {
   className?: string;
 }
 
+// Per-tab memory of which candidate URLs loaded and which 404'd. Tiles remount
+// on every list ↔ detail navigation and re-render on every 5s/30s refetch; without
+// this each of them restarted the whole <img onError> cascade from candidate 0
+// (two 404s, then the favicon), so an icon that had already loaded blinked out
+// and back — or stayed gone whenever the browser cache was disabled. Strings
+// only, a few dozen entries at most.
+const loadedSrc = new Set<string>();
+const failedSrc = new Set<string>();
+
+/** First candidate that has not already been seen to fail (a known-good one wins). */
+function pickStart(candidates: string[]): number {
+  const known = candidates.findIndex((c) => loadedSrc.has(c));
+  if (known >= 0) return known;
+  const i = candidates.findIndex((c) => !failedSrc.has(c));
+  return i >= 0 ? i : candidates.length;
+}
+
 /**
  * Renders an application's icon from CDN candidates, cascading through fallbacks
  * on load error and ending at a generic placeholder.
  */
 export function AppIcon({ slug, altSlug, publicUrl, name, className }: AppIconProps) {
-  const candidates = iconCandidates(slug, publicUrl, altSlug);
-  const [idx, setIdx] = useState(0);
+  const candidates = useMemo(() => iconCandidates(slug, publicUrl, altSlug), [slug, publicUrl, altSlug]);
+  const key = candidates.join('\n');
+  const [state, setState] = useState(() => ({ key, idx: pickStart(candidates) }));
 
-  // Reset the candidate index whenever the icon inputs change.
+  // Re-pick only when the candidate LIST changes (not on every render), and
+  // even then skip straight past candidates already known to fail.
   useEffect(() => {
-    setIdx(0);
-  }, [slug, altSlug, publicUrl]);
+    setState((s) => (s.key === key ? s : { key, idx: pickStart(candidates) }));
+  }, [key, candidates]);
 
-  const src = candidates[idx];
+  const src = state.key === key ? candidates[state.idx] : candidates[pickStart(candidates)];
 
   if (!src) {
     return (
@@ -46,7 +65,15 @@ export function AppIcon({ slug, altSlug, publicUrl, name, className }: AppIconPr
       src={src}
       alt={name ?? slug ?? 'application'}
       loading="lazy"
-      onError={() => setIdx((i) => i + 1)}
+      onLoad={() => loadedSrc.add(src)}
+      onError={() => {
+        failedSrc.add(src);
+        setState((s) => {
+          let next = s.idx + 1;
+          while (next < candidates.length && failedSrc.has(candidates[next])) next++;
+          return { key, idx: next };
+        });
+      }}
       className={cn('object-contain', className)}
     />
   );

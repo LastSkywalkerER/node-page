@@ -391,3 +391,42 @@ func TestParseTraefikDirs_GatewayPortHint(t *testing.T) {
 		t.Error("host.docker.internal upstream must match the container publishing the port")
 	}
 }
+
+// Routers are parsed out of a Go map, so their order is random per tick. The
+// app-level public URL must not depend on it: a public https domain wins over
+// "https://localhost" regardless of which route attaches first.
+func TestEnrichWithProxyRoutes_PublicURLIsDeterministic(t *testing.T) {
+	mk := func() *DockerMetric {
+		return &DockerMetric{Stacks: []DockerStack{{Containers: []DockerContainer{{
+			Name: "node-stats-node-stats-1", Project: "node-stats", Service: "node-stats",
+			Ports: []DockerPort{{PrivatePort: 9090, PublicPort: 9090, Type: "tcp"}},
+		}}}}}
+	}
+	a := traefikRoute{Host: "localhost", Scheme: "https", UpstreamHost: "host.docker.internal", UpstreamPort: 9090}
+	b := traefikRoute{Host: "dashboard.example.com", Scheme: "https", UpstreamHost: "host.docker.internal", UpstreamPort: 9090}
+	c := traefikRoute{Host: "localhost-nginx-proxy-manager", Scheme: "https", UpstreamHost: "host.docker.internal", UpstreamPort: 9090}
+	for _, order := range [][]traefikRoute{{a, b, c}, {c, b, a}, {b, a, c}, {c, a, b}} {
+		m := mk()
+		enrichWithProxyRoutes(m, order, nil)
+		ctr := m.Stacks[0].Containers[0]
+		if got := firstContainerPortURL(ctr); got != "https://dashboard.example.com" {
+			t.Fatalf("order %v: public url = %q, want the public domain", order, got)
+		}
+		if len(ctr.Ports) != 3 {
+			t.Fatalf("expected all 3 domains kept, got %d ports", len(ctr.Ports))
+		}
+	}
+}
+
+func TestPublicURLRank(t *testing.T) {
+	better := func(x, y string) {
+		if publicURLRank(x) >= publicURLRank(y) {
+			t.Fatalf("%s should rank better than %s", x, y)
+		}
+	}
+	better("https://app.example.com", "http://app.example.com")
+	better("http://app.example.com", "https://localhost")
+	better("https://app.example.com", "https://192.168.1.5:9090")
+	better("https://app.example.com", "https://web")
+	better("https://web", "https://nas.local")
+}

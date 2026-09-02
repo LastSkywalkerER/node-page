@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -358,6 +359,13 @@ func enrichWithProxyRoutes(m *DockerMetric, routes []traefikRoute, logger *log.L
 		}
 	}
 
+	// Routes come out of YAML/nginx maps in RANDOM order. Attachment order
+	// decides which domain lands on the container's real published-port row
+	// (and so what the app's public_url / icon favicon origin becomes) — sort
+	// best-first so the result is identical on every collection tick instead
+	// of flapping "https://localhost" ↔ "https://dashboard.example.com".
+	routes = sortRoutesByPreference(routes)
+
 	for _, r := range routes {
 		if r.URL() == "" {
 			continue
@@ -473,15 +481,63 @@ func attachRouteURL(c *DockerContainer, r traefikRoute) {
 	c.Ports = append(c.Ports, DockerPort{PrivatePort: r.UpstreamPort, Type: "tcp", PublicURL: u})
 }
 
-// firstContainerPortURL returns the first Traefik URL attached to any of the
-// container's ports, used as the app-level public link when no label provided one.
+// sortRoutesByPreference returns a copy of routes ordered best-first (see
+// publicURLRank), ties broken by URL so the order is fully deterministic.
+func sortRoutesByPreference(routes []traefikRoute) []traefikRoute {
+	out := make([]traefikRoute, len(routes))
+	copy(out, routes)
+	sort.SliceStable(out, func(i, j int) bool {
+		ui, uj := out[i].URL(), out[j].URL()
+		ri, rj := publicURLRank(ui), publicURLRank(uj)
+		if ri != rj {
+			return ri < rj
+		}
+		return ui < uj
+	})
+	return out
+}
+
+// publicURLRank orders candidate public URLs for one app (lower = better): a
+// real https domain beats http, and any domain beats a loopback / .local /
+// bare-IP address that only means something on the machine itself. Equal
+// ranks fall back to a plain string compare in the callers.
+func publicURLRank(raw string) int {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return 100
+	}
+	h := strings.ToLower(u.Hostname())
+	local := upstreamIsThisHost(h) || strings.HasSuffix(h, ".local") ||
+		strings.HasSuffix(h, ".localhost") || strings.HasSuffix(h, ".internal") || net.ParseIP(h) != nil
+	dotted := strings.Contains(h, ".")
+	rank := 0
+	if local {
+		rank += 40
+	} else if !dotted {
+		rank += 20 // bare single-label name — resolvable only on a LAN
+	}
+	if u.Scheme != "https" {
+		rank += 10
+	}
+	return rank
+}
+
+// firstContainerPortURL returns the best proxy URL attached to any of the
+// container's ports (publicURLRank, then lexical — never Docker's port order,
+// which is not stable across ticks), used as the app-level public link when no
+// label provided one.
 func firstContainerPortURL(c DockerContainer) string {
+	best, bestRank := "", 0
 	for _, p := range c.Ports {
-		if p.PublicURL != "" {
-			return p.PublicURL
+		if p.PublicURL == "" {
+			continue
+		}
+		r := publicURLRank(p.PublicURL)
+		if best == "" || r < bestRank || (r == bestRank && p.PublicURL < best) {
+			best, bestRank = p.PublicURL, r
 		}
 	}
-	return ""
+	return best
 }
 
 // traefikDirsFromStaticConfig reads a Traefik STATIC config (traefik.yml) at a
