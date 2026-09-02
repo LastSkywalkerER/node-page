@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -930,6 +931,8 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		// survive restarts/redeploys, so a cold process serves them instantly
 		// instead of re-resolving every name against the CDNs.
 		appIconsSvc := appicons.NewService(logger).WithStore(appicons.NewGormStore(container.GetDB()))
+		// The favicon route must be registered before the :slug wildcard.
+		authAPI.GET("/app-icons/favicon", appIconsSvc.FaviconHandler(knownAppOrigins(container.GetDockerService(), container.GetHostRepository())))
 		authAPI.GET("/app-icons/:slug", appIconsSvc.Handle)
 		// Warm the icon cache when the applications list is built so the bytes are
 		// ready by the time the cards' <img> requests arrive.
@@ -1492,4 +1495,53 @@ func getEnvOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// knownAppOrigins builds the favicon SSRF allow-list: an origin is fetchable
+// only when it is the public URL (or a published port) of an application the
+// node itself discovered on some host. The set is rebuilt at most every 30 s.
+func knownAppOrigins(dockerSvc docker.Service, hostRepo hosts.Repository) appicons.OriginAllowed {
+	var mu sync.Mutex
+	var set map[string]bool
+	var built time.Time
+	rebuild := func(ctx context.Context) map[string]bool {
+		out := map[string]bool{}
+		all, err := hostRepo.GetAllHosts(ctx)
+		if err != nil {
+			return out
+		}
+		add := func(raw string) {
+			if o, ok := appicons.NormalizeOrigin(raw); ok {
+				out[o] = true
+			}
+		}
+		for _, h := range all {
+			apps, err := dockerSvc.GetApplicationsByHost(ctx, h.ID)
+			if err != nil {
+				continue
+			}
+			for _, app := range apps {
+				add(app.PublicURL)
+				for _, c := range app.Containers {
+					for _, p := range c.Ports {
+						add(p.PublicURL)
+						if p.PublicPort > 0 && h.IPv4 != "" && (p.IP == "" || p.IP == "0.0.0.0") {
+							add(fmt.Sprintf("http://%s:%d", h.IPv4, p.PublicPort))
+							add(fmt.Sprintf("https://%s:%d", h.IPv4, p.PublicPort))
+						}
+					}
+				}
+			}
+		}
+		return out
+	}
+	return func(ctx context.Context, origin string) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if set == nil || time.Since(built) > 30*time.Second {
+			set = rebuild(ctx)
+			built = time.Now()
+		}
+		return set[origin]
+	}
 }

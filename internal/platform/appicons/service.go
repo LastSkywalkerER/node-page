@@ -338,6 +338,11 @@ func (s *Service) fetch(ctx context.Context, rawURL string) ([]byte, string, err
 	return data, ctype, nil
 }
 
+// readCapped reads at most limit bytes.
+func readCapped(r io.Reader, limit int64) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(r, limit))
+}
+
 type statusErr int
 
 func (e statusErr) Error() string { return "unexpected status " + http.StatusText(int(e)) }

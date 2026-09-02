@@ -14,10 +14,11 @@ function faviconCandidates(publicUrl: string | undefined | null): string[] {
   try {
     const parsed = new URL(u);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return [];
-    return [
-      `${parsed.origin}/favicon.ico`,
-      `https://icons.duckduckgo.com/ip3/${parsed.hostname}.ico`,
-    ];
+    // Fetched by the backend (it sits on the apps' network and caches the
+    // bytes in the DB) — never straight from the browser: an https dashboard
+    // loading http://10.0.0.5:3000/favicon.ico is mixed content AND a private-
+    // network request Chrome gates behind a permission prompt.
+    return [`/api/v1/app-icons/favicon?origin=${encodeURIComponent(parsed.origin)}`];
   } catch {
     return [];
   }
