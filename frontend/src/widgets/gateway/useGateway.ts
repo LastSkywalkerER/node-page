@@ -117,7 +117,7 @@ export function useDeleteRoute() {
 }
 
 /** Managed Traefik logs — only meaningful on the gateway node. */
-export function useGatewayLogs(enabled: boolean, tail = 300) {
+export function useGatewayLogs(enabled: boolean, tail = 300, live = true) {
   return useQuery<{ logs: string; error?: string }>({
     queryKey: [...KEY, 'logs', tail],
     queryFn: async () => {
@@ -125,7 +125,7 @@ export function useGatewayLogs(enabled: boolean, tail = 300) {
       return data as { logs: string; error?: string }
     },
     enabled,
-    refetchInterval: 5000,
+    refetchInterval: live ? 5000 : false,
   })
 }
 

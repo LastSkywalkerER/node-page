@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
 import { confirmDialog } from '@/shared/lib/confirmDialog'
-import { Globe, Plus, Trash2, Pencil, ExternalLink, ShieldAlert, ShieldCheck, Lock, Activity, X, ScrollText, RefreshCw, Radar, Gauge, FileCode2, Copy, Check } from 'lucide-react'
+import { Globe, Plus, Trash2, Pencil, ExternalLink, ShieldAlert, ShieldCheck, Lock, Activity, X, ScrollText, RefreshCw, Radar, Gauge, FileCode2, Copy, Check, Pause, Play } from 'lucide-react'
+import { LogViewer } from '@/widgets/applications/LogViewer'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -1016,30 +1017,28 @@ function RouteRow({ route, onEdit }: { route: GatewayRoute; onEdit: () => void }
 
 function LogsCard({ state }: { state: GatewayState }) {
   const [open, setOpen] = useState(false)
+  const [live, setLive] = useState(true)
   const [tail, setTail] = useState(300)
   const enabled = open && state.status.is_gateway_node && state.config.mode === 'managed'
-  const { data, isFetching, refetch } = useGatewayLogs(enabled, tail)
-  const endRef = useRef<HTMLDivElement | null>(null)
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ block: 'end' })
-  }, [data?.logs])
+  const { data, isLoading, isFetching, refetch } = useGatewayLogs(enabled, tail, live)
 
   if (!state.config.enabled || !state.status.is_gateway_node || state.config.mode !== 'managed') return null
 
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <CardTitle className="flex items-center gap-2">
               <ScrollText className="h-4 w-4" /> Traefik logs
             </CardTitle>
             <CardDescription>
               Service log + access log of the managed Traefik on this node
-              {state.capabilities.manage_kind === 'systemd' ? ' (journalctl)' : ' (docker logs)'}. Refreshes every 5 s.
+              {state.capabilities.manage_kind === 'systemd' ? ' (journalctl)' : ' (docker logs)'}, newest at the bottom.
+              {live ? ' Refreshes every 5 s.' : ' Paused.'}
             </CardDescription>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             {open && (
               <>
                 <select className={cn(selectCls, 'h-8 w-auto')} value={tail} onChange={(e) => setTail(Number(e.target.value))}>
@@ -1049,8 +1048,13 @@ function LogsCard({ state }: { state: GatewayState }) {
                     </option>
                   ))}
                 </select>
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => refetch()} title="Refresh">
-                  <RefreshCw className={cn('h-4 w-4', isFetching && 'animate-spin')} />
+                <Button type="button" variant="outline" size="sm" onClick={() => setLive((v) => !v)} className="gap-1.5">
+                  {live ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+                  {live ? 'Pause' : 'Live'}
+                </Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching} className="gap-1.5">
+                  <RefreshCw className={cn('h-3.5 w-3.5', isFetching && 'animate-spin')} />
+                  Refresh
                 </Button>
               </>
             )}
@@ -1063,10 +1067,7 @@ function LogsCard({ state }: { state: GatewayState }) {
       {open && (
         <CardContent>
           {data?.error && <div className="mb-2 text-xs text-amber-500">{data.error}</div>}
-          <pre className="max-h-96 overflow-auto rounded-lg border border-border/60 bg-black/80 p-3 font-mono text-[11px] leading-snug text-zinc-200 whitespace-pre-wrap break-all">
-            {data?.logs?.trim() ? data.logs : isFetching ? 'loading…' : 'no output yet'}
-            <div ref={endRef} />
-          </pre>
+          <LogViewer logs={data?.logs ?? ''} loading={isLoading} />
         </CardContent>
       )}
     </Card>

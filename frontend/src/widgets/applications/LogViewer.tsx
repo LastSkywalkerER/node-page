@@ -10,14 +10,26 @@ const WARN_RE = /\b(WARN|WRN)\b/;
 const INFO_RE = /\b(INFO|INF)\b/;
 const DEBUG_RE = /\b(DEBU|DEBUG|DBG|TRACE|TRC)\b/;
 
-// Split a line into optional [docker-ts] [app date-time] [LEVEL] [rest].
-const LINE_RE = /^(\S+Z)?\s*(\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)?\s*([A-Z]{3,5})?\s*([\s\S]*)$/;
+// Split a line into optional [iso-ts (docker "…Z" or journal "…+0000")]
+// [app date-time] [journal ident "host unit[pid]: "] [LEVEL] [rest].
+const LINE_RE =
+  /^(\S+(?:Z|[+-]\d{2}:?\d{2}))?\s*(\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)?\s*(\S+\s+\S+\[\d+\]:\s+)?([A-Z]{3,5})?\s*([\s\S]*)$/;
+// HTTP access-log status ("GET /x HTTP/1.1" 404 …) — coloured when the line
+// carries no log level of its own (Traefik / nginx access logs).
+const ACCESS_STATUS_RE = /HTTP\/[\d.]+"\s+(\d{3})\b/;
 
 function lineClass(line: string): string {
   if (ERROR_RE.test(line)) return 'text-red-400';
   if (WARN_RE.test(line)) return 'text-amber-400';
   if (INFO_RE.test(line)) return 'text-emerald-400/90';
   if (DEBUG_RE.test(line)) return 'text-sky-300/70';
+  const st = ACCESS_STATUS_RE.exec(line);
+  if (st) {
+    const code = Number(st[1]);
+    if (code >= 500) return 'text-red-400';
+    if (code >= 400) return 'text-amber-400';
+    return 'text-emerald-400/90';
+  }
   return 'text-foreground/80';
 }
 
@@ -97,9 +109,10 @@ function LogLine({
   // Without an active search, render the pretty split (dim timestamp, bold level).
   if (!query) {
     const m = LINE_RE.exec(line);
-    const ts = [m?.[1], m?.[2]].filter(Boolean).join(' ');
-    const level = m?.[3] && isLevel(m[3]) ? m[3] : '';
-    const rest = level ? (m?.[4] ?? '') : line.slice(ts.length).trimStart() || line;
+    const ts = [m?.[1], m?.[2], m?.[3]?.trimEnd()].filter(Boolean).join(' ');
+    const level = m?.[4] && isLevel(m[4]) ? m[4] : '';
+    const prefixLen = (m?.[1]?.length ?? 0) + (m?.[2]?.length ?? 0) + (m?.[3]?.length ?? 0);
+    const rest = level ? (m?.[5] ?? '') : line.slice(prefixLen).trimStart() || line;
     return (
       <div className="whitespace-pre-wrap break-all px-3 py-px leading-relaxed">
         {ts && <span className="text-muted-foreground/40">{ts} </span>}
