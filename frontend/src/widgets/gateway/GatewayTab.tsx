@@ -35,6 +35,15 @@ import { ConnectionsCard, BlocksCard } from './ConnectionsCard'
 const selectCls =
   'flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50'
 
+/** First of a comma-separated prefix list ('' when none / '/'). */
+function firstPrefix(csv: string): string {
+  const p = csv
+    .split(',')
+    .map((s) => s.trim())
+    .find((s) => s && s !== '/')
+  return p ?? ''
+}
+
 function fmtTime(iso?: string | null): string {
   if (!iso) return 'never'
   const d = new Date(iso)
@@ -164,6 +173,29 @@ function ConfigCard({ state }: { state: GatewayState }) {
                 />
               </div>
             </div>
+            {state.capabilities.running_in_docker && (
+              <div className="space-y-1.5">
+                <Label>Extra Docker networks (optional, comma-separated)</Label>
+                <Input
+                  placeholder="nginxproxymanager, myapp_default"
+                  value={(cfg.docker_networks ?? []).join(', ')}
+                  onChange={(e) =>
+                    update({
+                      docker_networks: e.target.value
+                        .split(',')
+                        .map((s) => s.trim())
+                        .filter(Boolean),
+                    })
+                  }
+                />
+                <p className="text-xs text-muted-foreground">
+                  Existing networks of other stacks the managed Traefik container also joins, so their containers can be
+                  targeted <b>by container name</b> (<span className="font-mono">http://grafana:3000</span>) — including
+                  ports published on <span className="font-mono">127.0.0.1</span> only, which no other bridge network can
+                  reach. Find them with <span className="font-mono">docker network ls</span>. Changing this restarts Traefik.
+                </p>
+              </div>
+            )}
             <div className="space-y-1.5">
               <Label>Request read timeout (upload ceiling)</Label>
               <select
@@ -678,7 +710,7 @@ function RouteForm({
               <>
                 Public URL: <span className="font-mono">{`${req.tls ? 'https' : 'http'}://${req.domain.trim()}${
                   req.tls ? (state.config.mode === 'managed' && (state.config.https_port || 443) !== 443 ? `:${state.config.https_port}` : '') : gwPort !== 80 ? `:${gwPort}` : ''
-                }${req.path_prefix.trim() && req.path_prefix.trim() !== '/' ? req.path_prefix.trim() : ''}`}</span>
+                }${firstPrefix(req.path_prefix)}`}</span>
                 {' — '}
               </>
             ) : null}
@@ -698,8 +730,8 @@ function RouteForm({
           </p>
         </div>
         <div className="space-y-1.5">
-          <Label>Path prefix (optional)</Label>
-          <Input placeholder="/" value={req.path_prefix} disabled={isPassthrough} onChange={(e) => set({ path_prefix: e.target.value })} />
+          <Label>Path prefix (optional — several: comma-separated)</Label>
+          <Input placeholder="/ or /api, /oauth2" value={req.path_prefix} disabled={isPassthrough} onChange={(e) => set({ path_prefix: e.target.value })} />
         </div>
       </div>
 
@@ -755,6 +787,7 @@ function RouteForm({
             >
               <option value="http">http</option>
               <option value="https">https</option>
+              <option value="h2c">h2c (gRPC)</option>
             </select>
             <Input
               placeholder="10.0.0.5 or hostname"
@@ -800,6 +833,12 @@ function RouteForm({
             </button>
           ) : null}
           {schemeNote && <span className="text-amber-500">{schemeNote}</span>}
+          {req.target_scheme === 'h2c' && (
+            <span>
+              HTTP/2 cleartext to the upstream — required for gRPC services (NetBird management/signal, Grafana Tempo…);
+              plain HTTP/1.1 upstreams break on it, so put WebSocket/REST paths on a separate <b>http</b> route.
+            </span>
+          )}
 
           {req.target_scheme === 'https' && (
             <label className="inline-flex items-center gap-1.5">

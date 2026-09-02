@@ -299,3 +299,57 @@ func TestSetConfig_Hardening(t *testing.T) {
 		t.Error("defaults must be delete/strict")
 	}
 }
+
+func TestCreateRoute_H2CAndPathPrefixList(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newSvc(repo, nil)
+	ctx := context.Background()
+	v, err := svc.CreateRoute(ctx, RouteRequest{Domain: "nb.example.com", TargetScheme: "H2C", TargetHost: "netbird-server", TargetPort: 80,
+		PathPrefix: " /api/, /oauth2/ ,/api/,/", TLS: true, TargetInsecureSkipVerify: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.TargetScheme != gateway.SchemeH2C || v.PathPrefix != "/api/,/oauth2/" || v.TargetInsecureSkipVerify {
+		t.Errorf("normalised: scheme=%q prefix=%q skip=%v", v.TargetScheme, v.PathPrefix, v.TargetInsecureSkipVerify)
+	}
+	// Same domain: any shared prefix is a conflict (order-insensitive); disjoint sets coexist.
+	if _, err := svc.CreateRoute(ctx, RouteRequest{Domain: "nb.example.com", TargetHost: "h", TargetPort: 80, PathPrefix: "/relay,/api/"}); !errors.Is(err, ErrValidation) {
+		t.Errorf("expected a conflict on the shared /api/ prefix, got %v", err)
+	}
+	if _, err := svc.CreateRoute(ctx, RouteRequest{Domain: "nb.example.com", TargetHost: "h", TargetPort: 80, PathPrefix: "/relay,/ws-proxy/"}); err != nil {
+		t.Errorf("disjoint prefixes must coexist: %v", err)
+	}
+	if _, err := svc.CreateRoute(ctx, RouteRequest{Domain: "nb.example.com", TargetHost: "h", TargetPort: 80}); err != nil {
+		t.Errorf("whole-host route next to a prefixed one must be allowed: %v", err)
+	}
+	for i, bad := range []RouteRequest{
+		{Domain: "nb.example.com", TargetHost: "h", TargetPort: 80, PathPrefix: "/ok,noslash"},
+		{Domain: "nb.example.com", TargetHost: "h", TargetPort: 80, TargetScheme: "h2c", Mode: gateway.RouteModePassthrough},
+	} {
+		if _, err := svc.CreateRoute(ctx, bad); !errors.Is(err, ErrValidation) {
+			t.Errorf("case %d: expected validation error, got %v", i, err)
+		}
+	}
+}
+
+func TestSetConfig_DockerNetworks(t *testing.T) {
+	store := &fakeStore{}
+	svc := NewService(log.New(nil), newFakeRepo(), nil, store, nil, nil, nil, nil)
+	ctx := context.Background()
+	out, err := svc.SetConfig(ctx, gateway.Config{Enabled: true, NodeMAC: "AA:BB", DockerNetworks: []string{" nginxproxymanager ", "", "netbird_netbird", "nginxproxymanager"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.DockerNetworks) != 2 || out.DockerNetworks[0] != "nginxproxymanager" || out.DockerNetworks[1] != "netbird_netbird" {
+		t.Errorf("networks: %v", out.DockerNetworks)
+	}
+	cfg, err := LoadConfig(ctx, store)
+	if err != nil || len(cfg.DockerNetworks) != 2 {
+		t.Errorf("round-trip: %+v %v", cfg.DockerNetworks, err)
+	}
+	for _, bad := range [][]string{{"default"}, {"has space"}, {"-leading"}, {"a/b"}} {
+		if _, err := svc.SetConfig(ctx, gateway.Config{Enabled: true, NodeMAC: "AA:BB", DockerNetworks: bad}); !errors.Is(err, ErrValidation) {
+			t.Errorf("%v: expected validation error, got %v", bad, err)
+		}
+	}
+}

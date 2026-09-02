@@ -47,7 +47,16 @@ const CertResolverName = "le"
 const (
 	SchemeHTTP  = "http"
 	SchemeHTTPS = "https"
+	// SchemeH2C: HTTP/2 cleartext to the upstream — what a gRPC service behind
+	// the gateway needs (gRPC requires end-to-end HTTP/2; Traefik would
+	// otherwise downgrade the hop to HTTP/1.1 and the stream breaks).
+	SchemeH2C = "h2c"
 )
+
+// ValidScheme reports whether s is a supported target scheme.
+func ValidScheme(s string) bool {
+	return s == SchemeHTTP || s == SchemeHTTPS || s == SchemeH2C
+}
 
 // Route modes.
 const (
@@ -117,6 +126,14 @@ type Config struct {
 	// against sloppy backends) and allows the rest; "permissive" allows all
 	// (Traefik's default); "paranoid" rejects all seven.
 	EncodedPathPolicy string `json:"encoded_path_policy,omitempty"`
+	// DockerNetworks (managed mode, Docker backend) are EXISTING Docker
+	// networks the Traefik container is additionally attached to, so the
+	// containers on them are reachable by container name (`http://grafana:3000`)
+	// — the way an NPM/Traefik that shares an app network does. Without it a
+	// target must be a published host port; containers published on
+	// 127.0.0.1 only are unreachable from another bridge network at all.
+	// Ignored by the native (systemd) backend — there Traefik runs on the host.
+	DockerNetworks []string `json:"docker_networks,omitempty"`
 	// (The Let's Encrypt staging CA is a developer-only knob —
 	// NODE_STATS_ACME_STAGING=1 on the gateway node — not part of the config.)
 }
@@ -136,6 +153,8 @@ type Route struct {
 	// Domain is the public hostname (lower-case FQDN). A leading "*." makes it
 	// a wildcard (all direct subdomains; matched with HostRegexp/HostSNIRegexp).
 	// PathPrefix optionally narrows the match (e.g. "/grafana"; http mode only).
+	// Several prefixes may be comma-separated ("/api,/oauth2") — they render as
+	// one OR-ed rule and share the target (see PathPrefixes).
 	Domain     string `json:"domain" gorm:"index;size:253;not null"`
 	PathPrefix string `json:"path_prefix,omitempty" gorm:"size:255"`
 
@@ -203,6 +222,26 @@ func AutoMigrate(db *gorm.DB) error {
 
 // IsWildcard reports whether the domain is a "*.example.com" wildcard.
 func (r Route) IsWildcard() bool { return strings.HasPrefix(r.Domain, "*.") }
+
+// PathPrefixes returns the route's path prefixes (comma-separated in
+// PathPrefix; "" or "/" → none).
+func (r Route) PathPrefixes() []string {
+	var out []string
+	for _, p := range SplitCSV(r.PathPrefix) {
+		if p != "" && p != "/" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// FirstPathPrefix is the prefix used where only one fits (public URL).
+func (r Route) FirstPathPrefix() string {
+	if ps := r.PathPrefixes(); len(ps) > 0 {
+		return ps[0]
+	}
+	return ""
+}
 
 // IsPassthrough reports whether the route delegates TLS to another proxy.
 func (r Route) IsPassthrough() bool { return r.Mode == RouteModePassthrough }
@@ -298,5 +337,5 @@ func (r Route) PublicURL(cfg Config) string {
 	} else if cfg.Mode == ModeManaged && cfg.HTTPPort != 0 && cfg.HTTPPort != 80 {
 		port = ":" + itoa(cfg.HTTPPort)
 	}
-	return scheme + "://" + r.Domain + port + r.PathPrefix
+	return scheme + "://" + r.Domain + port + r.FirstPathPrefix()
 }

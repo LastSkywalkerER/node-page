@@ -80,7 +80,7 @@ func TestDesiredState_GatewayRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := ReadDesiredState(dir)
-	if err != nil || got == nil || got.Gateway == nil || *got.Gateway != *ds.Gateway {
+	if err != nil || got == nil || got.Gateway == nil || !got.Gateway.Equal(*ds.Gateway) {
 		t.Fatalf("round-trip: %+v %v", got, err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, DesiredStateFile)); err != nil {
@@ -115,5 +115,33 @@ func TestEncodedCharacterOptions(t *testing.T) {
 	}
 	if got := len(TraefikEntrypointHardeningFlags("web", GatewayProvision{AliasHeadersStrategy: AliasHeadersReject, EncodedPathPolicy: EncodedPathStrict})); got != 8 {
 		t.Errorf("expected 1 + 7 flags, got %d", got)
+	}
+}
+
+func TestBuildComposeContent_GatewayDockerNetworks(t *testing.T) {
+	ds := DesiredState{DBMode: DBModeSQLite, Gateway: &GatewayProvision{Enabled: true, DockerNetworks: []string{"nginxproxymanager", "netbird_netbird"}}}
+	out := BuildComposeContent(ds)
+	for _, want := range []string{
+		"    networks:\n      - default\n      - nginxproxymanager\n      - netbird_netbird\n",
+		"\nnetworks:\n  nginxproxymanager:\n    external: true\n    name: nginxproxymanager\n  netbird_netbird:\n    external: true\n    name: netbird_netbird\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("compose missing %q\n%s", want, out)
+		}
+	}
+	// Only the traefik service joins them — the app/controller stanzas keep the implicit default.
+	if strings.Count(out, "      - default") != 1 {
+		t.Errorf("expected exactly one service-level networks list:\n%s", out)
+	}
+	plain := BuildComposeContent(DesiredState{DBMode: DBModeSQLite, Gateway: &GatewayProvision{Enabled: true}})
+	if strings.Contains(plain, "networks:") {
+		t.Errorf("no networks stanza expected without extra networks:\n%s", plain)
+	}
+	a := GatewayProvision{Enabled: true, DockerNetworks: []string{"x"}}
+	if a.Equal(GatewayProvision{Enabled: true}) || !a.Equal(GatewayProvision{Enabled: true, DockerNetworks: []string{"x"}}) {
+		t.Error("Equal must compare the network list")
+	}
+	if !(GatewayProvision{Enabled: true}).Equal(GatewayProvision{Enabled: true, DockerNetworks: []string{}}) {
+		t.Error("nil and empty network lists are the same provision")
 	}
 }

@@ -107,7 +107,7 @@ func (n *nativeProvisioner) acmeDir() string    { return filepath.Join(n.dir(), 
 // Reconcile makes the systemd Traefik match want (installing on first use).
 // Returns whether the service was (re)started.
 func (n *nativeProvisioner) Reconcile(ctx context.Context, want setup.GatewayProvision) (restarted bool, err error) {
-	if n.installedWant != nil && *n.installedWant == want && time.Since(n.lastCheck) < time.Minute {
+	if n.installedWant != nil && n.installedWant.Equal(want) && time.Since(n.lastCheck) < time.Minute {
 		return false, nil
 	}
 	if err := os.MkdirAll(n.dynamicDir(), 0o755); err != nil {

@@ -17,6 +17,8 @@ export const GatewayConfigSchema = z.object({
   // Entrypoint hardening ('' = node-stats default: delete / strict).
   alias_headers_strategy: z.string().optional().default(''),
   encoded_path_policy: z.string().optional().default(''),
+  // Managed Docker Traefik: extra EXISTING Docker networks it joins (targets by container name).
+  docker_networks: z.array(z.string()).optional().default([]),
 })
 export type GatewayConfig = z.infer<typeof GatewayConfigSchema>
 

@@ -258,8 +258,14 @@ func RenderFiles(cfg Config, routes []Route, blocks []Block) (Rendered, error) {
 		rc.note(secHTTPServices, svcName, label, "upstream "+targetURL)
 
 		rule := hostRule(r.Domain)
-		if p := strings.TrimSpace(r.PathPrefix); p != "" && p != "/" {
-			rule += fmt.Sprintf(" && PathPrefix(`%s`)", p)
+		if ps := r.PathPrefixes(); len(ps) == 1 {
+			rule += fmt.Sprintf(" && PathPrefix(`%s`)", ps[0])
+		} else if len(ps) > 1 {
+			parts := make([]string, 0, len(ps))
+			for _, p := range ps {
+				parts = append(parts, fmt.Sprintf("PathPrefix(`%s`)", p))
+			}
+			rule += " && (" + strings.Join(parts, " || ") + ")"
 		}
 		if r.ReadOnly {
 			// Traefik v3's Method() takes exactly one argument — OR them.

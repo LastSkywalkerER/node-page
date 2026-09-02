@@ -597,7 +597,8 @@ func (m *Materializer) provisionFor(cfg gateway.Config) setup.GatewayProvision {
 		ACMEEnabled: cfg.ACMEEnabled, ACMEEmail: cfg.ACMEEmail, ACMEStaging: acmeStagingEnv(),
 		ReadTimeoutSeconds:   cfg.EffectiveRequestReadTimeoutSeconds(),
 		AliasHeadersStrategy: cfg.EffectiveAliasHeadersStrategy(),
-		EncodedPathPolicy:    cfg.EffectiveEncodedPathPolicy()}
+		EncodedPathPolicy:    cfg.EffectiveEncodedPathPolicy(),
+		DockerNetworks:       append([]string(nil), cfg.DockerNetworks...)}
 }
 
 func readConfigFile(name, kind, path, note string) ConfigFile {

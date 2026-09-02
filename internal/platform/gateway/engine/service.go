@@ -270,6 +270,11 @@ func (s *service) SetConfig(ctx context.Context, cfg gateway.Config) (*gateway.C
 	if t := cfg.RequestReadTimeoutSeconds; t < gateway.RequestReadTimeoutUnlimited || t > gateway.MaxRequestReadTimeoutSeconds {
 		return nil, fmt.Errorf("%w: request read timeout must be -1 (unlimited), 0 (default 24h) or up to %d seconds", ErrValidation, gateway.MaxRequestReadTimeoutSeconds)
 	}
+	nets, err := normalizeDockerNetworks(cfg.DockerNetworks)
+	if err != nil {
+		return nil, err
+	}
+	cfg.DockerNetworks = nets
 	cfg.NodeSystemID = ""
 	if s.hosts != nil {
 		var h *hosts.Host
@@ -500,19 +505,32 @@ func (s *service) applyRequest(r *gateway.Route, req RouteRequest, prev *gateway
 			return fmt.Errorf("%w: passthrough routes can't carry basic auth / IP allow lists — the traffic is encrypted end-to-end; configure access control on the other proxy", ErrValidation)
 		}
 	}
-	path := strings.TrimSpace(req.PathPrefix)
-	if path == "/" {
-		path = ""
+	// Path prefixes: one or several (comma-separated), each "/something";
+	// a lone "/" means "whole host". Normalised back to a comma list.
+	var prefixes []string
+	seen := map[string]bool{}
+	for _, p := range gateway.SplitCSV(req.PathPrefix) {
+		if p == "" || p == "/" {
+			continue
+		}
+		if !strings.HasPrefix(p, "/") || strings.ContainsAny(p, " `\"',") {
+			return fmt.Errorf("%w: path prefix must start with / and contain no spaces or quotes", ErrValidation)
+		}
+		if !seen[p] {
+			seen[p] = true
+			prefixes = append(prefixes, p)
+		}
 	}
-	if path != "" && (!strings.HasPrefix(path, "/") || strings.ContainsAny(path, " `\"'")) {
-		return fmt.Errorf("%w: path prefix must start with / and contain no spaces or quotes", ErrValidation)
-	}
+	path := strings.Join(prefixes, ",")
 	scheme := strings.ToLower(strings.TrimSpace(req.TargetScheme))
 	if scheme == "" {
 		scheme = gateway.SchemeHTTP
 	}
-	if scheme != gateway.SchemeHTTP && scheme != gateway.SchemeHTTPS {
-		return fmt.Errorf("%w: target scheme must be http or https", ErrValidation)
+	if !gateway.ValidScheme(scheme) {
+		return fmt.Errorf("%w: target scheme must be http, https or h2c (gRPC / HTTP/2 cleartext)", ErrValidation)
+	}
+	if scheme == gateway.SchemeH2C && mode == gateway.RouteModePassthrough {
+		return fmt.Errorf("%w: passthrough routes forward raw TLS — the target scheme does not apply", ErrValidation)
 	}
 	th := strings.TrimSpace(req.TargetHost)
 	if th == "" || strings.ContainsAny(th, " /`\"'") {
@@ -620,15 +638,51 @@ func (s *service) applyRequest(r *gateway.Route, req RouteRequest, prev *gateway
 	return nil
 }
 
+// dockerNetworkRe matches what `docker network create` accepts as a name.
+var dockerNetworkRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
+
+// normalizeDockerNetworks trims, de-duplicates and validates the extra Docker
+// network names of the managed Traefik ("default" is implicit and rejected so
+// the compose stanza never lists it twice).
+func normalizeDockerNetworks(in []string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, raw := range in {
+		n := strings.TrimSpace(raw)
+		if n == "" || seen[n] {
+			continue
+		}
+		if n == "default" || !dockerNetworkRe.MatchString(n) {
+			return nil, fmt.Errorf("%w: invalid Docker network name %q", ErrValidation, raw)
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	return out, nil
+}
+
 // checkDomainConflict rejects a second route on the same domain+path.
 func (s *service) checkDomainConflict(ctx context.Context, r gateway.Route) error {
 	rows, err := s.repo.List(ctx)
 	if err != nil {
 		return err
 	}
+	mine := r.PathPrefixes()
 	for _, o := range rows {
-		if o.RouteID != r.RouteID && o.Domain == r.Domain && o.PathPrefix == r.PathPrefix {
-			return fmt.Errorf("%w: %s%s is already routed (%s)", ErrValidation, r.Domain, r.PathPrefix, o.Name)
+		if o.RouteID == r.RouteID || o.Domain != r.Domain {
+			continue
+		}
+		theirs := o.PathPrefixes()
+		if len(mine) == 0 && len(theirs) == 0 {
+			return fmt.Errorf("%w: %s is already routed (%s)", ErrValidation, r.Domain, o.Name)
+		}
+		// Two routes may share a domain only while their prefix sets are disjoint.
+		for _, a := range mine {
+			for _, b := range theirs {
+				if a == b {
+					return fmt.Errorf("%w: %s%s is already routed (%s)", ErrValidation, r.Domain, a, o.Name)
+				}
+			}
 		}
 	}
 	return nil

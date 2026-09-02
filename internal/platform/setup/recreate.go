@@ -69,7 +69,7 @@ func RequestGatewayState(dataDir, dbType, dbDSN string, want GatewayProvision) (
 		}
 		ds.Gateway = &GatewayProvision{Enabled: false}
 	} else {
-		if ds.Gateway != nil && *ds.Gateway == want {
+		if ds.Gateway != nil && ds.Gateway.Equal(want) {
 			return false, nil
 		}
 		gw := want

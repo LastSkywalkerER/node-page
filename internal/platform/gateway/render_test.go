@@ -264,3 +264,41 @@ func TestRenderFiles_PrettyLayout(t *testing.T) {
 		t.Errorf("comment injection not neutralised:\n%s", files.Blocks)
 	}
 }
+
+func TestRender_H2CSchemeAndMultiplePathPrefixes(t *testing.T) {
+	cfg := Config{Enabled: true, Mode: ModeManaged, ACMEEnabled: true}
+	routes := []Route{
+		{RouteID: "dash", Domain: "nb.example.com", TargetHost: "netbird-dashboard", TargetPort: 80, TLS: true, Enabled: true},
+		{RouteID: "grpc", Domain: "nb.example.com", TargetScheme: SchemeH2C, TargetHost: "netbird-server", TargetPort: 80, TLS: true, Enabled: true,
+			PathPrefix: "/signalexchange.SignalExchange,/management.ManagementService"},
+	}
+	out, err := renderRoutes(t, cfg, routes, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc traefikDynamic
+	if err := yaml.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("invalid yaml: %v\n%s", err, out)
+	}
+	if got := doc.HTTP.Services["ns-grpc"].LoadBalancer.Servers[0].URL; got != "h2c://netbird-server:80" {
+		t.Errorf("h2c service url = %q", got)
+	}
+	want := "Host(`nb.example.com`) && (PathPrefix(`/signalexchange.SignalExchange`) || PathPrefix(`/management.ManagementService`))"
+	if got := doc.HTTP.Routers["ns-grpc"].Rule; got != want {
+		t.Errorf("rule = %q", got)
+	}
+	if got := doc.HTTP.Routers["ns-dash"].Rule; got != "Host(`nb.example.com`)" {
+		t.Errorf("dashboard rule = %q", got)
+	}
+	// h2c never gets a skip-verify transport (there is no TLS on that hop).
+	if _, ok := doc.HTTP.ServersTransports["ns-grpc-transport"]; ok {
+		t.Error("h2c route must not render a serversTransport")
+	}
+	r := routes[1]
+	if r.FirstPathPrefix() != "/signalexchange.SignalExchange" || len(r.PathPrefixes()) != 2 {
+		t.Errorf("prefix helpers: %q %v", r.FirstPathPrefix(), r.PathPrefixes())
+	}
+	if u := r.PublicURL(cfg); u != "https://nb.example.com/signalexchange.SignalExchange" {
+		t.Errorf("public url = %q", u)
+	}
+}

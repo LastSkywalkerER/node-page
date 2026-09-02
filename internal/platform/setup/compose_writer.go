@@ -2,6 +2,7 @@ package setup
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -82,6 +83,22 @@ type GatewayProvision struct {
 	// (only for old binaries that predate the options).
 	AliasHeadersStrategy string `json:"alias_headers_strategy,omitempty"`
 	EncodedPathPolicy    string `json:"encoded_path_policy,omitempty"`
+	// DockerNetworks are EXISTING (external) Docker networks the Traefik
+	// service is attached to in addition to the stack's default network, so
+	// containers on them are reachable by name. Already validated.
+	DockerNetworks []string `json:"docker_networks,omitempty"`
+}
+
+// Equal compares two provisions field by field (the struct holds a slice, so
+// == is not available).
+func (gw GatewayProvision) Equal(o GatewayProvision) bool {
+	if len(gw.DockerNetworks) == 0 {
+		gw.DockerNetworks = nil
+	}
+	if len(o.DockerNetworks) == 0 {
+		o.DockerNetworks = nil
+	}
+	return reflect.DeepEqual(gw, o)
 }
 
 // Entrypoint hardening values (gateway.Config.AliasHeadersStrategy /
@@ -343,6 +360,18 @@ func BuildComposeContent(ds DesiredState) string {
 		w("  pgdata:")
 	}
 
+	// --- top-level networks: the gateway's extra (external) Docker networks --
+	// Declared `external` so compose never creates/removes them — they belong
+	// to the other stacks (an NPM network, an app's compose network…).
+	if ds.GatewayEnabled() && len(ds.Gateway.DockerNetworks) > 0 {
+		w("networks:")
+		for _, n := range ds.Gateway.DockerNetworks {
+			w("  " + n + ":")
+			w("    external: true")
+			w("    name: " + n)
+		}
+	}
+
 	return b.String()
 }
 
@@ -419,6 +448,16 @@ func writeTraefikService(w func(string), gw GatewayProvision) {
 	// host-gateway alias inside the Traefik container too.
 	w("    extra_hosts:")
 	w(`      - "host.docker.internal:host-gateway"`)
+	// Extra networks: listing any network on a service drops the implicit
+	// default, so it is re-added first (the app's liveness probe reaches
+	// traefik:8082 over it).
+	if len(gw.DockerNetworks) > 0 {
+		w("    networks:")
+		w("      - default")
+		for _, n := range gw.DockerNetworks {
+			w("      - " + n)
+		}
+	}
 	w("    ports:")
 	w(fmt.Sprintf(`      - "%d:80"`, httpPort))
 	w(fmt.Sprintf(`      - "%d:443"`, httpsPort))

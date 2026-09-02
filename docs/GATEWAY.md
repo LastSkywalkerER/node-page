@@ -42,13 +42,19 @@ that header.
 Injected by `setup.BuildComposeContent` when `desired-state.json` carries `gateway.enabled=true`
 (see `writeTraefikService`):
 
-- `traefik:v3.3` (override with `NODE_STATS_TRAEFIK_IMAGE` in the stack `.env`), file provider
+- `traefik:v3.7` (override with `NODE_STATS_TRAEFIK_IMAGE` in the stack `.env`), file provider
   only, `--providers.file.watch=true` — no docker socket, no labels;
 - entrypoints `web` :80 / `websecure` :443 published on the configured host ports, `ping` :8082
   container-internal (healthcheck + the app's liveness probe at `http://traefik:8082/ping`);
 - ACME (`le` resolver, HTTP-01 on `web`) when enabled; `acme.json` persists in
   `./data/docker/traefik/acme`; optional staging CA for testing;
-- `mem_limit: 256m`, capped json logs, `--api.dashboard=false`, no telemetry.
+- `mem_limit: 256m`, capped json logs, `--api.dashboard=false`, no telemetry;
+- **extra Docker networks** (`Config.docker_networks`, UI: "Extra Docker networks"): existing networks
+  of other stacks the Traefik service additionally joins (`networks: [default, <n>…]` + top-level
+  `networks.<n>: {external: true}`), so their containers are targets **by container name** — the way
+  NPM/Traefik on a shared app network works — including services published on `127.0.0.1` only, which
+  no other bridge network can reach (Docker's inter-bridge isolation). `default` stays first so the
+  app's liveness probe (`traefik:8082`) keeps working. Native (systemd) installs ignore it.
 
 The controller starts it with `compose up -d --wait traefik` (a port clash surfaces as a
 controller error shown in the UI) and removes it when the gateway is disabled. A **gateway-only**
@@ -88,6 +94,19 @@ normally.
 A route is provider-neutral (`gateway.Route`): `domain` (+ optional `path_prefix`) → `scheme://
 target_host:target_port`, flags `tls`, `target_insecure_skip_verify`, access control (`basic_auth`
 users — bcrypt-hashed server-side, never returned — and an `ip_allow_list` of CIDRs), `enabled`.
+
+- **`path_prefix` may list several prefixes, comma-separated** (`/api,/oauth2`): they render as one
+  OR-ed rule (`Host(…) && (PathPrefix(`/api`) || PathPrefix(`/oauth2`))`) sharing the target. Routes on
+  the same domain may coexist as long as their prefix sets are disjoint; a whole-host route (no prefix)
+  next to prefixed ones is the usual "SPA + API split" — Traefik's rule-length priority makes the
+  longer prefixed rules win. The public URL shown in the UI uses the first prefix.
+- **`target_scheme`** is `http`, `https` (+ `target_insecure_skip_verify` for self-signed upstreams) or
+  **`h2c`** — HTTP/2 cleartext to the upstream, which gRPC services need end-to-end (Traefik would
+  otherwise downgrade the hop to HTTP/1.1 and the stream fails). Keep WebSocket/REST paths on a separate
+  `http` route: an HTTP/1.1-only upstream breaks behind `h2c`. Example (NetBird, one domain):
+  `/` → `http://netbird-dashboard:80`; `/relay,/ws-proxy/,/api/,/oauth2/` → `http://netbird-server:80`;
+  `/signalexchange.SignalExchange,/management.ManagementService` → `h2c://netbird-server:80` (limits off
+  on the two long-lived ones).
 
 **Passthrough routes (delegating to another reverse proxy).** `mode: passthrough` hands a hostname —
 typically a wildcard like `*.apps.example.com` — to another proxy (a Dokploy/Coolify Traefik, Caddy,
