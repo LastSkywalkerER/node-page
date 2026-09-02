@@ -159,10 +159,12 @@ type Rendered struct {
 	// Routes is DynamicFileName: every enabled route's routers/services/
 	// middlewares, grouped by domain with an index in the header.
 	Routes []byte
-	// Blocks is BlocksFileName: the client deny list. Only rendered when there
-	// is at least one route (an empty gateway serves nothing anyway) and at
-	// least one unexpired block — it changes on its own rhythm (TTL sweeps),
-	// so keeping it apart leaves the routes file untouched.
+	// Blocks is BlocksFileName: the client deny list. Rendered whenever at
+	// least one block is unexpired — independently of routes: a gateway with
+	// no routes yet is still a public :80/:443 that scanners probe (Traefik
+	// answers 404), and blocking them is exactly what the deny list is for.
+	// It changes on its own rhythm (TTL sweeps), so keeping it apart leaves
+	// the routes file untouched.
 	Blocks []byte
 }
 
@@ -326,31 +328,30 @@ func RenderFiles(cfg Config, routes []Route, blocks []Block) (Rendered, error) {
 	}
 
 	out := Rendered{}
-	if len(doc.HTTP.Routers) == 0 && (doc.TCP == nil || len(doc.TCP.Routers) == 0) {
-		// No enabled routes: no files at all (see Rendered).
-		return out, nil
-	}
 	active := activeBlocks(blocks)
+	hasRoutes := len(doc.HTTP.Routers) > 0 || (doc.TCP != nil && len(doc.TCP.Routers) > 0)
 
-	body, err := emitYAML(doc, rc)
-	if err != nil {
-		return out, err
-	}
-	header := ownershipHeader + "\n# Manage routes in the node-stats admin panel → Gateway.\n"
-	// Port hint for the Applications-view discovery parser (public URLs with
-	// the gateway's actual published ports). Only managed mode knows them.
-	if cfg.Mode == ModeManaged {
-		hp, sp := cfg.HTTPPort, cfg.HTTPSPort
-		if hp == 0 {
-			hp = 80
+	if hasRoutes {
+		body, err := emitYAML(doc, rc)
+		if err != nil {
+			return out, err
 		}
-		if sp == 0 {
-			sp = 443
+		header := ownershipHeader + "\n# Manage routes in the node-stats admin panel → Gateway.\n"
+		// Port hint for the Applications-view discovery parser (public URLs with
+		// the gateway's actual published ports). Only managed mode knows them.
+		if cfg.Mode == ModeManaged {
+			hp, sp := cfg.HTTPPort, cfg.HTTPSPort
+			if hp == 0 {
+				hp = 80
+			}
+			if sp == 0 {
+				sp = 443
+			}
+			header += fmt.Sprintf("# node-stats-gateway: http_port=%d https_port=%d\n", hp, sp)
 		}
-		header += fmt.Sprintf("# node-stats-gateway: http_port=%d https_port=%d\n", hp, sp)
+		header += routeIndex(sorted, len(active))
+		out.Routes = append([]byte(header), body...)
 	}
-	header += routeIndex(sorted, len(active))
-	out.Routes = append([]byte(header), body...)
 
 	if len(active) > 0 {
 		bdoc, brc := renderBlocksDoc(active, doc.TCP != nil && len(doc.TCP.Routers) > 0)

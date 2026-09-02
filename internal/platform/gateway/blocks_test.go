@@ -74,10 +74,14 @@ func TestRenderBlocklist(t *testing.T) {
 		t.Errorf("expired block still rendered:\n%s", y)
 	}
 
-	// No routes → no file at all, blocks alone must not force one.
+	// No routes → no routes file, but the deny list still renders: a gateway
+	// without routes is still probed by scanners on :80/:443.
 	files, err = RenderFiles(cfg, nil, blocks)
-	if err != nil || files.Routes != nil || files.Blocks != nil {
-		t.Errorf("blocks without routes rendered a file: %+v %v", files, err)
+	if err != nil || files.Routes != nil || files.Blocks == nil {
+		t.Errorf("blocks without routes must still render the blocks file: routes=%v blocks=%v err=%v", files.Routes != nil, files.Blocks != nil, err)
+	}
+	if strings.Contains(string(files.Blocks), "tcp:") {
+		t.Errorf("no passthrough routes → no TCP blackhole:\n%s", files.Blocks)
 	}
 	// Routes but no active blocks → no blocks file.
 	files, _ = RenderFiles(cfg, routes, []Block{{BlockID: "b3", CIDR: "192.0.2.9/32", ExpiresAt: &past}})
