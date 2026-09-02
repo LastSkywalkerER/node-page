@@ -89,14 +89,14 @@ Local:
 // prefix (default via a /32 gateway route) — it must fall back to the
 // default-route interface instead of being dropped.
 func TestHostNetNSPointToPointVPS(t *testing.T) {
-	// 65.21.152.83 LE-hex = 5398.15.41 → bytes 41 15 98 53 → "53981541";
+	// 203.0.113.83 LE-hex = 5398.15.41 → bytes 41 15 98 53 → "53981541";
 	// gateway 172.31.1.1 → "0101 1F AC" → "01011FAC".
 	route := "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
 		"eth0\t00000000\t01011FAC\t0003\t0\t0\t0\t00000000\t0\t0\t0\n" +
 		"eth0\t01011FAC\t00000000\t0005\t0\t0\t0\tFFFFFFFF\t0\t0\t0\n"
 	fib := `Main:
   +-- 0.0.0.0/0 2 0 2
-     |-- 65.21.152.83
+     |-- 203.0.113.83
         /32 host LOCAL
 Local:
   +-- 127.0.0.0/8 2 0 2
@@ -113,8 +113,8 @@ Local:
 		t.Fatalf("default iface = %q, want eth0", def)
 	}
 	eth := details["eth0"]
-	if eth == nil || len(eth.IPs) != 1 || eth.IPs[0] != "65.21.152.83" {
-		t.Fatalf("eth0 = %+v, want 65.21.152.83", eth)
+	if eth == nil || len(eth.IPs) != 1 || eth.IPs[0] != "203.0.113.83" {
+		t.Fatalf("eth0 = %+v, want 203.0.113.83", eth)
 	}
 	if eth.MAC != "96:00:02:aa:bb:cc" {
 		t.Fatalf("eth0 mac = %q", eth.MAC)

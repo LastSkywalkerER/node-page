@@ -218,8 +218,8 @@ func TestHostsFromRule_MultipleDomains(t *testing.T) {
 // silently dropped because the port slot already carries the first.
 func TestEnrichWithTraefikRoutes_MultipleDomainsOneService(t *testing.T) {
 	routes := []traefikRoute{
-		{Host: "ebcenter.sky-tehnol.uk", Scheme: "https", UpstreamHost: "ebcenter-app-yxkjot", UpstreamPort: 3000},
-		{Host: "prosmety.by", Scheme: "https", UpstreamHost: "ebcenter-app-yxkjot", UpstreamPort: 3000},
+		{Host: "shop.example.com", Scheme: "https", UpstreamHost: "ebcenter-app-yxkjot", UpstreamPort: 3000},
+		{Host: "shop.example.org", Scheme: "https", UpstreamHost: "ebcenter-app-yxkjot", UpstreamPort: 3000},
 	}
 	m := &DockerMetric{Stacks: []DockerStack{{Containers: []DockerContainer{
 		{Name: "ebcenter-app-yxkjot.1.sgmey", Project: "ebcenter-app-yxkjot", Ports: []DockerPort{}},
@@ -234,7 +234,7 @@ func TestEnrichWithTraefikRoutes_MultipleDomainsOneService(t *testing.T) {
 			urls[p.PublicURL] = true
 		}
 	}
-	if !urls["https://ebcenter.sky-tehnol.uk"] || !urls["https://prosmety.by"] {
+	if !urls["https://shop.example.com"] || !urls["https://shop.example.org"] {
 		t.Fatalf("expected BOTH domains attached, got ports %+v", c.Ports)
 	}
 

@@ -268,16 +268,13 @@ Raft replication as the UI):
   (`routes:` = a list of route requests with the API's JSON keys, optional `config:` patch with
   `docker_networks` / `enabled` / `acme_*`).
 
-**Migrating from Nginx Proxy Manager**: `scripts/npm-to-traefik.py /path/to/npm/database.sqlite
-[--no-tls host,… ] [--skip host,…] [--rewrite 127.0.0.1=host.docker.internal] > gateway-import.yml`
-converts proxy hosts (domains → Host rule + aliases, forward target, certificate → https, HSTS,
-access lists → basicAuth/ipAllowList), redirection hosts and streams into that dynamic config, and
-prints review notes for what it could not translate (NPM "advanced config" blocks — usually extra
-`location`s that become additional PathPrefix routers; "block exploits", which the gateway covers
-with limits and client blocks). Attach the managed Traefik to NPM's Docker network
-(`docker_networks`) so container-name targets keep resolving. Use `--no-tls` for hosts behind
-Cloudflare in *Flexible* mode (Cloudflare reaches the origin over plain http; a TLS route's redirect
-would loop).
+**Migrating from another proxy**: express its hosts as a Traefik dynamic config (one router + service
+per host; `tls: {certResolver: le}` on `websecure` for https, an `ipAllowList`/`basicAuth` middleware
+for access lists, `redirectRegex` on `noop@internal` for redirects, tcp/udp routers on
+`ns-<proto>-<port>` for port forwards) and import it. Attach the managed Traefik to that proxy's Docker
+network (`docker_networks`) so container-name targets keep resolving. Hosts behind Cloudflare in
+*Flexible* mode must stay plain `web` routes (Cloudflare reaches the origin over http; a TLS route's
+redirect would loop).
 
 ## API (admin)
 

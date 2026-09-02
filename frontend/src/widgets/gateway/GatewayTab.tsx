@@ -1626,8 +1626,7 @@ function ImportPanel({ onDone }: { onDone: () => void }) {
         <div className="text-sm font-medium">Import routes from a Traefik dynamic config</div>
         <p className="text-xs text-muted-foreground">
           Paste a Traefik file-provider YAML — this gateway's own <span className="font-mono">node-stats.yml</span> from
-          another cluster, a hand-written one, or the output of{' '}
-          <span className="font-mono">scripts/npm-to-traefik.py</span> (Nginx Proxy Manager database → Traefik). Routers,
+          another cluster, a hand-written one, or a config exported from the proxy you are migrating away from. Routers,
           services, middlewares and tcp/udp streams become routes; existing routes with the same domain + path (or
           protocol + port) are updated, everything else is created. What the route model can't express is listed as a
           warning. The same file can be dropped as <span className="font-mono">gateway-import.yml</span> into the data
