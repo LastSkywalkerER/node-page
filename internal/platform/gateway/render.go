@@ -15,6 +15,7 @@ import (
 type traefikDynamic struct {
 	HTTP traefikHTTP `yaml:"http"`
 	TCP  *traefikTCP `yaml:"tcp,omitempty"`
+	UDP  *traefikUDP `yaml:"udp,omitempty"`
 }
 
 // TCP section — used for TLS passthrough routes (SNI-routed raw TLS).
@@ -75,9 +76,11 @@ type traefikService struct {
 }
 
 type traefikLoadBalancer struct {
-	Servers          []traefikServer `yaml:"servers"`
-	PassHostHeader   *bool           `yaml:"passHostHeader,omitempty"`
-	ServersTransport string          `yaml:"serversTransport,omitempty"`
+	Servers          []traefikServer     `yaml:"servers"`
+	PassHostHeader   *bool               `yaml:"passHostHeader,omitempty"`
+	ServersTransport string              `yaml:"serversTransport,omitempty"`
+	HealthCheck      *traefikHealthCheck `yaml:"healthCheck,omitempty"`
+	Sticky           *traefikSticky      `yaml:"sticky,omitempty"`
 }
 
 type traefikServer struct {
@@ -86,6 +89,7 @@ type traefikServer struct {
 
 type traefikServersTransport struct {
 	InsecureSkipVerify bool                       `yaml:"insecureSkipVerify"`
+	ServerName         string                     `yaml:"serverName,omitempty"`
 	ForwardingTimeouts *traefikForwardingTimeouts `yaml:"forwardingTimeouts,omitempty"`
 }
 
@@ -99,9 +103,16 @@ type traefikMiddleware struct {
 	BasicAuth      *traefikBasicAuth      `yaml:"basicAuth,omitempty"`
 	IPAllowList    *traefikIPAllowList    `yaml:"ipAllowList,omitempty"`
 	RedirectScheme *traefikRedirectScheme `yaml:"redirectScheme,omitempty"`
+	RedirectRegex  *traefikRedirectRegex  `yaml:"redirectRegex,omitempty"`
 	InFlightReq    *traefikInFlightReq    `yaml:"inFlightReq,omitempty"`
 	RateLimit      *traefikRateLimit      `yaml:"rateLimit,omitempty"`
 	Buffering      *traefikBuffering      `yaml:"buffering,omitempty"`
+	ForwardAuth    *traefikForwardAuth    `yaml:"forwardAuth,omitempty"`
+	Headers        *traefikHeaders        `yaml:"headers,omitempty"`
+	StripPrefix    *traefikStripPrefix    `yaml:"stripPrefix,omitempty"`
+	AddPrefix      *traefikAddPrefix      `yaml:"addPrefix,omitempty"`
+	Compress       *traefikCompress       `yaml:"compress,omitempty"`
+	Retry          *traefikRetry          `yaml:"retry,omitempty"`
 }
 
 // inFlightReq: at most Amount concurrent requests per source (client IP by
@@ -222,11 +233,26 @@ func RenderFiles(cfg Config, routes []Route, blocks []Block) (Rendered, error) {
 	}
 
 	for _, r := range sorted {
-		if !r.Enabled || r.RouteID == "" || r.Domain == "" || r.TargetHost == "" || r.TargetPort <= 0 {
+		if !r.Enabled || r.RouteID == "" {
 			continue
 		}
 		base := namePrefix + r.RouteID
 		label := routeLabel(r)
+		switch {
+		case r.IsStream():
+			if r.TargetHost != "" && r.TargetPort > 0 && r.ListenPort > 0 {
+				renderStream(&doc, rc, base, label, r)
+			}
+			continue
+		case r.IsRedirect():
+			if r.Domain != "" && strings.TrimSpace(r.RedirectURL) != "" {
+				renderRedirect(&doc, rc, base, label, r, cfg)
+			}
+			continue
+		}
+		if r.Domain == "" || r.TargetHost == "" || r.TargetPort <= 0 {
+			continue
+		}
 		if r.IsPassthrough() {
 			renderPassthrough(&doc, rc, base, label, r)
 			continue
@@ -238,13 +264,33 @@ func RenderFiles(cfg Config, routes []Route, blocks []Block) (Rendered, error) {
 		}
 		targetURL := fmt.Sprintf("%s://%s:%d", scheme, r.TargetHost, r.TargetPort)
 		lb := traefikLoadBalancer{Servers: []traefikServer{{URL: targetURL}}}
+		for _, extra := range r.ExtraServers() {
+			lb.Servers = append(lb.Servers, traefikServer{URL: scheme + "://" + extra})
+		}
+		if r.HostHeaderMode == HostHeaderUpstream {
+			f := false
+			lb.PassHostHeader = &f
+		}
+		if iv := r.EffectiveHealthCheckInterval(); iv > 0 {
+			lb.HealthCheck = &traefikHealthCheck{Path: strings.TrimSpace(r.HealthCheckPath), Interval: fmt.Sprintf("%ds", iv), Timeout: "5s"}
+		}
+		if r.Sticky {
+			lb.Sticky = &traefikSticky{Cookie: traefikStickyCookie{Name: base, Secure: r.TLS, HTTPOnly: true}}
+		}
 		skipVerify := scheme == SchemeHTTPS && r.TargetInsecureSkipVerify
-		if skipVerify || r.UpstreamTimeoutSeconds > 0 {
+		serverName := ""
+		if scheme == SchemeHTTPS {
+			serverName = strings.TrimSpace(r.TargetServerName)
+		}
+		if skipVerify || serverName != "" || r.UpstreamTimeoutSeconds > 0 {
 			tName := base + "-transport"
-			tr := traefikServersTransport{InsecureSkipVerify: skipVerify}
+			tr := traefikServersTransport{InsecureSkipVerify: skipVerify, ServerName: serverName}
 			what := []string{}
 			if skipVerify {
 				what = append(what, "skip upstream cert verification")
+			}
+			if serverName != "" {
+				what = append(what, "SNI "+serverName)
 			}
 			if r.UpstreamTimeoutSeconds > 0 {
 				tr.ForwardingTimeouts = &traefikForwardingTimeouts{ResponseHeaderTimeout: fmt.Sprintf("%ds", r.UpstreamTimeoutSeconds)}
@@ -255,9 +301,19 @@ func RenderFiles(cfg Config, routes []Route, blocks []Block) (Rendered, error) {
 			lb.ServersTransport = tName
 		}
 		doc.HTTP.Services[svcName] = traefikService{LoadBalancer: lb}
-		rc.note(secHTTPServices, svcName, label, "upstream "+targetURL)
+		svcWhat := "upstream " + targetURL
+		if n := len(lb.Servers); n > 1 {
+			svcWhat = fmt.Sprintf("%d upstreams, %s first", n, targetURL)
+			if lb.HealthCheck != nil {
+				svcWhat += ", health check " + lb.HealthCheck.Path
+			}
+			if lb.Sticky != nil {
+				svcWhat += ", sticky"
+			}
+		}
+		rc.note(secHTTPServices, svcName, label, svcWhat)
 
-		rule := hostRule(r.Domain)
+		rule := hostsRule(r)
 		if ps := r.PathPrefixes(); len(ps) == 1 {
 			rule += fmt.Sprintf(" && PathPrefix(`%s`)", ps[0])
 		} else if len(ps) > 1 {
@@ -293,16 +349,55 @@ func RenderFiles(cfg Config, routes []Route, blocks []Block) (Rendered, error) {
 			rc.note(secHTTPMiddlewares, name, label, fmt.Sprintf("max %d concurrent requests per IP", r.MaxConnsPerIP))
 			mws = append(mws, name)
 		}
+		if fa := strings.TrimSpace(r.ForwardAuthURL); fa != "" {
+			name := base + "-fwdauth"
+			doc.HTTP.Middlewares[name] = traefikMiddleware{ForwardAuth: &traefikForwardAuth{
+				Address: fa, TrustForwardHeader: r.ForwardAuthTrustForwardHeader, AuthResponseHeaders: SplitCSV(r.ForwardAuthResponseHeaders),
+				MaxResponseBodySize: forwardAuthMaxResponseBytes,
+			}}
+			rc.note(secHTTPMiddlewares, name, label, "forward auth → "+fa)
+			mws = append(mws, name)
+		}
 		if r.BasicAuthUsers != "" {
 			name := base + "-auth"
 			doc.HTTP.Middlewares[name] = traefikMiddleware{BasicAuth: &traefikBasicAuth{Users: SplitLines(r.BasicAuthUsers)}}
 			rc.note(secHTTPMiddlewares, name, label, "basic auth")
 			mws = append(mws, name)
 		}
+		if h, what := headersMiddleware(r); h != nil {
+			name := base + "-headers"
+			doc.HTTP.Middlewares[name] = traefikMiddleware{Headers: h}
+			rc.note(secHTTPMiddlewares, name, label, strings.Join(what, ", "))
+			mws = append(mws, name)
+		}
+		if ps := r.PathPrefixes(); r.StripPrefix && len(ps) > 0 {
+			name := base + "-strip"
+			doc.HTTP.Middlewares[name] = traefikMiddleware{StripPrefix: &traefikStripPrefix{Prefixes: ps}}
+			rc.note(secHTTPMiddlewares, name, label, "strip "+strings.Join(ps, ", ")+" before forwarding")
+			mws = append(mws, name)
+		}
+		if ap := strings.TrimSpace(r.AddPrefix); ap != "" && ap != "/" {
+			name := base + "-addprefix"
+			doc.HTTP.Middlewares[name] = traefikMiddleware{AddPrefix: &traefikAddPrefix{Prefix: ap}}
+			rc.note(secHTTPMiddlewares, name, label, "prepend "+ap)
+			mws = append(mws, name)
+		}
+		if r.Compress {
+			name := base + "-compress"
+			doc.HTTP.Middlewares[name] = traefikMiddleware{Compress: &traefikCompress{}}
+			rc.note(secHTTPMiddlewares, name, label, "compress responses")
+			mws = append(mws, name)
+		}
 		if r.MaxBodyBytes > 0 {
 			name := base + "-body"
 			doc.HTTP.Middlewares[name] = traefikMiddleware{Buffering: &traefikBuffering{MaxRequestBodyBytes: r.MaxBodyBytes}}
 			rc.note(secHTTPMiddlewares, name, label, fmt.Sprintf("max request body %s (buffered)", humanBytes(r.MaxBodyBytes)))
+			mws = append(mws, name)
+		}
+		if r.RetryAttempts > 0 {
+			name := base + "-retry"
+			doc.HTTP.Middlewares[name] = traefikMiddleware{Retry: &traefikRetry{Attempts: r.RetryAttempts}}
+			rc.note(secHTTPMiddlewares, name, label, fmt.Sprintf("retry up to %d times on another upstream", r.RetryAttempts))
 			mws = append(mws, name)
 		}
 
@@ -335,7 +430,7 @@ func RenderFiles(cfg Config, routes []Route, blocks []Block) (Rendered, error) {
 
 	out := Rendered{}
 	active := activeBlocks(blocks)
-	hasRoutes := len(doc.HTTP.Routers) > 0 || (doc.TCP != nil && len(doc.TCP.Routers) > 0)
+	hasRoutes := len(doc.HTTP.Routers) > 0 || (doc.TCP != nil && len(doc.TCP.Routers) > 0) || (doc.UDP != nil && len(doc.UDP.Routers) > 0)
 
 	if hasRoutes {
 		body, err := emitYAML(doc, rc)
@@ -384,6 +479,13 @@ func newDynamic() traefikDynamic {
 // routeLabel is the human handle used in comments: "grafana.example.com" or
 // "example.com/grafana".
 func routeLabel(r Route) string {
+	if r.IsStream() {
+		proto := r.Protocol
+		if proto == "" {
+			proto = ProtoTCP
+		}
+		return fmt.Sprintf("%s/%d", proto, r.ListenPort)
+	}
 	l := r.Domain
 	if p := strings.TrimSpace(r.PathPrefix); p != "" && p != "/" {
 		l += p
@@ -423,13 +525,25 @@ func routeIndex(sorted []Route, blockCount int) string {
 	for _, r := range sorted {
 		kind := "http"
 		switch {
+		case r.IsStream():
+			kind = "stream"
+		case r.IsRedirect():
+			kind = "redirect"
 		case r.IsPassthrough():
 			kind = "passthrough"
 		case r.TLS:
 			kind = "https"
 		}
 		var target string
-		if r.IsPassthrough() {
+		switch {
+		case r.IsStream():
+			target = fmt.Sprintf("%s:%d", r.TargetHost, r.TargetPort)
+			if n := len(r.ExtraServers()); n > 0 {
+				target += fmt.Sprintf(" (+%d)", n)
+			}
+		case r.IsRedirect():
+			target = strings.TrimSpace(r.RedirectURL)
+		case r.IsPassthrough():
 			hp, sp := r.TargetPort, r.TargetHTTPSPort
 			if hp <= 0 {
 				hp = 80
@@ -438,12 +552,15 @@ func routeIndex(sorted []Route, blockCount int) string {
 				sp = 443
 			}
 			target = fmt.Sprintf("%s:%d (tls, sni) · :%d (http)", r.TargetHost, sp, hp)
-		} else {
+		default:
 			scheme := r.TargetScheme
 			if scheme == "" {
 				scheme = SchemeHTTP
 			}
 			target = fmt.Sprintf("%s://%s:%d", scheme, r.TargetHost, r.TargetPort)
+			if n := len(r.ExtraServers()); n > 0 {
+				target += fmt.Sprintf(" (+%d)", n)
+			}
 		}
 		extras := routeExtras(r)
 		line := fmt.Sprintf("#   %-*s  %-11s → %s", width, routeLabel(r), kind, oneLine(target))
@@ -468,10 +585,16 @@ func routeIndex(sorted []Route, blockCount int) string {
 
 // routeExtras summarises a route's access control + limits for the index.
 func routeExtras(r Route) []string {
-	if r.IsPassthrough() {
+	if r.IsPassthrough() || r.IsStream() || r.IsRedirect() {
 		return nil
 	}
 	var out []string
+	if len(r.Hostnames()) > 1 {
+		out = append(out, fmt.Sprintf("%d aliases", len(r.Hostnames())-1))
+	}
+	if r.ForwardAuthURL != "" {
+		out = append(out, "forward auth")
+	}
 	if r.BasicAuthUsers != "" {
 		out = append(out, fmt.Sprintf("basic auth (%d)", len(SplitLines(r.BasicAuthUsers))))
 	}
@@ -495,6 +618,21 @@ func routeExtras(r Route) []string {
 	}
 	if r.MaxBodyBytes > 0 {
 		out = append(out, "≤ "+humanBytes(r.MaxBodyBytes)+" body")
+	}
+	if r.StripPrefix && len(r.PathPrefixes()) > 0 {
+		out = append(out, "strip prefix")
+	}
+	if r.HostHeaderMode == HostHeaderUpstream || r.HostHeaderMode == HostHeaderCustom {
+		out = append(out, "host header: "+r.HostHeaderMode)
+	}
+	if r.SecurityHeaders {
+		out = append(out, "security headers")
+	}
+	if r.HSTS && r.TLS {
+		out = append(out, "hsts")
+	}
+	if r.Compress {
+		out = append(out, "compress")
 	}
 	return out
 }
@@ -583,6 +721,13 @@ func emitYAML(doc traefikDynamic, rc *renderCtx) ([]byte, error) {
 			{Key: "services", Value: ordered(doc.TCP.Services, rank)},
 		}
 		top = append(top, yaml.MapItem{Key: "tcp", Value: tcp})
+	}
+	if doc.UDP != nil && len(doc.UDP.Routers) > 0 {
+		udp := yaml.MapSlice{
+			{Key: "routers", Value: ordered(doc.UDP.Routers, rank)},
+			{Key: "services", Value: ordered(doc.UDP.Services, rank)},
+		}
+		top = append(top, yaml.MapItem{Key: "udp", Value: udp})
 	}
 	raw, err := yaml.Marshal(top)
 	if err != nil {
@@ -762,7 +907,7 @@ func renderPassthrough(doc *traefikDynamic, rc *renderCtx, base, label string, r
 	rc.note(secTCPServices, tcpName, label, "raw TLS to the other proxy at "+tlsAddr)
 	rc.note(secTCPRouters, tcpName, label, "passthrough — :443 routed by SNI, TLS untouched")
 	doc.TCP.Routers[tcpName] = traefikTCPRouter{
-		Rule: hostSNIRule(r.Domain), Service: tcpName, EntryPoints: []string{entryPointWebSecure},
+		Rule: hostSNIsRule(r), Service: tcpName, EntryPoints: []string{entryPointWebSecure},
 		TLS: &traefikTCPTLS{Passthrough: true},
 	}
 	httpName := base + "-http"
@@ -771,7 +916,7 @@ func renderPassthrough(doc *traefikDynamic, rc *renderCtx, base, label string, r
 		Servers: []traefikServer{{URL: httpURL}},
 	}}
 	doc.HTTP.Routers[httpName] = traefikRouter{
-		Rule: hostRule(r.Domain), Service: httpName, EntryPoints: []string{entryPointWeb},
+		Rule: hostsRule(r), Service: httpName, EntryPoints: []string{entryPointWeb},
 	}
 	rc.note(secHTTPRouters, httpName, label, "passthrough — :80 proxied as HTTP to "+httpURL+" (ACME challenges, redirects)")
 	rc.note(secHTTPServices, httpName, label, "http upstream "+httpURL)

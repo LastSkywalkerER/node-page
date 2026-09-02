@@ -353,3 +353,111 @@ func TestSetConfig_DockerNetworks(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateRoute_FeatureFieldsValidatedAndNormalised(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newSvc(repo, nil)
+	ctx := context.Background()
+	v, err := svc.CreateRoute(ctx, RouteRequest{
+		Domain: "App.Example.com", Aliases: " WWW.app.example.com, app.example.com ,alt.example.com", TargetScheme: "https", TargetHost: "10.0.0.5", TargetPort: 8443,
+		TLS: true, PathPrefix: "/grafana", StripPrefix: true, AddPrefix: "/ui/", HostHeaderMode: "Custom", HostHeaderValue: "app.internal",
+		TargetServerName: "app.internal", ExtraTargets: "10.0.0.6:8443, 10.0.0.6:8443\n10.0.0.7:8443", HealthCheckPath: "/healthz", HealthCheckIntervalSeconds: 30,
+		Sticky: true, RetryAttempts: 3, RequestHeaders: "X-A:  1 \nX-B: two", ResponseHeaders: "X-Robots-Tag: noindex",
+		ForwardAuthURL: "http://authelia:9091/api/verify", ForwardAuthResponseHeaders: "Remote-User,Remote-Email", ForwardAuthTrustForwardHeader: true,
+		SecurityHeaders: true, HSTS: true, HSTSIncludeSubdomains: true, Compress: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Aliases != "www.app.example.com,alt.example.com" || !v.StripPrefix || v.AddPrefix != "/ui/" || v.HostHeaderMode != "custom" || v.HostHeaderValue != "app.internal" ||
+		v.TargetServerName != "app.internal" || v.ExtraTargets != "10.0.0.6:8443\n10.0.0.7:8443" || v.HealthCheckIntervalSeconds != 30 || !v.Sticky || v.RetryAttempts != 3 ||
+		v.RequestHeaders != "X-A: 1\nX-B: two" || v.ResponseHeaders != "X-Robots-Tag: noindex" || v.ForwardAuthResponseHeaders != "Remote-User,Remote-Email" ||
+		!v.ForwardAuthTrustForwardHeader || !v.SecurityHeaders || !v.HSTS || !v.HSTSIncludeSubdomains || !v.Compress || !v.Protected {
+		t.Errorf("normalised view: %+v", v.Route)
+	}
+	// Alias conflicts count like domains.
+	if _, err := svc.CreateRoute(ctx, RouteRequest{Domain: "alt.example.com", TargetHost: "h", TargetPort: 80, PathPrefix: "/grafana"}); !errors.Is(err, ErrValidation) {
+		t.Errorf("alias+prefix conflict expected, got %v", err)
+	}
+	// HSTS without TLS is dropped; strip without a prefix is dropped; client mode normalises to "".
+	v2, err := svc.CreateRoute(ctx, RouteRequest{Domain: "plain.example.com", TargetHost: "h", TargetPort: 80, HSTS: true, StripPrefix: true, HostHeaderMode: "client"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v2.HSTS || v2.StripPrefix || v2.HostHeaderMode != "" {
+		t.Errorf("drops: %+v", v2.Route)
+	}
+	for i, bad := range []RouteRequest{
+		{Domain: "x.example.com", TargetHost: "h", TargetPort: 80, Aliases: "bad host"},
+		{Domain: "x.example.com", TargetHost: "h", TargetPort: 80, Aliases: "*.wild.example.com", TLS: true},
+		{Domain: "x.example.com", TargetHost: "h", TargetPort: 80, AddPrefix: "noslash"},
+		{Domain: "x.example.com", TargetHost: "h", TargetPort: 80, HostHeaderMode: "custom"},
+		{Domain: "x.example.com", TargetHost: "h", TargetPort: 80, HostHeaderMode: "weird"},
+		{Domain: "x.example.com", TargetHost: "h", TargetPort: 80, ExtraTargets: "nohostport"},
+		{Domain: "x.example.com", TargetHost: "h", TargetPort: 80, ExtraTargets: "h:99999"},
+		{Domain: "x.example.com", TargetHost: "h", TargetPort: 80, HealthCheckPath: "healthz"},
+		{Domain: "x.example.com", TargetHost: "h", TargetPort: 80, RetryAttempts: 99},
+		{Domain: "x.example.com", TargetHost: "h", TargetPort: 80, RequestHeaders: "no-colon"},
+		{Domain: "x.example.com", TargetHost: "h", TargetPort: 80, ResponseHeaders: "Bad Name: v"},
+		{Domain: "x.example.com", TargetHost: "h", TargetPort: 80, ForwardAuthURL: "authelia:9091"},
+		{Domain: "x.example.com", TargetHost: "h", TargetPort: 80, ForwardAuthURL: "http://a/", ForwardAuthResponseHeaders: "Remote User"},
+	} {
+		if _, err := svc.CreateRoute(ctx, bad); !errors.Is(err, ErrValidation) {
+			t.Errorf("case %d: expected validation error, got %v", i, err)
+		}
+	}
+}
+
+func TestCreateRoute_RedirectAndStreamModes(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newSvc(repo, nil)
+	ctx := context.Background()
+	rd, err := svc.CreateRoute(ctx, RouteRequest{Mode: "redirect", Domain: "old.example.com", Aliases: "www.old.example.com", TLS: true,
+		RedirectURL: "https://new.example.com/", RedirectPermanent: true, RedirectPreservePath: true, BasicAuth: []BasicAuthInput{{User: "u", Password: "p"}}, Compress: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rd.Mode != gateway.RouteModeRedirect || rd.RedirectURL != "https://new.example.com/" || !rd.RedirectPermanent || !rd.RedirectPreservePath ||
+		rd.Compress || rd.BasicAuthUsers != nil && len(rd.BasicAuthUsers) != 0 || rd.Name != "old.example.com → new.example.com" || rd.PublicURL != "https://old.example.com" {
+		t.Errorf("redirect view: %+v (%v)", rd.Route, rd.BasicAuthUsers)
+	}
+	// A redirect occupies its hostnames like a whole-host route.
+	if _, err := svc.CreateRoute(ctx, RouteRequest{Domain: "www.old.example.com", TargetHost: "h", TargetPort: 80}); !errors.Is(err, ErrValidation) {
+		t.Errorf("redirect alias conflict expected, got %v", err)
+	}
+	for i, bad := range []RouteRequest{
+		{Mode: "redirect", Domain: "a.example.com", RedirectURL: "ftp://x"},
+		{Mode: "redirect", Domain: "a.example.com", RedirectURL: ""},
+		{Mode: "redirect", Domain: "a.example.com", RedirectURL: "https://a.example.com/x"}, // loop
+	} {
+		if _, err := svc.CreateRoute(ctx, bad); !errors.Is(err, ErrValidation) {
+			t.Errorf("redirect case %d: expected validation error, got %v", i, err)
+		}
+	}
+
+	st, err := svc.CreateRoute(ctx, RouteRequest{Mode: "stream", Protocol: "UDP", ListenPort: 64738, TargetHost: "10.0.0.9", TargetPort: 64738, ExtraTargets: "10.0.0.10:64738", TLS: true, Domain: "ignored"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode != gateway.RouteModeStream || st.Protocol != "udp" || st.ListenPort != 64738 || st.Domain != "" || st.TLS || st.Name != "udp/64738" ||
+		st.ExtraTargets != "10.0.0.10:64738" || st.PublicURL != "udp://*:64738" || st.TargetURL == "" {
+		t.Errorf("stream view: %+v (public %q)", st.Route, st.PublicURL)
+	}
+	if _, err := svc.CreateRoute(ctx, RouteRequest{Mode: "stream", Protocol: "udp", ListenPort: 64738, TargetHost: "h", TargetPort: 1}); !errors.Is(err, ErrValidation) {
+		t.Errorf("same udp port must conflict, got %v", err)
+	}
+	if _, err := svc.CreateRoute(ctx, RouteRequest{Mode: "stream", Protocol: "tcp", ListenPort: 64738, TargetHost: "h", TargetPort: 1}); err != nil {
+		t.Errorf("same port on the other protocol is fine: %v", err)
+	}
+	for i, bad := range []RouteRequest{
+		{Mode: "stream", Protocol: "sctp", ListenPort: 1000, TargetHost: "h", TargetPort: 1},
+		{Mode: "stream", Protocol: "tcp", ListenPort: 0, TargetHost: "h", TargetPort: 1},
+		{Mode: "stream", Protocol: "tcp", ListenPort: 80, TargetHost: "h", TargetPort: 1},   // gateway http port
+		{Mode: "stream", Protocol: "tcp", ListenPort: 8082, TargetHost: "h", TargetPort: 1}, // ping
+		{Mode: "stream", Protocol: "tcp", ListenPort: 1000, TargetHost: "", TargetPort: 1},
+	} {
+		if _, err := svc.CreateRoute(ctx, bad); !errors.Is(err, ErrValidation) {
+			t.Errorf("stream case %d: expected validation error, got %v", i, err)
+		}
+	}
+}

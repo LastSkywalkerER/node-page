@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -94,6 +95,34 @@ type RouteRequest struct {
 	UpstreamTimeoutSeconds int   `json:"upstream_timeout_seconds"`
 	MaxBodyBytes           int64 `json:"max_body_bytes"`
 	Enabled                *bool `json:"enabled"`
+
+	// Hostname aliases, upstream shaping, extra access control, response
+	// hardening, redirect and stream fields — see gateway.Route.
+	Aliases                       string `json:"aliases"`
+	StripPrefix                   bool   `json:"strip_prefix"`
+	AddPrefix                     string `json:"add_prefix"`
+	HostHeaderMode                string `json:"host_header_mode"`
+	HostHeaderValue               string `json:"host_header_value"`
+	TargetServerName              string `json:"target_server_name"`
+	ExtraTargets                  string `json:"extra_targets"`
+	HealthCheckPath               string `json:"health_check_path"`
+	HealthCheckIntervalSeconds    int    `json:"health_check_interval_seconds"`
+	Sticky                        bool   `json:"sticky"`
+	RetryAttempts                 int    `json:"retry_attempts"`
+	RequestHeaders                string `json:"request_headers"`
+	ResponseHeaders               string `json:"response_headers"`
+	ForwardAuthURL                string `json:"forward_auth_url"`
+	ForwardAuthResponseHeaders    string `json:"forward_auth_response_headers"`
+	ForwardAuthTrustForwardHeader bool   `json:"forward_auth_trust_forward_header"`
+	SecurityHeaders               bool   `json:"security_headers"`
+	HSTS                          bool   `json:"hsts"`
+	HSTSIncludeSubdomains         bool   `json:"hsts_include_subdomains"`
+	Compress                      bool   `json:"compress"`
+	RedirectURL                   string `json:"redirect_url"`
+	RedirectPermanent             bool   `json:"redirect_permanent"`
+	RedirectPreservePath          bool   `json:"redirect_preserve_path"`
+	Protocol                      string `json:"protocol"`
+	ListenPort                    int    `json:"listen_port"`
 }
 
 // Bounds for the per-route limits (sanity, not policy).
@@ -479,20 +508,46 @@ var domainRe = regexp.MustCompile(`^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.
 // applyRequest validates req and copies it onto r. prev (update) lets an
 // empty password keep an existing user's hash.
 func (s *service) applyRequest(r *gateway.Route, req RouteRequest, prev *gateway.Route) error {
-	domain := strings.ToLower(strings.TrimSpace(req.Domain))
-	if domain == "" || !domainRe.MatchString(domain) {
-		return fmt.Errorf("%w: domain must be a valid hostname (optionally *.wildcard)", ErrValidation)
-	}
 	mode := strings.ToLower(strings.TrimSpace(req.Mode))
 	if mode == "" {
 		mode = gateway.RouteModeHTTP
 	}
-	if mode != gateway.RouteModeHTTP && mode != gateway.RouteModePassthrough {
-		return fmt.Errorf("%w: mode must be http or passthrough", ErrValidation)
+	switch mode {
+	case gateway.RouteModeHTTP, gateway.RouteModePassthrough, gateway.RouteModeRedirect, gateway.RouteModeStream:
+	default:
+		return fmt.Errorf("%w: mode must be http, passthrough, redirect or stream", ErrValidation)
+	}
+	if mode == gateway.RouteModeStream {
+		return s.applyStreamRequest(r, req)
+	}
+	domain := strings.ToLower(strings.TrimSpace(req.Domain))
+	if domain == "" || !domainRe.MatchString(domain) {
+		return fmt.Errorf("%w: domain must be a valid hostname (optionally *.wildcard)", ErrValidation)
 	}
 	wildcard := strings.HasPrefix(domain, "*.")
-	if wildcard && mode == gateway.RouteModeHTTP && req.TLS {
+	if wildcard && mode != gateway.RouteModePassthrough && req.TLS {
 		return fmt.Errorf("%w: a wildcard domain can't get a certificate via HTTP-01 — use passthrough mode (the other proxy issues certs) or turn HTTPS off", ErrValidation)
+	}
+	// Aliases: extra hostnames, same rules as the domain.
+	var aliases []string
+	seenHost := map[string]bool{domain: true}
+	for _, a := range gateway.SplitCSV(strings.ToLower(req.Aliases)) {
+		if !domainRe.MatchString(a) {
+			return fmt.Errorf("%w: alias %q must be a valid hostname", ErrValidation, a)
+		}
+		if strings.HasPrefix(a, "*.") && mode != gateway.RouteModePassthrough && req.TLS {
+			return fmt.Errorf("%w: wildcard alias %q can't get a certificate via HTTP-01", ErrValidation, a)
+		}
+		if !seenHost[a] {
+			seenHost[a] = true
+			aliases = append(aliases, a)
+		}
+	}
+	if len(aliases) > gateway.MaxAliases {
+		return fmt.Errorf("%w: at most %d aliases", ErrValidation, gateway.MaxAliases)
+	}
+	if mode == gateway.RouteModeRedirect {
+		return s.applyRedirectRequest(r, req, domain, aliases)
 	}
 	if mode == gateway.RouteModePassthrough {
 		if req.TargetHTTPSPort != 0 && !validPort(req.TargetHTTPSPort) {
@@ -541,6 +596,68 @@ func (s *service) applyRequest(r *gateway.Route, req RouteRequest, prev *gateway
 	}
 	if !validPort(req.TargetPort) {
 		return fmt.Errorf("%w: target port must be 1-65535", ErrValidation)
+	}
+	// Upstream shaping / headers / forward auth (http mode; passthrough drops them).
+	addPrefix := strings.TrimSpace(req.AddPrefix)
+	if addPrefix == "/" {
+		addPrefix = ""
+	}
+	if addPrefix != "" && (!strings.HasPrefix(addPrefix, "/") || strings.ContainsAny(addPrefix, " `\"',")) {
+		return fmt.Errorf("%w: add-prefix must start with / and contain no spaces or quotes", ErrValidation)
+	}
+	hostMode := strings.ToLower(strings.TrimSpace(req.HostHeaderMode))
+	hostValue := strings.TrimSpace(req.HostHeaderValue)
+	switch hostMode {
+	case "", gateway.HostHeaderClient:
+		hostMode, hostValue = "", ""
+	case gateway.HostHeaderUpstream:
+		hostValue = ""
+	case gateway.HostHeaderCustom:
+		if hostValue == "" || strings.ContainsAny(hostValue, " /`\"'\n") {
+			return fmt.Errorf("%w: custom Host header needs a hostname value", ErrValidation)
+		}
+	default:
+		return fmt.Errorf("%w: host header mode must be client, upstream or custom", ErrValidation)
+	}
+	serverName := strings.TrimSpace(req.TargetServerName)
+	if serverName != "" && !domainRe.MatchString(strings.ToLower(serverName)) {
+		return fmt.Errorf("%w: upstream SNI server name must be a hostname", ErrValidation)
+	}
+	extra, err := normalizeExtraTargets(req.ExtraTargets)
+	if err != nil {
+		return err
+	}
+	hcPath := strings.TrimSpace(req.HealthCheckPath)
+	if hcPath != "" && (!strings.HasPrefix(hcPath, "/") || strings.ContainsAny(hcPath, " `\"'")) {
+		return fmt.Errorf("%w: health-check path must start with /", ErrValidation)
+	}
+	if req.HealthCheckIntervalSeconds < 0 || req.HealthCheckIntervalSeconds > gateway.MaxHealthInterval {
+		return fmt.Errorf("%w: health-check interval must be 0 (default) to %d seconds", ErrValidation, gateway.MaxHealthInterval)
+	}
+	if req.RetryAttempts < 0 || req.RetryAttempts > gateway.MaxRetryAttempts {
+		return fmt.Errorf("%w: retry attempts must be 0 (off) to %d", ErrValidation, gateway.MaxRetryAttempts)
+	}
+	reqHeaders, err := normalizeHeaderLines(req.RequestHeaders, "request")
+	if err != nil {
+		return err
+	}
+	respHeaders, err := normalizeHeaderLines(req.ResponseHeaders, "response")
+	if err != nil {
+		return err
+	}
+	fwdAuth := strings.TrimSpace(req.ForwardAuthURL)
+	if fwdAuth != "" {
+		u, err := url.Parse(fwdAuth)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("%w: forward-auth address must be an http(s) URL", ErrValidation)
+		}
+	}
+	var fwdHeaders []string
+	for _, h := range gateway.SplitCSV(req.ForwardAuthResponseHeaders) {
+		if !headerNameRe.MatchString(h) {
+			return fmt.Errorf("%w: invalid forward-auth response header name %q", ErrValidation, h)
+		}
+		fwdHeaders = append(fwdHeaders, h)
 	}
 	if req.MaxConnsPerIP < 0 || req.MaxConnsPerIP > maxConnsPerIPLimit {
 		return fmt.Errorf("%w: max concurrent requests per IP must be 0 (off) to %d", ErrValidation, maxConnsPerIPLimit)
@@ -622,6 +739,43 @@ func (s *service) applyRequest(r *gateway.Route, req RouteRequest, prev *gateway
 	r.TLS = req.TLS
 	r.BasicAuthUsers = strings.Join(lines, "\n")
 	r.IPAllowList = strings.Join(gateway.SplitCSV(allow), ",")
+	r.Aliases = strings.Join(aliases, ",")
+	r.RedirectURL, r.RedirectPermanent, r.RedirectPreservePath = "", false, false
+	r.Protocol, r.ListenPort = "", 0
+	// Everything below is an HTTP-layer feature — a passthrough route is an
+	// opaque TLS stream and carries none of it.
+	r.StripPrefix, r.AddPrefix = false, ""
+	r.HostHeaderMode, r.HostHeaderValue, r.TargetServerName = "", "", ""
+	r.ExtraTargets, r.HealthCheckPath, r.HealthCheckIntervalSeconds, r.Sticky, r.RetryAttempts = "", "", 0, false, 0
+	r.RequestHeaders, r.ResponseHeaders = "", ""
+	r.ForwardAuthURL, r.ForwardAuthResponseHeaders, r.ForwardAuthTrustForwardHeader = "", "", false
+	r.SecurityHeaders, r.HSTS, r.HSTSIncludeSubdomains, r.Compress = false, false, false, false
+	if mode == gateway.RouteModeHTTP {
+		r.StripPrefix = req.StripPrefix && path != ""
+		r.AddPrefix = addPrefix
+		r.HostHeaderMode, r.HostHeaderValue = hostMode, hostValue
+		if scheme == gateway.SchemeHTTPS {
+			r.TargetServerName = serverName
+		}
+		r.ExtraTargets = strings.Join(extra, "\n")
+		r.HealthCheckPath = hcPath
+		if hcPath != "" {
+			r.HealthCheckIntervalSeconds = req.HealthCheckIntervalSeconds
+		}
+		r.Sticky = req.Sticky
+		r.RetryAttempts = req.RetryAttempts
+		r.RequestHeaders = strings.Join(reqHeaders, "\n")
+		r.ResponseHeaders = strings.Join(respHeaders, "\n")
+		r.ForwardAuthURL = fwdAuth
+		if fwdAuth != "" {
+			r.ForwardAuthResponseHeaders = strings.Join(fwdHeaders, ",")
+			r.ForwardAuthTrustForwardHeader = req.ForwardAuthTrustForwardHeader
+		}
+		r.SecurityHeaders = req.SecurityHeaders
+		r.HSTS = req.HSTS && req.TLS
+		r.HSTSIncludeSubdomains = r.HSTS && req.HSTSIncludeSubdomains
+		r.Compress = req.Compress
+	}
 	// Limits are HTTP-layer features; a passthrough route is an opaque TLS
 	// stream, so they are dropped there (the form hides them as well).
 	r.MaxConnsPerIP, r.RateLimitRPS, r.ReadOnly, r.UpstreamTimeoutSeconds, r.MaxBodyBytes = 0, 0, false, 0, 0
@@ -661,31 +815,193 @@ func normalizeDockerNetworks(in []string) ([]string, error) {
 	return out, nil
 }
 
-// checkDomainConflict rejects a second route on the same domain+path.
+// checkDomainConflict rejects a second route on the same hostname+path (any
+// of the route's hostnames — domain or alias — against any of the other's),
+// and a second stream on the same protocol+port.
 func (s *service) checkDomainConflict(ctx context.Context, r gateway.Route) error {
 	rows, err := s.repo.List(ctx)
 	if err != nil {
 		return err
 	}
+	if r.IsStream() {
+		for _, o := range rows {
+			if o.RouteID != r.RouteID && o.IsStream() && o.ListenPort == r.ListenPort && o.Protocol == r.Protocol {
+				return fmt.Errorf("%w: %s port %d is already forwarded (%s)", ErrValidation, r.Protocol, r.ListenPort, o.Name)
+			}
+		}
+		return nil
+	}
 	mine := r.PathPrefixes()
 	for _, o := range rows {
-		if o.RouteID == r.RouteID || o.Domain != r.Domain {
+		if o.RouteID == r.RouteID || o.IsStream() {
+			continue
+		}
+		shared := ""
+		for _, a := range r.Hostnames() {
+			for _, b := range o.Hostnames() {
+				if a == b {
+					shared = a
+				}
+			}
+		}
+		if shared == "" {
 			continue
 		}
 		theirs := o.PathPrefixes()
 		if len(mine) == 0 && len(theirs) == 0 {
-			return fmt.Errorf("%w: %s is already routed (%s)", ErrValidation, r.Domain, o.Name)
+			return fmt.Errorf("%w: %s is already routed (%s)", ErrValidation, shared, o.Name)
 		}
-		// Two routes may share a domain only while their prefix sets are disjoint.
+		// Two routes may share a hostname only while their prefix sets are disjoint.
 		for _, a := range mine {
 			for _, b := range theirs {
 				if a == b {
-					return fmt.Errorf("%w: %s%s is already routed (%s)", ErrValidation, r.Domain, a, o.Name)
+					return fmt.Errorf("%w: %s%s is already routed (%s)", ErrValidation, shared, a, o.Name)
 				}
 			}
 		}
 	}
 	return nil
+}
+
+// applyRedirectRequest validates a redirect route: hostnames + a target URL,
+// no upstream.
+func (s *service) applyRedirectRequest(r *gateway.Route, req RouteRequest, domain string, aliases []string) error {
+	target := strings.TrimSpace(req.RedirectURL)
+	u, err := url.Parse(target)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || strings.ContainsAny(target, " `\"'\n$") {
+		return fmt.Errorf("%w: redirect target must be an http(s) URL", ErrValidation)
+	}
+	for _, h := range append([]string{domain}, aliases...) {
+		if strings.EqualFold(u.Hostname(), h) {
+			return fmt.Errorf("%w: redirect target points back at %s — that would loop", ErrValidation, h)
+		}
+	}
+	*r = gateway.Route{ID: r.ID, RouteID: r.RouteID, CreatedAt: r.CreatedAt, Enabled: r.Enabled}
+	r.Name = strings.TrimSpace(req.Name)
+	if r.Name == "" {
+		r.Name = domain + " → " + u.Host
+	}
+	r.Mode = gateway.RouteModeRedirect
+	r.Domain = domain
+	r.Aliases = strings.Join(aliases, ",")
+	r.TargetScheme = gateway.SchemeHTTP
+	// TargetHost/Port are NOT NULL columns with no meaning here — keep a
+	// harmless placeholder so the row round-trips through every store.
+	r.TargetHost, r.TargetPort = u.Hostname(), 80
+	r.TLS = req.TLS
+	r.RedirectURL = target
+	r.RedirectPermanent = req.RedirectPermanent
+	r.RedirectPreservePath = req.RedirectPreservePath
+	if req.Enabled != nil {
+		r.Enabled = *req.Enabled
+	}
+	return nil
+}
+
+// applyStreamRequest validates a raw TCP/UDP forward: protocol + public port
+// + target(s); no hostname, no HTTP features.
+func (s *service) applyStreamRequest(r *gateway.Route, req RouteRequest) error {
+	proto := strings.ToLower(strings.TrimSpace(req.Protocol))
+	if proto == "" {
+		proto = gateway.ProtoTCP
+	}
+	if proto != gateway.ProtoTCP && proto != gateway.ProtoUDP {
+		return fmt.Errorf("%w: stream protocol must be tcp or udp", ErrValidation)
+	}
+	if !validPort(req.ListenPort) {
+		return fmt.Errorf("%w: public port must be 1-65535", ErrValidation)
+	}
+	if cfg, err := LoadConfig(context.Background(), s.cfg); err == nil {
+		hp, sp := cfg.HTTPPort, cfg.HTTPSPort
+		if hp == 0 {
+			hp = 80
+		}
+		if sp == 0 {
+			sp = 443
+		}
+		if req.ListenPort == hp || req.ListenPort == sp || req.ListenPort == 8082 {
+			return fmt.Errorf("%w: port %d is used by the gateway itself (http/https/ping)", ErrValidation, req.ListenPort)
+		}
+	}
+	th := strings.TrimSpace(req.TargetHost)
+	if th == "" || strings.ContainsAny(th, " /`\"'") {
+		return fmt.Errorf("%w: target host is required", ErrValidation)
+	}
+	if !validPort(req.TargetPort) {
+		return fmt.Errorf("%w: target port must be 1-65535", ErrValidation)
+	}
+	extra, err := normalizeExtraTargets(req.ExtraTargets)
+	if err != nil {
+		return err
+	}
+	*r = gateway.Route{ID: r.ID, RouteID: r.RouteID, CreatedAt: r.CreatedAt, Enabled: r.Enabled}
+	r.Name = strings.TrimSpace(req.Name)
+	if r.Name == "" {
+		r.Name = fmt.Sprintf("%s/%d", proto, req.ListenPort)
+	}
+	r.Mode = gateway.RouteModeStream
+	r.Protocol = proto
+	r.ListenPort = req.ListenPort
+	r.TargetScheme = proto
+	r.TargetHost = th
+	r.TargetPort = req.TargetPort
+	r.TargetHostMAC = strings.ToLower(strings.TrimSpace(req.TargetHostMAC))
+	r.TargetLabel = strings.TrimSpace(req.TargetLabel)
+	r.ExtraTargets = strings.Join(extra, "\n")
+	if req.Enabled != nil {
+		r.Enabled = *req.Enabled
+	}
+	return nil
+}
+
+var headerNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,127}$`)
+
+// normalizeHeaderLines validates "Name: value" lines (kind is for the error).
+func normalizeHeaderLines(s, kind string) ([]string, error) {
+	var out []string
+	for _, line := range gateway.SplitLines(s) {
+		i := strings.IndexByte(line, ':')
+		if i <= 0 {
+			return nil, fmt.Errorf("%w: %s header %q must look like \"Name: value\"", ErrValidation, kind, line)
+		}
+		name, value := strings.TrimSpace(line[:i]), strings.TrimSpace(line[i+1:])
+		if !headerNameRe.MatchString(name) {
+			return nil, fmt.Errorf("%w: invalid %s header name %q", ErrValidation, kind, name)
+		}
+		if strings.ContainsAny(value, "\r\n") {
+			return nil, fmt.Errorf("%w: %s header %q value must be one line", ErrValidation, kind, name)
+		}
+		out = append(out, name+": "+value)
+	}
+	if len(out) > gateway.MaxCustomHeaders {
+		return nil, fmt.Errorf("%w: at most %d %s headers", ErrValidation, gateway.MaxCustomHeaders, kind)
+	}
+	return out, nil
+}
+
+// normalizeExtraTargets validates "host:port" entries (newline/comma-separated).
+func normalizeExtraTargets(s string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, item := range gateway.SplitLines(strings.ReplaceAll(s, ",", "\n")) {
+		host, portStr, err := net.SplitHostPort(item)
+		if err != nil || host == "" || strings.ContainsAny(host, " /`\"'") {
+			return nil, fmt.Errorf("%w: extra target %q must be host:port", ErrValidation, item)
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil || !validPort(port) {
+			return nil, fmt.Errorf("%w: extra target %q has an invalid port", ErrValidation, item)
+		}
+		key := net.JoinHostPort(host, portStr)
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, key)
+		}
+	}
+	if len(out) > gateway.MaxExtraTargets {
+		return nil, fmt.Errorf("%w: at most %d extra targets", ErrValidation, gateway.MaxExtraTargets)
+	}
+	return out, nil
 }
 
 func (s *service) persist(ctx context.Context, r gateway.Route) error {

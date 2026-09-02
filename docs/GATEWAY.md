@@ -107,6 +107,40 @@ users — bcrypt-hashed server-side, never returned — and an `ip_allow_list` o
   `/` → `http://netbird-dashboard:80`; `/relay,/ws-proxy/,/api/,/oauth2/` → `http://netbird-server:80`;
   `/signalexchange.SignalExchange,/management.ManagementService` → `h2c://netbird-server:80` (limits off
   on the two long-lived ones).
+- **`aliases`** (comma-separated extra hostnames): OR-ed into the rule and issued as SANs on the same
+  certificate (`www.example.com` next to the apex). Conflicts are checked across every hostname of every
+  route.
+- **Upstream shaping** (http mode): `strip_prefix` (drop the matched prefix(es) before forwarding —
+  `/grafana` → the app sees `/`), `add_prefix`, `host_header_mode` `client` (default) | `upstream`
+  (`passHostHeader: false`) | `custom` + `host_header_value` (headers middleware `Host`),
+  `target_server_name` (SNI on the serversTransport for https upstreams addressed by IP).
+- **Several upstreams**: `extra_targets` (`host:port` per line, same scheme) become extra
+  `loadBalancer.servers` — the same app on several cluster nodes; `health_check_path` (+
+  `health_check_interval_seconds`, default 10) lets Traefik skip a failing one, `sticky` pins a client by
+  cookie (`ns-<id>`, httpOnly, secure on TLS routes), `retry_attempts` re-sends a failed request to another
+  server (`retry` middleware, last in the chain).
+- **Headers**: `request_headers` / `response_headers` (`Name: value` lines), `security_headers`
+  (X-Frame-Options SAMEORIGIN, nosniff, XSS filter, referrer policy), `hsts` (+
+  `hsts_include_subdomains`; 2-year max-age, TLS routes only), `compress` (Traefik `compress`). All in
+  one `ns-<id>-headers` middleware (+ `-strip`, `-addprefix`, `-compress`).
+- **Forward auth / SSO**: `forward_auth_url` (Authelia, Authentik, Pocket-ID…) +
+  `forward_auth_response_headers` (copied onto the upstream request) + `forward_auth_trust_forward_header`
+  → `ns-<id>-fwdauth` (`forwardAuth`), placed after the allow list / rate limits and before basic auth.
+  Counts as "protected" in the UI.
+- **Redirect routes** (`mode: redirect`): hostnames → `redirect_url` (`redirect_permanent` 301/302,
+  `redirect_preserve_path` keeps `/path?query`). Rendered as a `redirectRegex` middleware on routers whose
+  service is Traefik's built-in `noop@internal`; with `tls` on, a `websecure` router with a certificate
+  redirects `https://old…` too. A target pointing back at one of the route's own hostnames is rejected.
+- **Stream routes** (`mode: stream`): `protocol` tcp|udp + `listen_port` (the public port on the gateway
+  node) → `target_host:target_port` (+ `extra_targets`). Rendered as a `tcp` (`HostSNI(\`*\`)`) or `udp`
+  router on a dedicated entrypoint `ns-<proto>-<port>`; the materializer collects the enabled streams'
+  ports into `GatewayProvision.stream_ports`, so the managed Traefik gets `--entrypoints.ns-tcp-25565.
+  address=:25565/tcp` + a `25565:25565/tcp` port mapping (native: an `entryPoints` entry) and restarts when
+  the set changes. No hostname, TLS or HTTP feature applies; the gateway's own http/https/ping ports are
+  rejected; client blocks don't cover streams (raw TCP has no ClientIP middleware on a non-TLS router).
+
+Middleware order (http mode): ipallow → ratelimit → inflight → fwdauth → auth → headers → strip →
+addprefix → compress → body (buffering) → retry.
 
 **Passthrough routes (delegating to another reverse proxy).** `mode: passthrough` hands a hostname —
 typically a wildcard like `*.apps.example.com` — to another proxy (a Dokploy/Coolify Traefik, Caddy,

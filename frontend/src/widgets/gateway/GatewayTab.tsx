@@ -28,12 +28,14 @@ import {
   type PublicCheckResult,
   type TargetCheck,
 } from './useGateway'
-import { DEFAULT_ROUTE_LIMITS } from './schemas'
+import { DEFAULT_ROUTE_LIMITS, EMPTY_ROUTE_FEATURES } from './schemas'
 import type { GatewayConfig, GatewayRoute, GatewayState, GatewayTarget, RouteRequest, BasicAuthInput, GatewayConfigFile } from './schemas'
 import { ConnectionsCard, BlocksCard } from './ConnectionsCard'
 
 const selectCls =
   'flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50'
+const textareaCls =
+  'flex min-h-16 w-full rounded-md border border-input bg-background px-3 py-1.5 font-mono text-xs shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50'
 
 /** First of a comma-separated prefix list ('' when none / '/'). */
 function firstPrefix(csv: string): string {
@@ -529,6 +531,7 @@ const emptyRequest: RouteRequest = {
   basic_auth: [],
   ip_allow_list: '',
   ...DEFAULT_ROUTE_LIMITS,
+  ...EMPTY_ROUTE_FEATURES,
   enabled: true,
 }
 
@@ -544,6 +547,15 @@ const MB = 1024 * 1024
 
 function fmtLimits(r: GatewayRoute): string {
   const parts: string[] = []
+  if (r.aliases) parts.push(`+${r.aliases.split(',').filter(Boolean).length} alias`)
+  if (r.extra_targets) parts.push(`${r.extra_targets.split(/[\n,]/).filter((s) => s.trim()).length + 1} upstreams${r.health_check_path ? ' · health check' : ''}${r.sticky ? ' · sticky' : ''}`)
+  if (r.strip_prefix && r.path_prefix) parts.push('strip prefix')
+  if (r.add_prefix) parts.push(`+${r.add_prefix}`)
+  if (r.host_header_mode === 'upstream' || r.host_header_mode === 'custom') parts.push(`host: ${r.host_header_mode}`)
+  if (r.forward_auth_url) parts.push('forward auth')
+  if (r.security_headers) parts.push('security headers')
+  if (r.hsts && r.tls) parts.push('hsts')
+  if (r.compress) parts.push('compress')
   if (r.max_conns_per_ip > 0) parts.push(`${r.max_conns_per_ip} concurrent/ip`)
   if (r.rate_limit_rps > 0) parts.push(`${r.rate_limit_rps} req/s/ip`)
   if (r.upstream_timeout_seconds > 0) parts.push(`${r.upstream_timeout_seconds}s upstream`)
@@ -583,6 +595,12 @@ function RouteForm({
 
   const set = (patch: Partial<RouteRequest>) => setReq((r) => ({ ...r, ...patch }))
   const isPassthrough = req.mode === 'passthrough'
+  const isRedirect = req.mode === 'redirect'
+  const isStream = req.mode === 'stream'
+  const isHTTP = req.mode === 'http'
+  const canSubmit =
+    (isStream ? req.listen_port > 0 && !!req.target_host && !!req.target_port : !!req.domain) &&
+    (isRedirect ? !!req.redirect_url.trim() : isStream || (!!req.target_host && !!req.target_port))
 
   const selectedTarget = targets.find((t) => targetKey(t) === `${req.target_host}:${req.target_port}`)
 
@@ -678,15 +696,28 @@ function RouteForm({
           value={req.mode}
           onChange={(e) => {
             const mode = e.target.value as RouteRequest['mode']
-            set(
-              mode === 'passthrough'
-                ? { mode, tls: false, path_prefix: '', basic_auth: [], ip_allow_list: '', target_scheme: 'http', target_port: req.target_port || 80, target_https_port: req.target_https_port || 443, max_conns_per_ip: 0, rate_limit_rps: 0, read_only: false, upstream_timeout_seconds: 0, max_body_bytes: 0 }
-                : { mode, ...(routeId ? {} : DEFAULT_ROUTE_LIMITS) }
-            )
+            const noLimits = { max_conns_per_ip: 0, rate_limit_rps: 0, read_only: false, upstream_timeout_seconds: 0, max_body_bytes: 0 }
+            const noHTTP = { path_prefix: '', basic_auth: [], ip_allow_list: '', ...noLimits, ...EMPTY_ROUTE_FEATURES, aliases: req.aliases }
+            switch (mode) {
+              case 'passthrough':
+                set({ mode, tls: false, target_scheme: 'http', target_port: req.target_port || 80, target_https_port: req.target_https_port || 443, ...noHTTP })
+                break
+              case 'redirect':
+                set({ mode, tls: true, target_scheme: 'http', ...noHTTP, redirect_permanent: true, redirect_preserve_path: true })
+                break
+              case 'stream':
+                setManual(true)
+                set({ mode, tls: false, target_scheme: 'http', ...noHTTP, aliases: '', protocol: 'tcp', listen_port: req.listen_port || req.target_port || 0 })
+                break
+              default:
+                set({ mode, tls: true, ...(routeId ? {} : DEFAULT_ROUTE_LIMITS), redirect_url: '', protocol: '', listen_port: 0 })
+            }
           }}
         >
           <option value="http">Publish a service — this gateway terminates TLS and proxies HTTP</option>
           <option value="passthrough">Delegate to another reverse proxy — TLS passthrough (it issues its own certificates)</option>
+          <option value="redirect">Redirect — answer the hostname(s) with a redirect to another URL</option>
+          <option value="stream">Forward a TCP/UDP port — raw stream (game servers, SSH, databases)</option>
         </select>
         {isPassthrough && (
           <p className="text-xs text-muted-foreground">
@@ -696,7 +727,39 @@ function RouteForm({
             space.
           </p>
         )}
+        {isRedirect && (
+          <p className="text-xs text-muted-foreground">
+            No upstream: every request for the domain (and aliases) gets a 301/302 to the URL below. With HTTPS on, the
+            old name still gets a certificate so <span className="font-mono">https://old…</span> redirects cleanly too.
+          </p>
+        )}
+        {isStream && (
+          <p className="text-xs text-muted-foreground">
+            The gateway node publishes the port and forwards the raw stream to the target — no hostname, no TLS, no HTTP
+            features. Each new port restarts the managed Traefik (a new listener); the port must be free on the gateway
+            host and open in its firewall. Client blocks don't apply to streams.
+          </p>
+        )}
       </div>
+      {isStream ? (
+      <div className="grid gap-4 md:grid-cols-[160px_1fr]">
+        <div className="space-y-1.5">
+          <Label>Protocol</Label>
+          <select className={selectCls} value={req.protocol || 'tcp'} onChange={(e) => set({ protocol: e.target.value === 'udp' ? 'udp' : 'tcp' })}>
+            <option value="tcp">tcp</option>
+            <option value="udp">udp</option>
+          </select>
+        </div>
+        <div className="space-y-1.5">
+          <Label>Public port on the gateway node</Label>
+          <Input type="number" min={1} max={65535} placeholder="25565" value={req.listen_port || ''} onChange={(e) => set({ listen_port: Number(e.target.value) || 0 })} />
+          <p className="text-xs text-muted-foreground">
+            Clients connect to <span className="font-mono">{gwIP || '<gateway ip>'}:{req.listen_port || '…'}</span>
+            {req.protocol === 'udp' ? ' (udp)' : ''}. Can't be the gateway's http/https ports.
+          </p>
+        </div>
+      </div>
+      ) : (
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-1.5">
           <Label>Domain</Label>
@@ -729,12 +792,40 @@ function RouteForm({
             ) : null}
           </p>
         </div>
-        <div className="space-y-1.5">
-          <Label>Path prefix (optional — several: comma-separated)</Label>
-          <Input placeholder="/ or /api, /oauth2" value={req.path_prefix} disabled={isPassthrough} onChange={(e) => set({ path_prefix: e.target.value })} />
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label>Aliases (optional — extra hostnames, comma-separated)</Label>
+            <Input placeholder="www.example.com, example.net" value={req.aliases} onChange={(e) => set({ aliases: e.target.value })} />
+            <p className="text-xs text-muted-foreground">Served by the same route; each lands as a SAN on the same certificate.</p>
+          </div>
+          {isHTTP && (
+            <div className="space-y-1.5">
+              <Label>Path prefix (optional — several: comma-separated)</Label>
+              <Input placeholder="/ or /api, /oauth2" value={req.path_prefix} onChange={(e) => set({ path_prefix: e.target.value })} />
+            </div>
+          )}
         </div>
       </div>
+      )}
 
+      {isRedirect && (
+      <div className="space-y-2">
+        <Label>Redirect to</Label>
+        <Input placeholder="https://new.example.com/" value={req.redirect_url} onChange={(e) => set({ redirect_url: e.target.value })} />
+        <div className="flex flex-wrap gap-6 text-sm">
+          <label className="inline-flex items-center gap-2">
+            <Switch checked={req.redirect_permanent} onCheckedChange={(v) => set({ redirect_permanent: v })} />
+            Permanent (301) — browsers cache it; use 302 while testing
+          </label>
+          <label className="inline-flex items-center gap-2">
+            <Switch checked={req.redirect_preserve_path} onCheckedChange={(v) => set({ redirect_preserve_path: v })} />
+            Keep the request path (<span className="font-mono">/x/y?q</span> → <span className="font-mono">{(req.redirect_url || 'https://new…').replace(/\/$/, '')}/x/y?q</span>)
+          </label>
+        </div>
+      </div>
+      )}
+
+      {!isRedirect && (
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <Label>Target</Label>
@@ -757,6 +848,15 @@ function RouteForm({
               </option>
             ))}
           </select>
+        ) : isStream ? (
+          <div className="grid gap-2 md:grid-cols-[1fr_120px]">
+            <Input
+              placeholder="10.0.0.5 or container name"
+              value={req.target_host}
+              onChange={(e) => set({ target_host: e.target.value, target_label: '', target_host_mac: '' })}
+            />
+            <Input type="number" placeholder="port" value={req.target_port || ''} onChange={(e) => set({ target_port: Number(e.target.value) })} />
+          </div>
         ) : (
           isPassthrough ? (
           <div className="grid gap-2 md:grid-cols-[1fr_140px_140px]">
@@ -851,8 +951,85 @@ function RouteForm({
             </label>
           )}
         </div>
+        {(isHTTP || isStream) && (
+          <div className="space-y-1.5 pt-1">
+            <Label className="text-xs">More upstreams (optional — host:port per line; same {isStream ? 'protocol' : 'scheme'})</Label>
+            <textarea
+              className={textareaCls}
+              rows={2}
+              placeholder={'10.0.0.6:8443\n10.0.0.7:8443'}
+              value={req.extra_targets}
+              onChange={(e) => set({ extra_targets: e.target.value })}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Requests are round-robined over all upstreams — the same app on several cluster nodes.
+              {isHTTP ? ' Add a health check below so a failing node is taken out automatically.' : ''}
+            </p>
+          </div>
+        )}
       </div>
+      )}
 
+      {isHTTP && (
+      <div className="space-y-3 rounded-lg border border-border/60 p-3">
+        <div>
+          <div className="text-sm font-medium">Upstream options</div>
+          <p className="text-xs text-muted-foreground">How the request is reshaped on its way to the service.</p>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="space-y-1">
+            <Label className="text-xs">Host header sent to the upstream</Label>
+            <select className={selectCls} value={req.host_header_mode || 'client'} onChange={(e) => set({ host_header_mode: e.target.value as RouteRequest['host_header_mode'] })}>
+              <option value="client">Client's Host (default — {req.domain || 'the public domain'})</option>
+              <option value="upstream">Upstream's own host:port (passHostHeader off)</option>
+              <option value="custom">Custom value</option>
+            </select>
+            {req.host_header_mode === 'custom' && (
+              <Input placeholder="app.internal" value={req.host_header_value} onChange={(e) => set({ host_header_value: e.target.value })} />
+            )}
+            <p className="text-[11px] text-muted-foreground">Change it for upstreams that route by their own vhost (another proxy, a tunnel, S3-style storage).</p>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Path rewrite</Label>
+            <label className="flex items-center gap-2 text-sm">
+              <Switch checked={req.strip_prefix} disabled={!req.path_prefix.trim() || req.path_prefix.trim() === '/'} onCheckedChange={(v) => set({ strip_prefix: v })} />
+              Strip the path prefix{req.path_prefix.trim() && req.path_prefix.trim() !== '/' ? ` (${req.path_prefix.trim()} → /)` : ' (needs a path prefix)'}
+            </label>
+            <Input placeholder="add prefix, e.g. /app (optional)" value={req.add_prefix} onChange={(e) => set({ add_prefix: e.target.value })} />
+          </div>
+          {req.target_scheme === 'https' && (
+            <div className="space-y-1">
+              <Label className="text-xs">TLS server name (SNI) for the upstream</Label>
+              <Input placeholder={req.target_host || 'app.internal'} value={req.target_server_name} onChange={(e) => set({ target_server_name: e.target.value })} />
+              <p className="text-[11px] text-muted-foreground">When the upstream is addressed by IP but serves a certificate for a name.</p>
+            </div>
+          )}
+        </div>
+        {req.extra_targets.trim() && (
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="space-y-1">
+              <Label className="text-xs">Health-check path (optional)</Label>
+              <Input placeholder="/healthz" value={req.health_check_path} onChange={(e) => set({ health_check_path: e.target.value })} />
+              <p className="text-[11px] text-muted-foreground">An upstream answering non-2xx/3xx is skipped until it recovers.</p>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Health-check interval (s)</Label>
+              <Input type="number" min={0} disabled={!req.health_check_path.trim()} value={req.health_check_interval_seconds || ''} placeholder="10" onChange={(e) => set({ health_check_interval_seconds: Math.max(0, Number(e.target.value) || 0) })} />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Retry on another upstream</Label>
+              <Input type="number" min={0} max={10} value={req.retry_attempts} onChange={(e) => set({ retry_attempts: Math.max(0, Math.min(10, Number(e.target.value) || 0)) })} />
+              <label className="flex items-center gap-2 pt-1 text-sm">
+                <Switch checked={req.sticky} onCheckedChange={(v) => set({ sticky: v })} />
+                Sticky sessions (cookie)
+              </label>
+            </div>
+          </div>
+        )}
+      </div>
+      )}
+
+      {!isStream && (
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-1.5">
           <Label>Name (optional)</Label>
@@ -861,12 +1038,19 @@ function RouteForm({
         {!isPassthrough && (
           <div className="flex items-end gap-2 pb-1">
             <Switch checked={req.tls} onCheckedChange={(v) => set({ tls: v })} />
-            <span className="text-sm">HTTPS (TLS terminated on the gateway; http redirects)</span>
+            <span className="text-sm">{isRedirect ? 'HTTPS too (certificate for the old name; http redirects as well)' : 'HTTPS (TLS terminated on the gateway; http redirects)'}</span>
           </div>
         )}
       </div>
+      )}
+      {isStream && (
+        <div className="space-y-1.5">
+          <Label>Name (optional)</Label>
+          <Input placeholder={`${req.protocol || 'tcp'}/${req.listen_port || '…'}`} value={req.name} onChange={(e) => set({ name: e.target.value })} />
+        </div>
+      )}
 
-      {!isPassthrough && (
+      {isHTTP && (
       <div className="space-y-2 rounded-lg border border-border/60 p-3">
         <div className="flex items-center justify-between">
           <div>
@@ -914,10 +1098,84 @@ function RouteForm({
             onChange={(e) => set({ ip_allow_list: e.target.value })}
           />
         </div>
+        <div className="space-y-1.5 border-t border-border/60 pt-2">
+          <Label className="text-xs">Forward auth / SSO (optional — Authelia, Authentik, Pocket-ID…)</Label>
+          <Input
+            placeholder="http://authelia:9091/api/authz/forward-auth"
+            value={req.forward_auth_url}
+            onChange={(e) => set({ forward_auth_url: e.target.value })}
+          />
+          {req.forward_auth_url.trim() && (
+            <div className="grid gap-2 md:grid-cols-[1fr_auto]">
+              <Input
+                placeholder="headers copied to the upstream: Remote-User, Remote-Groups, Remote-Email"
+                value={req.forward_auth_response_headers}
+                onChange={(e) => set({ forward_auth_response_headers: e.target.value })}
+              />
+              <label className="inline-flex items-center gap-2 text-sm">
+                <Switch checked={req.forward_auth_trust_forward_header} onCheckedChange={(v) => set({ forward_auth_trust_forward_header: v })} />
+                trust X-Forwarded-*
+              </label>
+            </div>
+          )}
+          <p className="text-[11px] text-muted-foreground">
+            Every request is first sent to this address; a non-2xx answer (the login page) goes back to the client, a 2xx
+            lets it through. Reachable from the gateway node — a container name works when its network is attached.
+          </p>
+        </div>
       </div>
       )}
 
-      {!isPassthrough && (
+      {isHTTP && (
+      <div className="space-y-3 rounded-lg border border-border/60 p-3">
+        <div>
+          <div className="text-sm font-medium">Headers & compression</div>
+          <p className="text-xs text-muted-foreground">Response hardening for browsers, custom headers in both directions, gzip/brotli.</p>
+        </div>
+        <div className="grid gap-3 md:grid-cols-3">
+          <label className="flex items-start gap-2">
+            <Switch checked={req.security_headers} onCheckedChange={(v) => set({ security_headers: v })} />
+            <span className="text-sm">
+              Security headers
+              <span className="block text-[11px] text-muted-foreground">X-Frame-Options SAMEORIGIN, nosniff, XSS filter, referrer policy.</span>
+            </span>
+          </label>
+          <label className={cn('flex items-start gap-2', !req.tls && 'opacity-50')}>
+            <Switch checked={req.hsts && req.tls} disabled={!req.tls} onCheckedChange={(v) => set({ hsts: v })} />
+            <span className="text-sm">
+              HSTS (2 years)
+              <span className="block text-[11px] text-muted-foreground">
+                {req.tls ? 'Browsers refuse plain http for this name afterwards.' : 'Needs HTTPS.'}
+                {req.hsts && req.tls && (
+                  <label className="mt-1 flex items-center gap-1.5">
+                    <input type="checkbox" checked={req.hsts_include_subdomains} onChange={(e) => set({ hsts_include_subdomains: e.target.checked })} /> include subdomains
+                  </label>
+                )}
+              </span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2">
+            <Switch checked={req.compress} onCheckedChange={(v) => set({ compress: v })} />
+            <span className="text-sm">
+              Compress responses
+              <span className="block text-[11px] text-muted-foreground">gzip / brotli / zstd for text-like content the app didn't compress itself.</span>
+            </span>
+          </label>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="space-y-1">
+            <Label className="text-xs">Request headers to the upstream (Name: value per line)</Label>
+            <textarea className={textareaCls} rows={2} placeholder={'X-Forwarded-Prefix: /grafana'} value={req.request_headers} onChange={(e) => set({ request_headers: e.target.value })} />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Response headers to the client (Name: value per line)</Label>
+            <textarea className={textareaCls} rows={2} placeholder={'X-Robots-Tag: noindex'} value={req.response_headers} onChange={(e) => set({ response_headers: e.target.value })} />
+          </div>
+        </div>
+      </div>
+      )}
+
+      {isHTTP && (
       <div className="space-y-3 rounded-lg border border-border/60 p-3">
         <div>
           <div className="flex items-center gap-1.5 text-sm font-medium">
@@ -979,7 +1237,7 @@ function RouteForm({
         <Button type="button" variant="ghost" size="sm" onClick={onDone} disabled={pending}>
           Cancel
         </Button>
-        <Button type="button" size="sm" onClick={submit} disabled={pending || !req.domain || !req.target_host || !req.target_port}>
+        <Button type="button" size="sm" onClick={submit} disabled={pending || !canSubmit}>
           {pending ? 'Saving…' : routeId ? 'Save route' : 'Add route'}
         </Button>
       </div>
@@ -1024,7 +1282,15 @@ function RouteRow({ route, onEdit }: { route: GatewayRoute; onEdit: () => void }
             <span className={cn('truncate font-medium', !route.enabled && 'text-muted-foreground line-through')}>
               {route.name || route.domain}
             </span>
-            {route.mode === 'passthrough' ? (
+            {route.mode === 'stream' ? (
+              <Badge variant="secondary" className="text-[10px] uppercase" title="raw TCP/UDP forward">
+                {route.protocol || 'tcp'} stream
+              </Badge>
+            ) : route.mode === 'redirect' ? (
+              <Badge variant="secondary" className="text-[10px] uppercase" title="redirect — no upstream">
+                redirect {route.redirect_permanent ? '301' : '302'}
+              </Badge>
+            ) : route.mode === 'passthrough' ? (
               <Badge variant="secondary" className="text-[10px] uppercase" title="TLS passthrough — the other proxy terminates TLS">
                 passthrough
               </Badge>
@@ -1035,7 +1301,9 @@ function RouteRow({ route, onEdit }: { route: GatewayRoute; onEdit: () => void }
             )}
             {route.mode === 'passthrough' ? (
               <span className="text-xs text-muted-foreground">TLS + access control handled by the other proxy</span>
-            ) : route.protected ? (
+            ) : route.mode === 'stream' ? (
+              <span className="text-xs text-muted-foreground">raw stream — secure the service itself</span>
+            ) : route.mode === 'redirect' ? null : route.protected ? (
               <span className="inline-flex items-center gap-1 text-xs text-emerald-500" title="basic auth / IP allow list">
                 <ShieldCheck className="h-3.5 w-3.5" /> protected
               </span>
@@ -1055,7 +1323,11 @@ function RouteRow({ route, onEdit }: { route: GatewayRoute; onEdit: () => void }
           <div className="truncate font-mono text-xs text-muted-foreground">
             → {route.mode === 'passthrough'
               ? `${route.target_host}:${route.target_https_port || 443} (tls, sni) · :${route.target_port || 80} (http)`
-              : route.effective_url || route.target_url || `${route.target_scheme}://${route.target_host}:${route.target_port}`}
+              : route.mode === 'redirect'
+                ? `${route.redirect_url}${route.redirect_preserve_path ? ' (path kept)' : ''}`
+                : route.mode === 'stream'
+                  ? `${route.target_host}:${route.target_port}${route.extra_targets ? ` (+${route.extra_targets.split(/[\n,]/).filter((s) => s.trim()).length})` : ''}`
+                  : route.effective_url || route.target_url || `${route.target_scheme}://${route.target_host}:${route.target_port}`}
             {route.rewritten ? (
               <span
                 className="font-sans"
@@ -1067,7 +1339,7 @@ function RouteRow({ route, onEdit }: { route: GatewayRoute; onEdit: () => void }
             ) : null}
             {route.target_label ? <span className="font-sans"> · {route.target_label}</span> : null}
           </div>
-          {route.mode !== 'passthrough' && fmtLimits(route) ? (
+          {route.mode === 'http' && fmtLimits(route) ? (
             <div className="flex items-center gap-1 text-[11px] text-muted-foreground" title="Request limits (route form → Request limits)">
               <Gauge className="h-3 w-3" /> {fmtLimits(route)}
             </div>

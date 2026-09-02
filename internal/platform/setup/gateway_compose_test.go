@@ -145,3 +145,25 @@ func TestBuildComposeContent_GatewayDockerNetworks(t *testing.T) {
 		t.Error("nil and empty network lists are the same provision")
 	}
 }
+
+func TestBuildComposeContent_GatewayStreamPorts(t *testing.T) {
+	ds := DesiredState{DBMode: DBModeSQLite, Gateway: &GatewayProvision{Enabled: true, StreamPorts: []StreamPort{{Protocol: "tcp", Port: 25565}, {Protocol: "udp", Port: 64738}}}}
+	out := BuildComposeContent(ds)
+	for _, want := range []string{
+		"- --entrypoints.ns-tcp-25565.address=:25565/tcp",
+		"- --entrypoints.ns-udp-64738.address=:64738/udp",
+		`- "25565:25565/tcp"`,
+		`- "64738:64738/udp"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("compose missing %q\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "--entrypoints.ns-tcp-25565.http.") {
+		t.Error("stream entrypoints must not get the http hardening flags")
+	}
+	a := GatewayProvision{Enabled: true, StreamPorts: []StreamPort{{Protocol: "tcp", Port: 1}}}
+	if a.Equal(GatewayProvision{Enabled: true}) {
+		t.Error("Equal must compare stream ports")
+	}
+}

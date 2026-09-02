@@ -133,3 +133,16 @@ func TestSemverAtLeast(t *testing.T) {
 		t.Errorf("version parse failed: %v", m)
 	}
 }
+
+func TestRenderStaticFor_StreamEntrypoints(t *testing.T) {
+	out := string(renderStaticFor(setup.GatewayProvision{Enabled: true, StreamPorts: []setup.StreamPort{{Protocol: "tcp", Port: 25565}, {Protocol: "udp", Port: 64738}}}, "3.7.12", "/d", "/t", "/a"))
+	for _, want := range []string{"  ns-tcp-25565:\n    address: \":25565/tcp\"", "  ns-udp-64738:\n    address: \":64738/udp\""} {
+		if !strings.Contains(out, want) {
+			t.Errorf("static config missing %q:\n%s", want, out)
+		}
+	}
+	n := &nativeProvisioner{installedWant: &setup.GatewayProvision{HTTPPort: 80, HTTPSPort: 443, StreamPorts: []setup.StreamPort{{Protocol: "tcp", Port: 25565}, {Protocol: "udp", Port: 64738}}}}
+	if got := n.lastPorts(); len(got) != 3 || got[2] != 25565 {
+		t.Errorf("lastPorts = %v (udp must not be TCP-probed)", got)
+	}
+}

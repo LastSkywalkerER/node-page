@@ -302,3 +302,164 @@ func TestRender_H2CSchemeAndMultiplePathPrefixes(t *testing.T) {
 		t.Errorf("public url = %q", u)
 	}
 }
+
+func TestRender_FeatureMiddlewaresAndLoadBalancer(t *testing.T) {
+	cfg := Config{Enabled: true, Mode: ModeManaged, ACMEEnabled: true}
+	r := Route{
+		RouteID: "f1", Domain: "app.example.com", Aliases: "www.app.example.com,alt.example.com",
+		TargetScheme: SchemeHTTPS, TargetHost: "10.0.0.5", TargetPort: 8443, TargetInsecureSkipVerify: true, TargetServerName: "app.internal",
+		TLS: true, Enabled: true, PathPrefix: "/grafana", StripPrefix: true, AddPrefix: "/ui",
+		HostHeaderMode: HostHeaderCustom, HostHeaderValue: "app.internal",
+		ExtraTargets: "10.0.0.6:8443\n10.0.0.7:8443", HealthCheckPath: "/healthz", Sticky: true, RetryAttempts: 2,
+		RequestHeaders: "X-Forwarded-Prefix: /grafana", ResponseHeaders: "X-Robots-Tag: noindex",
+		ForwardAuthURL: "http://authelia:9091/api/verify?rd=https://auth.example.com", ForwardAuthResponseHeaders: "Remote-User, Remote-Groups", ForwardAuthTrustForwardHeader: true,
+		SecurityHeaders: true, HSTS: true, HSTSIncludeSubdomains: true, Compress: true,
+		IPAllowList: "10.0.0.0/8", MaxBodyBytes: 1 << 20,
+	}
+	out, err := renderRoutes(t, cfg, []Route{r}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc traefikDynamic
+	if err := yaml.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("invalid yaml: %v\n%s", err, out)
+	}
+	rt := doc.HTTP.Routers["ns-f1"]
+	wantRule := "(Host(`app.example.com`) || Host(`www.app.example.com`) || Host(`alt.example.com`)) && PathPrefix(`/grafana`)"
+	if rt.Rule != wantRule {
+		t.Errorf("rule = %q", rt.Rule)
+	}
+	wantMW := []string{"ns-f1-ipallow", "ns-f1-fwdauth", "ns-f1-headers", "ns-f1-strip", "ns-f1-addprefix", "ns-f1-compress", "ns-f1-body", "ns-f1-retry"}
+	if strings.Join(rt.Middlewares, ",") != strings.Join(wantMW, ",") {
+		t.Errorf("middleware order = %v", rt.Middlewares)
+	}
+	lb := doc.HTTP.Services["ns-f1"].LoadBalancer
+	if len(lb.Servers) != 3 || lb.Servers[1].URL != "https://10.0.0.6:8443" {
+		t.Errorf("servers = %+v", lb.Servers)
+	}
+	if lb.HealthCheck == nil || lb.HealthCheck.Path != "/healthz" || lb.HealthCheck.Interval != "10s" {
+		t.Errorf("healthcheck = %+v", lb.HealthCheck)
+	}
+	if lb.Sticky == nil || lb.Sticky.Cookie.Name != "ns-f1" || !lb.Sticky.Cookie.Secure || !lb.Sticky.Cookie.HTTPOnly {
+		t.Errorf("sticky = %+v", lb.Sticky)
+	}
+	if lb.PassHostHeader != nil {
+		t.Error("custom host header must not disable passHostHeader")
+	}
+	tr := doc.HTTP.ServersTransports["ns-f1-transport"]
+	if !tr.InsecureSkipVerify || tr.ServerName != "app.internal" {
+		t.Errorf("transport = %+v", tr)
+	}
+	h := doc.HTTP.Middlewares["ns-f1-headers"].Headers
+	if h == nil || h.CustomRequestHeaders["Host"] != "app.internal" || h.CustomRequestHeaders["X-Forwarded-Prefix"] != "/grafana" ||
+		h.CustomResponseHeaders["X-Robots-Tag"] != "noindex" || h.CustomFrameOptionsValue != "SAMEORIGIN" || !h.ContentTypeNosniff ||
+		h.STSSeconds != HSTSMaxAgeSeconds || !h.STSIncludeSubdomains {
+		t.Errorf("headers = %+v", h)
+	}
+	fa := doc.HTTP.Middlewares["ns-f1-fwdauth"].ForwardAuth
+	if fa == nil || !fa.TrustForwardHeader || len(fa.AuthResponseHeaders) != 2 || fa.AuthResponseHeaders[1] != "Remote-Groups" || fa.MaxResponseBodySize != forwardAuthMaxResponseBytes {
+		t.Errorf("forwardAuth = %+v", fa)
+	}
+	if sp := doc.HTTP.Middlewares["ns-f1-strip"].StripPrefix; sp == nil || sp.Prefixes[0] != "/grafana" {
+		t.Errorf("strip = %+v", sp)
+	}
+	if ap := doc.HTTP.Middlewares["ns-f1-addprefix"].AddPrefix; ap == nil || ap.Prefix != "/ui" {
+		t.Errorf("addprefix = %+v", ap)
+	}
+	if doc.HTTP.Middlewares["ns-f1-compress"].Compress == nil {
+		t.Error("compress middleware missing")
+	}
+	if rt := doc.HTTP.Middlewares["ns-f1-retry"].Retry; rt == nil || rt.Attempts != 2 {
+		t.Errorf("retry = %+v", rt)
+	}
+	if !strings.Contains(string(out), "compress: {}") {
+		t.Errorf("compress must serialise as an empty mapping:\n%s", out)
+	}
+
+	// Upstream host-header mode → passHostHeader: false; HSTS without TLS is dropped.
+	r2 := Route{RouteID: "f2", Domain: "b.example.com", TargetHost: "h", TargetPort: 80, Enabled: true, HostHeaderMode: HostHeaderUpstream, HSTS: true}
+	out, err = renderRoutes(t, cfg, []Route{r2}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(out, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if ph := doc.HTTP.Services["ns-f2"].LoadBalancer.PassHostHeader; ph == nil || *ph {
+		t.Errorf("passHostHeader = %v", ph)
+	}
+	if _, ok := doc.HTTP.Middlewares["ns-f2-headers"]; ok {
+		t.Error("HSTS on a plain-http route must not render a headers middleware")
+	}
+}
+
+func TestRender_RedirectAndStreamRoutes(t *testing.T) {
+	cfg := Config{Enabled: true, Mode: ModeManaged, ACMEEnabled: true}
+	routes := []Route{
+		{RouteID: "rd", Mode: RouteModeRedirect, Domain: "old.example.com", Aliases: "www.old.example.com", TLS: true, Enabled: true,
+			RedirectURL: "https://new.example.com/", RedirectPermanent: true, RedirectPreservePath: true, TargetHost: "new.example.com", TargetPort: 80},
+		{RouteID: "rd2", Mode: RouteModeRedirect, Domain: "go.example.com", Enabled: true, RedirectURL: "https://docs.example.com/start", TargetHost: "x", TargetPort: 80},
+		{RouteID: "mc", Mode: RouteModeStream, Protocol: ProtoTCP, ListenPort: 25565, TargetHost: "10.0.0.9", TargetPort: 25565, ExtraTargets: "10.0.0.10:25565", Enabled: true},
+		{RouteID: "vo", Mode: RouteModeStream, Protocol: ProtoUDP, ListenPort: 64738, TargetHost: "10.0.0.9", TargetPort: 64738, Enabled: true},
+		{RouteID: "off", Mode: RouteModeStream, Protocol: ProtoTCP, ListenPort: 2222, TargetHost: "10.0.0.9", TargetPort: 22, Enabled: false},
+	}
+	out, err := renderRoutes(t, cfg, routes, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc traefikDynamic
+	if err := yaml.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("invalid yaml: %v\n%s", err, out)
+	}
+	web := doc.HTTP.Routers["ns-rd"]
+	if web.Service != noopService || web.EntryPoints[0] != "web" || web.Rule != "(Host(`old.example.com`) || Host(`www.old.example.com`))" {
+		t.Errorf("redirect web router = %+v", web)
+	}
+	tls := doc.HTTP.Routers["ns-rd-tls"]
+	if tls.Service != noopService || tls.TLS == nil || tls.TLS.CertResolver != "le" || tls.Middlewares[0] != "ns-rd-redirect" {
+		t.Errorf("redirect tls router = %+v", tls)
+	}
+	re := doc.HTTP.Middlewares["ns-rd-redirect"].RedirectRegex
+	if re == nil || !re.Permanent || re.Replacement != "https://new.example.com${1}" || re.Regex != `^https?://[^/]+(/.*)?$` {
+		t.Errorf("redirectRegex = %+v", re)
+	}
+	if re2 := doc.HTTP.Middlewares["ns-rd2-redirect"].RedirectRegex; re2 == nil || re2.Permanent || re2.Regex != `^.*$` || re2.Replacement != "https://docs.example.com/start" {
+		t.Errorf("fixed redirect = %+v", re2)
+	}
+	if _, ok := doc.HTTP.Routers["ns-rd2-tls"]; ok {
+		t.Error("plain redirect must not get a tls router")
+	}
+	if _, ok := doc.HTTP.Services["ns-rd"]; ok {
+		t.Error("redirect routes must not render an upstream service")
+	}
+	tcp := doc.TCP.Routers["ns-mc"]
+	if tcp.Rule != "HostSNI(`*`)" || tcp.EntryPoints[0] != "ns-tcp-25565" || tcp.TLS != nil {
+		t.Errorf("tcp stream router = %+v", tcp)
+	}
+	if srv := doc.TCP.Services["ns-mc"].LoadBalancer.Servers; len(srv) != 2 || srv[1].Address != "10.0.0.10:25565" {
+		t.Errorf("tcp servers = %+v", srv)
+	}
+	udp := doc.UDP.Routers["ns-vo"]
+	if udp.EntryPoints[0] != "ns-udp-64738" || doc.UDP.Services["ns-vo"].LoadBalancer.Servers[0].Address != "10.0.0.9:64738" {
+		t.Errorf("udp = %+v / %+v", udp, doc.UDP.Services["ns-vo"])
+	}
+	if _, ok := doc.TCP.Routers["ns-off"]; ok {
+		t.Error("disabled stream rendered")
+	}
+	ports := StreamPorts(routes)
+	if len(ports) != 2 || ports[0] != (StreamPort{Protocol: "tcp", Port: 25565}) || ports[1] != (StreamPort{Protocol: "udp", Port: 64738}) {
+		t.Errorf("StreamPorts = %+v", ports)
+	}
+	s := string(out)
+	for _, want := range []string{"udp:", "tcp/25565", "udp/64738", "redirect", "301 → https://new.example.com/ (path kept)"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("output missing %q:\n%s", want, s)
+		}
+	}
+	if routes[2].PublicURL(cfg) != "tcp://*:25565" || routes[0].PublicURL(cfg) != "https://old.example.com" {
+		t.Errorf("public urls: %q %q", routes[2].PublicURL(cfg), routes[0].PublicURL(cfg))
+	}
+	if !routes[0].Protected() && (Route{ForwardAuthURL: "http://a"}).Protected() != true {
+		t.Error("forward auth must count as protected")
+	}
+}

@@ -43,6 +43,32 @@ export const GatewayRouteSchema = z.object({
   read_only: z.boolean().optional().default(false),
   upstream_timeout_seconds: z.number().optional().default(0),
   max_body_bytes: z.number().optional().default(0),
+  // Hostname aliases, upstream shaping, extra access control, response hardening, redirect, stream.
+  aliases: z.string().optional().default(''),
+  strip_prefix: z.boolean().optional().default(false),
+  add_prefix: z.string().optional().default(''),
+  host_header_mode: z.string().optional().default(''),
+  host_header_value: z.string().optional().default(''),
+  target_server_name: z.string().optional().default(''),
+  extra_targets: z.string().optional().default(''),
+  health_check_path: z.string().optional().default(''),
+  health_check_interval_seconds: z.number().optional().default(0),
+  sticky: z.boolean().optional().default(false),
+  retry_attempts: z.number().optional().default(0),
+  request_headers: z.string().optional().default(''),
+  response_headers: z.string().optional().default(''),
+  forward_auth_url: z.string().optional().default(''),
+  forward_auth_response_headers: z.string().optional().default(''),
+  forward_auth_trust_forward_header: z.boolean().optional().default(false),
+  security_headers: z.boolean().optional().default(false),
+  hsts: z.boolean().optional().default(false),
+  hsts_include_subdomains: z.boolean().optional().default(false),
+  compress: z.boolean().optional().default(false),
+  redirect_url: z.string().optional().default(''),
+  redirect_permanent: z.boolean().optional().default(false),
+  redirect_preserve_path: z.boolean().optional().default(false),
+  protocol: z.string().optional().default(''),
+  listen_port: z.number().optional().default(0),
   enabled: z.boolean(),
   basic_auth_users: z.array(z.string()).default([]),
   public_url: z.string(),
@@ -115,6 +141,37 @@ export interface BasicAuthInput {
   password: string
 }
 
+export type RouteMode = 'http' | 'passthrough' | 'redirect' | 'stream'
+
+/** Zero values for every feature field — spread into a new request / a passthrough reset. */
+export const EMPTY_ROUTE_FEATURES = {
+  aliases: '',
+  strip_prefix: false,
+  add_prefix: '',
+  host_header_mode: '' as const,
+  host_header_value: '',
+  target_server_name: '',
+  extra_targets: '',
+  health_check_path: '',
+  health_check_interval_seconds: 0,
+  sticky: false,
+  retry_attempts: 0,
+  request_headers: '',
+  response_headers: '',
+  forward_auth_url: '',
+  forward_auth_response_headers: '',
+  forward_auth_trust_forward_header: false,
+  security_headers: false,
+  hsts: false,
+  hsts_include_subdomains: false,
+  compress: false,
+  redirect_url: '',
+  redirect_permanent: false,
+  redirect_preserve_path: false,
+  protocol: '' as const,
+  listen_port: 0,
+}
+
 export interface RouteRequest {
   name: string
   domain: string
@@ -126,10 +183,41 @@ export interface RouteRequest {
   target_label: string
   target_insecure_skip_verify: boolean
   tls: boolean
-  mode: 'http' | 'passthrough'
+  mode: RouteMode
   target_https_port: number
   basic_auth: BasicAuthInput[]
   ip_allow_list: string
+  /** Extra hostnames (comma-separated) served by the same route. */
+  aliases: string
+  /** Upstream shaping (http mode). */
+  strip_prefix: boolean
+  add_prefix: string
+  host_header_mode: '' | 'client' | 'upstream' | 'custom'
+  host_header_value: string
+  target_server_name: string
+  extra_targets: string
+  health_check_path: string
+  health_check_interval_seconds: number
+  sticky: boolean
+  retry_attempts: number
+  request_headers: string
+  response_headers: string
+  /** Forward auth (SSO). */
+  forward_auth_url: string
+  forward_auth_response_headers: string
+  forward_auth_trust_forward_header: boolean
+  /** Response hardening / compression. */
+  security_headers: boolean
+  hsts: boolean
+  hsts_include_subdomains: boolean
+  compress: boolean
+  /** Redirect mode. */
+  redirect_url: string
+  redirect_permanent: boolean
+  redirect_preserve_path: boolean
+  /** Stream mode. */
+  protocol: 'tcp' | 'udp' | ''
+  listen_port: number
   /** Per-route request limits (http mode only; 0/false = off). */
   max_conns_per_ip: number
   rate_limit_rps: number

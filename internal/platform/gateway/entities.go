@@ -13,6 +13,8 @@
 package gateway
 
 import (
+	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -69,6 +71,43 @@ const (
 	// traffic is proxied as HTTP to its http port (so its HTTP-01 challenges and
 	// redirects work).
 	RouteModePassthrough = "passthrough"
+	// RouteModeRedirect answers every request for the hostname(s) with a
+	// redirect to another URL (www → apex, old domains, "moved" notices). No
+	// upstream is involved (Traefik's noop@internal service).
+	RouteModeRedirect = "redirect"
+	// RouteModeStream forwards a raw TCP or UDP port (game servers, SSH,
+	// databases) — a dedicated entrypoint per (protocol, port); no hostname.
+	RouteModeStream = "stream"
+)
+
+// Stream protocols.
+const (
+	ProtoTCP = "tcp"
+	ProtoUDP = "udp"
+)
+
+// Host-header modes (http mode).
+const (
+	// HostHeaderClient (default, ""): forward the client's Host header.
+	HostHeaderClient = "client"
+	// HostHeaderUpstream: send the target's own host:port as Host (Traefik
+	// passHostHeader=false) — for upstreams that route by their own vhost.
+	HostHeaderUpstream = "upstream"
+	// HostHeaderCustom: send HostHeaderValue verbatim.
+	HostHeaderCustom = "custom"
+)
+
+// Bounds for the list-ish route fields.
+const (
+	MaxAliases        = 16
+	MaxExtraTargets   = 16
+	MaxCustomHeaders  = 32
+	MaxRetryAttempts  = 10
+	MaxHealthInterval = 300
+	// DefaultHealthCheckIntervalSeconds applies when a path is set but no interval.
+	DefaultHealthCheckIntervalSeconds = 10
+	// HSTSMaxAgeSeconds is the Strict-Transport-Security max-age rendered (2 years).
+	HSTSMaxAgeSeconds = 63072000
 )
 
 // Config is the cluster-wide gateway configuration (stored as one JSON value
@@ -207,6 +246,68 @@ type Route struct {
 	// breaks streaming (SSE, long downloads) — meant for small admin UIs only.
 	MaxBodyBytes int64 `json:"max_body_bytes" gorm:"column:max_body_bytes"`
 
+	// --- hostnames ---------------------------------------------------------
+	// Aliases are extra hostnames (comma-separated) served by the same route
+	// ("www.example.com" next to the apex). Every alias is OR-ed into the rule
+	// and lands as a SAN on the same ACME certificate.
+	Aliases string `json:"aliases,omitempty" gorm:"type:text"`
+
+	// --- upstream shaping (http mode) ----------------------------------------
+	// StripPrefix removes the matched PathPrefix(es) before forwarding
+	// (/grafana → the app sees /); AddPrefix prepends a path instead/as well.
+	StripPrefix bool   `json:"strip_prefix" gorm:"column:strip_prefix"`
+	AddPrefix   string `json:"add_prefix,omitempty" gorm:"size:255;column:add_prefix"`
+	// HostHeaderMode: HostHeader* ("" = client). HostHeaderValue is the custom
+	// value for HostHeaderCustom.
+	HostHeaderMode  string `json:"host_header_mode,omitempty" gorm:"size:16;column:host_header_mode"`
+	HostHeaderValue string `json:"host_header_value,omitempty" gorm:"size:253;column:host_header_value"`
+	// TargetServerName is the TLS SNI sent to an https upstream when it
+	// differs from TargetHost (a vhost behind an IP).
+	TargetServerName string `json:"target_server_name,omitempty" gorm:"size:253;column:target_server_name"`
+	// ExtraTargets: additional "host:port" upstreams (newline/comma-separated,
+	// same scheme) round-robined with the primary target — the same app on
+	// several cluster nodes. HealthCheckPath (+ interval) lets Traefik drop a
+	// failing server; Sticky pins a client to one server by cookie;
+	// RetryAttempts re-sends a failed request to another server.
+	ExtraTargets               string `json:"extra_targets,omitempty" gorm:"type:text;column:extra_targets"`
+	HealthCheckPath            string `json:"health_check_path,omitempty" gorm:"size:255;column:health_check_path"`
+	HealthCheckIntervalSeconds int    `json:"health_check_interval_seconds" gorm:"column:health_check_interval_seconds"`
+	Sticky                     bool   `json:"sticky"`
+	RetryAttempts              int    `json:"retry_attempts" gorm:"column:retry_attempts"`
+	// RequestHeaders / ResponseHeaders: "Name: value" lines added to the
+	// upstream request / the client response.
+	RequestHeaders  string `json:"request_headers,omitempty" gorm:"type:text;column:request_headers"`
+	ResponseHeaders string `json:"response_headers,omitempty" gorm:"type:text;column:response_headers"`
+
+	// --- access control additions ----------------------------------------------
+	// ForwardAuthURL: an SSO/auth service (Authelia, Authentik, Pocket-ID…)
+	// every request is checked against first (Traefik forwardAuth);
+	// ForwardAuthResponseHeaders (comma-separated) are copied from its 2xx
+	// answer onto the upstream request (Remote-User…).
+	ForwardAuthURL                string `json:"forward_auth_url,omitempty" gorm:"size:1024;column:forward_auth_url"`
+	ForwardAuthResponseHeaders    string `json:"forward_auth_response_headers,omitempty" gorm:"type:text;column:forward_auth_response_headers"`
+	ForwardAuthTrustForwardHeader bool   `json:"forward_auth_trust_forward_header" gorm:"column:forward_auth_trust_forward_header"`
+
+	// --- response hardening / compression --------------------------------------
+	// SecurityHeaders adds the usual browser hardening set (X-Frame-Options
+	// SAMEORIGIN, nosniff, referrer policy). HSTS adds Strict-Transport-
+	// Security (TLS routes only). Compress enables gzip/brotli/zstd.
+	SecurityHeaders       bool `json:"security_headers" gorm:"column:security_headers"`
+	HSTS                  bool `json:"hsts" gorm:"column:hsts"`
+	HSTSIncludeSubdomains bool `json:"hsts_include_subdomains" gorm:"column:hsts_include_subdomains"`
+	Compress              bool `json:"compress"`
+
+	// --- redirect mode -----------------------------------------------------------
+	RedirectURL          string `json:"redirect_url,omitempty" gorm:"size:1024;column:redirect_url"`
+	RedirectPermanent    bool   `json:"redirect_permanent" gorm:"column:redirect_permanent"`
+	RedirectPreservePath bool   `json:"redirect_preserve_path" gorm:"column:redirect_preserve_path"`
+
+	// --- stream mode -------------------------------------------------------------
+	// Protocol (tcp|udp) and ListenPort: the public port the gateway node
+	// publishes and forwards to TargetHost:TargetPort (+ ExtraTargets).
+	Protocol   string `json:"protocol,omitempty" gorm:"size:8"`
+	ListenPort int    `json:"listen_port" gorm:"column:listen_port"`
+
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -214,6 +315,89 @@ type Route struct {
 
 // TableName pins the GORM table name.
 func (Route) TableName() string { return "gateway_routes" }
+
+// IsRedirect / IsStream report the non-proxy modes.
+func (r Route) IsRedirect() bool { return r.Mode == RouteModeRedirect }
+func (r Route) IsStream() bool   { return r.Mode == RouteModeStream }
+
+// Hostnames returns the domain followed by its aliases (de-duplicated, blanks
+// dropped). Empty for stream routes.
+func (r Route) Hostnames() []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, h := range append([]string{r.Domain}, SplitCSV(r.Aliases)...) {
+		h = strings.ToLower(strings.TrimSpace(h))
+		if h == "" || seen[h] {
+			continue
+		}
+		seen[h] = true
+		out = append(out, h)
+	}
+	return out
+}
+
+// ExtraServers returns the additional "host:port" upstreams (newline- or
+// comma-separated in ExtraTargets).
+func (r Route) ExtraServers() []string {
+	var out []string
+	for _, line := range SplitLines(strings.ReplaceAll(r.ExtraTargets, ",", "\n")) {
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// EffectiveHealthCheckInterval is the health-check interval in seconds (0 =
+// no health check).
+func (r Route) EffectiveHealthCheckInterval() int {
+	if strings.TrimSpace(r.HealthCheckPath) == "" {
+		return 0
+	}
+	if r.HealthCheckIntervalSeconds <= 0 {
+		return DefaultHealthCheckIntervalSeconds
+	}
+	return r.HealthCheckIntervalSeconds
+}
+
+// StreamEntryPoint is the Traefik entrypoint name for a stream route:
+// ns-<proto>-<port> (namespaced like every other object node-stats owns).
+func StreamEntryPoint(proto string, port int) string {
+	return fmt.Sprintf("%s%s-%d", namePrefix, proto, port)
+}
+
+// StreamPort is one (protocol, port) the managed Traefik must listen on.
+type StreamPort struct {
+	Protocol string `json:"protocol"`
+	Port     int    `json:"port"`
+}
+
+// StreamPorts lists the distinct (protocol, port) pairs of the ENABLED stream
+// routes, sorted — what the managed Traefik must publish as entrypoints.
+func StreamPorts(routes []Route) []StreamPort {
+	seen := map[StreamPort]bool{}
+	var out []StreamPort
+	for _, r := range routes {
+		if !r.Enabled || !r.IsStream() || r.ListenPort <= 0 {
+			continue
+		}
+		p := StreamPort{Protocol: r.Protocol, Port: r.ListenPort}
+		if p.Protocol == "" {
+			p.Protocol = ProtoTCP
+		}
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Port != out[j].Port {
+			return out[i].Port < out[j].Port
+		}
+		return out[i].Protocol < out[j].Protocol
+	})
+	return out
+}
 
 // AutoMigrate creates the gateway tables (called from the central migrations).
 func AutoMigrate(db *gorm.DB) error {
@@ -322,11 +506,19 @@ func (c Config) IsNode(mac, systemID, hardwareUUID string) bool {
 
 // Protected reports whether the route has any access-control middleware.
 func (r Route) Protected() bool {
-	return r.BasicAuthUsers != "" || r.IPAllowList != ""
+	return r.BasicAuthUsers != "" || r.IPAllowList != "" || strings.TrimSpace(r.ForwardAuthURL) != ""
 }
 
-// PublicURL is the browser-facing URL of the route.
+// PublicURL is the browser-facing URL of the route. Stream routes have no
+// hostname: "tcp://*:<port>" (the UI substitutes the gateway's address).
 func (r Route) PublicURL(cfg Config) string {
+	if r.IsStream() {
+		proto := r.Protocol
+		if proto == "" {
+			proto = ProtoTCP
+		}
+		return proto + "://*:" + itoa(r.ListenPort)
+	}
 	scheme := SchemeHTTP
 	port := ""
 	if r.TLS || r.IsPassthrough() {

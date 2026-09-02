@@ -220,7 +220,13 @@ func (n *nativeProvisioner) lastPorts() []int {
 	if sp <= 0 {
 		sp = 443
 	}
-	return []int{hp, sp}
+	out := []int{hp, sp}
+	for _, p := range n.installedWant.StreamPorts {
+		if p.Protocol == "tcp" {
+			out = append(out, p.Port)
+		}
+	}
+	return out
 }
 
 // portOwners reports which OTHER processes listen on the given ports (via
@@ -318,6 +324,9 @@ func renderStaticFor(gw setup.GatewayProvision, binVersion, dynamicDir, dir, acm
 	w(fmt.Sprintf("  web:\n    address: \":%d\"\n%s%s", httpPort, transport, httpSection))
 	w(fmt.Sprintf("  websecure:\n    address: \":%d\"\n%s%s", httpsPort, transport, httpSection))
 	w("  ping:\n    address: \"127.0.0.1:8082\"" + httpSection)
+	for _, p := range gw.StreamPorts {
+		w(fmt.Sprintf("  %s:\n    address: \":%d/%s\"", p.EntryPoint(), p.Port, p.Protocol))
+	}
 	w("ping:\n  entryPoint: ping")
 	w("providers:\n  file:")
 	w(fmt.Sprintf("    directory: %q", dynamicDir))

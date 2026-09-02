@@ -87,7 +87,19 @@ type GatewayProvision struct {
 	// service is attached to in addition to the stack's default network, so
 	// containers on them are reachable by name. Already validated.
 	DockerNetworks []string `json:"docker_networks,omitempty"`
+	// StreamPorts are the raw TCP/UDP ports of enabled stream routes: each
+	// becomes an entrypoint (ns-<proto>-<port>) published 1:1 on the host.
+	StreamPorts []StreamPort `json:"stream_ports,omitempty"`
 }
+
+// StreamPort is one (protocol, port) entrypoint of the managed Traefik.
+type StreamPort struct {
+	Protocol string `json:"protocol"` // tcp | udp
+	Port     int    `json:"port"`
+}
+
+// EntryPoint is the Traefik entrypoint name (mirrors gateway.StreamEntryPoint).
+func (p StreamPort) EntryPoint() string { return fmt.Sprintf("ns-%s-%d", p.Protocol, p.Port) }
 
 // Equal compares two provisions field by field (the struct holds a slice, so
 // == is not available).
@@ -97,6 +109,12 @@ func (gw GatewayProvision) Equal(o GatewayProvision) bool {
 	}
 	if len(o.DockerNetworks) == 0 {
 		o.DockerNetworks = nil
+	}
+	if len(gw.StreamPorts) == 0 {
+		gw.StreamPorts = nil
+	}
+	if len(o.StreamPorts) == 0 {
+		o.StreamPorts = nil
 	}
 	return reflect.DeepEqual(gw, o)
 }
@@ -414,6 +432,10 @@ func writeTraefikService(w func(string), gw GatewayProvision) {
 	w(fmt.Sprintf("      - --entrypoints.web.transport.respondingTimeouts.readTimeout=%ds", gw.ReadTimeoutSeconds))
 	w(fmt.Sprintf("      - --entrypoints.websecure.transport.respondingTimeouts.readTimeout=%ds", gw.ReadTimeoutSeconds))
 	w("      - --entrypoints.ping.address=:8082")
+	// Stream routes: one raw TCP/UDP entrypoint per (protocol, port).
+	for _, p := range gw.StreamPorts {
+		w(fmt.Sprintf("      - --entrypoints.%s.address=:%d/%s", p.EntryPoint(), p.Port, p.Protocol))
+	}
 	// Entrypoint hardening (alias headers, encoded path characters) — on every
 	// http entrypoint incl. ping, so Traefik's start-up warnings go quiet.
 	for _, ep := range []string{"web", "websecure", "ping"} {
@@ -461,6 +483,9 @@ func writeTraefikService(w func(string), gw GatewayProvision) {
 	w("    ports:")
 	w(fmt.Sprintf(`      - "%d:80"`, httpPort))
 	w(fmt.Sprintf(`      - "%d:443"`, httpsPort))
+	for _, p := range gw.StreamPorts {
+		w(fmt.Sprintf(`      - "%d:%d/%s"`, p.Port, p.Port, p.Protocol))
+	}
 	w("    volumes:")
 	w("      - ./data/docker/traefik/dynamic:/etc/traefik/dynamic:ro")
 	w("      - ./data/docker/traefik/acme:/letsencrypt")

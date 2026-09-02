@@ -455,7 +455,8 @@ func (m *Materializer) reconcile(ctx context.Context) {
 	// --- managed backend: systemd (native root install) --------------------
 	if m.native != nil {
 		if isGW && cfg.Mode == gateway.ModeManaged {
-			want := m.provisionFor(cfg)
+			routes, _ := m.deps.Repo.List(rc)
+			want := m.provisionFor(cfg, routes)
 			m.resetACMEStateIfCAChanged(want)
 			if restarted, err := m.native.Reconcile(rc, want); err != nil {
 				st.LastError = "traefik (systemd): " + err.Error()
@@ -484,7 +485,8 @@ func (m *Materializer) reconcile(ctx context.Context) {
 	if setup.RunningInDocker() && !setup.ManagedExternally() {
 		want := setup.GatewayProvision{Enabled: isGW && cfg.Mode == gateway.ModeManaged}
 		if want.Enabled {
-			want = m.provisionFor(cfg)
+			routes, _ := m.deps.Repo.List(rc)
+			want = m.provisionFor(cfg, routes)
 			m.resetACMEStateIfCAChanged(want)
 		}
 		if want.Enabled {
@@ -573,7 +575,8 @@ func (m *Materializer) Files(ctx context.Context) ([]ConfigFile, error) {
 	if cfg.Mode != gateway.ModeManaged {
 		return out, nil
 	}
-	want := m.provisionFor(cfg)
+	routes, _ := m.deps.Repo.List(ctx)
+	want := m.provisionFor(cfg, routes)
 	switch {
 	case m.native != nil:
 		out = append(out,
@@ -592,13 +595,18 @@ func (m *Materializer) Files(ctx context.Context) ([]ConfigFile, error) {
 
 // provisionFor derives the managed-Traefik provisioning request from the
 // replicated config (shared by reconcile and the files viewer).
-func (m *Materializer) provisionFor(cfg gateway.Config) setup.GatewayProvision {
+func (m *Materializer) provisionFor(cfg gateway.Config, routes []gateway.Route) setup.GatewayProvision {
+	var streams []setup.StreamPort
+	for _, p := range gateway.StreamPorts(routes) {
+		streams = append(streams, setup.StreamPort{Protocol: p.Protocol, Port: p.Port})
+	}
 	return setup.GatewayProvision{Enabled: true, HTTPPort: cfg.HTTPPort, HTTPSPort: cfg.HTTPSPort,
 		ACMEEnabled: cfg.ACMEEnabled, ACMEEmail: cfg.ACMEEmail, ACMEStaging: acmeStagingEnv(),
 		ReadTimeoutSeconds:   cfg.EffectiveRequestReadTimeoutSeconds(),
 		AliasHeadersStrategy: cfg.EffectiveAliasHeadersStrategy(),
 		EncodedPathPolicy:    cfg.EffectiveEncodedPathPolicy(),
-		DockerNetworks:       append([]string(nil), cfg.DockerNetworks...)}
+		DockerNetworks:       append([]string(nil), cfg.DockerNetworks...),
+		StreamPorts:          streams}
 }
 
 func readConfigFile(name, kind, path, note string) ConfigFile {

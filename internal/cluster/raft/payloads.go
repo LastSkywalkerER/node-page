@@ -88,6 +88,32 @@ type GatewayRouteUpsertPayload struct {
 	UpstreamTimeoutSeconds   int    `json:"upstream_timeout_seconds,omitempty"`
 	MaxBodyBytes             int64  `json:"max_body_bytes,omitempty"`
 	Enabled                  bool   `json:"enabled"`
+	// Feature fields (v0.10.3+; omitempty so older peers ignore them).
+	Aliases                       string `json:"aliases,omitempty"`
+	StripPrefix                   bool   `json:"strip_prefix,omitempty"`
+	AddPrefix                     string `json:"add_prefix,omitempty"`
+	HostHeaderMode                string `json:"host_header_mode,omitempty"`
+	HostHeaderValue               string `json:"host_header_value,omitempty"`
+	TargetServerName              string `json:"target_server_name,omitempty"`
+	ExtraTargets                  string `json:"extra_targets,omitempty"`
+	HealthCheckPath               string `json:"health_check_path,omitempty"`
+	HealthCheckIntervalSeconds    int    `json:"health_check_interval_seconds,omitempty"`
+	Sticky                        bool   `json:"sticky,omitempty"`
+	RetryAttempts                 int    `json:"retry_attempts,omitempty"`
+	RequestHeaders                string `json:"request_headers,omitempty"`
+	ResponseHeaders               string `json:"response_headers,omitempty"`
+	ForwardAuthURL                string `json:"forward_auth_url,omitempty"`
+	ForwardAuthResponseHeaders    string `json:"forward_auth_response_headers,omitempty"`
+	ForwardAuthTrustForwardHeader bool   `json:"forward_auth_trust_forward_header,omitempty"`
+	SecurityHeaders               bool   `json:"security_headers,omitempty"`
+	HSTS                          bool   `json:"hsts,omitempty"`
+	HSTSIncludeSubdomains         bool   `json:"hsts_include_subdomains,omitempty"`
+	Compress                      bool   `json:"compress,omitempty"`
+	RedirectURL                   string `json:"redirect_url,omitempty"`
+	RedirectPermanent             bool   `json:"redirect_permanent,omitempty"`
+	RedirectPreservePath          bool   `json:"redirect_preserve_path,omitempty"`
+	Protocol                      string `json:"protocol,omitempty"`
+	ListenPort                    int    `json:"listen_port,omitempty"`
 }
 
 // GatewayRouteDeletePayload removes a gateway route everywhere.
