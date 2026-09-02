@@ -16,6 +16,7 @@ import { useHosts } from '@/widgets/hosts/useHosts'
 import {
   useGateway,
   useGatewayTargets,
+  useDockerNetworks,
   useSetGatewayConfig,
   useCreateRoute,
   useUpdateRoute,
@@ -79,6 +80,11 @@ function ConfigCard({ state }: { state: GatewayState }) {
     [hostsData]
   )
   const [publicResult, setPublicResult] = useState<PublicCheckResult | null>(null)
+  const { data: dockerNets } = useDockerNetworks(state.capabilities.running_in_docker && cfg.mode === 'managed')
+  const toggleNet = (name: string, on: boolean) => {
+    const cur = cfg.docker_networks ?? []
+    update({ docker_networks: on ? (cur.includes(name) ? cur : [...cur, name]) : cur.filter((n) => n !== name) })
+  }
   const caps = state.capabilities
   // Identity is by stable machine id first, MAC second: Docker bridge
   // containers share 02:42:… MACs across machines, so MAC alone can point the
@@ -177,9 +183,40 @@ function ConfigCard({ state }: { state: GatewayState }) {
             </div>
             {state.capabilities.running_in_docker && (
               <div className="space-y-1.5">
-                <Label>Extra Docker networks (optional, comma-separated)</Label>
+                <Label>Extra Docker networks (optional)</Label>
+                {dockerNets && dockerNets.networks.filter((n) => !n.own).length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {dockerNets.networks
+                      .filter((n) => !n.own)
+                      .map((n) => {
+                        const on = (cfg.docker_networks ?? []).includes(n.name)
+                        return (
+                          <button
+                            key={n.name}
+                            type="button"
+                            onClick={() => toggleNet(n.name, !on)}
+                            title={`${n.driver}${n.containers ? ` · ${n.containers} container${n.containers === 1 ? '' : 's'}` : ' · no containers'}`}
+                            className={cn(
+                              'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors',
+                              on ? 'border-primary bg-primary/15 text-foreground' : 'border-border/60 text-muted-foreground hover:text-foreground'
+                            )}
+                          >
+                            <span className={cn('h-1.5 w-1.5 rounded-full', on ? 'bg-primary' : 'bg-zinc-500')} />
+                            <span className="font-mono">{n.name}</span>
+                            {n.containers ? <span className="opacity-70">{n.containers}</span> : null}
+                          </button>
+                        )
+                      })}
+                  </div>
+                )}
+                {dockerNets?.error && <p className="text-[11px] text-amber-500">Could not list networks here: {dockerNets.error}</p>}
+                {selectedHost && !isLocalHost(selectedHost) && (
+                  <p className="text-[11px] text-amber-500">
+                    The list shows networks of <b>this</b> node; the gateway node is {selectedHost.display_name || selectedHost.name} — type its network names below.
+                  </p>
+                )}
                 <Input
-                  placeholder="nginxproxymanager, myapp_default"
+                  placeholder="or type names: nginxproxymanager, myapp_default"
                   value={(cfg.docker_networks ?? []).join(', ')}
                   onChange={(e) =>
                     update({

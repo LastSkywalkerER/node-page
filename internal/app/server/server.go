@@ -899,6 +899,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.GET("/gateway", middleware.RequireAdmin(), gatewayHandler.HandleGet)
 		authAPI.PUT("/gateway/config", middleware.RequireAdmin(), gatewayHandler.HandleSetConfig)
 		authAPI.GET("/gateway/targets", middleware.RequireAdmin(), gatewayHandler.HandleTargets)
+		authAPI.GET("/gateway/docker-networks", middleware.RequireAdmin(), gatewayHandler.HandleDockerNetworks)
 		authAPI.POST("/gateway/check", middleware.RequireAdmin(), gatewayHandler.HandleCheck)
 		authAPI.GET("/gateway/logs", middleware.RequireAdmin(), gatewayHandler.HandleLogs)
 		authAPI.GET("/gateway/files", middleware.RequireAdmin(), gatewayHandler.HandleFiles)

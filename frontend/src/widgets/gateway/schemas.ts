@@ -136,6 +136,14 @@ export const GatewayTargetSchema = z.object({
 })
 export type GatewayTarget = z.infer<typeof GatewayTargetSchema>
 
+export const DockerNetworkSchema = z.object({
+  name: z.string(),
+  driver: z.string().optional().default(''),
+  own: z.boolean().optional().default(false),
+  containers: z.number().optional().default(0),
+})
+export type DockerNetwork = z.infer<typeof DockerNetworkSchema>
+
 export interface BasicAuthInput {
   user: string
   password: string

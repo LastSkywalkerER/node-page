@@ -500,7 +500,10 @@ func (m *Materializer) reconcile(ctx context.Context) {
 		}
 		if isGW && cfg.Mode == gateway.ModeManaged {
 			if cs, err := setup.ReadControllerStatus(m.deps.DataDir); err == nil && cs != nil {
-				st.Controller = cs
+				// Only the gateway unit matters here — an app pull failing must
+				// not read as "Traefik broken" (and vice versa).
+				v := cs.UnitView(setup.ServiceUnitTraefik)
+				st.Controller = &v
 			}
 			healthy := pingURL(rc, traefikPingURL)
 			st.TraefikHealthy = &healthy

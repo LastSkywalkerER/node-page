@@ -82,6 +82,24 @@ func (h *Handler) HandleTargets(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"targets": t})
 }
 
+// HandleDockerNetworks lists this node's joinable Docker networks (for the
+// managed Traefik's "extra networks" picker).
+//
+// @Summary  List Docker networks on this node
+// @Tags     gateway
+// @Produce  json
+// @Success  200 {object} map[string]interface{}
+// @Security BearerAuth
+// @Router   /gateway/docker-networks [get]
+func (h *Handler) HandleDockerNetworks(c *gin.Context) {
+	nets, err := DockerNetworks(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"networks": []DockerNetwork{}, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"networks": nets})
+}
+
 // HandleCheck TCP-dials a target from this node.
 //
 // @Summary  Check a gateway target

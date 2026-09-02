@@ -18,6 +18,8 @@ import {
   type GatewayBlock,
   type GatewayConfigFile,
   type BlockRequest,
+  DockerNetworkSchema,
+  type DockerNetwork,
 } from './schemas'
 import { z } from 'zod'
 
@@ -51,6 +53,19 @@ export function useGatewayTargets(enabled = true) {
     queryFn: async () => {
       const { data } = await apiClient.get('/gateway/targets')
       return z.array(GatewayTargetSchema).parse(data.targets ?? [])
+    },
+    enabled,
+    staleTime: 15000,
+  })
+}
+
+/** Docker networks on THIS node the managed Traefik could join (config card picker). */
+export function useDockerNetworks(enabled = true) {
+  return useQuery<{ networks: DockerNetwork[]; error?: string }>({
+    queryKey: [...KEY, 'docker-networks'],
+    queryFn: async () => {
+      const { data } = await apiClient.get('/gateway/docker-networks')
+      return { networks: z.array(DockerNetworkSchema).parse(data.networks ?? []), error: data.error }
     },
     enabled,
     staleTime: 15000,

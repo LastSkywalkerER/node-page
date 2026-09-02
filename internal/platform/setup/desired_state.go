@@ -32,6 +32,43 @@ type ControllerStatus struct {
 	Message    string `json:"message,omitempty"`
 	Error      string `json:"error,omitempty"`
 	UpdatedAt  string `json:"updated_at,omitempty"`
+	// Services is the per-unit view (compose, db, app, traefik): each unit is
+	// reconciled independently, so one can be in error while the others are
+	// applied. The top-level Phase/Message/Error summarise them.
+	Services map[string]ServiceStatus `json:"services,omitempty"`
+	// PullAppliedGeneration is the desired-state generation whose image pull
+	// the app unit last executed — lets writers of gateway-only changes know
+	// whether a pending pull may be dropped (RequestGatewayState).
+	PullAppliedGeneration int `json:"pull_applied_generation,omitempty"`
+}
+
+// ServiceStatus is one unit's reconcile state.
+type ServiceStatus struct {
+	Phase     string `json:"phase"`
+	Message   string `json:"message,omitempty"`
+	Error     string `json:"error,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+	// NextRetry / Attempts are set while the unit is failing (back-off).
+	NextRetry string `json:"next_retry,omitempty"`
+	Attempts  int    `json:"attempts,omitempty"`
+}
+
+// ServiceUnitTraefik is the Services key of the managed gateway unit.
+const ServiceUnitTraefik = "traefik"
+
+// UnitView returns the status of one unit as a standalone ControllerStatus (the
+// shape the UI already renders), or the whole status when the controller
+// predates per-unit reporting.
+func (st ControllerStatus) UnitView(unit string) ControllerStatus {
+	ss, ok := st.Services[unit]
+	if !ok {
+		return st
+	}
+	out := ControllerStatus{Generation: st.Generation, Phase: ss.Phase, Message: ss.Message, Error: ss.Error, UpdatedAt: ss.UpdatedAt}
+	if ss.Attempts > 0 {
+		out.Message = fmt.Sprintf("%s (attempt %d, retrying)", ss.Message, ss.Attempts)
+	}
+	return out
 }
 
 // Hash returns a digest of the descriptor INCLUDING Generation, so each new

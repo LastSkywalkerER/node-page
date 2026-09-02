@@ -51,6 +51,12 @@ func RequestGatewayState(dataDir, dbType, dbDSN string, want GatewayProvision) (
 	if !dockerenv.Running() || ManagedExternally() {
 		return false, nil
 	}
+	return ReconcileGatewayDesiredState(dataDir, dbType, dbDSN, want)
+}
+
+// ReconcileGatewayDesiredState is RequestGatewayState without the deployment
+// gate (exported for the controller's tests).
+func ReconcileGatewayDesiredState(dataDir, dbType, dbDSN string, want GatewayProvision) (changed bool, err error) {
 	ds, _ := ReadDesiredState(dataDir)
 	if ds == nil {
 		if !want.Enabled {
@@ -75,8 +81,15 @@ func RequestGatewayState(dataDir, dbType, dbDSN string, want GatewayProvision) (
 		gw := want
 		ds.Gateway = &gw
 	}
-	// A gateway-only change must not re-pull the image.
-	ds.PullBeforeApply = false
+	// A gateway-only change must not re-pull the image — unless a pull request
+	// is still PENDING (the controller has not executed it yet, e.g. it was
+	// blocked or the registry was down): dropping the flag then would silently
+	// lose an update the operator asked for.
+	if ds.PullBeforeApply {
+		if st, err := ReadControllerStatus(dataDir); err == nil && st != nil && st.PullAppliedGeneration >= ds.Generation {
+			ds.PullBeforeApply = false
+		}
+	}
 	ds.Generation++
 	if err := WriteDesiredState(dataDir, *ds); err != nil {
 		return false, fmt.Errorf("failed to request the gateway state from the controller: %w", err)

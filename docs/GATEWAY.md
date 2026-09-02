@@ -56,11 +56,18 @@ Injected by `setup.BuildComposeContent` when `desired-state.json` carries `gatew
   no other bridge network can reach (Docker's inter-bridge isolation). `default` stays first so the
   app's liveness probe (`traefik:8082`) keeps working. Native (systemd) installs ignore it.
 
-The controller starts it with `compose up -d --wait traefik` (a port clash surfaces as a
-controller error shown in the UI) and removes it when the gateway is disabled. A **gateway-only**
-desired-state change (toggle, ports, ACME) does **not** recreate the app container — the
-controller compares the new state against the last applied one (`.applied-state.json`) and skips
-the disruptive recreate when only the `gateway` section differs.
+The controller reconciles the stack as **independent units** — `compose` (the generated file +
+stack `.env` keys), `db` (managed Postgres), `app` (node-stats: image/DB env/ports + one-shot image
+pulls) and `traefik` (the gateway) — each with its own applied hash, error and exponential retry
+back-off (2 s → 60 s), persisted in `.applied-units.json`. So a Traefik that cannot bind :80 (another
+proxy still holds it) keeps retrying every few seconds **without** blocking an app update, a failing
+image pull keeps retrying without touching Traefik, and a gateway-only change (toggle, ports, ACME,
+networks, stream ports) never recreates the app. A pull is an intent keyed by desired-state
+generation (`pull_applied_generation` in `controller-status.json`), so a gateway-only write only drops
+the `pull_before_apply` flag once the controller has actually executed it. `controller-status.json`
+carries a per-unit `services` map; the Gateway tab shows the `traefik` unit only. The networks picker
+(`GET /gateway/docker-networks`) lists this node's joinable Docker networks with their attached
+container counts.
 
 ## Native (systemd) Traefik — Proxmox LXC and other non-Docker installs
 
