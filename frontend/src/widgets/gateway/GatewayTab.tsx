@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
 import { confirmDialog } from '@/shared/lib/confirmDialog'
-import { Globe, Plus, Trash2, Pencil, ExternalLink, ShieldAlert, ShieldCheck, Lock, Activity, X, ScrollText, RefreshCw, Radar } from 'lucide-react'
+import { Globe, Plus, Trash2, Pencil, ExternalLink, ShieldAlert, ShieldCheck, Lock, Activity, X, ScrollText, RefreshCw, Radar, Gauge } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -26,6 +26,7 @@ import {
   type PublicCheckResult,
   type TargetCheck,
 } from './useGateway'
+import { DEFAULT_ROUTE_LIMITS } from './schemas'
 import type { GatewayConfig, GatewayRoute, GatewayState, GatewayTarget, RouteRequest, BasicAuthInput } from './schemas'
 import { ConnectionsCard, BlocksCard } from './ConnectionsCard'
 
@@ -137,6 +138,29 @@ function ConfigCard({ state }: { state: GatewayState }) {
                   onChange={(e) => update({ https_port: Number(e.target.value) })}
                 />
               </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Request read timeout (upload ceiling)</Label>
+              <select
+                className={selectCls}
+                value={String(cfg.request_read_timeout_seconds || 0)}
+                onChange={(e) => update({ request_read_timeout_seconds: Number(e.target.value) })}
+              >
+                {!READ_TIMEOUT_PRESETS.some((p) => p.value === (cfg.request_read_timeout_seconds || 0)) && (
+                  <option value={String(cfg.request_read_timeout_seconds)}>{cfg.request_read_timeout_seconds} seconds (custom)</option>
+                )}
+                {READ_TIMEOUT_PRESETS.map((p) => (
+                  <option key={p.value} value={String(p.value)}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-muted-foreground">
+                How long a client may take to send one request, body included — in practice the largest/slowest upload a
+                file service (MinIO, Nextcloud, Immich…) behind the gateway can accept. Traefik applies it on the
+                listener, so it is gateway-wide; tighten individual routes with the <b>Request limits</b> in the route
+                form. Changing it restarts the managed Traefik.
+              </p>
             </div>
             <div className="rounded-lg border border-border/60 p-3 space-y-3">
               <div className="flex items-center justify-between gap-3">
@@ -396,7 +420,28 @@ const emptyRequest: RouteRequest = {
   target_https_port: 443,
   basic_auth: [],
   ip_allow_list: '',
+  ...DEFAULT_ROUTE_LIMITS,
   enabled: true,
+}
+
+const READ_TIMEOUT_PRESETS: { value: number; label: string }[] = [
+  { value: 60, label: '1 minute (Traefik default — fails any slower upload)' },
+  { value: 600, label: '10 minutes' },
+  { value: 3600, label: '1 hour' },
+  { value: 0, label: '24 hours (node-stats default)' },
+  { value: -1, label: 'No limit' },
+]
+
+const MB = 1024 * 1024
+
+function fmtLimits(r: GatewayRoute): string {
+  const parts: string[] = []
+  if (r.max_conns_per_ip > 0) parts.push(`${r.max_conns_per_ip} concurrent/ip`)
+  if (r.rate_limit_rps > 0) parts.push(`${r.rate_limit_rps} req/s/ip`)
+  if (r.upstream_timeout_seconds > 0) parts.push(`${r.upstream_timeout_seconds}s upstream`)
+  if (r.read_only) parts.push('read-only')
+  if (r.max_body_bytes > 0) parts.push(`≤ ${Math.round(r.max_body_bytes / MB)} MB body`)
+  return parts.join(' · ')
 }
 
 function targetKey(t: GatewayTarget) {
@@ -527,8 +572,8 @@ function RouteForm({
             const mode = e.target.value as RouteRequest['mode']
             set(
               mode === 'passthrough'
-                ? { mode, tls: false, path_prefix: '', basic_auth: [], ip_allow_list: '', target_scheme: 'http', target_port: req.target_port || 80, target_https_port: req.target_https_port || 443 }
-                : { mode }
+                ? { mode, tls: false, path_prefix: '', basic_auth: [], ip_allow_list: '', target_scheme: 'http', target_port: req.target_port || 80, target_https_port: req.target_https_port || 443, max_conns_per_ip: 0, rate_limit_rps: 0, read_only: false, upstream_timeout_seconds: 0, max_body_bytes: 0 }
+                : { mode, ...(routeId ? {} : DEFAULT_ROUTE_LIMITS) }
             )
           }}
         >
@@ -757,6 +802,64 @@ function RouteForm({
       </div>
       )}
 
+      {!isPassthrough && (
+      <div className="space-y-3 rounded-lg border border-border/60 p-3">
+        <div>
+          <div className="flex items-center gap-1.5 text-sm font-medium">
+            <Gauge className="h-3.5 w-3.5" /> Request limits
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Per-route guards against connection hoarding and floods. The gateway-wide read timeout can't be scoped to a
+            route, so routes bound abuse by concurrency, rate, method and size instead. 0 = off; loosen for file
+            services, tighten for small admin UIs.
+          </p>
+        </div>
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className="space-y-1">
+            <Label className="text-xs">Max concurrent requests per IP</Label>
+            <Input type="number" min={0} value={req.max_conns_per_ip} onChange={(e) => set({ max_conns_per_ip: Math.max(0, Number(e.target.value) || 0) })} />
+            <p className="text-[11px] text-muted-foreground">429 above it. Stops one client holding hundreds of connections.</p>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Rate limit (requests/s per IP)</Label>
+            <Input type="number" min={0} value={req.rate_limit_rps} onChange={(e) => set({ rate_limit_rps: Math.max(0, Number(e.target.value) || 0) })} />
+            <p className="text-[11px] text-muted-foreground">Average per second, burst 2×; 429 above it.</p>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Upstream response timeout (s)</Label>
+            <Input type="number" min={0} value={req.upstream_timeout_seconds} onChange={(e) => set({ upstream_timeout_seconds: Math.max(0, Number(e.target.value) || 0) })} />
+            <p className="text-[11px] text-muted-foreground">504 when the service doesn't start answering in time. Raise for slow report/long-poll endpoints.</p>
+          </div>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <label className="flex items-start gap-2 pt-1">
+            <Switch checked={req.read_only} onCheckedChange={(v) => set({ read_only: v })} />
+            <span className="text-sm">
+              Read-only (GET / HEAD / OPTIONS only)
+              <span className="block text-[11px] text-muted-foreground">The service never receives a request body — for dashboards and status pages.</span>
+            </span>
+          </label>
+          <div className="space-y-1">
+            <Label className="text-xs">Max request body (MB, 0 = unlimited)</Label>
+            <Input
+              type="number"
+              min={0}
+              value={req.max_body_bytes > 0 ? Math.round(req.max_body_bytes / MB) : 0}
+              onChange={(e) => set({ max_body_bytes: Math.max(0, Math.round(Number(e.target.value) || 0)) * MB })}
+            />
+            {req.max_body_bytes > 0 ? (
+              <p className="text-[11px] text-amber-500">
+                Traefik's buffering middleware holds the whole request <i>and</i> response before forwarding — it breaks
+                SSE / streaming and slows big downloads. Use it for small admin UIs only, never for file services.
+              </p>
+            ) : (
+              <p className="text-[11px] text-muted-foreground">413 above it (buffered, see warning when set). Leave 0 for file/media services.</p>
+            )}
+          </div>
+        </div>
+      </div>
+      )}
+
       <div className="flex justify-end gap-2">
         <Button type="button" variant="ghost" size="sm" onClick={onDone} disabled={pending}>
           Cancel
@@ -849,6 +952,11 @@ function RouteRow({ route, onEdit }: { route: GatewayRoute; onEdit: () => void }
             ) : null}
             {route.target_label ? <span className="font-sans"> · {route.target_label}</span> : null}
           </div>
+          {route.mode !== 'passthrough' && fmtLimits(route) ? (
+            <div className="flex items-center gap-1 text-[11px] text-muted-foreground" title="Request limits (route form → Request limits)">
+              <Gauge className="h-3 w-3" /> {fmtLimits(route)}
+            </div>
+          ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <Switch checked={route.enabled} disabled={update.isPending} onCheckedChange={toggle} />

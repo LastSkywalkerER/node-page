@@ -100,6 +100,15 @@ func Migrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate raft cluster tables: %w", err)
 	}
 
+	// gateway_blocks.cidr was first created as "c_id_r" (GORM split the CIDR
+	// initialism). Rename in place so the pinned column name matches; the old
+	// column is NOT NULL, so leaving it behind would fail every insert.
+	if m := db.Migrator(); m.HasTable("gateway_blocks") && m.HasColumn(&gateway.Block{}, "c_id_r") && !m.HasColumn(&gateway.Block{}, "cidr") {
+		if err := m.RenameColumn(&gateway.Block{}, "c_id_r", "cidr"); err != nil {
+			return fmt.Errorf("failed to rename gateway_blocks.c_id_r: %w", err)
+		}
+	}
+
 	if err := gateway.AutoMigrate(db); err != nil {
 		return fmt.Errorf("failed to migrate gateway routes: %w", err)
 	}

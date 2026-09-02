@@ -10,6 +10,8 @@ export const GatewayConfigSchema = z.object({
   https_port: z.number().optional().default(0),
   acme_enabled: z.boolean().default(false),
   acme_email: z.string().optional().default(''),
+  // Entrypoint read timeout (upload ceiling): 0 = default 24h, -1 = unlimited.
+  request_read_timeout_seconds: z.number().optional().default(0),
 })
 export type GatewayConfig = z.infer<typeof GatewayConfigSchema>
 
@@ -29,6 +31,11 @@ export const GatewayRouteSchema = z.object({
   target_insecure_skip_verify: z.boolean().default(false),
   tls: z.boolean(),
   ip_allow_list: z.string().optional().default(''),
+  max_conns_per_ip: z.number().optional().default(0),
+  rate_limit_rps: z.number().optional().default(0),
+  read_only: z.boolean().optional().default(false),
+  upstream_timeout_seconds: z.number().optional().default(0),
+  max_body_bytes: z.number().optional().default(0),
   enabled: z.boolean(),
   basic_auth_users: z.array(z.string()).default([]),
   public_url: z.string(),
@@ -115,8 +122,23 @@ export interface RouteRequest {
   target_https_port: number
   basic_auth: BasicAuthInput[]
   ip_allow_list: string
+  /** Per-route request limits (http mode only; 0/false = off). */
+  max_conns_per_ip: number
+  rate_limit_rps: number
+  read_only: boolean
+  upstream_timeout_seconds: number
+  max_body_bytes: number
   enabled?: boolean
 }
+
+/** Defaults for a NEW http route — a bounded-but-generous safety net the admin can loosen per route. */
+export const DEFAULT_ROUTE_LIMITS = {
+  max_conns_per_ip: 100,
+  rate_limit_rps: 0,
+  read_only: false,
+  upstream_timeout_seconds: 60,
+  max_body_bytes: 0,
+} as const
 
 export const ConnEventSchema = z.object({
   ts: z.number(),

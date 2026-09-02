@@ -85,8 +85,23 @@ type RouteRequest struct {
 	TargetHTTPSPort int              `json:"target_https_port"`
 	BasicAuth       []BasicAuthInput `json:"basic_auth"`
 	IPAllowList     string           `json:"ip_allow_list"`
-	Enabled         *bool            `json:"enabled"`
+	// Per-route request limits (http mode only; 0/false = off). See
+	// gateway.Route for what each renders to.
+	MaxConnsPerIP          int   `json:"max_conns_per_ip"`
+	RateLimitRPS           int   `json:"rate_limit_rps"`
+	ReadOnly               bool  `json:"read_only"`
+	UpstreamTimeoutSeconds int   `json:"upstream_timeout_seconds"`
+	MaxBodyBytes           int64 `json:"max_body_bytes"`
+	Enabled                *bool `json:"enabled"`
 }
+
+// Bounds for the per-route limits (sanity, not policy).
+const (
+	maxConnsPerIPLimit  = 100_000
+	maxRateLimitRPS     = 1_000_000
+	maxUpstreamTimeoutS = 24 * 60 * 60
+	maxBodyBytesLimit   = int64(1) << 40 // 1 TiB
+)
 
 // RouteView is the API shape of a route (hashes stripped, users listed).
 type RouteView struct {
@@ -241,6 +256,9 @@ func (s *service) SetConfig(ctx context.Context, cfg gateway.Config) (*gateway.C
 		if !validPort(cfg.HTTPPort) || !validPort(cfg.HTTPSPort) || cfg.HTTPPort == cfg.HTTPSPort {
 			return nil, fmt.Errorf("%w: invalid gateway ports", ErrValidation)
 		}
+	}
+	if t := cfg.RequestReadTimeoutSeconds; t < gateway.RequestReadTimeoutUnlimited || t > gateway.MaxRequestReadTimeoutSeconds {
+		return nil, fmt.Errorf("%w: request read timeout must be -1 (unlimited), 0 (default 24h) or up to %d seconds", ErrValidation, gateway.MaxRequestReadTimeoutSeconds)
 	}
 	cfg.NodeSystemID = ""
 	if cfg.NodeMAC != "" && s.hosts != nil {
@@ -472,6 +490,18 @@ func (s *service) applyRequest(r *gateway.Route, req RouteRequest, prev *gateway
 	if !validPort(req.TargetPort) {
 		return fmt.Errorf("%w: target port must be 1-65535", ErrValidation)
 	}
+	if req.MaxConnsPerIP < 0 || req.MaxConnsPerIP > maxConnsPerIPLimit {
+		return fmt.Errorf("%w: max concurrent requests per IP must be 0 (off) to %d", ErrValidation, maxConnsPerIPLimit)
+	}
+	if req.RateLimitRPS < 0 || req.RateLimitRPS > maxRateLimitRPS {
+		return fmt.Errorf("%w: rate limit must be 0 (off) to %d req/s", ErrValidation, maxRateLimitRPS)
+	}
+	if req.UpstreamTimeoutSeconds < 0 || req.UpstreamTimeoutSeconds > maxUpstreamTimeoutS {
+		return fmt.Errorf("%w: upstream response timeout must be 0 (off) to %d seconds", ErrValidation, maxUpstreamTimeoutS)
+	}
+	if req.MaxBodyBytes < 0 || req.MaxBodyBytes > maxBodyBytesLimit {
+		return fmt.Errorf("%w: max request body must be 0 (unlimited) to %d bytes", ErrValidation, maxBodyBytesLimit)
+	}
 	allow := strings.TrimSpace(req.IPAllowList)
 	for _, c := range gateway.SplitCSV(allow) {
 		if _, _, err := net.ParseCIDR(c); err != nil {
@@ -540,6 +570,16 @@ func (s *service) applyRequest(r *gateway.Route, req RouteRequest, prev *gateway
 	r.TLS = req.TLS
 	r.BasicAuthUsers = strings.Join(lines, "\n")
 	r.IPAllowList = strings.Join(gateway.SplitCSV(allow), ",")
+	// Limits are HTTP-layer features; a passthrough route is an opaque TLS
+	// stream, so they are dropped there (the form hides them as well).
+	r.MaxConnsPerIP, r.RateLimitRPS, r.ReadOnly, r.UpstreamTimeoutSeconds, r.MaxBodyBytes = 0, 0, false, 0, 0
+	if mode == gateway.RouteModeHTTP {
+		r.MaxConnsPerIP = req.MaxConnsPerIP
+		r.RateLimitRPS = req.RateLimitRPS
+		r.ReadOnly = req.ReadOnly
+		r.UpstreamTimeoutSeconds = req.UpstreamTimeoutSeconds
+		r.MaxBodyBytes = req.MaxBodyBytes
+	}
 	if req.Enabled != nil {
 		r.Enabled = *req.Enabled
 	}

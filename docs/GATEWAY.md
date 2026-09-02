@@ -107,7 +107,41 @@ operator's objects):
 - router `ns-<id>` on `websecure` with `tls.certResolver: le` (when ACME is on) or `tls: {}`
   (Traefik default cert), plus `ns-<id>-http` on `web` with a permanent `redirectScheme` → https;
   plain routes get one `web` router;
-- middlewares `ns-<id>-auth` (basicAuth) and `ns-<id>-ipallow` (ipAllowList) when set.
+- middlewares `ns-<id>-auth` (basicAuth) and `ns-<id>-ipallow` (ipAllowList) when set;
+- per-route **request limits** (below): `ns-<id>-ratelimit` (rateLimit), `ns-<id>-inflight`
+  (inFlightReq), `ns-<id>-body` (buffering), a `forwardingTimeouts.responseHeaderTimeout` on the
+  route's serversTransport, and a `Method()` OR-chain appended to the rule for read-only routes.
+  Middleware order: ipallow → ratelimit → inflight → auth → body.
+
+### Request timeouts & limits
+
+**Gateway-wide read timeout** (Gateway node card → *Request read timeout*, `Config.
+request_read_timeout_seconds`). Traefik v3 defaults the entrypoint `respondingTimeouts.readTimeout`
+to **60 s**, and it covers reading the whole request *including the body* — so any upload slower
+than a minute (a backup into MinIO, a phone photo into Immich over a bad link) was cut off. node-stats
+now owns the value: **24 h by default**, presets down to Traefik's minute or up to *no limit* (`-1`).
+It is a listener setting, so it applies to both entrypoints and every route — Traefik has no per-
+router equivalent (the timeout fires before a router is even matched). Rendered into the managed
+Traefik's static config (compose `--entrypoints.<ep>.transport.respondingTimeouts.readTimeout`,
+native `entryPoints.<ep>.transport.respondingTimeouts.readTimeout`); changing it recreates/restarts
+Traefik. External mode: set it on your own Traefik.
+
+Body size needs no tuning: Traefik streams request bodies without a limit unless the buffering
+middleware is on.
+
+**Per-route limits** (route form → *Request limits*; http mode only, dropped for passthrough) are
+the per-route answer to "the read timeout is generous now" — they bound abuse by concurrency, rate,
+method and size instead of time. New routes default to `max_conns_per_ip: 100` and
+`upstream_timeout_seconds: 60`; existing routes keep everything off. `0`/`false` = off.
+
+| Field | Traefik object | Effect |
+|-------|----------------|--------|
+| `max_conns_per_ip` | `inFlightReq{amount}` | 429 above N concurrent requests from one client IP — the slowloris / connection-hoarding guard. |
+| `rate_limit_rps` | `rateLimit{average, burst: 2×}` | 429 above N req/s per client IP. |
+| `upstream_timeout_seconds` | `serversTransport.forwardingTimeouts.responseHeaderTimeout` | 504 when the service doesn't start answering in time (raise for slow reports / long-poll). |
+| `read_only` | rule `&& (Method(\`GET\`) \|\| Method(\`HEAD\`) \|\| Method(\`OPTIONS\`))` | Other methods 404 — the service never receives a body. (v3's `Method()` takes one argument, hence the OR chain.) |
+| `max_body_bytes` | `buffering{maxRequestBodyBytes}` | 413 above it. **Buffers the request and the response in full** (verified on v3.3: SSE arrives in one piece) — small admin UIs only, never file/media services. |
+
 
 Routes without basic auth / allow list are badged **public** in the UI — one click exposes an
 internal service to the internet, so the form nudges towards adding a user or a CIDR.
@@ -159,6 +193,9 @@ DELETE /gateway/routes/:route_id
   bind mount) or NPM could be added without a schema change.
 - Targets are `ip:published-port`. Reaching containers on the gateway node by docker network
   name is not done yet.
+- Per-route *time* limits on the client side (readTimeout) are impossible in Traefik; a body-size cap
+  without buffering would need a `forwardAuth` hop through node-stats (Content-Length check) — not
+  done, it would put node-stats on the hot path.
 - Runtime status (file path, controller phase, Traefik health) and `manage_kind` are only visible on
   the gateway node's own UI; other nodes show where it is rendered. Picking a node that can't run
   managed Traefik from *another* node's UI is only reported on the target node.

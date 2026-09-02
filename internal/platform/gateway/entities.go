@@ -85,6 +85,14 @@ type Config struct {
 	// ACMEEnabled turns on Let's Encrypt (HTTP-01) for routers with TLS.
 	ACMEEnabled bool   `json:"acme_enabled"`
 	ACMEEmail   string `json:"acme_email,omitempty"`
+	// RequestReadTimeoutSeconds (managed mode) is Traefik's entrypoint
+	// respondingTimeouts.readTimeout: how long a client may take to send a
+	// whole request INCLUDING its body, i.e. the upload ceiling. Traefik v3
+	// defaults to 60s, which kills any upload slower than a minute. It is an
+	// entrypoint (listener) setting — there is no per-route knob — so it lives
+	// here; routes tighten with their own limits (RouteLimits). 0 → the
+	// node-stats default (DefaultRequestReadTimeoutSeconds), -1 → unlimited.
+	RequestReadTimeoutSeconds int `json:"request_read_timeout_seconds,omitempty"`
 	// (The Let's Encrypt staging CA is a developer-only knob —
 	// NODE_STATS_ACME_STAGING=1 on the gateway node — not part of the config.)
 }
@@ -134,6 +142,28 @@ type Route struct {
 	// IPAllowList is a comma-separated CIDR list; empty = allow all.
 	IPAllowList string `json:"ip_allow_list,omitempty" gorm:"type:text"`
 
+	// Per-route request limits (http mode only; 0/false = off). These are the
+	// per-route counterpart of the global read timeout: Traefik can't scope
+	// the read timeout to a router, so routes bound abuse by concurrency,
+	// rate, method and size instead. Column names are pinned — GORM splits
+	// initialisms ("IP", "RPS") unpredictably.
+	//
+	// MaxConnsPerIP → inFlightReq (429 above N concurrent requests per client
+	// IP) — the slowloris / connection-hoarding guard.
+	MaxConnsPerIP int `json:"max_conns_per_ip" gorm:"column:max_conns_per_ip"`
+	// RateLimitRPS → rateLimit (average req/s per client IP, burst 2×).
+	RateLimitRPS int `json:"rate_limit_rps" gorm:"column:rate_limit_rps"`
+	// ReadOnly restricts the router rule to GET/HEAD/OPTIONS — the upstream
+	// never sees a request body at all.
+	ReadOnly bool `json:"read_only" gorm:"column:read_only"`
+	// UpstreamTimeoutSeconds → serversTransport.forwardingTimeouts.
+	// responseHeaderTimeout (504 when the upstream doesn't answer in time).
+	UpstreamTimeoutSeconds int `json:"upstream_timeout_seconds" gorm:"column:upstream_timeout_seconds"`
+	// MaxBodyBytes → buffering.maxRequestBodyBytes (413 above the cap). The
+	// buffering middleware buffers the request AND the response in full, so it
+	// breaks streaming (SSE, long downloads) — meant for small admin UIs only.
+	MaxBodyBytes int64 `json:"max_body_bytes" gorm:"column:max_body_bytes"`
+
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -152,6 +182,36 @@ func (r Route) IsWildcard() bool { return strings.HasPrefix(r.Domain, "*.") }
 
 // IsPassthrough reports whether the route delegates TLS to another proxy.
 func (r Route) IsPassthrough() bool { return r.Mode == RouteModePassthrough }
+
+// HasLimits reports whether any per-route request limit is set.
+func (r Route) HasLimits() bool {
+	return r.MaxConnsPerIP > 0 || r.RateLimitRPS > 0 || r.ReadOnly || r.UpstreamTimeoutSeconds > 0 || r.MaxBodyBytes > 0
+}
+
+// DefaultRequestReadTimeoutSeconds is the entrypoint read timeout node-stats
+// applies when the config leaves it unset: 24 h, so a big upload over a slow
+// link goes through (Traefik's own default is 60 s).
+const DefaultRequestReadTimeoutSeconds = 24 * 60 * 60
+
+// RequestReadTimeoutUnlimited is the sentinel for "no read timeout at all".
+const RequestReadTimeoutUnlimited = -1
+
+// MaxRequestReadTimeoutSeconds bounds the configurable value (30 days).
+const MaxRequestReadTimeoutSeconds = 30 * 24 * 60 * 60
+
+// EffectiveRequestReadTimeoutSeconds resolves the configured value: the
+// number of seconds Traefik gets, where 0 means unlimited (Traefik's own
+// semantics for readTimeout=0).
+func (c Config) EffectiveRequestReadTimeoutSeconds() int {
+	switch {
+	case c.RequestReadTimeoutSeconds == RequestReadTimeoutUnlimited:
+		return 0
+	case c.RequestReadTimeoutSeconds <= 0:
+		return DefaultRequestReadTimeoutSeconds
+	default:
+		return c.RequestReadTimeoutSeconds
+	}
+}
 
 // IsNode reports whether a host row (by MAC / stable system id) is the
 // configured gateway node.

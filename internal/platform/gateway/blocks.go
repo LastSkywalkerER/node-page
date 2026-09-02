@@ -20,8 +20,11 @@ type Block struct {
 	ID uint `json:"id" gorm:"primaryKey"`
 	// BlockID is the cluster-stable identity (short random hex).
 	BlockID string `json:"block_id" gorm:"uniqueIndex;size:32;not null"`
-	// CIDR is the blocked range in canonical form ("203.0.113.7/32").
-	CIDR string `json:"cidr" gorm:"size:64;not null"`
+	// CIDR is the blocked range in canonical form ("203.0.113.7/32"). The
+	// column name is pinned: GORM's naming strategy would otherwise derive
+	// "c_id_r" (it splits the "ID" initialism), which broke the ON CONFLICT
+	// upsert that references excluded.cidr.
+	CIDR string `json:"cidr" gorm:"column:cidr;size:64;not null"`
 	// Reason is the operator's note ("scanner", "brute force on /wp-login").
 	Reason string `json:"reason,omitempty" gorm:"size:255"`
 	// Source: "manual" (admin UI). Reserved for a future "auto" rule engine.

@@ -82,6 +82,11 @@ type GatewayRouteUpsertPayload struct {
 	TLS                      bool   `json:"tls"`
 	BasicAuthUsers           string `json:"basic_auth_users,omitempty"`
 	IPAllowList              string `json:"ip_allow_list,omitempty"`
+	MaxConnsPerIP            int    `json:"max_conns_per_ip,omitempty"`
+	RateLimitRPS             int    `json:"rate_limit_rps,omitempty"`
+	ReadOnly                 bool   `json:"read_only,omitempty"`
+	UpstreamTimeoutSeconds   int    `json:"upstream_timeout_seconds,omitempty"`
+	MaxBodyBytes             int64  `json:"max_body_bytes,omitempty"`
 	Enabled                  bool   `json:"enabled"`
 }
 

@@ -230,3 +230,54 @@ func TestSetConfig_Validation(t *testing.T) {
 		t.Errorf("round-trip: %+v %v", cfg, err)
 	}
 }
+
+func TestCreateRoute_LimitsValidatedAndDroppedForPassthrough(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newSvc(repo, nil)
+	ctx := context.Background()
+	bad := []RouteRequest{
+		{Domain: "ok.example.com", TargetHost: "h", TargetPort: 80, MaxConnsPerIP: -1},
+		{Domain: "ok.example.com", TargetHost: "h", TargetPort: 80, RateLimitRPS: 2_000_000},
+		{Domain: "ok.example.com", TargetHost: "h", TargetPort: 80, UpstreamTimeoutSeconds: 100_000},
+		{Domain: "ok.example.com", TargetHost: "h", TargetPort: 80, MaxBodyBytes: -5},
+	}
+	for i, c := range bad {
+		if _, err := svc.CreateRoute(ctx, c); !errors.Is(err, ErrValidation) {
+			t.Errorf("case %d: expected validation error, got %v", i, err)
+		}
+	}
+	v, err := svc.CreateRoute(ctx, RouteRequest{Domain: "ok.example.com", TargetHost: "h", TargetPort: 80,
+		MaxConnsPerIP: 100, RateLimitRPS: 10, ReadOnly: true, UpstreamTimeoutSeconds: 60, MaxBodyBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := repo.rows[v.RouteID]
+	if got.MaxConnsPerIP != 100 || got.RateLimitRPS != 10 || !got.ReadOnly || got.UpstreamTimeoutSeconds != 60 || got.MaxBodyBytes != 1<<20 {
+		t.Errorf("limits not stored: %+v", got)
+	}
+	// Passthrough: limits are HTTP-layer only → silently zeroed.
+	v2, err := svc.CreateRoute(ctx, RouteRequest{Domain: "*.apps.example.com", Mode: "passthrough", TargetHost: "h",
+		TargetPort: 80, MaxConnsPerIP: 100, ReadOnly: true, MaxBodyBytes: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := repo.rows[v2.RouteID]; g.HasLimits() {
+		t.Errorf("passthrough must drop limits: %+v", g)
+	}
+}
+
+func TestSetConfig_RequestReadTimeout(t *testing.T) {
+	svc := newSvc(newFakeRepo(), nil)
+	ctx := context.Background()
+	if _, err := svc.SetConfig(ctx, gateway.Config{RequestReadTimeoutSeconds: -2}); !errors.Is(err, ErrValidation) {
+		t.Errorf("-2 must be rejected, got %v", err)
+	}
+	if _, err := svc.SetConfig(ctx, gateway.Config{RequestReadTimeoutSeconds: gateway.MaxRequestReadTimeoutSeconds + 1}); !errors.Is(err, ErrValidation) {
+		t.Errorf("too large must be rejected, got %v", err)
+	}
+	for _, v := range []int{-1, 0, 3600} {
+		if _, err := svc.SetConfig(ctx, gateway.Config{RequestReadTimeoutSeconds: v}); err != nil {
+			t.Errorf("%d rejected: %v", v, err)
+		}
+	}
+}

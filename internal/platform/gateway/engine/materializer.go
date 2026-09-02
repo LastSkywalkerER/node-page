@@ -439,7 +439,8 @@ func (m *Materializer) reconcile(ctx context.Context) {
 	if m.native != nil {
 		if isGW && cfg.Mode == gateway.ModeManaged {
 			want := setup.GatewayProvision{Enabled: true, HTTPPort: cfg.HTTPPort, HTTPSPort: cfg.HTTPSPort,
-				ACMEEnabled: cfg.ACMEEnabled, ACMEEmail: cfg.ACMEEmail, ACMEStaging: acmeStagingEnv()}
+				ACMEEnabled: cfg.ACMEEnabled, ACMEEmail: cfg.ACMEEmail, ACMEStaging: acmeStagingEnv(),
+				ReadTimeoutSeconds: cfg.EffectiveRequestReadTimeoutSeconds()}
 			m.resetACMEStateIfCAChanged(want)
 			if restarted, err := m.native.Reconcile(rc, want); err != nil {
 				st.LastError = "traefik (systemd): " + err.Error()
@@ -473,6 +474,7 @@ func (m *Materializer) reconcile(ctx context.Context) {
 			want.ACMEEnabled = cfg.ACMEEnabled
 			want.ACMEEmail = cfg.ACMEEmail
 			want.ACMEStaging = acmeStagingEnv()
+			want.ReadTimeoutSeconds = cfg.EffectiveRequestReadTimeoutSeconds()
 			m.resetACMEStateIfCAChanged(want)
 		}
 		if want.Enabled {

@@ -185,6 +185,11 @@ export function routeToRequest(r: GatewayRoute): RouteRequest {
     target_https_port: r.target_https_port || 443,
     basic_auth: r.basic_auth_users.map((u) => ({ user: u, password: '' })),
     ip_allow_list: r.ip_allow_list,
+    max_conns_per_ip: r.max_conns_per_ip,
+    rate_limit_rps: r.rate_limit_rps,
+    read_only: r.read_only,
+    upstream_timeout_seconds: r.upstream_timeout_seconds,
+    max_body_bytes: r.max_body_bytes,
     enabled: r.enabled,
   }
 }

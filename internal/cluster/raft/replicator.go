@@ -140,7 +140,7 @@ func (r *Replicator) SubmitGatewayRouteUpsert(ctx context.Context, g gateway.Rou
 	if !r.Enabled() {
 		return nil
 	}
-	_, err := SubmitTyped(ctx, r.svc, CmdGatewayRouteUpsert, GatewayRouteUpsertPayload{
+	res, err := SubmitTyped(ctx, r.svc, CmdGatewayRouteUpsert, GatewayRouteUpsertPayload{
 		RouteID:                  g.RouteID,
 		Name:                     g.Name,
 		Domain:                   g.Domain,
@@ -156,9 +156,14 @@ func (r *Replicator) SubmitGatewayRouteUpsert(ctx context.Context, g gateway.Rou
 		TLS:                      g.TLS,
 		BasicAuthUsers:           g.BasicAuthUsers,
 		IPAllowList:              g.IPAllowList,
+		MaxConnsPerIP:            g.MaxConnsPerIP,
+		RateLimitRPS:             g.RateLimitRPS,
+		ReadOnly:                 g.ReadOnly,
+		UpstreamTimeoutSeconds:   g.UpstreamTimeoutSeconds,
+		MaxBodyBytes:             g.MaxBodyBytes,
 		Enabled:                  g.Enabled,
 	}, 5*time.Second)
-	return err
+	return firstErr(err, res.Err)
 }
 
 // SubmitGatewayRouteDelete removes a gateway route on every node.
@@ -166,8 +171,8 @@ func (r *Replicator) SubmitGatewayRouteDelete(ctx context.Context, routeID strin
 	if !r.Enabled() {
 		return nil
 	}
-	_, err := SubmitTyped(ctx, r.svc, CmdGatewayRouteDelete, GatewayRouteDeletePayload{RouteID: routeID}, 5*time.Second)
-	return err
+	res, err := SubmitTyped(ctx, r.svc, CmdGatewayRouteDelete, GatewayRouteDeletePayload{RouteID: routeID}, 5*time.Second)
+	return firstErr(err, res.Err)
 }
 
 // SubmitGatewayBlockUpsert replicates a gateway client block cluster-wide.
@@ -175,7 +180,7 @@ func (r *Replicator) SubmitGatewayBlockUpsert(ctx context.Context, b gateway.Blo
 	if !r.Enabled() {
 		return nil
 	}
-	_, err := SubmitTyped(ctx, r.svc, CmdGatewayBlockUpsert, GatewayBlockUpsertPayload{
+	res, err := SubmitTyped(ctx, r.svc, CmdGatewayBlockUpsert, GatewayBlockUpsertPayload{
 		BlockID:   b.BlockID,
 		CIDR:      b.CIDR,
 		Reason:    b.Reason,
@@ -183,7 +188,7 @@ func (r *Replicator) SubmitGatewayBlockUpsert(ctx context.Context, b gateway.Blo
 		CreatedBy: b.CreatedBy,
 		ExpiresAt: b.ExpiresAt,
 	}, 5*time.Second)
-	return err
+	return firstErr(err, res.Err)
 }
 
 // SubmitGatewayBlockDelete removes a gateway block on every node.
@@ -191,8 +196,8 @@ func (r *Replicator) SubmitGatewayBlockDelete(ctx context.Context, blockID strin
 	if !r.Enabled() {
 		return nil
 	}
-	_, err := SubmitTyped(ctx, r.svc, CmdGatewayBlockDelete, GatewayBlockDeletePayload{BlockID: blockID}, 5*time.Second)
-	return err
+	res, err := SubmitTyped(ctx, r.svc, CmdGatewayBlockDelete, GatewayBlockDeletePayload{BlockID: blockID}, 5*time.Second)
+	return firstErr(err, res.Err)
 }
 
 // BackfillLocalGatewayRoutes republishes routes that only live in this node's
@@ -484,4 +489,15 @@ func (r *Replicator) BackfillLocalConnectors(ctx context.Context, connRepo conne
 		count++
 	}
 	return count, nil
+}
+
+// firstErr returns the submit error if any, else the applier's error. The
+// applier error (SubmitResult.Err) is the FSM's verdict — a command that was
+// committed but failed to persist (e.g. a SQL error) must not look like a
+// success to the caller, or the UI reports "done" for a row that never landed.
+func firstErr(submit, applied error) error {
+	if submit != nil {
+		return submit
+	}
+	return applied
 }

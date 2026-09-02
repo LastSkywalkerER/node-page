@@ -10,9 +10,12 @@ import (
 func TestBuildComposeContent_GatewayService(t *testing.T) {
 	ds := DesiredState{DBMode: DBModeSQLite, Gateway: &GatewayProvision{
 		Enabled: true, HTTPPort: 8080, HTTPSPort: 8443, ACMEEnabled: true, ACMEEmail: "ops@example.com", ACMEStaging: true,
+		ReadTimeoutSeconds: 86400,
 	}}
 	out := BuildComposeContent(ds)
 	for _, want := range []string{
+		"--entrypoints.web.transport.respondingTimeouts.readTimeout=86400s",
+		"--entrypoints.websecure.transport.respondingTimeouts.readTimeout=86400s",
 		"  traefik:",
 		"image: ${NODE_STATS_TRAEFIK_IMAGE:-" + DefaultTraefikImage + "}",
 		"--providers.file.directory=/etc/traefik/dynamic",

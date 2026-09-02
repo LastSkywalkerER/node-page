@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"gopkg.in/yaml.v2"
 	"strings"
 	"testing"
 
@@ -15,9 +16,10 @@ import (
 func TestNativeRenderStatic(t *testing.T) {
 	n := newNativeProvisioner(log.New(nil), "/var/lib/node-stats/data")
 	out := string(n.renderStatic(setup.GatewayProvision{Enabled: true, HTTPPort: 8080, HTTPSPort: 8443,
-		ACMEEnabled: true, ACMEEmail: "ops@example.com", ACMEStaging: true}))
+		ACMEEnabled: true, ACMEEmail: "ops@example.com", ACMEStaging: true, ReadTimeoutSeconds: 86400}))
 	for _, want := range []string{
 		`address: ":8080"`, `address: ":8443"`, `address: "127.0.0.1:8082"`,
+		"readTimeout: 86400s",
 		`directory: "/var/lib/node-stats/data/traefik/dynamic"`, "watch: true",
 		`email: "ops@example.com"`, `storage: "/var/lib/node-stats/data/traefik/acme/acme.json"`,
 		"entryPoint: web", "acme-staging-v02",
@@ -26,7 +28,20 @@ func TestNativeRenderStatic(t *testing.T) {
 			t.Errorf("static config missing %q:\n%s", want, out)
 		}
 	}
+	// Must be well-formed YAML with the timeout nested under the entrypoint.
+	var parsed map[string]any
+	if err := yaml.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("static config is not valid yaml: %v\n%s", err, out)
+	}
+	web := parsed["entryPoints"].(map[any]any)["web"].(map[any]any)
+	if got := web["transport"].(map[any]any)["respondingTimeouts"].(map[any]any)["readTimeout"]; got != "86400s" {
+		t.Errorf("web readTimeout = %v", got)
+	}
+	t.Logf("STATIC_YAML_BEGIN\n%sSTATIC_YAML_END", out)
 	plain := string(n.renderStatic(setup.GatewayProvision{Enabled: true}))
+	if strings.Count(plain, "readTimeout: 0s") != 2 {
+		t.Errorf("unlimited read timeout must be rendered on both entrypoints:\n%s", plain)
+	}
 	if !strings.Contains(plain, `address: ":80"`) || !strings.Contains(plain, `address: ":443"`) || strings.Contains(plain, "certificatesResolvers") {
 		t.Errorf("defaults/no-acme wrong:\n%s", plain)
 	}

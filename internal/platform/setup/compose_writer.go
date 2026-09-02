@@ -73,6 +73,10 @@ type GatewayProvision struct {
 	ACMEEnabled bool   `json:"acme_enabled"`
 	ACMEEmail   string `json:"acme_email,omitempty"`
 	ACMEStaging bool   `json:"acme_staging,omitempty"`
+	// ReadTimeoutSeconds is the entrypoint respondingTimeouts.readTimeout for
+	// web + websecure (client → gateway request incl. body, i.e. the upload
+	// ceiling). Already resolved by the materializer: 0 = unlimited.
+	ReadTimeoutSeconds int `json:"read_timeout_seconds"`
 }
 
 // GatewayEnabled reports whether the desired state asks for the Traefik service.
@@ -290,6 +294,10 @@ func writeTraefikService(w func(string), gw GatewayProvision) {
 	w("      - --providers.file.watch=true")
 	w("      - --entrypoints.web.address=:80")
 	w("      - --entrypoints.websecure.address=:443")
+	// Traefik v3 defaults readTimeout to 60s and it covers the request BODY,
+	// so any upload slower than a minute dies; node-stats owns the value.
+	w(fmt.Sprintf("      - --entrypoints.web.transport.respondingTimeouts.readTimeout=%ds", gw.ReadTimeoutSeconds))
+	w(fmt.Sprintf("      - --entrypoints.websecure.transport.respondingTimeouts.readTimeout=%ds", gw.ReadTimeoutSeconds))
 	w("      - --entrypoints.ping.address=:8082")
 	w("      - --ping=true")
 	w("      - --ping.entryPoint=ping")

@@ -53,6 +53,7 @@ func (r *gormRepository) Upsert(ctx context.Context, in *Route) error {
 			"name", "mode", "domain", "path_prefix",
 			"target_scheme", "target_host", "target_port", "target_https_port", "target_host_mac", "target_label",
 			"target_insecure_skip_verify", "tls", "basic_auth_users", "ip_allow_list",
+			"max_conns_per_ip", "rate_limit_rps", "read_only", "upstream_timeout_seconds", "max_body_bytes",
 			"enabled", "updated_at",
 		}),
 	}).Create(&row).Error

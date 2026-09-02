@@ -85,13 +85,42 @@ type traefikServer struct {
 }
 
 type traefikServersTransport struct {
-	InsecureSkipVerify bool `yaml:"insecureSkipVerify"`
+	InsecureSkipVerify bool                       `yaml:"insecureSkipVerify"`
+	ForwardingTimeouts *traefikForwardingTimeouts `yaml:"forwardingTimeouts,omitempty"`
+}
+
+type traefikForwardingTimeouts struct {
+	// ResponseHeaderTimeout: how long to wait for the upstream's response
+	// headers (504 past it). Duration string ("60s").
+	ResponseHeaderTimeout string `yaml:"responseHeaderTimeout,omitempty"`
 }
 
 type traefikMiddleware struct {
 	BasicAuth      *traefikBasicAuth      `yaml:"basicAuth,omitempty"`
 	IPAllowList    *traefikIPAllowList    `yaml:"ipAllowList,omitempty"`
 	RedirectScheme *traefikRedirectScheme `yaml:"redirectScheme,omitempty"`
+	InFlightReq    *traefikInFlightReq    `yaml:"inFlightReq,omitempty"`
+	RateLimit      *traefikRateLimit      `yaml:"rateLimit,omitempty"`
+	Buffering      *traefikBuffering      `yaml:"buffering,omitempty"`
+}
+
+// inFlightReq: at most Amount concurrent requests per source (client IP by
+// default) — 429 above it.
+type traefikInFlightReq struct {
+	Amount int `yaml:"amount"`
+}
+
+// rateLimit: Average req/s per source with Burst headroom — 429 above it.
+type traefikRateLimit struct {
+	Average int `yaml:"average"`
+	Burst   int `yaml:"burst"`
+}
+
+// buffering: 413 for request bodies above MaxRequestBodyBytes. Note it
+// buffers responses too (verified against traefik v3.3: SSE arrives in one
+// piece), so it is only rendered when a route explicitly asks for a cap.
+type traefikBuffering struct {
+	MaxRequestBodyBytes int64 `yaml:"maxRequestBodyBytes"`
 }
 
 type traefikBasicAuth struct {
@@ -152,9 +181,14 @@ func Render(cfg Config, routes []Route, blocks []Block) ([]byte, error) {
 		lb := traefikLoadBalancer{
 			Servers: []traefikServer{{URL: fmt.Sprintf("%s://%s:%d", scheme, r.TargetHost, r.TargetPort)}},
 		}
-		if scheme == SchemeHTTPS && r.TargetInsecureSkipVerify {
+		skipVerify := scheme == SchemeHTTPS && r.TargetInsecureSkipVerify
+		if skipVerify || r.UpstreamTimeoutSeconds > 0 {
 			tName := base + "-transport"
-			doc.HTTP.ServersTransports[tName] = traefikServersTransport{InsecureSkipVerify: true}
+			tr := traefikServersTransport{InsecureSkipVerify: skipVerify}
+			if r.UpstreamTimeoutSeconds > 0 {
+				tr.ForwardingTimeouts = &traefikForwardingTimeouts{ResponseHeaderTimeout: fmt.Sprintf("%ds", r.UpstreamTimeoutSeconds)}
+			}
+			doc.HTTP.ServersTransports[tName] = tr
 			lb.ServersTransport = tName
 		}
 		doc.HTTP.Services[svcName] = traefikService{LoadBalancer: lb}
@@ -163,16 +197,37 @@ func Render(cfg Config, routes []Route, blocks []Block) ([]byte, error) {
 		if p := strings.TrimSpace(r.PathPrefix); p != "" && p != "/" {
 			rule += fmt.Sprintf(" && PathPrefix(`%s`)", p)
 		}
+		if r.ReadOnly {
+			// Traefik v3's Method() takes exactly one argument — OR them.
+			rule += " && " + readOnlyMethodsRule
+		}
 
+		// Middleware order: cheapest denials first (allow list, rate/concurrency
+		// caps), then auth, then body buffering right before the upstream.
 		var mws []string
 		if r.IPAllowList != "" {
 			name := base + "-ipallow"
 			doc.HTTP.Middlewares[name] = traefikMiddleware{IPAllowList: &traefikIPAllowList{SourceRange: SplitCSV(r.IPAllowList)}}
 			mws = append(mws, name)
 		}
+		if r.RateLimitRPS > 0 {
+			name := base + "-ratelimit"
+			doc.HTTP.Middlewares[name] = traefikMiddleware{RateLimit: &traefikRateLimit{Average: r.RateLimitRPS, Burst: 2 * r.RateLimitRPS}}
+			mws = append(mws, name)
+		}
+		if r.MaxConnsPerIP > 0 {
+			name := base + "-inflight"
+			doc.HTTP.Middlewares[name] = traefikMiddleware{InFlightReq: &traefikInFlightReq{Amount: r.MaxConnsPerIP}}
+			mws = append(mws, name)
+		}
 		if r.BasicAuthUsers != "" {
 			name := base + "-auth"
 			doc.HTTP.Middlewares[name] = traefikMiddleware{BasicAuth: &traefikBasicAuth{Users: SplitLines(r.BasicAuthUsers)}}
+			mws = append(mws, name)
+		}
+		if r.MaxBodyBytes > 0 {
+			name := base + "-body"
+			doc.HTTP.Middlewares[name] = traefikMiddleware{Buffering: &traefikBuffering{MaxRequestBodyBytes: r.MaxBodyBytes}}
 			mws = append(mws, name)
 		}
 
@@ -238,6 +293,11 @@ func Render(cfg Config, routes []Route, blocks []Block) ([]byte, error) {
 	}
 	return append([]byte(header), body...), nil
 }
+
+// readOnlyMethodsRule is the rule fragment for ReadOnly routes. Traefik v3
+// rejects `Method(`GET`,`HEAD`)` ("unexpected number of parameters"), hence
+// the OR chain.
+const readOnlyMethodsRule = "(Method(`GET`) || Method(`HEAD`) || Method(`OPTIONS`))"
 
 // blockRouterPriority puts the deny routers above every route router (Traefik
 // otherwise ranks by rule length, and a long Host rule could shadow the block).

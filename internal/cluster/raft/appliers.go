@@ -319,6 +319,11 @@ func (a *appliers) applyGatewayRouteUpsert(cmd Command, _ *hraft.Log) error {
 		TLS:                      p.TLS,
 		BasicAuthUsers:           p.BasicAuthUsers,
 		IPAllowList:              p.IPAllowList,
+		MaxConnsPerIP:            p.MaxConnsPerIP,
+		RateLimitRPS:             p.RateLimitRPS,
+		ReadOnly:                 p.ReadOnly,
+		UpstreamTimeoutSeconds:   p.UpstreamTimeoutSeconds,
+		MaxBodyBytes:             p.MaxBodyBytes,
 		Enabled:                  p.Enabled,
 		CreatedAt:                cmd.Timestamp,
 	})
