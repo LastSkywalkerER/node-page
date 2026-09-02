@@ -278,6 +278,15 @@ func BuildComposeContent(ds DesiredState) string {
 //     the app's liveness probe (http://traefik:8082/ping on the compose network).
 //   - ACME HTTP-01 via resolver `le` when enabled; acme.json persists under
 //     ./data/docker/traefik/acme.
+//
+// RenderTraefikService returns the compose stanza the controller is asked to
+// run for the managed gateway (for the admin "config files" viewer).
+func RenderTraefikService(gw GatewayProvision) string {
+	var b strings.Builder
+	writeTraefikService(func(s string) { b.WriteString(s); b.WriteString("\n") }, gw)
+	return b.String()
+}
+
 func writeTraefikService(w func(string), gw GatewayProvision) {
 	httpPort, httpsPort := gw.HTTPPort, gw.HTTPSPort
 	if httpPort <= 0 {

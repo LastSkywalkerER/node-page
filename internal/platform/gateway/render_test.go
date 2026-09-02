@@ -14,7 +14,7 @@ func TestRender_TLSRouteEmitsRedirectAndResolver(t *testing.T) {
 		TargetHost: "10.0.0.5", TargetPort: 3000, TLS: true, Enabled: true,
 		IPAllowList: "10.0.0.0/8, 192.168.1.0/24", BasicAuthUsers: "admin:$2a$10$hash",
 	}}
-	out, err := Render(cfg, routes, nil)
+	out, err := renderRoutes(t, cfg, routes, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,8 +58,8 @@ func TestRender_PlainRouteSkipsDisabledAndIsDeterministic(t *testing.T) {
 		{RouteID: "a", Domain: "a.example.com", TargetHost: "h", TargetPort: 81, Enabled: false},
 		{RouteID: "c", Domain: "c.example.com", TargetHost: "h", TargetPort: 8443, Enabled: true, TargetScheme: "https", TargetInsecureSkipVerify: true},
 	}
-	out1, _ := Render(cfg, routes, nil)
-	out2, _ := Render(cfg, []Route{routes[2], routes[0], routes[1]}, nil)
+	out1, _ := renderRoutes(t, cfg, routes, nil)
+	out2, _ := renderRoutes(t, cfg, []Route{routes[2], routes[0], routes[1]}, nil)
 	if string(out1) != string(out2) {
 		t.Fatal("render is not order-independent")
 	}
@@ -82,14 +82,14 @@ func TestRender_PlainRouteSkipsDisabledAndIsDeterministic(t *testing.T) {
 }
 
 func TestRender_EmptyProducesNoRouters(t *testing.T) {
-	out, err := Render(Config{}, nil, nil)
+	out, err := renderRoutes(t, Config{}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if out != nil {
 		t.Errorf("empty render must return nil (file gets removed), got:\n%s", out)
 	}
-	out, _ = Render(Config{}, []Route{{RouteID: "a", Domain: "a.example.com", TargetHost: "h", TargetPort: 1, Enabled: false}}, nil)
+	out, _ = renderRoutes(t, Config{}, []Route{{RouteID: "a", Domain: "a.example.com", TargetHost: "h", TargetPort: 1, Enabled: false}}, nil)
 	if out != nil {
 		t.Error("only-disabled routes must also render nil")
 	}
@@ -131,7 +131,7 @@ func TestRender_PassthroughWildcard(t *testing.T) {
 		RouteID: "pt1", Mode: RouteModePassthrough, Domain: "*.apps.example.com",
 		TargetHost: "10.0.0.20", TargetPort: 80, TargetHTTPSPort: 443, Enabled: true,
 	}}
-	out, err := Render(cfg, routes, nil)
+	out, err := renderRoutes(t, cfg, routes, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,8 +161,89 @@ func TestRender_PassthroughWildcard(t *testing.T) {
 	}
 	// Exact-name passthrough uses HostSNI/Host.
 	routes[0].Domain = "cloud.example.com"
-	out, _ = Render(cfg, routes, nil)
+	out, _ = renderRoutes(t, cfg, routes, nil)
 	if !strings.Contains(string(out), "HostSNI(`cloud.example.com`)") {
 		t.Errorf("exact passthrough rule missing:\n%s", out)
+	}
+}
+
+// renderRoutes is the old Render(): just the routes file.
+func renderRoutes(t *testing.T, cfg Config, routes []Route, blocks []Block) ([]byte, error) {
+	t.Helper()
+	files, err := RenderFiles(cfg, routes, blocks)
+	return files.Routes, err
+}
+
+// The routes file must read top-down: an index of every route in the header,
+// objects grouped by route in domain order (not by opaque id), one comment
+// above each object.
+func TestRenderFiles_PrettyLayout(t *testing.T) {
+	cfg := Config{Enabled: true, Mode: ModeManaged, HTTPPort: 80, HTTPSPort: 443}
+	routes := []Route{
+		{RouteID: "zzz999", Name: "Grafana", Domain: "grafana.example.com", TargetScheme: "http", TargetHost: "10.0.0.5", TargetPort: 3000, TLS: true, Enabled: true, MaxConnsPerIP: 100},
+		{RouteID: "aaa111", Domain: "wiki.example.com", TargetScheme: "http", TargetHost: "10.0.0.6", TargetPort: 80, Enabled: true},
+		{RouteID: "mmm555", Domain: "old.example.com", TargetScheme: "http", TargetHost: "10.0.0.7", TargetPort: 80, Enabled: false},
+		{RouteID: "ppp777", Domain: "*.apps.example.com", Mode: RouteModePassthrough, TargetHost: "10.0.0.9", TargetPort: 80, TargetHTTPSPort: 443, Enabled: true},
+	}
+	files, err := RenderFiles(cfg, routes, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(files.Routes)
+	if !strings.HasPrefix(s, ownershipHeader+"\n") {
+		t.Fatalf("ownership header must be the first line:\n%s", s)
+	}
+	// Index: every route listed (disabled marked), in domain order.
+	for _, want := range []string{
+		"# Routes (4):",
+		"grafana.example.com",
+		"https       → http://10.0.0.5:3000 · Grafana · 100 concurrent/ip  [ns-zzz999]",
+		"passthrough → 10.0.0.9:443 (tls, sni) · :80 (http)  [ns-ppp777]",
+		"[ns-mmm555]  (disabled — not rendered)",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("index missing %q:\n%s", want, s)
+		}
+	}
+	// Objects grouped by domain (reversed labels, so siblings under example.com
+	// sit together): apps.* < grafana < wiki — never by the opaque id order
+	// (aaa111 < ppp777 < zzz999).
+	iGrafana, iWiki, iApps := strings.Index(s, "    ns-zzz999:"), strings.Index(s, "    ns-aaa111:"), strings.Index(s, "    ns-ppp777-http:")
+	if iGrafana < 0 || iWiki < 0 || iApps < 0 || !(iApps < iGrafana && iGrafana < iWiki) {
+		t.Errorf("routers not in domain order (grafana=%d wiki=%d apps=%d):\n%s", iGrafana, iWiki, iApps, s)
+	}
+	if strings.Contains(s, "ns-mmm555:") {
+		t.Errorf("disabled route rendered as an object:\n%s", s)
+	}
+	// Comments above objects.
+	for _, want := range []string{
+		"    # grafana.example.com — https router\n    ns-zzz999:",
+		"    # grafana.example.com — http → https redirect\n    ns-zzz999-redirect:",
+		"    # grafana.example.com — upstream http://10.0.0.5:3000\n    ns-zzz999:",
+		"    # grafana.example.com — max 100 concurrent requests per IP\n    ns-zzz999-inflight:",
+		"    # *.apps.example.com — raw TLS to the other proxy at 10.0.0.9:443\n    ns-ppp777-tls:",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing comment block %q:\n%s", want, s)
+		}
+	}
+	t.Logf("SAMPLE_BEGIN\n%sSAMPLE_END", s)
+	// Still valid YAML that parses into the same structure Traefik reads.
+	var doc traefikDynamic
+	if err := yaml.Unmarshal(files.Routes, &doc); err != nil {
+		t.Fatalf("not valid yaml: %v\n%s", err, s)
+	}
+	if len(doc.HTTP.Routers) != 4 || doc.TCP == nil || len(doc.TCP.Routers) != 1 {
+		t.Errorf("unexpected object counts: routers=%d tcp=%v", len(doc.HTTP.Routers), doc.TCP)
+	}
+	// Deterministic regardless of input order.
+	again, _ := RenderFiles(cfg, []Route{routes[3], routes[1], routes[0], routes[2]}, nil)
+	if string(again.Routes) != s {
+		t.Error("output depends on input order")
+	}
+	// A reason with a newline can't escape the comment.
+	files, _ = RenderFiles(cfg, routes, []Block{{BlockID: "b", CIDR: "203.0.113.7/32", Reason: "evil\nhttp:\n  routers: {}"}})
+	if strings.Contains(string(files.Blocks), "\nhttp:\n  routers: {}") || !strings.Contains(string(files.Blocks), "evil http: routers: {}") {
+		t.Errorf("comment injection not neutralised:\n%s", files.Blocks)
 	}
 }

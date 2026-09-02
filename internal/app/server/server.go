@@ -901,6 +901,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.GET("/gateway/targets", middleware.RequireAdmin(), gatewayHandler.HandleTargets)
 		authAPI.POST("/gateway/check", middleware.RequireAdmin(), gatewayHandler.HandleCheck)
 		authAPI.GET("/gateway/logs", middleware.RequireAdmin(), gatewayHandler.HandleLogs)
+		authAPI.GET("/gateway/files", middleware.RequireAdmin(), gatewayHandler.HandleFiles)
 		authAPI.POST("/gateway/check-public", middleware.RequireAdmin(), gatewayHandler.HandleCheckPublic)
 		authAPI.POST("/gateway/routes", middleware.RequireAdmin(), gatewayHandler.HandleCreateRoute)
 		authAPI.PUT("/gateway/routes/:route_id", middleware.RequireAdmin(), gatewayHandler.HandleUpdateRoute)

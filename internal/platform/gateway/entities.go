@@ -36,6 +36,10 @@ const ConfigKey = "gateway_config"
 // Everything else in that dir is the operator's and is never touched.
 const DynamicFileName = "node-stats.yml"
 
+// BlocksFileName is the second owned file: the client deny list (see
+// Rendered.Blocks). Same prefix so an operator's `ls` groups them.
+const BlocksFileName = "node-stats-blocks.yml"
+
 // CertResolverName is the ACME resolver id referenced by TLS routers.
 const CertResolverName = "le"
 

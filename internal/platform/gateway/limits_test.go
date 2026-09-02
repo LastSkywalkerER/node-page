@@ -16,7 +16,7 @@ func TestRender_RouteLimits(t *testing.T) {
 		IPAllowList: "10.0.0.0/8", BasicAuthUsers: "admin:$2a$10$hash",
 		MaxConnsPerIP: 100, RateLimitRPS: 20, ReadOnly: true, UpstreamTimeoutSeconds: 60, MaxBodyBytes: 32 << 20,
 	}}
-	out, err := Render(cfg, routes, nil)
+	out, err := renderRoutes(t, cfg, routes, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestRender_UpstreamTimeoutWithoutSkipVerify_AndNoLimits(t *testing.T) {
 		{RouteID: "t1", Domain: "a.example.com", TargetScheme: "http", TargetHost: "h", TargetPort: 80, Enabled: true, UpstreamTimeoutSeconds: 15},
 		{RouteID: "t2", Domain: "b.example.com", TargetScheme: "http", TargetHost: "h", TargetPort: 80, Enabled: true},
 	}
-	out, err := Render(cfg, routes, nil)
+	out, err := renderRoutes(t, cfg, routes, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

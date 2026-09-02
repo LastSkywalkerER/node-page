@@ -47,11 +47,20 @@ func TestRenderBlocklist(t *testing.T) {
 		{BlockID: "b2", CIDR: "198.51.100.0/24"},
 		{BlockID: "b3", CIDR: "192.0.2.9/32", ExpiresAt: &past}, // expired
 	}
-	out, err := Render(cfg, routes, blocks)
+	files, err := RenderFiles(cfg, routes, blocks)
 	if err != nil {
 		t.Fatal(err)
 	}
-	y := string(out)
+	if files.Blocks == nil || files.Routes == nil {
+		t.Fatalf("both files expected: routes=%v blocks=%v", files.Routes != nil, files.Blocks != nil)
+	}
+	if strings.Contains(string(files.Routes), "ns-blocklist") {
+		t.Errorf("blocklist must live in its own file, not the routes file:\n%s", files.Routes)
+	}
+	if !strings.Contains(string(files.Routes), "# Blocked clients: 2 → node-stats-blocks.yml") {
+		t.Errorf("routes header must point at the blocks file:\n%s", files.Routes)
+	}
+	y := string(files.Blocks)
 	for _, want := range []string{
 		"ns-blocklist-http", "ns-blocklist-https",
 		"ClientIP(`203.0.113.7/32`)", "ClientIP(`198.51.100.0/24`)",
@@ -66,8 +75,13 @@ func TestRenderBlocklist(t *testing.T) {
 	}
 
 	// No routes → no file at all, blocks alone must not force one.
-	out, err = Render(cfg, nil, blocks)
-	if err != nil || out != nil {
-		t.Errorf("blocks without routes rendered a file: %v %v", out, err)
+	files, err = RenderFiles(cfg, nil, blocks)
+	if err != nil || files.Routes != nil || files.Blocks != nil {
+		t.Errorf("blocks without routes rendered a file: %+v %v", files, err)
+	}
+	// Routes but no active blocks → no blocks file.
+	files, _ = RenderFiles(cfg, routes, []Block{{BlockID: "b3", CIDR: "192.0.2.9/32", ExpiresAt: &past}})
+	if files.Routes == nil || files.Blocks != nil {
+		t.Errorf("expired-only blocks must not produce a blocks file: %+v", files)
 	}
 }

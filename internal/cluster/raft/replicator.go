@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	users "system-stats/internal/auth/users"
@@ -499,5 +500,34 @@ func firstErr(submit, applied error) error {
 	if submit != nil {
 		return submit
 	}
-	return applied
+	if applied != nil {
+		return fmt.Errorf("committed, but the leader failed to apply it: %w — if the leader runs an older node-stats build, update it; the change is retried by the backfill on the next restart", applied)
+	}
+	return nil
+}
+
+// BackfillLocalGatewayBlocks republishes every local client block (idempotent
+// upserts). Runs on activation like the route backfill; besides the standalone
+// → cluster case it heals replicas that failed to apply a block while running
+// an older build (Raft never re-applies an index that already went through the
+// FSM, so without this those rows would stay missing there for good).
+func (r *Replicator) BackfillLocalGatewayBlocks(ctx context.Context, repo gateway.BlockRepository) (int, error) {
+	if !r.Enabled() || repo == nil {
+		return 0, nil
+	}
+	rows, err := repo.ListBlocks(ctx)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, b := range rows {
+		if b.BlockID == "" {
+			continue
+		}
+		if err := r.SubmitGatewayBlockUpsert(ctx, b); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, nil
 }

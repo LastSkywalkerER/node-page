@@ -614,9 +614,14 @@ func (c *Container) reconcileGatewayBackfill(ctx context.Context) {
 		c.logger.Warn("raft: gateway route backfill failed (will retry)", "submitted", n, "error", err)
 		return
 	}
+	nb, err := repl.BackfillLocalGatewayBlocks(rc, c.gatewayBlockRepository)
+	if err != nil {
+		c.logger.Warn("raft: gateway block backfill failed (will retry)", "submitted", nb, "error", err)
+		return
+	}
 	c.gatewayBackfillDone = true
-	if n > 0 {
-		c.logger.Info("raft: backfilled local gateway routes into replicated log", "submitted", n)
+	if n > 0 || nb > 0 {
+		c.logger.Info("raft: backfilled local gateway routes/blocks into replicated log", "routes", n, "blocks", nb)
 	}
 }
 

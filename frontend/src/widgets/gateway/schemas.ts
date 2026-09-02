@@ -60,6 +60,7 @@ export const GatewayStatusSchema = z.object({
   is_gateway_node: z.boolean(),
   mode: z.string().optional().default(''),
   file_path: z.string().optional().default(''),
+  blocks_file_path: z.string().optional().default(''),
   route_count: z.number().default(0),
   last_render_at: z.string().nullable().optional(),
   last_error: z.string().optional().default(''),
@@ -216,3 +217,16 @@ export interface BlockRequest {
   ttl_hours: number
   force?: boolean
 }
+
+/** One Traefik config file node-stats writes on the gateway node (GET /gateway/files). */
+export const GatewayConfigFileSchema = z.object({
+  name: z.string(),
+  kind: z.string(),
+  path: z.string().optional().default(''),
+  content: z.string().optional().default(''),
+  size: z.number().optional().default(0),
+  modified: z.string().nullable().optional(),
+  missing: z.boolean().optional().default(false),
+  note: z.string().optional().default(''),
+})
+export type GatewayConfigFile = z.infer<typeof GatewayConfigFileSchema>

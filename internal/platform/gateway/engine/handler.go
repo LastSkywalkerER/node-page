@@ -213,6 +213,26 @@ func (h *Handler) HandleLogs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"logs": out})
 }
 
+// HandleFiles lists the Traefik config files node-stats owns on this node.
+//
+// @Summary  Gateway (Traefik) config files written by node-stats
+// @Tags     gateway
+// @Produce  json
+// @Success  200 {object} map[string]interface{}
+// @Security BearerAuth
+// @Router   /gateway/files [get]
+func (h *Handler) HandleFiles(c *gin.Context) {
+	files, err := h.service.Files(c.Request.Context())
+	if files == nil {
+		files = []ConfigFile{}
+	}
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"files": files, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"files": files})
+}
+
 // forwardedHeader guards against proxy loops between nodes.
 const forwardedHeader = "X-NS-Gateway-Forwarded"
 

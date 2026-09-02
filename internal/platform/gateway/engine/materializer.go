@@ -31,11 +31,14 @@ const traefikPingURL = "http://traefik:8082/ping"
 type Status struct {
 	IsGatewayNode bool   `json:"is_gateway_node"`
 	Mode          string `json:"mode,omitempty"`
-	// FilePath is the dynamic file this node renders (gateway node only).
-	FilePath     string     `json:"file_path,omitempty"`
-	RouteCount   int        `json:"route_count"`
-	LastRenderAt *time.Time `json:"last_render_at,omitempty"`
-	LastError    string     `json:"last_error,omitempty"`
+	// FilePath is the dynamic file this node renders (gateway node only);
+	// BlocksFilePath its sibling for the client deny list (absent when there
+	// are no active blocks).
+	FilePath       string     `json:"file_path,omitempty"`
+	BlocksFilePath string     `json:"blocks_file_path,omitempty"`
+	RouteCount     int        `json:"route_count"`
+	LastRenderAt   *time.Time `json:"last_render_at,omitempty"`
+	LastError      string     `json:"last_error,omitempty"`
 	// Controller mirrors controller-status.json (managed mode on the gateway node).
 	Controller *setup.ControllerStatus `json:"controller,omitempty"`
 	// TraefikHealthy is the managed Traefik's ping result (nil = not probed).
@@ -399,48 +402,60 @@ func (m *Materializer) reconcile(ctx context.Context) {
 			dir = cfg.DynamicDir
 		}
 		path := filepath.Join(dir, gateway.DynamicFileName)
+		blocksPath := blocksSibling(path)
 		st.FilePath = path
 		blocks, err := m.listBlocks(rc)
 		if err != nil {
 			st.LastError = err.Error()
 			return
 		}
-		content, err := gateway.Render(cfg, m.localizeTargets(rc, cfg, routes), blocks)
+		files, err := gateway.RenderFiles(cfg, m.localizeTargets(rc, cfg, routes), blocks)
 		if err != nil {
 			st.LastError = "render: " + err.Error()
 			return
 		}
 		if m.lastPath != "" && m.lastPath != path {
 			m.removeOwned(m.lastPath)
+			m.removeOwned(blocksSibling(m.lastPath))
 		}
-		if content == nil {
-			// Nothing to serve: no file at all (Traefik rejects an empty http
-			// section). Keep the dir so the managed container's bind mount holds.
-			m.removeOwned(path)
-			_ = os.MkdirAll(filepath.Dir(path), 0o755)
-			now := time.Now().UTC()
-			st.LastRenderAt = &now
-			m.setLastPath(path)
-		} else if err := writeIfChanged(path, content); err != nil {
-			st.LastError = "write " + path + ": " + err.Error()
-		} else {
+		// Keep the dir so the managed container's bind mount holds even when
+		// nothing is served (a nil file means "must not exist": Traefik rejects
+		// an empty http section).
+		_ = os.MkdirAll(filepath.Dir(path), 0o755)
+		ok := true
+		for _, f := range []struct {
+			path    string
+			content []byte
+		}{{path, files.Routes}, {blocksPath, files.Blocks}} {
+			if f.content == nil {
+				m.removeOwned(f.path)
+				continue
+			}
+			if err := writeIfChanged(f.path, f.content); err != nil {
+				st.LastError = "write " + f.path + ": " + err.Error()
+				ok = false
+			}
+		}
+		if files.Blocks != nil {
+			st.BlocksFilePath = blocksPath
+		}
+		if ok {
 			now := time.Now().UTC()
 			st.LastRenderAt = &now
 			m.setLastPath(path)
 		}
 	} else if m.lastPath != "" {
-		// Gateway disabled or moved to another node — drop our file so the
+		// Gateway disabled or moved to another node — drop our files so the
 		// (possibly still running) Traefik stops serving stale routes.
 		m.removeOwned(m.lastPath)
+		m.removeOwned(blocksSibling(m.lastPath))
 		m.setLastPath("")
 	}
 
 	// --- managed backend: systemd (native root install) --------------------
 	if m.native != nil {
 		if isGW && cfg.Mode == gateway.ModeManaged {
-			want := setup.GatewayProvision{Enabled: true, HTTPPort: cfg.HTTPPort, HTTPSPort: cfg.HTTPSPort,
-				ACMEEnabled: cfg.ACMEEnabled, ACMEEmail: cfg.ACMEEmail, ACMEStaging: acmeStagingEnv(),
-				ReadTimeoutSeconds: cfg.EffectiveRequestReadTimeoutSeconds()}
+			want := m.provisionFor(cfg)
 			m.resetACMEStateIfCAChanged(want)
 			if restarted, err := m.native.Reconcile(rc, want); err != nil {
 				st.LastError = "traefik (systemd): " + err.Error()
@@ -469,12 +484,7 @@ func (m *Materializer) reconcile(ctx context.Context) {
 	if setup.RunningInDocker() && !setup.ManagedExternally() {
 		want := setup.GatewayProvision{Enabled: isGW && cfg.Mode == gateway.ModeManaged}
 		if want.Enabled {
-			want.HTTPPort = cfg.HTTPPort
-			want.HTTPSPort = cfg.HTTPSPort
-			want.ACMEEnabled = cfg.ACMEEnabled
-			want.ACMEEmail = cfg.ACMEEmail
-			want.ACMEStaging = acmeStagingEnv()
-			want.ReadTimeoutSeconds = cfg.EffectiveRequestReadTimeoutSeconds()
+			want = m.provisionFor(cfg)
 			m.resetACMEStateIfCAChanged(want)
 		}
 		if want.Enabled {
@@ -513,12 +523,109 @@ func writeIfChanged(path string, content []byte) error {
 
 // removeOwned deletes a file only if it carries our generated-header marker —
 // never an operator's file that happens to share the name.
+// blocksSibling maps the routes file path to the blocks file next to it.
+func blocksSibling(routesPath string) string {
+	return filepath.Join(filepath.Dir(routesPath), gateway.BlocksFileName)
+}
+
+// ConfigFile is one Traefik-related file node-stats writes on this node, as
+// shown in the admin "config files" viewer.
+type ConfigFile struct {
+	// Name is the display label; Kind groups it (dynamic|static|unit|compose).
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	// Path is where it lives on disk (empty for a generated-only preview).
+	Path     string     `json:"path,omitempty"`
+	Content  string     `json:"content"`
+	Size     int64      `json:"size"`
+	Modified *time.Time `json:"modified,omitempty"`
+	// Missing: node-stats owns this path but nothing is there right now
+	// (e.g. no active blocks → no blocks file).
+	Missing bool   `json:"missing,omitempty"`
+	Note    string `json:"note,omitempty"`
+}
+
+// configFileReadCap bounds what the viewer ships to the browser.
+const configFileReadCap = 1 << 20
+
+// Files lists the Traefik configuration node-stats owns on this node: the
+// dynamic file(s) in every mode, plus the static config it generates for a
+// managed Traefik (systemd: traefik.yml + unit; docker: the compose stanza the
+// controller is asked to run). Gateway node only — other nodes have nothing.
+func (m *Materializer) Files(ctx context.Context) ([]ConfigFile, error) {
+	st := m.Status()
+	if !st.IsGatewayNode {
+		return nil, errors.New("this node is not the gateway — open the gateway node's dashboard to see its Traefik files")
+	}
+	cfg, err := LoadConfig(ctx, m.deps.Config)
+	if err != nil {
+		return nil, err
+	}
+	dir := m.ManagedDynamicDir()
+	if cfg.Mode == gateway.ModeExternal {
+		dir = cfg.DynamicDir
+	}
+	routesPath := filepath.Join(dir, gateway.DynamicFileName)
+	out := []ConfigFile{
+		readConfigFile(gateway.DynamicFileName, "dynamic", routesPath, "Routes, services and middlewares — rendered from the replicated route table; Traefik hot-reloads it."),
+		readConfigFile(gateway.BlocksFileName, "dynamic", blocksSibling(routesPath), "Client deny list — present only while at least one block is active."),
+	}
+	if cfg.Mode != gateway.ModeManaged {
+		return out, nil
+	}
+	want := m.provisionFor(cfg)
+	switch {
+	case m.native != nil:
+		out = append(out,
+			readConfigFile("traefik.yml", "static", m.native.staticPath(), "Static configuration (entrypoints, read timeout, file provider, ACME) — Traefik restarts when it changes."),
+			readConfigFile(nativeUnitName+".service", "unit", nativeUnitPath, "systemd unit node-stats installs and drives."),
+		)
+	case setup.RunningInDocker() && !setup.ManagedExternally():
+		out = append(out, ConfigFile{
+			Name: "docker-compose.yml · traefik", Kind: "compose",
+			Content: setup.RenderTraefikService(want), Size: int64(len(setup.RenderTraefikService(want))),
+			Note: "The traefik service stanza node-stats asks the controller to run (via desired-state.json); the controller merges it into the stack's docker-compose.yml.",
+		})
+	}
+	return out, nil
+}
+
+// provisionFor derives the managed-Traefik provisioning request from the
+// replicated config (shared by reconcile and the files viewer).
+func (m *Materializer) provisionFor(cfg gateway.Config) setup.GatewayProvision {
+	return setup.GatewayProvision{Enabled: true, HTTPPort: cfg.HTTPPort, HTTPSPort: cfg.HTTPSPort,
+		ACMEEnabled: cfg.ACMEEnabled, ACMEEmail: cfg.ACMEEmail, ACMEStaging: acmeStagingEnv(),
+		ReadTimeoutSeconds: cfg.EffectiveRequestReadTimeoutSeconds()}
+}
+
+func readConfigFile(name, kind, path, note string) ConfigFile {
+	f := ConfigFile{Name: name, Kind: kind, Path: path, Note: note}
+	fi, err := os.Stat(path)
+	if err != nil {
+		f.Missing = true
+		return f
+	}
+	f.Size = fi.Size()
+	mt := fi.ModTime().UTC()
+	f.Modified = &mt
+	b, err := os.ReadFile(path)
+	if err != nil {
+		f.Note = "unreadable: " + err.Error()
+		return f
+	}
+	if len(b) > configFileReadCap {
+		b = append(b[:configFileReadCap], []byte("\n# … truncated for display …\n")...)
+	}
+	f.Content = string(b)
+	return f
+}
+
 func (m *Materializer) removeOwned(path string) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return
 	}
-	if !bytes.HasPrefix(b, []byte("# Generated by node-stats (gateway)")) {
+	if !bytes.HasPrefix(b, []byte(gateway.OwnershipPrefix)) {
 		return
 	}
 	if err := os.Remove(path); err == nil && m.deps.Logger != nil {

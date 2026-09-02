@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
 import { confirmDialog } from '@/shared/lib/confirmDialog'
-import { Globe, Plus, Trash2, Pencil, ExternalLink, ShieldAlert, ShieldCheck, Lock, Activity, X, ScrollText, RefreshCw, Radar, Gauge } from 'lucide-react'
+import { Globe, Plus, Trash2, Pencil, ExternalLink, ShieldAlert, ShieldCheck, Lock, Activity, X, ScrollText, RefreshCw, Radar, Gauge, FileCode2, Copy, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -21,13 +21,14 @@ import {
   useDeleteRoute,
   useCheckTarget,
   useGatewayLogs,
+  useGatewayFiles,
   useCheckPublic,
   routeToRequest,
   type PublicCheckResult,
   type TargetCheck,
 } from './useGateway'
 import { DEFAULT_ROUTE_LIMITS } from './schemas'
-import type { GatewayConfig, GatewayRoute, GatewayState, GatewayTarget, RouteRequest, BasicAuthInput } from './schemas'
+import type { GatewayConfig, GatewayRoute, GatewayState, GatewayTarget, RouteRequest, BasicAuthInput, GatewayConfigFile } from './schemas'
 import { ConnectionsCard, BlocksCard } from './ConnectionsCard'
 
 const selectCls =
@@ -375,7 +376,12 @@ function StatusLine({ state }: { state: GatewayState }) {
         This node is the gateway · {st.route_count} active route{st.route_count === 1 ? '' : 's'} · rendered{' '}
         {fmtTime(st.last_render_at)}
       </span>
-      {st.file_path && <code className="truncate">{st.file_path}</code>}
+      {st.file_path && (
+        <code className="truncate" title={st.blocks_file_path ? `${st.file_path} + ${st.blocks_file_path}` : st.file_path}>
+          {st.file_path}
+          {st.blocks_file_path ? ` + ${st.blocks_file_path.split('/').pop()}` : ''}
+        </code>
+      )}
       {cfg.mode === 'managed' && (
         <span className="inline-flex items-center gap-1.5">
           <Activity className="h-3 w-3" />
@@ -1045,6 +1051,121 @@ function LogsCard({ state }: { state: GatewayState }) {
 }
 
 // ---------------------------------------------------------------------------
+// Config files (what node-stats writes for Traefik on this node)
+// ---------------------------------------------------------------------------
+
+function fmtSize(n: number) {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
+function ConfigFilesCard({ state }: { state: GatewayState }) {
+  const [open, setOpen] = useState(false)
+  const enabled = open && state.config.enabled && state.status.is_gateway_node
+  const { data, isFetching, refetch } = useGatewayFiles(enabled)
+  const files = data?.files ?? []
+  const [selected, setSelected] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const current: GatewayConfigFile | undefined = files.find((f) => f.name === selected) ?? files[0]
+
+  if (!state.config.enabled || !state.status.is_gateway_node) return null
+
+  const copy = async () => {
+    if (!current?.content) return
+    try {
+      await navigator.clipboard.writeText(current.content)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      toast.error('Clipboard unavailable')
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <FileCode2 className="h-4 w-4" /> Traefik config files
+            </CardTitle>
+            <CardDescription>
+              Exactly what node-stats writes for Traefik on this node — the dynamic route file, the deny list
+              {state.config.mode === 'managed' ? ', and the static config it generates for the managed Traefik' : ''}.
+              Read-only: edits are overwritten on the next render.
+            </CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            {open && (
+              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => refetch()} title="Refresh">
+                <RefreshCw className={cn('h-4 w-4', isFetching && 'animate-spin')} />
+              </Button>
+            )}
+            <Button variant="outline" size="sm" onClick={() => setOpen((o) => !o)}>
+              {open ? 'Hide' : 'Show'}
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      {open && (
+        <CardContent className="space-y-3">
+          {data?.error && <div className="text-xs text-amber-500">{data.error}</div>}
+          {files.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {files.map((f) => (
+                <button
+                  key={f.name}
+                  type="button"
+                  onClick={() => setSelected(f.name)}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-xs transition-colors',
+                    current?.name === f.name
+                      ? 'border-primary/60 bg-primary/10 text-foreground'
+                      : 'border-border/60 text-muted-foreground hover:bg-muted/40 hover:text-foreground',
+                    f.missing && 'opacity-60'
+                  )}
+                  title={f.path || f.note}
+                >
+                  {f.name}
+                  <Badge variant="outline" className="text-[9px] uppercase">{f.kind}</Badge>
+                  {f.missing && <span className="text-[10px] font-sans">absent</span>}
+                </button>
+              ))}
+            </div>
+          )}
+          {current && (
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                <div className="min-w-0 space-y-0.5">
+                  {current.path && <div className="truncate font-mono">{current.path}</div>}
+                  <div>
+                    {current.missing
+                      ? 'Not present right now.'
+                      : `${fmtSize(current.size)}${current.modified ? ` · written ${fmtTime(current.modified)}` : ' · generated preview'}`}
+                    {current.note ? ` — ${current.note}` : ''}
+                  </div>
+                </div>
+                {!current.missing && current.content && (
+                  <Button variant="ghost" size="sm" className="h-7" onClick={copy}>
+                    {copied ? <Check className="mr-1 h-3.5 w-3.5 text-emerald-500" /> : <Copy className="mr-1 h-3.5 w-3.5" />}
+                    {copied ? 'Copied' : 'Copy'}
+                  </Button>
+                )}
+              </div>
+              <pre className="max-h-[32rem] overflow-auto rounded-lg border border-border/60 bg-black/80 p-3 font-mono text-[11px] leading-snug text-zinc-200">
+                {current.missing ? '(no file)' : current.content || (isFetching ? 'loading…' : '(empty)')}
+              </pre>
+            </>
+          )}
+          {files.length === 0 && !data?.error && <p className="text-sm text-muted-foreground">{isFetching ? 'loading…' : 'Nothing rendered yet.'}</p>}
+        </CardContent>
+      )}
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Tab
 // ---------------------------------------------------------------------------
 
@@ -1117,6 +1238,8 @@ export function GatewayTab() {
       <BlocksCard state={data} />
 
       <LogsCard state={data} />
+
+      <ConfigFilesCard state={data} />
     </div>
   )
 }

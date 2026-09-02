@@ -4,6 +4,7 @@ import { apiClient } from '@/shared/lib/api'
 import {
   ConnectionsViewSchema,
   GatewayBlockSchema,
+  GatewayConfigFileSchema,
   GatewayStateSchema,
   GatewayTargetSchema,
   GatewayConfigSchema,
@@ -15,6 +16,7 @@ import {
   type RouteRequest,
   type ConnectionsView,
   type GatewayBlock,
+  type GatewayConfigFile,
   type BlockRequest,
 } from './schemas'
 import { z } from 'zod'
@@ -124,6 +126,19 @@ export function useGatewayLogs(enabled: boolean, tail = 300) {
     },
     enabled,
     refetchInterval: 5000,
+  })
+}
+
+/** Traefik config files node-stats owns on this node — gateway node only. */
+export function useGatewayFiles(enabled: boolean) {
+  return useQuery<{ files: GatewayConfigFile[]; error?: string }>({
+    queryKey: [...KEY, 'files'],
+    queryFn: async () => {
+      const { data } = await apiClient.get('/gateway/files')
+      return { files: z.array(GatewayConfigFileSchema).parse(data.files ?? []), error: data.error as string | undefined }
+    },
+    enabled,
+    refetchInterval: 10000,
   })
 }
 
