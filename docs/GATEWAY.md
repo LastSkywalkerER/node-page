@@ -240,6 +240,45 @@ gateway node as `<host ipv4>:<published port>`. Unpublished container ports are 
 cross-host and are not offered. "Check reachability" TCP-dials the target from the node serving
 the UI (label it accordingly if that isn't the gateway node).
 
+## Import (Traefik dynamic config → routes)
+
+`gateway.ParseDynamic` is the renderer's inverse: it reads a Traefik file-provider dynamic config —
+this gateway's own `node-stats.yml` from another cluster, a hand-written one, anything a Traefik
+would load — and returns the routes it describes: http routers (`Host`/`HostRegexp` wildcard,
+`PathPrefix`, `Method` → read-only; entrypoint/tls → https; the http→https companion router is
+folded in) with their service (servers → target + extra targets, `passHostHeader`, `healthCheck`,
+`sticky`, `serversTransport` → skip-verify/SNI/upstream timeout) and middlewares (`ipAllowList`,
+`rateLimit`, `inFlightReq`, `basicAuth` — hashes kept as-is —, `buffering`, `forwardAuth`, `headers`,
+`stripPrefix`, `addPrefix`, `compress`, `retry`, `redirectRegex` → redirect route); tcp routers with
+`tls.passthrough` → passthrough routes; tcp/udp routers on `ns-<proto>-<port>` entrypoints → stream
+routes. Whatever the route model cannot express is returned as a warning instead of being dropped.
+Object names of the form `ns-<id>` keep their route id (a re-import updates the same rows); foreign
+names match existing routes by domain + path (streams: protocol + port), else create.
+
+Three ways in, one code path (`engine.ParseImport` → `applyImport`, i.e. the same validation and
+Raft replication as the UI):
+
+- **UI**: Gateway → Routes → *Import*: paste, *Preview* (dry run: per-entry created/updated/failed +
+  warnings), *Import*.
+- **API**: `POST /gateway/import {"yaml": "...", "dry_run": true|false}` → `ImportResult`.
+- **File**: drop the YAML as `<data dir>/gateway-import.yml` on any node (Docker: the stack's
+  `data/docker/`); the watcher (5 s) applies it, renames it to `gateway-import.applied.yml` (or
+  `.failed.yml` when it does not parse) and writes `gateway-import.result.yml`. Writing into the data
+  dir already means owning the node, so no further auth is involved. A native shape is accepted too
+  (`routes:` = a list of route requests with the API's JSON keys, optional `config:` patch with
+  `docker_networks` / `enabled` / `acme_*`).
+
+**Migrating from Nginx Proxy Manager**: `scripts/npm-to-traefik.py /path/to/npm/database.sqlite
+[--no-tls host,… ] [--skip host,…] [--rewrite 127.0.0.1=host.docker.internal] > gateway-import.yml`
+converts proxy hosts (domains → Host rule + aliases, forward target, certificate → https, HSTS,
+access lists → basicAuth/ipAllowList), redirection hosts and streams into that dynamic config, and
+prints review notes for what it could not translate (NPM "advanced config" blocks — usually extra
+`location`s that become additional PathPrefix routers; "block exploits", which the gateway covers
+with limits and client blocks). Attach the managed Traefik to NPM's Docker network
+(`docker_networks`) so container-name targets keep resolving. Use `--no-tls` for hosts behind
+Cloudflare in *Flexible* mode (Cloudflare reaches the origin over plain http; a TLS route's redirect
+would loop).
+
 ## API (admin)
 
 ```

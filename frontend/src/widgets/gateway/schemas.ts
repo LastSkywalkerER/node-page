@@ -136,6 +136,29 @@ export const GatewayTargetSchema = z.object({
 })
 export type GatewayTarget = z.infer<typeof GatewayTargetSchema>
 
+export const ImportRouteResultSchema = z.object({
+  index: z.number(),
+  label: z.string(),
+  action: z.string(),
+  route_id: z.string().optional().default(''),
+  error: z.string().optional().default(''),
+  request: z.record(z.string(), z.unknown()).optional(),
+})
+export const ImportResultSchema = z.object({
+  at: z.string().optional().default(''),
+  format: z.string().optional().default(''),
+  dry_run: z.boolean().optional().default(false),
+  ok: z.boolean(),
+  error: z.string().optional().default(''),
+  warnings: z.array(z.string()).optional().default([]),
+  config: z.string().optional().default(''),
+  routes: z.array(ImportRouteResultSchema).optional().default([]),
+  created: z.number().default(0),
+  updated: z.number().default(0),
+  failed: z.number().default(0),
+})
+export type ImportResult = z.infer<typeof ImportResultSchema>
+
 export const DockerNetworkSchema = z.object({
   name: z.string(),
   driver: z.string().optional().default(''),

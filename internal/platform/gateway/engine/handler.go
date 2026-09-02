@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"system-stats/internal/platform/gateway"
@@ -80,6 +81,37 @@ func (h *Handler) HandleTargets(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"targets": t})
+}
+
+// HandleImport parses a pasted Traefik dynamic config (or native routes YAML)
+// and previews (dry_run) or applies it.
+//
+// @Summary  Import routes from a Traefik dynamic config
+// @Tags     gateway
+// @Accept   json
+// @Produce  json
+// @Success  200 {object} ImportResult
+// @Security BearerAuth
+// @Router   /gateway/import [post]
+func (h *Handler) HandleImport(c *gin.Context) {
+	var body struct {
+		YAML   string `json:"yaml"`
+		DryRun bool   `json:"dry_run"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.YAML) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "yaml is required"})
+		return
+	}
+	if len(body.YAML) > 1<<20 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "import document too large (1 MiB max)"})
+		return
+	}
+	res, err := h.service.Import(c.Request.Context(), []byte(body.YAML), body.DryRun)
+	if err != nil {
+		h.fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, res)
 }
 
 // HandleDockerNetworks lists this node's joinable Docker networks (for the

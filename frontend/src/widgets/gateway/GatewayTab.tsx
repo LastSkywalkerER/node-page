@@ -17,6 +17,7 @@ import {
   useGateway,
   useGatewayTargets,
   useDockerNetworks,
+  useImportRoutes,
   useSetGatewayConfig,
   useCreateRoute,
   useUpdateRoute,
@@ -30,7 +31,7 @@ import {
   type TargetCheck,
 } from './useGateway'
 import { DEFAULT_ROUTE_LIMITS, EMPTY_ROUTE_FEATURES } from './schemas'
-import type { GatewayConfig, GatewayRoute, GatewayState, GatewayTarget, RouteRequest, BasicAuthInput, GatewayConfigFile } from './schemas'
+import type { GatewayConfig, GatewayRoute, GatewayState, GatewayTarget, RouteRequest, BasicAuthInput, GatewayConfigFile, ImportResult } from './schemas'
 import { ConnectionsCard, BlocksCard } from './ConnectionsCard'
 
 const selectCls =
@@ -183,7 +184,7 @@ function ConfigCard({ state }: { state: GatewayState }) {
             </div>
             {state.capabilities.running_in_docker && (
               <div className="space-y-1.5">
-                <Label>Extra Docker networks (optional)</Label>
+                <Label>Extra Docker networks (optional — pick any number)</Label>
                 {dockerNets && dockerNets.networks.filter((n) => !n.own).length > 0 && (
                   <div className="flex flex-wrap gap-1.5">
                     {dockerNets.networks
@@ -228,10 +229,11 @@ function ConfigCard({ state }: { state: GatewayState }) {
                   }
                 />
                 <p className="text-xs text-muted-foreground">
-                  Existing networks of other stacks the managed Traefik container also joins, so their containers can be
-                  targeted <b>by container name</b> (<span className="font-mono">http://grafana:3000</span>) — including
-                  ports published on <span className="font-mono">127.0.0.1</span> only, which no other bridge network can
-                  reach. Find them with <span className="font-mono">docker network ls</span>. Changing this restarts Traefik.
+                  Existing networks of other stacks the managed Traefik container also joins (click chips to toggle — it can
+                  sit on several at once), so their containers can be targeted <b>by container name</b> (
+                  <span className="font-mono">http://grafana:3000</span>) — including ports published on{' '}
+                  <span className="font-mono">127.0.0.1</span> only, which no other bridge network can reach. Changing this
+                  restarts Traefik.
                 </p>
               </div>
             )}
@@ -1587,9 +1589,124 @@ function ConfigFilesCard({ state }: { state: GatewayState }) {
 // Tab
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Import (Traefik dynamic config → routes)
+// ---------------------------------------------------------------------------
+
+function ImportPanel({ onDone }: { onDone: () => void }) {
+  const [text, setText] = useState('')
+  const [preview, setPreview] = useState<ImportResult | null>(null)
+  const run = useImportRoutes()
+
+  const doPreview = () =>
+    run.mutate(
+      { yaml: text, dry_run: true },
+      { onSuccess: setPreview, onError: (e) => toast.error('Import preview failed: ' + e.message) }
+    )
+  const doApply = () =>
+    run.mutate(
+      { yaml: text, dry_run: false },
+      {
+        onSuccess: (r) => {
+          setPreview(r)
+          if (r.ok) {
+            toast.success(`Imported: ${r.created} created, ${r.updated} updated`)
+            onDone()
+          } else {
+            toast.error(`Import finished with ${r.failed} failure${r.failed === 1 ? '' : 's'} — see the list`)
+          }
+        },
+        onError: (e) => toast.error('Import failed: ' + e.message),
+      }
+    )
+
+  return (
+    <div className="space-y-3 rounded-lg border border-border/60 bg-muted/10 p-4">
+      <div>
+        <div className="text-sm font-medium">Import routes from a Traefik dynamic config</div>
+        <p className="text-xs text-muted-foreground">
+          Paste a Traefik file-provider YAML — this gateway's own <span className="font-mono">node-stats.yml</span> from
+          another cluster, a hand-written one, or the output of{' '}
+          <span className="font-mono">scripts/npm-to-traefik.py</span> (Nginx Proxy Manager database → Traefik). Routers,
+          services, middlewares and tcp/udp streams become routes; existing routes with the same domain + path (or
+          protocol + port) are updated, everything else is created. What the route model can't express is listed as a
+          warning. The same file can be dropped as <span className="font-mono">gateway-import.yml</span> into the data
+          dir of any node.
+        </p>
+      </div>
+      <textarea
+        className={cn(textareaCls, 'min-h-48')}
+        placeholder={'http:\n  routers:\n    grafana:\n      rule: Host(`grafana.example.com`)\n      entryPoints: [websecure]\n      service: grafana\n      tls: {}\n  services:\n    grafana:\n      loadBalancer:\n        servers:\n          - url: http://grafana:3000'}
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value)
+          setPreview(null)
+        }}
+      />
+      {preview && (
+        <div className="space-y-2 text-xs">
+          {preview.error && <p className="text-red-400">{preview.error}</p>}
+          {preview.warnings.length > 0 && (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-amber-500">
+              {preview.warnings.map((w, i) => (
+                <div key={i}>{w}</div>
+              ))}
+            </div>
+          )}
+          {preview.config && <div className="text-muted-foreground">config: {preview.config}</div>}
+          <div className="divide-y divide-border/60 rounded-md border border-border/60">
+            {preview.routes.map((r) => {
+              const req = (r.request ?? {}) as Record<string, unknown>
+              const target =
+                req.mode === 'redirect'
+                  ? `→ ${String(req.redirect_url ?? '')}`
+                  : req.mode === 'stream'
+                    ? `→ ${String(req.target_host ?? '')}:${String(req.target_port ?? '')}`
+                    : req.target_host
+                      ? `→ ${String(req.target_scheme ?? 'http')}://${String(req.target_host)}:${String(req.target_port ?? '')}`
+                      : ''
+              return (
+                <div key={r.index} className="flex flex-wrap items-center gap-2 px-2 py-1.5">
+                  <Badge
+                    variant={r.action === 'failed' ? 'destructive' : r.action === 'updated' ? 'secondary' : 'outline'}
+                    className="text-[10px] uppercase"
+                  >
+                    {r.action}
+                  </Badge>
+                  <span className="font-mono">{r.label}</span>
+                  {target && <span className="font-mono text-muted-foreground">{target}</span>}
+                  {req.tls ? <Badge variant="secondary" className="text-[10px] uppercase">https</Badge> : null}
+                  {r.error && <span className="text-red-400">{r.error}</span>}
+                </div>
+              )
+            })}
+          </div>
+          <div className="text-muted-foreground">
+            {preview.dry_run ? 'Preview: ' : 'Result: '}
+            {preview.created} to create · {preview.updated} to update · {preview.failed} failed
+            {preview.format ? ` · format: ${preview.format}` : ''}
+          </div>
+        </div>
+      )}
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="ghost" size="sm" onClick={onDone} disabled={run.isPending}>
+          Cancel
+        </Button>
+        <Button type="button" variant="outline" size="sm" onClick={doPreview} disabled={run.isPending || !text.trim()}>
+          {run.isPending && run.variables?.dry_run ? 'Parsing…' : 'Preview'}
+        </Button>
+        <Button type="button" size="sm" onClick={doApply} disabled={run.isPending || !text.trim() || !preview || !!preview.error}>
+          {run.isPending && run.variables && !run.variables.dry_run ? 'Importing…' : 'Import'}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 export function GatewayTab() {
   const { data, isLoading, error } = useGateway()
   const [adding, setAdding] = useState(false)
+  const [importing, setImporting] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
 
   if (isLoading || !data) {
@@ -1618,14 +1735,24 @@ export function GatewayTab() {
                 applied on the gateway node within seconds.
               </CardDescription>
             </div>
-            {!adding && (
-              <Button size="sm" onClick={() => { setAdding(true); setEditing(null) }}>
-                <Plus className="mr-1 h-4 w-4" /> Add route
-              </Button>
+            {!adding && !importing && (
+              <div className="flex shrink-0 gap-2">
+                <Button size="sm" variant="outline" onClick={() => { setImporting(true); setEditing(null) }} title="Import routes from a Traefik dynamic config">
+                  <FileCode2 className="mr-1 h-4 w-4" /> Import
+                </Button>
+                <Button size="sm" onClick={() => { setAdding(true); setEditing(null) }}>
+                  <Plus className="mr-1 h-4 w-4" /> Add route
+                </Button>
+              </div>
             )}
           </div>
         </CardHeader>
         <CardContent className="space-y-4 p-0">
+          {importing && (
+            <div className="px-4 pb-2">
+              <ImportPanel onDone={() => setImporting(false)} />
+            </div>
+          )}
           {adding && (
             <div className="px-4 pb-2">
               <RouteForm initial={emptyRequest} onDone={() => setAdding(false)} state={data} />

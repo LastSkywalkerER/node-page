@@ -20,6 +20,8 @@ import {
   type BlockRequest,
   DockerNetworkSchema,
   type DockerNetwork,
+  ImportResultSchema,
+  type ImportResult,
 } from './schemas'
 import { z } from 'zod'
 
@@ -84,6 +86,24 @@ export function useSetGatewayConfig() {
       }
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
+  })
+}
+
+/** Import routes from a pasted Traefik dynamic config (or native routes YAML); dry_run previews. */
+export function useImportRoutes() {
+  const qc = useQueryClient()
+  return useMutation<ImportResult, Error, { yaml: string; dry_run: boolean }>({
+    mutationFn: async (body) => {
+      try {
+        const { data } = await apiClient.post('/gateway/import', body)
+        return ImportResultSchema.parse(data)
+      } catch (e) {
+        throw apiError(e)
+      }
+    },
+    onSuccess: (_r, vars) => {
+      if (!vars.dry_run) void qc.invalidateQueries({ queryKey: KEY })
+    },
   })
 }
 

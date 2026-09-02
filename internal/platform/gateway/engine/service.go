@@ -67,6 +67,10 @@ type Target struct {
 type BasicAuthInput struct {
 	User     string `json:"user"`
 	Password string `json:"password"`
+	// Hash is a ready htpasswd hash (bcrypt/apr1/…) — used by imports of
+	// existing configs where the plain password is unknown. Ignored when
+	// Password is set.
+	Hash string `json:"hash,omitempty"`
 }
 
 // RouteRequest is the create/update body.
@@ -180,6 +184,9 @@ type Service interface {
 	UpdateRoute(ctx context.Context, routeID string, req RouteRequest) (*RouteView, error)
 	DeleteRoute(ctx context.Context, routeID string) error
 	Targets(ctx context.Context) ([]Target, error)
+	// Import parses a Traefik dynamic config (or the native routes list) and
+	// creates/updates the routes it describes; dryRun only previews.
+	Import(ctx context.Context, raw []byte, dryRun bool) (*ImportResult, error)
 	// CheckTarget dials host:port from THIS node (TCP) — using the address
 	// Traefik would actually be given here (same-host rewrite) — and returns
 	// that checked address.
@@ -700,6 +707,13 @@ func (s *service) applyRequest(r *gateway.Route, req RouteRequest, prev *gateway
 			return fmt.Errorf("%w: basic-auth user names cannot contain ':' or spaces", ErrValidation)
 		}
 		if in.Password == "" {
+			if h := strings.TrimSpace(in.Hash); h != "" {
+				if strings.ContainsAny(h, " \n") {
+					return fmt.Errorf("%w: invalid basic-auth hash for %q", ErrValidation, u)
+				}
+				lines = append(lines, u+":"+h)
+				continue
+			}
 			if line, ok := prevHashes[u]; ok {
 				lines = append(lines, line)
 				continue

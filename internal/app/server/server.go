@@ -270,6 +270,9 @@ func Run() {
 	)
 	// Expired client blocks are swept by the gateway node (replicated deletes).
 	go gatewaySvc.RunBlockExpiry(appCtx)
+	// File-based bulk import: <data dir>/gateway-import.yml → routes (+ config
+	// patch) through the same service as the UI (migrations, GitOps).
+	go gatewayengine.RunImportWatcher(appCtx, logger, gatewaySvc, gatewayDataDir)
 	pvePoller := proxmox.NewPoller(proxmox.PollerDeps{
 		Logger:     logger,
 		Connectors: container.GetConnectorRepository(),
@@ -900,6 +903,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.PUT("/gateway/config", middleware.RequireAdmin(), gatewayHandler.HandleSetConfig)
 		authAPI.GET("/gateway/targets", middleware.RequireAdmin(), gatewayHandler.HandleTargets)
 		authAPI.GET("/gateway/docker-networks", middleware.RequireAdmin(), gatewayHandler.HandleDockerNetworks)
+		authAPI.POST("/gateway/import", middleware.RequireAdmin(), gatewayHandler.HandleImport)
 		authAPI.POST("/gateway/check", middleware.RequireAdmin(), gatewayHandler.HandleCheck)
 		authAPI.GET("/gateway/logs", middleware.RequireAdmin(), gatewayHandler.HandleLogs)
 		authAPI.GET("/gateway/files", middleware.RequireAdmin(), gatewayHandler.HandleFiles)
