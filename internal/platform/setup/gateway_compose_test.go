@@ -10,10 +10,18 @@ import (
 func TestBuildComposeContent_GatewayService(t *testing.T) {
 	ds := DesiredState{DBMode: DBModeSQLite, Gateway: &GatewayProvision{
 		Enabled: true, HTTPPort: 8080, HTTPSPort: 8443, ACMEEnabled: true, ACMEEmail: "ops@example.com", ACMEStaging: true,
-		ReadTimeoutSeconds: 86400,
+		ReadTimeoutSeconds: 86400, AliasHeadersStrategy: AliasHeadersDelete, EncodedPathPolicy: EncodedPathStrict,
 	}}
 	out := BuildComposeContent(ds)
 	for _, want := range []string{
+		"--entrypoints.web.http.aliasHeadersStrategy=delete",
+		"--entrypoints.websecure.http.aliasHeadersStrategy=delete",
+		"--entrypoints.ping.http.aliasHeadersStrategy=delete",
+		"--entrypoints.web.http.encodedCharacters.allowEncodedSlash=false",
+		"--entrypoints.web.http.encodedCharacters.allowEncodedNullCharacter=false",
+		"--entrypoints.web.http.encodedCharacters.allowEncodedBackSlash=false",
+		"--entrypoints.websecure.http.encodedCharacters.allowEncodedPercent=true",
+		"--entrypoints.ping.http.encodedCharacters.allowEncodedHash=true",
 		"--entrypoints.web.transport.respondingTimeouts.readTimeout=86400s",
 		"--entrypoints.websecure.transport.respondingTimeouts.readTimeout=86400s",
 		"  traefik:",
@@ -83,5 +91,29 @@ func TestDesiredState_GatewayRoundTrip(t *testing.T) {
 	other.Gateway = &GatewayProvision{Enabled: false}
 	if ds.Hash() == other.Hash() {
 		t.Error("hash ignores the gateway section")
+	}
+}
+
+func TestEncodedCharacterOptions(t *testing.T) {
+	count := func(policy string, allow bool) int {
+		n := 0
+		for _, o := range EncodedCharacterOptions(policy) {
+			if o.Allow == allow {
+				n++
+			}
+		}
+		return n
+	}
+	if count(EncodedPathPermissive, true) != 7 || count(EncodedPathParanoid, false) != 7 {
+		t.Error("permissive must allow all seven, paranoid reject all seven")
+	}
+	if count(EncodedPathStrict, false) != 3 || count(EncodedPathStrict, true) != 4 {
+		t.Errorf("strict must reject exactly slash/backslash/null: %+v", EncodedCharacterOptions(EncodedPathStrict))
+	}
+	if len(TraefikEntrypointHardeningFlags("web", GatewayProvision{})) != 0 {
+		t.Error("no hardening on the provision → no flags (old Traefik stays bootable)")
+	}
+	if got := len(TraefikEntrypointHardeningFlags("web", GatewayProvision{AliasHeadersStrategy: AliasHeadersReject, EncodedPathPolicy: EncodedPathStrict})); got != 8 {
+		t.Errorf("expected 1 + 7 flags, got %d", got)
 	}
 }

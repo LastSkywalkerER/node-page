@@ -38,6 +38,38 @@ func TestNativeRenderStatic(t *testing.T) {
 		t.Errorf("web readTimeout = %v", got)
 	}
 	t.Logf("STATIC_YAML_BEGIN\n%sSTATIC_YAML_END", out)
+	// Hardening keys: emitted for a binary that knows them, omitted otherwise.
+	hardened := setup.GatewayProvision{Enabled: true, AliasHeadersStrategy: setup.AliasHeadersDelete, EncodedPathPolicy: setup.EncodedPathStrict}
+	newBin := string(renderStaticFor(hardened, "3.7.12", n.dynamicDir(), n.dir(), n.acmeDir()))
+	for _, want := range []string{
+		"aliasHeadersStrategy: delete", "allowEncodedSlash: false", "allowEncodedBackSlash: false",
+		"allowEncodedNullCharacter: false", "allowEncodedSemicolon: true", "allowEncodedHash: true",
+	} {
+		if strings.Count(newBin, want) != 3 { // web, websecure, ping
+			t.Errorf("hardened static config: %q must appear on all 3 entrypoints (got %d):\n%s", want, strings.Count(newBin, want), newBin)
+		}
+	}
+	t.Logf("HARDENED_BEGIN\n%sHARDENED_END", newBin)
+	var hp map[string]any
+	if err := yaml.Unmarshal([]byte(newBin), &hp); err != nil {
+		t.Fatalf("hardened static config is not valid yaml: %v\n%s", err, newBin)
+	}
+	webHTTP := hp["entryPoints"].(map[any]any)["web"].(map[any]any)["http"].(map[any]any)
+	if webHTTP["aliasHeadersStrategy"] != "delete" || webHTTP["encodedCharacters"].(map[any]any)["allowEncodedSlash"] != false {
+		t.Errorf("hardening not nested under entryPoints.web.http: %+v", webHTTP)
+	}
+	oldBin := string(renderStaticFor(hardened, "3.3.7", n.dynamicDir(), n.dir(), n.acmeDir()))
+	if strings.Contains(oldBin, "aliasHeadersStrategy") || strings.Contains(oldBin, "encodedCharacters") || strings.Contains(oldBin, "http:") {
+		t.Errorf("old binary must not get keys it doesn't know:\n%s", oldBin)
+	}
+	mid := string(renderStaticFor(hardened, "3.6.7", n.dynamicDir(), n.dir(), n.acmeDir()))
+	if strings.Contains(mid, "aliasHeadersStrategy") || !strings.Contains(mid, "encodedCharacters") {
+		t.Errorf("3.6.7 knows encodedCharacters but not aliasHeadersStrategy:\n%s", mid)
+	}
+	if unknown := string(renderStaticFor(hardened, "", n.dynamicDir(), n.dir(), n.acmeDir())); strings.Contains(unknown, "http:") {
+		t.Errorf("unknown binary version must be treated as old:\n%s", unknown)
+	}
+
 	plain := string(n.renderStatic(setup.GatewayProvision{Enabled: true}))
 	if strings.Count(plain, "readTimeout: 0s") != 2 {
 		t.Errorf("unlimited read timeout must be rendered on both entrypoints:\n%s", plain)
@@ -80,5 +112,24 @@ func TestExtractFromTarGz(t *testing.T) {
 	}
 	if _, err := extractFromTarGz(buf.Bytes(), "nope"); err == nil {
 		t.Error("expected error for a missing entry")
+	}
+}
+
+func TestSemverAtLeast(t *testing.T) {
+	cases := []struct {
+		v, min string
+		want   bool
+	}{
+		{"3.7.12", "3.7.12", true}, {"v3.7.13", "3.7.12", true}, {"3.8.0", "3.7.12", true}, {"4.0.0", "3.7.12", true},
+		{"3.7.11", "3.7.12", false}, {"3.6.7", "3.7.12", false}, {"3.3.7", "3.6.7", false}, {"", "3.6.7", false}, {"garbage", "3.6.7", false},
+		{"3.7.12-rc1", "3.7.12", true},
+	}
+	for _, c := range cases {
+		if got := semverAtLeast(c.v, c.min); got != c.want {
+			t.Errorf("semverAtLeast(%q,%q)=%v want %v", c.v, c.min, got, c.want)
+		}
+	}
+	if m := traefikVersionRe.FindSubmatch([]byte("Version:      3.7.12\nCodename:     langres\n")); m == nil || string(m[1]) != "3.7.12" {
+		t.Errorf("version parse failed: %v", m)
 	}
 }

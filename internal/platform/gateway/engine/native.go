@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -45,8 +46,19 @@ const (
 	nativeUnitPath = "/etc/systemd/system/" + nativeUnitName + ".service"
 	// nativeTraefikFallbackVersion is used when the GitHub API can't be reached
 	// to resolve the newest v3 release. Override with NODE_STATS_TRAEFIK_VERSION.
-	nativeTraefikFallbackVersion = "v3.3.7"
-	nativePingURL                = "http://127.0.0.1:8082/ping"
+	nativeTraefikFallbackVersion = "v3.7.12"
+	// nativeTraefikLine pins the release line resolveVersion follows (newest
+	// patch of it) — the same line as setup.DefaultTraefikImage, so Docker and
+	// native gateways behave alike. nativeTraefikMinVersion is the oldest
+	// binary that understands every static-config key node-stats emits; an
+	// older installed binary is upgraded in place (unless pinned via
+	// NODE_STATS_TRAEFIK_VERSION, in which case the keys it lacks are omitted).
+	nativeTraefikLine       = "v3.7"
+	nativeTraefikMinVersion = "3.7.12"
+	// Feature thresholds for the gated static-config keys.
+	traefikEncodedCharsSince = "3.6.7"
+	traefikAliasHeadersSince = "3.7.12"
+	nativePingURL            = "http://127.0.0.1:8082/ping"
 )
 
 // nativeProvisioner manages the systemd-run Traefik.
@@ -57,6 +69,11 @@ type nativeProvisioner struct {
 	// unchanged cycle doesn't touch systemd.
 	installedWant *setup.GatewayProvision
 	lastCheck     time.Time
+	// binVersion is the installed binary's version ("3.7.12"), detected via
+	// `traefik version` after ensureBinary; gates the static-config keys.
+	binVersion string
+	// lastUpgradeTry throttles re-download attempts when an upgrade fails.
+	lastUpgradeTry time.Time
 }
 
 func newNativeProvisioner(logger *log.Logger, dataDir string) *nativeProvisioner {
@@ -102,7 +119,8 @@ func (n *nativeProvisioner) Reconcile(ctx context.Context, want setup.GatewayPro
 	if err := os.MkdirAll(filepath.Join(n.dir(), "logs"), 0o755); err != nil {
 		return false, err
 	}
-	if err := n.ensureBinary(ctx); err != nil {
+	binChanged, err := n.ensureBinary(ctx)
+	if err != nil {
 		return false, fmt.Errorf("install traefik: %w", err)
 	}
 	staticChanged, err := writeIfChangedReport(n.staticPath(), n.renderStatic(want))
@@ -125,7 +143,7 @@ func (n *nativeProvisioner) Reconcile(ctx context.Context, want setup.GatewayPro
 			return false, fmt.Errorf("enable --now: %s: %w", out, err)
 		}
 		restarted = true
-	case staticChanged || unitChanged:
+	case staticChanged || unitChanged || binChanged:
 		if out, err := systemctl(ctx, "restart", nativeUnitName); err != nil {
 			return false, fmt.Errorf("restart: %s: %w", out, err)
 		}
@@ -261,6 +279,13 @@ func (n *nativeProvisioner) isActive(ctx context.Context) bool {
 // renderStatic emits Traefik's static configuration. Entrypoints bind the
 // configured host ports directly (no container port mapping on native).
 func (n *nativeProvisioner) renderStatic(gw setup.GatewayProvision) []byte {
+	return renderStaticFor(gw, n.binVersion, n.dynamicDir(), n.dir(), n.acmeDir())
+}
+
+// renderStaticFor is renderStatic with the binary version injected: keys the
+// installed Traefik doesn't know yet are omitted (an unknown key aborts its
+// start-up), so an un-upgraded binary keeps running with the old behaviour.
+func renderStaticFor(gw setup.GatewayProvision, binVersion, dynamicDir, dir, acmeDir string) []byte {
 	httpPort, httpsPort := gw.HTTPPort, gw.HTTPSPort
 	if httpPort <= 0 {
 		httpPort = 80
@@ -274,25 +299,40 @@ func (n *nativeProvisioner) renderStatic(gw setup.GatewayProvision) []byte {
 	// readTimeout: Traefik v3 defaults to 60s and it covers the request body
 	// (uploads) — node-stats owns the value (0 = unlimited).
 	transport := fmt.Sprintf("    transport:\n      respondingTimeouts:\n        readTimeout: %ds", gw.ReadTimeoutSeconds)
+	// Entrypoint hardening — only the keys this binary understands.
+	var hard strings.Builder
+	if gw.AliasHeadersStrategy != "" && semverAtLeast(binVersion, traefikAliasHeadersSince) {
+		hard.WriteString("      aliasHeadersStrategy: " + gw.AliasHeadersStrategy + "\n")
+	}
+	if gw.EncodedPathPolicy != "" && semverAtLeast(binVersion, traefikEncodedCharsSince) {
+		hard.WriteString("      encodedCharacters:\n")
+		for _, o := range setup.EncodedCharacterOptions(gw.EncodedPathPolicy) {
+			hard.WriteString(fmt.Sprintf("        %s: %t\n", o.Name, o.Allow))
+		}
+	}
+	httpSection := ""
+	if hard.Len() > 0 {
+		httpSection = "\n    http:\n" + strings.TrimRight(hard.String(), "\n")
+	}
 	w("entryPoints:")
-	w(fmt.Sprintf("  web:\n    address: \":%d\"\n%s", httpPort, transport))
-	w(fmt.Sprintf("  websecure:\n    address: \":%d\"\n%s", httpsPort, transport))
-	w("  ping:\n    address: \"127.0.0.1:8082\"")
+	w(fmt.Sprintf("  web:\n    address: \":%d\"\n%s%s", httpPort, transport, httpSection))
+	w(fmt.Sprintf("  websecure:\n    address: \":%d\"\n%s%s", httpsPort, transport, httpSection))
+	w("  ping:\n    address: \"127.0.0.1:8082\"" + httpSection)
 	w("ping:\n  entryPoint: ping")
 	w("providers:\n  file:")
-	w(fmt.Sprintf("    directory: %q", n.dynamicDir()))
+	w(fmt.Sprintf("    directory: %q", dynamicDir))
 	w("    watch: true")
 	w("api:\n  dashboard: false")
 	w("log:\n  level: " + envOr("NODE_STATS_TRAEFIK_LOG_LEVEL", "INFO"))
 	w("accessLog:")
-	w(fmt.Sprintf("  filePath: %q", filepath.Join(n.dir(), "logs", "access.log")))
+	w(fmt.Sprintf("  filePath: %q", filepath.Join(dir, "logs", "access.log")))
 	w("  format: json")
 	w("  fields:\n    headers:\n      names:\n        User-Agent: keep")
 	w("global:\n  sendAnonymousUsage: false\n  checkNewVersion: false")
 	if gw.ACMEEnabled {
 		w("certificatesResolvers:\n  le:\n    acme:")
 		w(fmt.Sprintf("      email: %q", gw.ACMEEmail))
-		w(fmt.Sprintf("      storage: %q", filepath.Join(n.acmeDir(), "acme.json")))
+		w(fmt.Sprintf("      storage: %q", filepath.Join(acmeDir, "acme.json")))
 		w("      httpChallenge:\n        entryPoint: web")
 		if gw.ACMEStaging {
 			w("      caServer: https://acme-staging-v02.api.letsencrypt.org/directory")
@@ -326,12 +366,95 @@ WantedBy=multi-user.target
 `, n.binPath(), n.staticPath(), n.dir()))
 }
 
-// ensureBinary downloads the Traefik release tarball for this arch (checksum-
-// verified against the release's checksums file) when the binary is missing.
-func (n *nativeProvisioner) ensureBinary(ctx context.Context) error {
+// ensureBinary installs Traefik when missing and upgrades an installed binary
+// older than nativeTraefikMinVersion (the static config relies on keys it
+// lacks). Reports whether the binary changed (→ restart). A failed upgrade is
+// logged and retried later; meanwhile renderStatic omits the unknown keys.
+func (n *nativeProvisioner) ensureBinary(ctx context.Context) (changed bool, err error) {
+	present := false
 	if fi, err := os.Stat(n.binPath()); err == nil && fi.Mode().IsRegular() && fi.Size() > 0 {
-		return nil
+		present = true
 	}
+	if present {
+		n.binVersion = n.detectVersion(ctx)
+		pinned := strings.TrimSpace(os.Getenv("NODE_STATS_TRAEFIK_VERSION")) != ""
+		if pinned || n.binVersion == "" || semverAtLeast(n.binVersion, nativeTraefikMinVersion) || time.Since(n.lastUpgradeTry) < time.Hour {
+			return false, nil
+		}
+		n.lastUpgradeTry = time.Now()
+		n.logger.Info("gateway: upgrading traefik", "installed", n.binVersion, "required", nativeTraefikMinVersion)
+		if err := n.install(ctx); err != nil {
+			n.logger.Warn("gateway: traefik upgrade failed — keeping the installed binary (hardening keys it lacks are omitted)", "error", err)
+			return false, nil
+		}
+		n.binVersion = n.detectVersion(ctx)
+		return true, nil
+	}
+	if err := n.install(ctx); err != nil {
+		return false, err
+	}
+	n.binVersion = n.detectVersion(ctx)
+	return true, nil
+}
+
+// detectVersion runs `traefik version` and parses "Version: 3.7.12"; falls
+// back to the VERSION file written at install time.
+func (n *nativeProvisioner) detectVersion(ctx context.Context) string {
+	rc, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if out, err := exec.CommandContext(rc, n.binPath(), "version").CombinedOutput(); err == nil {
+		if m := traefikVersionRe.FindSubmatch(out); m != nil {
+			return string(m[1])
+		}
+	}
+	if b, err := os.ReadFile(filepath.Join(filepath.Dir(n.binPath()), "VERSION")); err == nil {
+		return strings.TrimPrefix(strings.TrimSpace(string(b)), "v")
+	}
+	return ""
+}
+
+var traefikVersionRe = regexp.MustCompile(`(?i)Version:\s+v?(\d+\.\d+\.\d+)`)
+
+// semverAtLeast reports v >= min for plain "x.y.z" strings (a leading "v" is
+// tolerated). Unknown/unparseable v → false (assume old).
+func semverAtLeast(v, min string) bool {
+	pv, okv := parseSemver(v)
+	pm, okm := parseSemver(min)
+	if !okv || !okm {
+		return false
+	}
+	for i := 0; i < 3; i++ {
+		if pv[i] != pm[i] {
+			return pv[i] > pm[i]
+		}
+	}
+	return true
+}
+
+func parseSemver(v string) ([3]int, bool) {
+	var out [3]int
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return out, false
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
+}
+
+// install downloads the Traefik release tarball for this arch (checksum-
+// verified against the release's checksums file) and atomically replaces the
+// binary.
+func (n *nativeProvisioner) install(ctx context.Context) error {
 	ver := n.resolveVersion(ctx)
 	arch := runtime.GOARCH
 	switch arch {
@@ -384,8 +507,8 @@ func (n *nativeProvisioner) ensureBinary(ctx context.Context) error {
 	return nil
 }
 
-// resolveVersion picks NODE_STATS_TRAEFIK_VERSION, else the newest stable v3
-// release from GitHub, else the pinned fallback.
+// resolveVersion picks NODE_STATS_TRAEFIK_VERSION, else the newest stable
+// release of nativeTraefikLine from GitHub, else the pinned fallback.
 func (n *nativeProvisioner) resolveVersion(ctx context.Context) string {
 	if v := strings.TrimSpace(os.Getenv("NODE_STATS_TRAEFIK_VERSION")); v != "" {
 		if !strings.HasPrefix(v, "v") {
@@ -402,7 +525,7 @@ func (n *nativeProvisioner) resolveVersion(ctx context.Context) string {
 		}
 		if json.Unmarshal(body, &rels) == nil {
 			for _, r := range rels {
-				if !r.Prerelease && !r.Draft && strings.HasPrefix(r.TagName, "v3.") {
+				if !r.Prerelease && !r.Draft && strings.HasPrefix(r.TagName, nativeTraefikLine+".") {
 					return r.TagName
 				}
 			}

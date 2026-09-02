@@ -595,7 +595,9 @@ func (m *Materializer) Files(ctx context.Context) ([]ConfigFile, error) {
 func (m *Materializer) provisionFor(cfg gateway.Config) setup.GatewayProvision {
 	return setup.GatewayProvision{Enabled: true, HTTPPort: cfg.HTTPPort, HTTPSPort: cfg.HTTPSPort,
 		ACMEEnabled: cfg.ACMEEnabled, ACMEEmail: cfg.ACMEEmail, ACMEStaging: acmeStagingEnv(),
-		ReadTimeoutSeconds: cfg.EffectiveRequestReadTimeoutSeconds()}
+		ReadTimeoutSeconds:   cfg.EffectiveRequestReadTimeoutSeconds(),
+		AliasHeadersStrategy: cfg.EffectiveAliasHeadersStrategy(),
+		EncodedPathPolicy:    cfg.EffectiveEncodedPathPolicy()}
 }
 
 func readConfigFile(name, kind, path, note string) ConfigFile {

@@ -103,6 +103,20 @@ type Config struct {
 	// here; routes tighten with their own limits (RouteLimits). 0 → the
 	// node-stats default (DefaultRequestReadTimeoutSeconds), -1 → unlimited.
 	RequestReadTimeoutSeconds int `json:"request_read_timeout_seconds,omitempty"`
+	// Entrypoint hardening (managed mode; Traefik ≥ 3.7.12 — the managed image
+	// / native binary are pinned to that line). Empty = node-stats default.
+	//
+	// AliasHeadersStrategy: what to do with request headers whose name aliases
+	// another once a backend normalises it (X_Forwarded_For → X-Forwarded-For
+	// in PHP/CGI/WSGI/nginx), which lets a client spoof the headers Traefik
+	// sets. "delete" (default) drops them, "reject" answers 400, "keep"
+	// forwards them (Traefik's own default).
+	AliasHeadersStrategy string `json:"alias_headers_strategy,omitempty"`
+	// EncodedPathPolicy: which percent-encoded specials are allowed in the
+	// request path. "strict" (default) rejects %2F %5C %00 (path-confusion
+	// against sloppy backends) and allows the rest; "permissive" allows all
+	// (Traefik's default); "paranoid" rejects all seven.
+	EncodedPathPolicy string `json:"encoded_path_policy,omitempty"`
 	// (The Let's Encrypt staging CA is a developer-only knob —
 	// NODE_STATS_ACME_STAGING=1 on the gateway node — not part of the config.)
 }
@@ -208,6 +222,30 @@ const RequestReadTimeoutUnlimited = -1
 
 // MaxRequestReadTimeoutSeconds bounds the configurable value (30 days).
 const MaxRequestReadTimeoutSeconds = 30 * 24 * 60 * 60
+
+// Hardening defaults (values validated against setup.AliasHeaders* /
+// setup.EncodedPath*; kept as strings here so this package stays free of the
+// setup import).
+const (
+	DefaultAliasHeadersStrategy = "delete"
+	DefaultEncodedPathPolicy    = "strict"
+)
+
+// EffectiveAliasHeadersStrategy resolves the configured value (empty → default).
+func (c Config) EffectiveAliasHeadersStrategy() string {
+	if c.AliasHeadersStrategy == "" {
+		return DefaultAliasHeadersStrategy
+	}
+	return c.AliasHeadersStrategy
+}
+
+// EffectiveEncodedPathPolicy resolves the configured value (empty → default).
+func (c Config) EffectiveEncodedPathPolicy() string {
+	if c.EncodedPathPolicy == "" {
+		return DefaultEncodedPathPolicy
+	}
+	return c.EncodedPathPolicy
+}
 
 // EffectiveRequestReadTimeoutSeconds resolves the configured value: the
 // number of seconds Traefik gets, where 0 means unlimited (Traefik's own

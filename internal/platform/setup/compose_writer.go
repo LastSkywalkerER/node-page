@@ -77,13 +77,90 @@ type GatewayProvision struct {
 	// web + websecure (client → gateway request incl. body, i.e. the upload
 	// ceiling). Already resolved by the materializer: 0 = unlimited.
 	ReadTimeoutSeconds int `json:"read_timeout_seconds"`
+	// AliasHeadersStrategy / EncodedPathPolicy: entrypoint hardening, already
+	// resolved (see gateway.Config). Empty = leave Traefik's own defaults
+	// (only for old binaries that predate the options).
+	AliasHeadersStrategy string `json:"alias_headers_strategy,omitempty"`
+	EncodedPathPolicy    string `json:"encoded_path_policy,omitempty"`
+}
+
+// Entrypoint hardening values (gateway.Config.AliasHeadersStrategy /
+// EncodedPathPolicy). Traefik: entryPoints.<ep>.http.aliasHeadersStrategy
+// (≥ 3.7.12) and entryPoints.<ep>.http.encodedCharacters.* (≥ 3.6.7).
+const (
+	AliasHeadersDelete = "delete"
+	AliasHeadersReject = "reject"
+	AliasHeadersKeep   = "keep"
+
+	EncodedPathStrict     = "strict"
+	EncodedPathPermissive = "permissive"
+	EncodedPathParanoid   = "paranoid"
+)
+
+// ValidAliasHeadersStrategy / ValidEncodedPathPolicy accept "" (= default).
+func ValidAliasHeadersStrategy(v string) bool {
+	return v == "" || v == AliasHeadersDelete || v == AliasHeadersReject || v == AliasHeadersKeep
+}
+
+func ValidEncodedPathPolicy(v string) bool {
+	return v == "" || v == EncodedPathStrict || v == EncodedPathPermissive || v == EncodedPathParanoid
+}
+
+// EncodedCharacterOption is one entryPoints.<ep>.http.encodedCharacters.* flag.
+type EncodedCharacterOption struct {
+	Name  string // e.g. allowEncodedSlash
+	Allow bool
+}
+
+// EncodedCharacterOptions maps a policy to Traefik's seven flags. Every flag is
+// always emitted: Traefik only stops warning about the defaults once all of
+// them are explicit (it still logs one informational WRN at start-up when any
+// is false — that is the strict/paranoid choice describing itself).
+func EncodedCharacterOptions(policy string) []EncodedCharacterOption {
+	// strict: the three that enable path confusion (a sloppy backend decodes
+	// them into path separators / string terminators) are rejected.
+	strictReject := map[string]bool{"allowEncodedSlash": true, "allowEncodedBackSlash": true, "allowEncodedNullCharacter": true}
+	names := []string{"allowEncodedSlash", "allowEncodedBackSlash", "allowEncodedNullCharacter",
+		"allowEncodedSemicolon", "allowEncodedPercent", "allowEncodedQuestionMark", "allowEncodedHash"}
+	out := make([]EncodedCharacterOption, 0, len(names))
+	for _, n := range names {
+		allow := true
+		switch policy {
+		case EncodedPathParanoid:
+			allow = false
+		case EncodedPathPermissive:
+			allow = true
+		default: // strict
+			allow = !strictReject[n]
+		}
+		out = append(out, EncodedCharacterOption{Name: n, Allow: allow})
+	}
+	return out
+}
+
+// TraefikEntrypointHardeningFlags returns the CLI flags for one entrypoint
+// (empty when the provision carries no hardening, i.e. an old Traefik).
+func TraefikEntrypointHardeningFlags(ep string, gw GatewayProvision) []string {
+	var out []string
+	if gw.AliasHeadersStrategy != "" {
+		out = append(out, fmt.Sprintf("--entrypoints.%s.http.aliasHeadersStrategy=%s", ep, gw.AliasHeadersStrategy))
+	}
+	if gw.EncodedPathPolicy != "" {
+		for _, o := range EncodedCharacterOptions(gw.EncodedPathPolicy) {
+			out = append(out, fmt.Sprintf("--entrypoints.%s.http.encodedCharacters.%s=%t", ep, o.Name, o.Allow))
+		}
+	}
+	return out
 }
 
 // GatewayEnabled reports whether the desired state asks for the Traefik service.
 func (ds DesiredState) GatewayEnabled() bool { return ds.Gateway != nil && ds.Gateway.Enabled }
 
 // DefaultTraefikImage is the gateway image (overridable via NODE_STATS_TRAEFIK_IMAGE).
-const DefaultTraefikImage = "traefik:v3.3"
+// Pinned to the v3.7 line: the entrypoint hardening flags need ≥ 3.7.12 and a
+// moving `v3`/`latest` tag could bring new defaults unannounced. Bump together
+// with the native line (engine/native.go nativeTraefikLine).
+const DefaultTraefikImage = "traefik:v3.7"
 
 // DBProvision configures the managed Postgres container.
 type DBProvision struct {
@@ -308,6 +385,13 @@ func writeTraefikService(w func(string), gw GatewayProvision) {
 	w(fmt.Sprintf("      - --entrypoints.web.transport.respondingTimeouts.readTimeout=%ds", gw.ReadTimeoutSeconds))
 	w(fmt.Sprintf("      - --entrypoints.websecure.transport.respondingTimeouts.readTimeout=%ds", gw.ReadTimeoutSeconds))
 	w("      - --entrypoints.ping.address=:8082")
+	// Entrypoint hardening (alias headers, encoded path characters) — on every
+	// http entrypoint incl. ping, so Traefik's start-up warnings go quiet.
+	for _, ep := range []string{"web", "websecure", "ping"} {
+		for _, f := range TraefikEntrypointHardeningFlags(ep, gw) {
+			w("      - " + f)
+		}
+	}
 	w("      - --ping=true")
 	w("      - --ping.entryPoint=ping")
 	w("      - --api.dashboard=false")

@@ -188,6 +188,52 @@ function ConfigCard({ state }: { state: GatewayState }) {
               </p>
             </div>
             <div className="rounded-lg border border-border/60 p-3 space-y-3">
+              <div>
+                <div className="text-sm font-medium">Request hardening</div>
+                <p className="text-xs text-muted-foreground">
+                  Entry-point filters applied before any route (Traefik ≥ 3.7.12 — the managed Traefik is pinned to
+                  that line, an older native binary is upgraded automatically). Changing them restarts Traefik.
+                </p>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label>Header-alias spoofing</Label>
+                  <select
+                    className={selectCls}
+                    value={cfg.alias_headers_strategy || 'delete'}
+                    onChange={(e) => update({ alias_headers_strategy: e.target.value })}
+                  >
+                    <option value="delete">Delete aliased headers (default)</option>
+                    <option value="reject">Reject the request with 400</option>
+                    <option value="keep">Keep — forward as-is (Traefik default)</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    Headers like <code>X_Forwarded_For</code> or <code>X.Real.IP</code> collapse into the real{' '}
+                    <code>X-Forwarded-For</code> / <code>X-Real-IP</code> inside PHP, CGI, WSGI or nginx backends, letting
+                    a client spoof the values Traefik sets. Delete is safe for practically every app.
+                  </p>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Percent-encoded path characters</Label>
+                  <select
+                    className={selectCls}
+                    value={cfg.encoded_path_policy || 'strict'}
+                    onChange={(e) => update({ encoded_path_policy: e.target.value })}
+                  >
+                    <option value="strict">Strict — reject %2F %5C %00, allow the rest (default)</option>
+                    <option value="permissive">Permissive — allow all (Traefik default)</option>
+                    <option value="paranoid">Paranoid — reject all encoded specials</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    Encoded slashes, backslashes and NULs let a sloppy backend see a different path than the router
+                    matched (split-view). Traefik still prints one informational warning at start-up whenever any
+                    character is rejected — that is this choice describing itself, not an error. Switch to permissive
+                    only if an app legitimately needs <code>%2F</code> in paths (some S3 clients, Gitea/GitLab API).
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="rounded-lg border border-border/60 p-3 space-y-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <div className="text-sm font-medium">Let's Encrypt certificates</div>

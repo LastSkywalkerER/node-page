@@ -21,6 +21,7 @@ import (
 
 	hosts "system-stats/internal/cluster/hosts"
 	"system-stats/internal/platform/gateway"
+	"system-stats/internal/platform/setup"
 )
 
 // ConfigStore persists the cluster-wide gateway.Config (cluster_config row; replicated
@@ -257,6 +258,14 @@ func (s *service) SetConfig(ctx context.Context, cfg gateway.Config) (*gateway.C
 		if !validPort(cfg.HTTPPort) || !validPort(cfg.HTTPSPort) || cfg.HTTPPort == cfg.HTTPSPort {
 			return nil, fmt.Errorf("%w: invalid gateway ports", ErrValidation)
 		}
+	}
+	cfg.AliasHeadersStrategy = strings.ToLower(strings.TrimSpace(cfg.AliasHeadersStrategy))
+	cfg.EncodedPathPolicy = strings.ToLower(strings.TrimSpace(cfg.EncodedPathPolicy))
+	if !setup.ValidAliasHeadersStrategy(cfg.AliasHeadersStrategy) {
+		return nil, fmt.Errorf("%w: alias headers strategy must be delete, reject or keep", ErrValidation)
+	}
+	if !setup.ValidEncodedPathPolicy(cfg.EncodedPathPolicy) {
+		return nil, fmt.Errorf("%w: encoded path policy must be strict, permissive or paranoid", ErrValidation)
 	}
 	if t := cfg.RequestReadTimeoutSeconds; t < gateway.RequestReadTimeoutUnlimited || t > gateway.MaxRequestReadTimeoutSeconds {
 		return nil, fmt.Errorf("%w: request read timeout must be -1 (unlimited), 0 (default 24h) or up to %d seconds", ErrValidation, gateway.MaxRequestReadTimeoutSeconds)

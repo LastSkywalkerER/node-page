@@ -281,3 +281,21 @@ func TestSetConfig_RequestReadTimeout(t *testing.T) {
 		}
 	}
 }
+
+func TestSetConfig_Hardening(t *testing.T) {
+	svc := newSvc(newFakeRepo(), nil)
+	ctx := context.Background()
+	if _, err := svc.SetConfig(ctx, gateway.Config{AliasHeadersStrategy: "drop"}); !errors.Is(err, ErrValidation) {
+		t.Errorf("bad alias strategy accepted: %v", err)
+	}
+	if _, err := svc.SetConfig(ctx, gateway.Config{EncodedPathPolicy: "yolo"}); !errors.Is(err, ErrValidation) {
+		t.Errorf("bad encoded policy accepted: %v", err)
+	}
+	out, err := svc.SetConfig(ctx, gateway.Config{AliasHeadersStrategy: " Reject ", EncodedPathPolicy: "PERMISSIVE"})
+	if err != nil || out.AliasHeadersStrategy != "reject" || out.EncodedPathPolicy != "permissive" {
+		t.Errorf("normalisation: %+v %v", out, err)
+	}
+	if d := (gateway.Config{}); d.EffectiveAliasHeadersStrategy() != "delete" || d.EffectiveEncodedPathPolicy() != "strict" {
+		t.Error("defaults must be delete/strict")
+	}
+}

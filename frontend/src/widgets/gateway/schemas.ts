@@ -14,6 +14,9 @@ export const GatewayConfigSchema = z.object({
   acme_email: z.string().optional().default(''),
   // Entrypoint read timeout (upload ceiling): 0 = default 24h, -1 = unlimited.
   request_read_timeout_seconds: z.number().optional().default(0),
+  // Entrypoint hardening ('' = node-stats default: delete / strict).
+  alias_headers_strategy: z.string().optional().default(''),
+  encoded_path_policy: z.string().optional().default(''),
 })
 export type GatewayConfig = z.infer<typeof GatewayConfigSchema>
 

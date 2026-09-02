@@ -129,6 +129,25 @@ Traefik. External mode: set it on your own Traefik.
 Body size needs no tuning: Traefik streams request bodies without a limit unless the buffering
 middleware is on.
 
+**Entry-point hardening** (Gateway node card → *Request hardening*; `Config.alias_headers_strategy`,
+`Config.encoded_path_policy`; rendered on `web`, `websecure` and `ping`):
+
+- `aliasHeadersStrategy` (Traefik ≥ 3.7.12) — request headers whose name aliases another once a
+  backend normalises it (`X_Forwarded_For`, `X.Real.IP` → `HTTP_X_FORWARDED_FOR` in PHP/CGI/WSGI/nginx)
+  let a client spoof the headers Traefik sets. Default **`delete`**; `reject` → 400; `keep` = Traefik's
+  own default (forward as-is).
+- `encodedCharacters.*` (≥ 3.6.7) — which percent-encoded specials may appear in the path. Default
+  **`strict`**: reject `%2F` `%5C` `%00` (path confusion / split-view against sloppy backends), allow
+  `%3B %25 %3F %23`; `permissive` allows all seven (Traefik's default); `paranoid` rejects all. All seven
+  flags are always emitted explicitly — Traefik only stops warning about unset defaults then; it still
+  logs one informational WRN at start-up while any character is rejected.
+
+**Versions.** The managed image is pinned to the `traefik:v3.7` line (`NODE_STATS_TRAEFIK_IMAGE`
+overrides) and the native installer follows the newest `v3.7.x` release (`NODE_STATS_TRAEFIK_VERSION`
+pins). A native binary older than 3.7.12 is upgraded in place (checksum-verified, Traefik restarted);
+if that fails — or the version is pinned — the keys the installed binary doesn't know are omitted from
+the static config so it keeps booting with the old behaviour.
+
 **Per-route limits** (route form → *Request limits*; http mode only, dropped for passthrough) are
 the per-route answer to "the read timeout is generous now" — they bound abuse by concurrency, rate,
 method and size instead of time. New routes default to `max_conns_per_ip: 100` and
