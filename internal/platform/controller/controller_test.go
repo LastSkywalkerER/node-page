@@ -15,6 +15,7 @@ import (
 type fakeRunner struct {
 	calls   []string
 	failing map[string]error // prefix of the joined compose args → error
+	output  string           // canned stdout for docker(); "" means empty
 }
 
 func (f *fakeRunner) compose(args ...string) (string, error) {
@@ -30,7 +31,7 @@ func (f *fakeRunner) compose(args ...string) (string, error) {
 
 func (f *fakeRunner) docker(args ...string) (string, error) {
 	f.calls = append(f.calls, "docker "+strings.Join(args, " "))
-	return "", nil
+	return f.output, nil
 }
 
 func (f *fakeRunner) count(prefix string) int {

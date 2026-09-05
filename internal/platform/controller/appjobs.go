@@ -207,17 +207,51 @@ func localRepoDir(url string) string {
 	return filepath.Clean(u)
 }
 
-// appJobImage is the image the helper runs — the same one this controller was
-// started from, so a job never runs a different node-stats version than the
-// node it belongs to.
+// appJobImage is the image the helper runs — the same one this controller is
+// running, so a job never executes a different node-stats version than the node
+// it belongs to.
+//
+// Asking the daemon what THIS container was created from is the only answer
+// that is always right. The generated compose resolves ${NODE_STATS_IMAGE} when
+// it creates the services but does not pass that variable into the controller's
+// environment, so a pinned or beta image was invisible here and the helper fell
+// back to the published default — a different version than the node itself.
 func (c *controller) appJobImage() string {
 	if c.jobImage != "" {
 		return c.jobImage
+	}
+	if img := c.selfImage(); img != "" {
+		c.jobImage = img
+		return img
 	}
 	if v := strings.TrimSpace(os.Getenv("NODE_STATS_IMAGE")); v != "" {
 		return v
 	}
 	return setup.DefaultImage
+}
+
+// selfImage resolves this controller container's own image reference. Returns
+// "" outside a container or when the daemon cannot be asked — the caller has
+// fallbacks.
+func (c *controller) selfImage() string {
+	if c.run == nil {
+		return ""
+	}
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		return ""
+	}
+	out, err := c.run.docker("inspect", "--format", "{{.Config.Image}}", host)
+	if err != nil {
+		return ""
+	}
+	img := strings.TrimSpace(out)
+	// A digest-pinned reference works for `docker run`; an empty or error-ish
+	// line does not.
+	if img == "" || strings.ContainsAny(img, " \t\n") {
+		return ""
+	}
+	return img
 }
 
 // putJobStatus merges one status into the status file and persists it.

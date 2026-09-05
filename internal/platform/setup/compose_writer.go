@@ -383,6 +383,10 @@ func BuildComposeContent(ds DesiredState) string {
 	w("      - NODE_STATS_STACK_DIR=${NODE_STATS_STACK_HOST_DIR}")
 	w("      - NODE_STATS_DATA_DIR=${NODE_STATS_STACK_HOST_DIR}/data/docker")
 	w("      - NODE_STATS_APP_SERVICE=node-stats")
+	// The image this stack runs, so the controller can start helper containers
+	// on the SAME version rather than the published default. It also asks the
+	// daemon what it is running itself; this is the cheap path.
+	w("      - NODE_STATS_IMAGE=" + imageRef)
 	// The controller drives `docker compose -p <project>`; it must match the
 	// stack's project so multi-instance hosts don't cross-manage each other.
 	w("      - NODE_STATS_PROJECT=${COMPOSE_PROJECT_NAME:-node-stats}")

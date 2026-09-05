@@ -415,8 +415,14 @@ func (s *service) DeleteRepo(ctx context.Context) error {
 }
 
 func validateRepo(req RepoRequest) error {
-	if strings.TrimSpace(req.Password) == "" {
-		return errors.New("a repository password is required: restic cannot encrypt without one, and it cannot be recovered")
+	switch {
+	case req.NoPassword && strings.TrimSpace(req.Password) != "":
+		return errors.New("choose one: either encrypt the repository with a password, or create it without encryption")
+	case !req.NoPassword && strings.TrimSpace(req.Password) == "":
+		// Not inferred from an empty field: backups hold whatever the
+		// applications hold, and that must not become world-readable by a
+		// slip of the keyboard.
+		return errors.New("a repository password is required, or tick \"no encryption\" to create the repository without one")
 	}
 	switch req.Backend {
 	case BackendLocal:

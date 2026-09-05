@@ -159,6 +159,11 @@ func RepoURL(cfg RepoConfig) string {
 // Resolve turns a stored connector into everything restic needs at run time.
 func Resolve(cfg RepoConfig, sec RepoSecrets) ResolvedRepo {
 	env := map[string]string{"RESTIC_PASSWORD": sec.Password}
+	if cfg.NoPassword {
+		// An unencrypted repository has no key at all; passing an empty
+		// RESTIC_PASSWORD would make restic prompt instead.
+		delete(env, "RESTIC_PASSWORD")
+	}
 	if cfg.Backend == BackendS3 {
 		env["AWS_ACCESS_KEY_ID"] = cfg.AccessKeyID
 		env["AWS_SECRET_ACCESS_KEY"] = sec.S3SecretKey
@@ -166,7 +171,7 @@ func Resolve(cfg RepoConfig, sec RepoSecrets) ResolvedRepo {
 			env["AWS_DEFAULT_REGION"] = cfg.Region
 		}
 	}
-	return ResolvedRepo{URL: RepoURL(cfg), Env: env, SSHPrivateKey: sec.SSHPrivateKey}
+	return ResolvedRepo{URL: RepoURL(cfg), Env: env, SSHPrivateKey: sec.SSHPrivateKey, NoPassword: cfg.NoPassword}
 }
 
 // Runner executes restic against one repository.
@@ -188,6 +193,11 @@ func (r Runner) Run(ctx context.Context, args ...string) (string, error) {
 	defer cleanup()
 
 	full := append([]string{"-r", r.Repo.URL}, extra...)
+	if r.Repo.NoPassword {
+		// restic requires this on EVERY command against an unencrypted
+		// repository, not only on init.
+		full = append(full, "--insecure-no-password")
+	}
 	full = append(full, args...)
 
 	cmd := exec.CommandContext(ctx, r.Bin, full...)
@@ -241,7 +251,11 @@ func (r Runner) EnsureRepo(ctx context.Context) error {
 	if _, err := r.Run(ctx, "cat", "config"); err == nil {
 		return nil
 	}
-	out, err := r.Run(ctx, "init")
+	initArgs := []string{"init"}
+	if r.Repo.NoPassword {
+		initArgs = append(initArgs, "--insecure-no-password")
+	}
+	out, err := r.Run(ctx, initArgs...)
 	if err != nil && !strings.Contains(out, "already initialized") {
 		return fmt.Errorf("restic init: %s: %w", firstLines(out, 3), err)
 	}

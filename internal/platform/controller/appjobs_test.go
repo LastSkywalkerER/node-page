@@ -55,19 +55,43 @@ func TestAppJobMountsDedupesComposeDirAgainstProjectDir(t *testing.T) {
 	}
 }
 
-func TestAppJobImageFallsBackToDefault(t *testing.T) {
-	c := &controller{}
-	t.Setenv("NODE_STATS_IMAGE", "")
-	if got := c.appJobImage(); got == "" {
-		t.Fatal("appJobImage() returned empty")
-	}
+// A helper must run the image this node runs, never the published default: a
+// pinned or beta node would otherwise execute jobs on a different version of
+// node-stats than itself.
+func TestAppJobImagePrefersTheControllersOwnImage(t *testing.T) {
+	c := &controller{run: &fakeRunner{}}
 	t.Setenv("NODE_STATS_IMAGE", "ghcr.io/example/img:beta")
+	// fakeRunner.docker returns "", so the self-inspect finds nothing and the
+	// environment answers.
 	if got := c.appJobImage(); got != "ghcr.io/example/img:beta" {
 		t.Fatalf("appJobImage() = %q, want the env override", got)
 	}
+
+	// With the daemon answering, its reply wins — that is what this container
+	// actually runs.
+	c = &controller{run: &fakeRunner{output: "node-stats:local\n"}}
+	if got := c.appJobImage(); got != "node-stats:local" {
+		t.Fatalf("appJobImage() = %q, want the controller's own image", got)
+	}
+}
+
+func TestAppJobImageFallsBackToDefault(t *testing.T) {
+	c := &controller{run: &fakeRunner{}}
+	t.Setenv("NODE_STATS_IMAGE", "")
+	if got := c.appJobImage(); got != setup.DefaultImage {
+		t.Fatalf("appJobImage() = %q, want the published default", got)
+	}
 	c.jobImage = "ghcr.io/example/img:v1"
 	if got := c.appJobImage(); got != "ghcr.io/example/img:v1" {
-		t.Fatalf("appJobImage() = %q, want the applied desired-state image", got)
+		t.Fatalf("appJobImage() = %q, want the cached image", got)
+	}
+}
+
+// Without a runner (before Run wires one) the lookup must not panic.
+func TestAppJobImageSurvivesAMissingRunner(t *testing.T) {
+	t.Setenv("NODE_STATS_IMAGE", "")
+	if got := (&controller{}).appJobImage(); got != setup.DefaultImage {
+		t.Fatalf("appJobImage() = %q", got)
 	}
 }
 

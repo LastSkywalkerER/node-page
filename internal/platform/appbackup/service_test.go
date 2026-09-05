@@ -168,3 +168,53 @@ func TestSuggestedBackupPath(t *testing.T) {
 		}
 	})
 }
+
+// Backups hold whatever the applications hold — password-manager data, .env
+// files, database contents — so an unencrypted repository must be an explicit
+// choice, never the consequence of leaving a field blank.
+func TestRepositoryEncryptionIsNeverSkippedByAccident(t *testing.T) {
+	base := RepoConfig{Backend: BackendLocal, Path: "/opt/node-stats/backups"}
+
+	t.Run("blank password is refused", func(t *testing.T) {
+		err := validateRepo(RepoRequest{RepoConfig: base})
+		if err == nil || !strings.Contains(err.Error(), "no encryption") {
+			t.Fatalf("err = %v, want a refusal pointing at the explicit opt-out", err)
+		}
+	})
+	t.Run("explicit opt-out is accepted", func(t *testing.T) {
+		cfg := base
+		cfg.NoPassword = true
+		if err := validateRepo(RepoRequest{RepoConfig: cfg}); err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+	})
+	t.Run("both at once is a contradiction", func(t *testing.T) {
+		cfg := base
+		cfg.NoPassword = true
+		if err := validateRepo(RepoRequest{RepoConfig: cfg, Password: "x"}); err == nil {
+			t.Fatal("a password AND no-encryption were both accepted")
+		}
+	})
+	t.Run("password alone is accepted", func(t *testing.T) {
+		if err := validateRepo(RepoRequest{RepoConfig: base, Password: "x"}); err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+	})
+}
+
+// An unencrypted repository has no key at all: passing an empty RESTIC_PASSWORD
+// would make restic prompt and hang instead of opening it.
+func TestUnencryptedRepositoryCarriesNoPasswordEnv(t *testing.T) {
+	repo := Resolve(RepoConfig{Backend: BackendLocal, Path: "/b", NoPassword: true}, RepoSecrets{})
+	if _, ok := repo.Env["RESTIC_PASSWORD"]; ok {
+		t.Error("RESTIC_PASSWORD set for an unencrypted repository; restic would prompt")
+	}
+	if !repo.NoPassword {
+		t.Error("NoPassword not carried to the resolved repository")
+	}
+
+	enc := Resolve(RepoConfig{Backend: BackendLocal, Path: "/b"}, RepoSecrets{Password: "s3cret"})
+	if enc.Env["RESTIC_PASSWORD"] != "s3cret" || enc.NoPassword {
+		t.Errorf("encrypted repository resolved wrong: %#v", enc)
+	}
+}

@@ -17,6 +17,8 @@ type Backend = 'local' | 'sftp' | 's3'
 interface RepoForm {
   backend: Backend
   password: string
+  /** Create the repository WITHOUT encryption — an explicit choice, never a blank field. */
+  no_password: boolean
   // local
   path: string
   // sftp
@@ -37,6 +39,7 @@ interface RepoForm {
 const emptyForm: RepoForm = {
   backend: 'sftp',
   password: '',
+  no_password: false,
   path: '',
   host: '',
   port: '',
@@ -70,7 +73,11 @@ function apiError(e: unknown): string {
 
 /** Turns the form into the API payload, dropping fields the backend ignores. */
 function payload(f: RepoForm): Record<string, unknown> {
-  const base: Record<string, unknown> = { backend: f.backend, password: f.password }
+  const base: Record<string, unknown> = {
+    backend: f.backend,
+    password: f.no_password ? '' : f.password,
+    no_password: f.no_password,
+  }
   if (f.backend === 'local') return { ...base, path: f.path.trim() }
   if (f.backend === 'sftp')
     return {
@@ -135,6 +142,7 @@ export function BackupRepoCard() {
       prefix: (r.prefix as string) ?? '',
       region: (r.region as string) ?? '',
       access_key_id: (r.access_key_id as string) ?? '',
+      no_password: !!r.no_password,
     }))
   }, [status?.repo, editing])
 
@@ -254,8 +262,8 @@ export function BackupRepoCard() {
           )}
         </div>
         <p className="text-sm text-muted-foreground">
-          Where application backups are written — one repository for the whole cluster, encrypted by restic. Snapshots
-          are tagged per node, so every machine deduplicates against the others.
+          Where application backups are written. Snapshots are tagged per node, so every machine deduplicates against the
+          others. Encrypted by restic unless you choose otherwise.
         </p>
       </CardHeader>
 
@@ -427,12 +435,35 @@ export function BackupRepoCard() {
             type="password"
             value={form.password}
             onChange={(e) => set({ password: e.target.value })}
-            placeholder={configured ? 'retype to change anything' : ''}
+            placeholder={form.no_password ? 'not used — repository is unencrypted' : configured ? 'retype to change anything' : ''}
+            disabled={form.no_password}
           />
-          <p className="text-xs text-muted-foreground">
-            restic encrypts with this and it cannot be recovered — without it the snapshots are unreadable, including by
-            node-stats. Keep a copy somewhere outside this cluster.
-          </p>
+          {!form.no_password && (
+            <p className="text-xs text-muted-foreground">
+              restic encrypts with this and it cannot be recovered — without it the snapshots are unreadable, including
+              by node-stats. Keep a copy somewhere outside this cluster.
+            </p>
+          )}
+
+          <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={form.no_password}
+              onChange={(e) => set({ no_password: e.target.checked, password: '' })}
+            />
+            <span>
+              <span className="font-medium">No encryption</span> — restore the snapshots with nothing but restic, no key
+              to keep and none to lose.
+              {form.no_password && (
+                <span className="mt-1 block text-destructive">
+                  Anyone who can read the repository can read every backup — including whatever the applications hold:
+                  password-manager data, <code>.env</code> files, database contents. Only sensible where the repository
+                  itself is already protected.
+                </span>
+              )}
+            </span>
+          </label>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -445,12 +476,12 @@ export function BackupRepoCard() {
                 onError: (e) => toast.error(apiError(e)),
               })
             }
-            disabled={test.isPending || !form.password}
+            disabled={test.isPending || (!form.password && !form.no_password)}
           >
             {test.isPending && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
             Test
           </Button>
-          <Button size="sm" onClick={onSave} disabled={save.isPending || !form.password}>
+          <Button size="sm" onClick={onSave} disabled={save.isPending || (!form.password && !form.no_password)}>
             {save.isPending && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
             {configured ? 'Update repository' : 'Save repository'}
           </Button>

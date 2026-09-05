@@ -56,6 +56,17 @@ type RepoConfig struct {
 	User       string `json:"user,omitempty"`
 	RemotePath string `json:"remote_path,omitempty"`
 
+	// NoPassword creates and opens the repository WITHOUT encryption, so its
+	// snapshots can be restored with nothing but restic — no key to keep, no
+	// key to lose. It is a property of the repository at creation time: restic
+	// requires --insecure-no-password on every command against it.
+	//
+	// Deliberately an explicit flag rather than "the password field is empty":
+	// backups contain whatever the applications hold — password-manager data,
+	// .env files, database contents — and that is not something to leave
+	// readable by accident.
+	NoPassword bool `json:"no_password,omitempty"`
+
 	// S3
 	Endpoint    string `json:"endpoint,omitempty"`
 	Bucket      string `json:"bucket,omitempty"`
@@ -166,6 +177,9 @@ type ResolvedRepo struct {
 	// SSHPrivateKey, when set, is written to a temp file and passed to restic's
 	// sftp backend via -o sftp.args.
 	SSHPrivateKey string `json:"ssh_private_key,omitempty"`
+	// NoPassword marks an unencrypted repository; every restic command against
+	// it must carry --insecure-no-password.
+	NoPassword bool `json:"no_password,omitempty"`
 }
 
 // JobStatus is the controller→app result for a single job.
