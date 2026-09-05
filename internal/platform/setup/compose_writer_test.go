@@ -103,3 +103,27 @@ func mustNotContain(t *testing.T, s string, subs []string) {
 		}
 	}
 }
+
+// A filesystem backup repository is named by its HOST path; the controller has
+// to mount it at the fixed in-container location, and the app must learn the
+// stack's host directory so it can suggest a default beside itself.
+func TestComposeMountsTheBackupRepository(t *testing.T) {
+	out := BuildComposeContent(DesiredState{
+		DBMode:         DBModeSQLite,
+		BackupHostPath: "/opt/node-stats/backups",
+	})
+	if !strings.Contains(out, "- /opt/node-stats/backups:"+BackupMountPath) {
+		t.Errorf("backup mount missing:\n%s", out)
+	}
+	if !strings.Contains(out, "NODE_STATS_STACK_HOST_DIR=") {
+		t.Error("app cannot suggest a default without the stack host dir")
+	}
+}
+
+// No repository configured must not add a stray mount.
+func TestComposeOmitsTheBackupMountWhenUnset(t *testing.T) {
+	out := BuildComposeContent(DesiredState{DBMode: DBModeSQLite})
+	if strings.Contains(out, BackupMountPath) {
+		t.Errorf("unexpected backup mount:\n%s", out)
+	}
+}

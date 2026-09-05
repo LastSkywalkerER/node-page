@@ -129,3 +129,40 @@ func RequestRecreate(dataDir, dbType, dbDSN string) (restartPending bool, err er
 	}
 	return true, nil
 }
+
+// RequestBackupMount asks the controller to bind-mount hostPath into the app at
+// BackupMountPath, so a filesystem backup repository named by its HOST path is
+// reachable from inside the container. Passing "" removes the mount.
+//
+// This changes the app's stanza, so the controller recreates the container —
+// node-stats restarts itself. That is deliberate and surfaced in the UI: the
+// alternative is asking every operator to hand-edit compose, which is exactly
+// the work this project exists to remove.
+//
+// No-op on native (the path is used directly) and on managed-externally
+// deployments (the orchestrator owns the compose file; the UI explains what to
+// mount instead).
+func RequestBackupMount(dataDir, dbType, dbDSN, hostPath string) (changed bool, err error) {
+	if !dockerenv.Running() || ManagedExternally() {
+		return false, nil
+	}
+	ds, _ := ReadDesiredState(dataDir)
+	if ds == nil {
+		mode := DBModeSQLite
+		dsn := ""
+		if strings.EqualFold(dbType, "postgres") {
+			mode, dsn = DBModePostgresExternal, dbDSN
+		}
+		ds = &DesiredState{DBMode: mode, DBDSN: dsn}
+	}
+	want := strings.TrimSpace(hostPath)
+	if ds.BackupHostPath == want {
+		return false, nil
+	}
+	ds.BackupHostPath = want
+	ds.Generation++
+	if err := WriteDesiredState(dataDir, *ds); err != nil {
+		return false, fmt.Errorf("failed to request the backup mount from the controller: %w", err)
+	}
+	return true, nil
+}

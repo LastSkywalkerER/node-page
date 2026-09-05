@@ -115,12 +115,13 @@ func dbHash(ds setup.DesiredState) string {
 // it (see appliedUnits.AppPullGeneration).
 func appHash(ds setup.DesiredState) string {
 	return hashJSON(struct {
-		Image    string
-		DBMode   string
-		DBDSN    string
-		HTTPPort string
-		RaftPort string
-	}{ds.Image, ds.DBMode, ds.DBDSN, ds.HTTPPort, ds.RaftPort})
+		Image      string
+		DBMode     string
+		DBDSN      string
+		HTTPPort   string
+		RaftPort   string
+		BackupPath string
+	}{ds.Image, ds.DBMode, ds.DBDSN, ds.HTTPPort, ds.RaftPort, ds.BackupHostPath})
 }
 
 // traefikHash: the gateway provision, or "absent".

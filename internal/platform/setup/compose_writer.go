@@ -14,6 +14,11 @@ const (
 	DBModePostgresExternal = "postgres-external" // operator points at an existing server
 )
 
+// BackupMountPath is where the application-backup repository is mounted inside
+// the app container. Fixed on purpose: the operator configures a host path, and
+// this is the single in-container path it always lands on.
+const BackupMountPath = "/app/backups"
+
 // DefaultImage is the published image the generated compose pulls. Overridable
 // per-deployment via the NODE_STATS_IMAGE compose variable.
 const DefaultImage = "ghcr.io/lastskywalkerer/node-page:latest"
@@ -57,6 +62,14 @@ type DesiredState struct {
 	// Empty leaves the installer-managed values untouched.
 	HTTPPort string `json:"http_port,omitempty"`
 	RaftPort string `json:"raft_port,omitempty"`
+
+	// BackupHostPath, when set, is the host directory the application-backup
+	// repository lives in. The controller bind-mounts it into the app at
+	// BackupMountPath so restic can reach it: the operator names a path on the
+	// machine and node-stats arranges the plumbing, rather than asking them to
+	// hand-edit compose. Node-local (a filesystem repository is only reachable
+	// from the machine holding it), so it is not part of any replicated state.
+	BackupHostPath string `json:"backup_host_path,omitempty"`
 
 	// Gateway, when set and Enabled, injects a Traefik `traefik` service (the
 	// cluster gateway / ingress) on this node. Written by the gateway
@@ -257,6 +270,11 @@ func BuildComposeContent(ds DesiredState) string {
 	// query the daemon. The controller mounts it read-write for compose control.
 	w("      - /var/run/docker.sock:/var/run/docker.sock:ro")
 	w("      - /:/host:ro")
+	// The application-backup repository, mounted at a fixed in-container path
+	// so the stored configuration is the HOST path an operator recognises.
+	if p := strings.TrimSpace(ds.BackupHostPath); p != "" {
+		w("      - " + p + ":" + BackupMountPath)
+	}
 	w("    extra_hosts:")
 	w(`      - "host.docker.internal:host-gateway"`)
 	if managed {
@@ -296,6 +314,10 @@ func BuildComposeContent(ds DesiredState) string {
 	// Compose project name, so the app can address sibling services of its own
 	// stack (e.g. the gateway's `traefik` container logs) via compose labels.
 	w("      - NODE_STATS_PROJECT=${COMPOSE_PROJECT_NAME:-node-stats}")
+	// The host path of the stack directory, so the app can suggest a default
+	// backup location next to itself ("<stack>/backups") instead of asking the
+	// operator to work out where the container actually lives.
+	w("      - NODE_STATS_STACK_HOST_DIR=${NODE_STATS_STACK_HOST_DIR:-}")
 	// Cap the Go heap below the container mem_limit so the runtime GC's harder
 	// instead of letting the OOM killer reap the app (the hub VPS is 2 CPU/4GB).
 	// Runtime-overridable, so a desired-state / installer env wins over the default.
@@ -364,6 +386,10 @@ func BuildComposeContent(ds DesiredState) string {
 	// The controller drives `docker compose -p <project>`; it must match the
 	// stack's project so multi-instance hosts don't cross-manage each other.
 	w("      - NODE_STATS_PROJECT=${COMPOSE_PROJECT_NAME:-node-stats}")
+	// The host path of the stack directory, so the app can suggest a default
+	// backup location next to itself ("<stack>/backups") instead of asking the
+	// operator to work out where the container actually lives.
+	w("      - NODE_STATS_STACK_HOST_DIR=${NODE_STATS_STACK_HOST_DIR:-}")
 	// The image HEALTHCHECK probes the HTTP API, which the controller
 	// subcommand does not serve - without this every controller shows
 	// a misleading "(unhealthy)" forever.

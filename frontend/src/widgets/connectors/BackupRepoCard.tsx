@@ -95,7 +95,11 @@ function payload(f: RepoForm): Record<string, unknown> {
 const BACKENDS: { key: Backend; label: string; hint: string }[] = [
   { key: 'sftp', label: 'SSH / SFTP', hint: 'Any SSH host — this is also how a Synology NAS is used as a target.' },
   { key: 's3', label: 'S3', hint: 'Any S3-compatible object store: Backblaze B2, Wasabi, MinIO, AWS.' },
-  { key: 'local', label: 'Filesystem', hint: 'A path on this node. It dies with the machine it protects.' },
+  {
+    key: 'local',
+    label: 'Filesystem',
+    hint: 'A directory on this machine — node-stats mounts it into itself. Node-local: it protects only this node, and it dies with the machine it protects.',
+  },
 ]
 
 /**
@@ -134,6 +138,13 @@ export function BackupRepoCard() {
     }))
   }, [status?.repo, editing])
 
+  // Offer a directory beside the installation rather than an empty field: the
+  // operator names a place on the machine, node-stats arranges the plumbing.
+  useEffect(() => {
+    if (editing || form.path || !status?.suggested_path) return
+    setForm((f) => ({ ...f, path: status.suggested_path as string }))
+  }, [status?.suggested_path, editing, form.path])
+
   const set = (patch: Partial<RepoForm>) => {
     setEditing(true)
     setForm((f) => ({ ...f, ...patch }))
@@ -165,8 +176,21 @@ export function BackupRepoCard() {
     if (form.backend === 'local') {
       const { confirmed } = await confirmDialog({
         title: 'Store backups on this node?',
-        description:
-          'A repository on the same machine it protects is lost with that machine — a failed disk, a wiped host or a ransomware run takes the backups with it. Use it only alongside a second, off-machine repository.',
+        description: (
+          <span>
+            A repository on the same machine it protects is lost with that machine — a failed disk, a
+            wiped host or a ransomware run takes the backups with it. Use it only alongside a second,
+            off-machine repository.
+            {!status?.self_mount_required && (
+              <>
+                <br />
+                <br />
+                <strong>node-stats will restart:</strong> the directory has to be mounted into the
+                container, so the controller recreates it. The dashboard comes back in a few seconds.
+              </>
+            )}
+          </span>
+        ),
         variant: 'destructive',
         confirmText: 'I understand, save',
       })
@@ -206,6 +230,16 @@ export function BackupRepoCard() {
           {configured && (
             <Badge variant="outline" className="border-emerald-500/40 bg-emerald-500/15 text-[10px] text-emerald-600">
               configured
+            </Badge>
+          )}
+          {configured && status?.scope && (
+            <Badge variant="outline" className="text-[10px]">
+              {status.scope === 'node' ? 'this node only' : 'whole cluster'}
+            </Badge>
+          )}
+          {status?.mount_pending && (
+            <Badge variant="outline" className="border-amber-500/40 bg-amber-500/15 text-[10px] text-amber-600">
+              mount pending
             </Badge>
           )}
           {status?.restic_installed && (
@@ -286,14 +320,22 @@ export function BackupRepoCard() {
 
         {form.backend === 'local' && (
           <div className="space-y-1">
-            <Label htmlFor="repo-path">Path on this node</Label>
+            <Label htmlFor="repo-path">Directory on the host</Label>
             <Input
               id="repo-path"
               value={form.path}
               onChange={(e) => set({ path: e.target.value })}
-              placeholder="/mnt/backup/restic"
+              placeholder={status?.suggested_path ?? '/mnt/backup/restic'}
               className="font-mono"
             />
+            {status?.self_mount_required ? (
+              <p className="text-xs text-amber-600">{status.mount_hint}</p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                A path on the machine, not inside the container — node-stats mounts it into itself,
+                which recreates the container on save.
+              </p>
+            )}
             <p className="text-xs text-destructive">
               A repository here dies with the machine it protects. Pair it with an off-machine one.
             </p>

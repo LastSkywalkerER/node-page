@@ -16,8 +16,10 @@ import (
 
 	"github.com/charmbracelet/log"
 
+	"system-stats/internal/app/dockerenv"
 	docker "system-stats/internal/metrics/docker"
 	"system-stats/internal/platform/connectors"
+	"system-stats/internal/platform/setup"
 )
 
 // connectorTypeAppBackup is this feature's connector type in the shared
@@ -66,6 +68,20 @@ type Status struct {
 	ControllerReady bool   `json:"controller_ready"`
 	ResticInstalled bool   `json:"restic_installed"`
 	ResticVersion   string `json:"restic_version,omitempty"`
+	// Scope is "node" for a filesystem repository (a directory only this
+	// machine can reach) and "cluster" for SSH/S3 (shared by every node).
+	Scope string `json:"scope,omitempty"`
+	// SuggestedPath prefills the filesystem form with a directory beside the
+	// installation, so the operator names a place they recognise.
+	SuggestedPath string `json:"suggested_path,omitempty"`
+	// MountPending is true while a filesystem repository is configured but the
+	// bind mount has not taken effect yet — the controller is recreating the
+	// app, and backups cannot run until it comes back.
+	MountPending bool `json:"mount_pending,omitempty"`
+	// SelfMountRequired marks a deployment where node-stats cannot add the
+	// mount itself (managed externally); MountHint says what to mount.
+	SelfMountRequired bool   `json:"self_mount_required,omitempty"`
+	MountHint         string `json:"mount_hint,omitempty"`
 	// Reason is a human sentence explaining the first blocker, empty when ready.
 	Reason string `json:"reason,omitempty"`
 }
@@ -145,9 +161,13 @@ type service struct {
 	repo       Repository
 	dockerSvc  docker.Service
 	connectors ConnectorStore
+	localRepo  LocalRepoStore
 	cipher     *connectors.Cipher
 	raft       Replicator
 	dataDir    string
+	// dbType/dbDSN seed a desired-state file that does not exist yet when the
+	// backup mount is requested.
+	dbType, dbDSN string
 	// localHostID is the host row this process collects for (hosts.LocalCollectorHostID).
 	localHostID uint
 
@@ -155,11 +175,11 @@ type service struct {
 }
 
 // NewService wires the application-backup service.
-func NewService(logger *log.Logger, repo Repository, dockerSvc docker.Service, store ConnectorStore, cipher *connectors.Cipher, raft Replicator, dataDir string, localHostID uint) Service {
+func NewService(logger *log.Logger, repo Repository, dockerSvc docker.Service, store ConnectorStore, localRepo LocalRepoStore, cipher *connectors.Cipher, raft Replicator, dataDir, dbType, dbDSN string, localHostID uint) Service {
 	return &service{
 		logger: logger, repo: repo, dockerSvc: dockerSvc,
-		connectors: store, cipher: cipher, raft: raft,
-		dataDir: dataDir, localHostID: localHostID,
+		connectors: store, localRepo: localRepo, cipher: cipher, raft: raft,
+		dataDir: dataDir, dbType: dbType, dbDSN: dbDSN, localHostID: localHostID,
 	}
 }
 
@@ -172,15 +192,31 @@ func (s *service) Status(ctx context.Context) (*Status, error) {
 	}
 	st.ResticInstalled = st.ResticVersion != ""
 
+	st.SuggestedPath = SuggestedBackupPath(s.dataDir, dockerenv.Running())
+	st.SelfMountRequired = dockerenv.Running() && setup.ManagedExternally()
+	if st.SelfMountRequired {
+		st.MountHint = "this deployment is managed by an external orchestrator, so node-stats cannot add the mount itself — bind-mount the directory into the node-stats container at " + setup.BackupMountPath
+	}
+
 	cfg, _, err := s.loadRepo(ctx)
 	if err == nil && cfg != nil {
 		st.RepoConfigured = true
 		st.Repo = &View{Backend: cfg.Backend, URL: RepoURL(*cfg), Config: *cfg}
+		st.Scope = "cluster"
+		if cfg.Backend == BackendLocal {
+			st.Scope = "node"
+			// The mount only exists after the controller has recreated the app.
+			st.MountPending = !dirExists(s.appRepoPath(*cfg))
+		}
 	}
 
 	switch {
 	case !st.RepoConfigured:
 		st.Reason = "No backup repository configured yet."
+	case st.MountPending && st.SelfMountRequired:
+		st.Reason = st.MountHint
+	case st.MountPending:
+		st.Reason = "node-stats is being recreated with the backup directory mounted; backups can run once it is back."
 	case !st.ControllerReady:
 		st.Reason = ErrNoController.Error()
 	case !st.ResticInstalled:
@@ -202,16 +238,26 @@ func (s *service) controllerReady() bool {
 	return time.Since(fi.ModTime()) < 24*time.Hour
 }
 
+// loadRepo returns this node's effective repository. A filesystem repository is
+// node-local and wins over the replicated one: it is this machine's explicit
+// choice, and a directory here is not something another node could have meant.
 func (s *service) loadRepo(ctx context.Context) (*RepoConfig, *RepoSecrets, error) {
+	if local, err := s.localRepo.Get(ctx); err == nil && local != nil {
+		return decodeRepo(local.Config, local.SecretEnc, s.cipher)
+	}
 	c, err := s.connectors.GetByFingerprint(ctx, ConnectorFingerprint)
 	if err != nil || c == nil {
 		return nil, nil, ErrNoRepo
 	}
+	return decodeRepo(c.Config, c.SecretEnc, s.cipher)
+}
+
+func decodeRepo(cfgJSON string, enc []byte, cipher *connectors.Cipher) (*RepoConfig, *RepoSecrets, error) {
 	var cfg RepoConfig
-	if err := json.Unmarshal([]byte(c.Config), &cfg); err != nil {
+	if err := json.Unmarshal([]byte(cfgJSON), &cfg); err != nil {
 		return nil, nil, fmt.Errorf("repository config unreadable: %w", err)
 	}
-	plain, err := s.cipher.Decrypt(c.SecretEnc)
+	plain, err := cipher.Decrypt(enc)
 	if err != nil {
 		return nil, nil, fmt.Errorf("repository secrets unreadable: %w", err)
 	}
@@ -225,6 +271,9 @@ func (s *service) loadRepo(ctx context.Context) (*RepoConfig, *RepoSecrets, erro
 func (s *service) SaveRepo(ctx context.Context, req RepoRequest) (*Status, error) {
 	if err := validateRepo(req); err != nil {
 		return nil, err
+	}
+	if req.Backend == BackendLocal {
+		return s.saveLocalRepo(ctx, req)
 	}
 	// Install restic before persisting: a repository we cannot reach is worse
 	// than no repository, and the operator asked for restic to arrive with the
@@ -274,6 +323,47 @@ func (s *service) SaveRepo(ctx context.Context, req RepoRequest) (*Status, error
 	return s.Status(ctx)
 }
 
+// saveLocalRepo stores a filesystem repository and arranges for this process to
+// be able to reach it.
+//
+// The operator names a path on the MACHINE. Inside a container that path is not
+// visible, so node-stats asks the controller to bind-mount it at a fixed
+// in-container location and the app is recreated — the same mechanism that
+// already applies a database or gateway change. Until it comes back the
+// repository reads as "mount pending"; on a native install there is nothing to
+// mount and it is usable immediately.
+//
+// The row is node-local: a directory on this machine is unreachable from any
+// other node, so replicating it would leave peers pointing at a path that does
+// not exist there.
+func (s *service) saveLocalRepo(ctx context.Context, req RepoRequest) (*Status, error) {
+	if _, err := EnsureBinary(ctx, s.dataDir); err != nil {
+		return nil, fmt.Errorf("install restic: %w", err)
+	}
+	if dockerenv.Running() && setup.ManagedExternally() {
+		// We cannot add the mount here; the repository is only usable if the
+		// operator already mounted it, so require that up front rather than
+		// storing a configuration that silently cannot work.
+		if err := assertRepoWritable(setup.BackupMountPath); err != nil {
+			return nil, fmt.Errorf("%w — bind-mount %s into the node-stats container at %s", ErrRepoReadOnly, req.Path, setup.BackupMountPath)
+		}
+	}
+
+	sec := RepoSecrets{Password: req.Password}
+	row, err := marshalLocalRepo(req.RepoConfig, sec, s.cipher)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.localRepo.Save(ctx, row); err != nil {
+		return nil, err
+	}
+	if _, err := setup.RequestBackupMount(s.dataDir, s.dbType, s.dbDSN, req.Path); err != nil {
+		return nil, err
+	}
+	s.logger.Info("appbackup: filesystem repository configured", "path", req.Path)
+	return s.Status(ctx)
+}
+
 // TestRepo verifies the credentials by asking restic to open (or create) the
 // repository, which is the only check that proves the whole path works.
 //
@@ -289,9 +379,15 @@ func (s *service) TestRepo(ctx context.Context, req RepoRequest) error {
 		return fmt.Errorf("install restic: %w", err)
 	}
 	if req.Backend == BackendLocal {
-		if err := assertRepoWritable(req.Path); err != nil {
-			return err
+		// The operator typed a HOST path. Inside a container it only becomes
+		// reachable once the mount exists, so probe whatever this process can
+		// actually see; before the first save there is nothing to probe and the
+		// answer is "saving will arrange it".
+		probe := hostToContainerPath(req.Path, dockerenv.Running())
+		if !dirExists(probe) && dockerenv.Running() {
+			return nil
 		}
+		return assertRepoWritable(probe)
 	}
 	r := Runner{Bin: bin, Repo: Resolve(req.RepoConfig, RepoSecrets{
 		Password: req.Password, S3SecretKey: req.S3SecretKey, SSHPrivateKey: req.SSHPrivateKey,
@@ -302,6 +398,15 @@ func (s *service) TestRepo(ctx context.Context, req RepoRequest) error {
 }
 
 func (s *service) DeleteRepo(ctx context.Context) error {
+	// A node-local filesystem repository is this node's own; removing it also
+	// withdraws the mount, which recreates the app.
+	if local, err := s.localRepo.Get(ctx); err == nil && local != nil {
+		if err := s.localRepo.Delete(ctx); err != nil {
+			return err
+		}
+		_, err := setup.RequestBackupMount(s.dataDir, s.dbType, s.dbDSN, "")
+		return err
+	}
 	if s.raft != nil && s.raft.Enabled() {
 		// removeHosts=false: this connector feeds no host rows.
 		return s.raft.SubmitConnectorDelete(ctx, connectorTypeAppBackup, ConnectorFingerprint, false)
@@ -458,6 +563,15 @@ func (s *service) DeleteSnapshot(ctx context.Context, id string) error {
 	return r.Forget(cctx, id)
 }
 
+// appRepoPath is where THIS process reaches the repository: the fixed mount
+// inside a container, the host path itself on a native install.
+func (s *service) appRepoPath(cfg RepoConfig) string {
+	if cfg.Backend != BackendLocal {
+		return RepoURL(cfg)
+	}
+	return hostToContainerPath(cfg.Path, dockerenv.Running())
+}
+
 // runner builds a restic runner for THIS process (read-only listing and
 // forget). A filesystem repository is a host path: the job helper reaches it
 // directly via an identity mount, but the app container only sees the host
@@ -471,7 +585,9 @@ func (s *service) runner(ctx context.Context) (Runner, error) {
 	if err != nil {
 		return Runner{}, fmt.Errorf("install restic: %w", err)
 	}
-	return Runner{Bin: bin, Repo: Resolve(*cfg, *sec), Port: cfg.Port}, nil
+	repo := Resolve(*cfg, *sec)
+	repo.URL = s.appRepoPath(*cfg)
+	return Runner{Bin: bin, Repo: repo, Port: cfg.Port}, nil
 }
 
 // assertRepoWritable verifies that this process can actually write at a

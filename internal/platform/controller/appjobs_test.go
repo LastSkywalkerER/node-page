@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"system-stats/internal/platform/appbackup"
+	"system-stats/internal/platform/setup"
 )
 
 // appJobMounts decides what a privileged helper can see, so it is worth
@@ -67,5 +68,21 @@ func TestAppJobImageFallsBackToDefault(t *testing.T) {
 	c.jobImage = "ghcr.io/example/img:v1"
 	if got := c.appJobImage(); got != "ghcr.io/example/img:v1" {
 		t.Fatalf("appJobImage() = %q, want the applied desired-state image", got)
+	}
+}
+
+// The backup mount lives in the app's stanza, so changing it must recreate the
+// container — otherwise the repository stays invisible inside a running app.
+func TestBackupPathChangeRecreatesTheApp(t *testing.T) {
+	base := setup.DesiredState{DBMode: setup.DBModeSQLite}
+	withPath := base
+	withPath.BackupHostPath = "/opt/node-stats/backups"
+	if appHash(base) == appHash(withPath) {
+		t.Fatal("appHash ignores BackupHostPath; the controller would never mount it")
+	}
+	moved := withPath
+	moved.BackupHostPath = "/mnt/backup"
+	if appHash(withPath) == appHash(moved) {
+		t.Fatal("appHash ignores a change of backup path")
 	}
 }

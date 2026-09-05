@@ -89,10 +89,11 @@ func Migrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate app icon cache: %w", err)
 	}
 
-	// Application backup/update run history. Node-local operational trace, not a
-	// cluster record: excluded from Raft snapshots and the DB-switch dump, in
-	// line with the regenerable-cache rule.
-	err = db.AutoMigrate(&appbackup.RunEntity{})
+	// Application backup/update run history plus this node's filesystem backup
+	// repository. Both are node-local — a run is one machine's operational
+	// trace, and a directory on this machine is unreachable from any peer — so
+	// neither is in the Raft snapshot allow-list.
+	err = db.AutoMigrate(&appbackup.RunEntity{}, &appbackup.LocalRepoEntity{})
 	if err != nil {
 		return fmt.Errorf("failed to migrate application backup runs: %w", err)
 	}

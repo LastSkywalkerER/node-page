@@ -252,9 +252,12 @@ func Run() {
 		appbackup.NewRepository(container.GetDB()),
 		container.GetDockerService(),
 		container.GetConnectorRepository(),
+		appbackup.NewLocalRepoStore(container.GetDB()),
 		connCipher,
 		container.GetRaftReplicator(),
 		appBackupDataDir,
+		string(cfg.Database.Type),
+		cfg.Database.DSN,
 		hosts.LocalCollectorHostID,
 	)
 

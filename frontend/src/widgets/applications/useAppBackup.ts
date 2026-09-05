@@ -37,6 +37,15 @@ export interface AppBackupStatus {
   controller_ready: boolean;
   restic_installed: boolean;
   restic_version?: string;
+  /** "node" for a filesystem repository, "cluster" for SSH/S3. */
+  scope?: 'node' | 'cluster' | string;
+  /** Default offered in the filesystem form — a directory beside the install. */
+  suggested_path?: string;
+  /** A filesystem repository is configured but its mount is not in place yet. */
+  mount_pending?: boolean;
+  /** This deployment cannot mount it for you (managed externally). */
+  self_mount_required?: boolean;
+  mount_hint?: string;
   reason?: string;
 }
 

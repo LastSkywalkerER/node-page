@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"system-stats/internal/platform/setup"
 )
 
 // restic needs read-write access to manage snapshots at all, and given a
@@ -117,4 +119,52 @@ func TestSnapshotsAreOrderedNewestFirst(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("order = %v, want %v", got, want)
 	}
+}
+
+// A filesystem repository is named by its HOST path, but inside a container it
+// is always reached at the fixed mount. Confusing the two is how a repository
+// ends up "configured" and unreachable.
+func TestHostPathMapsToTheFixedMountInsideAContainer(t *testing.T) {
+	const hostPath = "/opt/node-stats/backups"
+	if got := hostToContainerPath(hostPath, true); got != setup.BackupMountPath {
+		t.Fatalf("in a container = %q, want %q", got, setup.BackupMountPath)
+	}
+	if got := hostToContainerPath(hostPath, false); got != hostPath {
+		t.Fatalf("native = %q, want the host path unchanged", got)
+	}
+	if got := hostToContainerPath("", true); got != "" {
+		t.Fatalf("empty path = %q, want empty", got)
+	}
+}
+
+// The default has to land beside the installation: an operator should recognise
+// the directory, not have to work out where the container's data actually lives.
+func TestSuggestedBackupPath(t *testing.T) {
+	t.Run("docker uses the stack directory", func(t *testing.T) {
+		t.Setenv("NODE_STATS_STACK_HOST_DIR", "/opt/node-stats")
+		if got := SuggestedBackupPath("/app/data", true); got != "/opt/node-stats/backups" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("native sits beside the data directory", func(t *testing.T) {
+		t.Setenv("NODE_STATS_STACK_HOST_DIR", "")
+		if got := SuggestedBackupPath("/var/lib/node-stats/data", false); got != "/var/lib/node-stats/backups" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	// In a container that was not told its stack directory, every visible path
+	// is a container path: suggesting /app/backups would invite the operator to
+	// store a location that means nothing on the host.
+	t.Run("no suggestion in a container without the stack dir", func(t *testing.T) {
+		t.Setenv("NODE_STATS_STACK_HOST_DIR", "")
+		if got := SuggestedBackupPath("/app/data", true); got != "" {
+			t.Fatalf("got %q, want no suggestion", got)
+		}
+	})
+	t.Run("falls back when nothing is known", func(t *testing.T) {
+		t.Setenv("NODE_STATS_STACK_HOST_DIR", "")
+		if got := SuggestedBackupPath("", false); got != "/var/lib/node-stats/backups" {
+			t.Fatalf("got %q", got)
+		}
+	})
 }
