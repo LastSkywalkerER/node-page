@@ -251,15 +251,24 @@ func (s *Service) Status() Info {
 		info.CheckedAt = checkedAt.UTC().Format(time.RFC3339)
 	}
 	if channel == channelBeta {
-		// Docker beta is the rolling :beta image built from main HEAD — there is no
-		// release to semver-compare against. "Newer beta" = main has a commit other
-		// than the one this build was cut from. Show the short SHA as the latest
-		// marker so the popover isn't comparing against a stale release tag.
+		// Docker beta pulls the rolling :beta image. It used to be uncomparable —
+		// main builds stamped VERSION="main" — so "newer" meant "main has a
+		// different commit" and the popover showed main@<sha>. That is no longer
+		// true: every push to main publishes a prerelease AND builds the image,
+		// both stamped with the SAME version by scripts/ci-version.sh. So a modern
+		// beta image is semver-comparable and should say v0.10.8-beta.1, not a
+		// commit hash the operator cannot relate to the "Current" version beside it.
 		if v.Deployment == "docker" {
-			if latestCommit != "" {
-				info.Latest = "main@" + shortSHA(latestCommit)
-				info.UpdateAvailable = v.Commit != "" && !sameCommit(v.Commit, latestCommit)
+			if _, ok := parseSemver(v.Current); !ok {
+				// An image from before ci-version.sh (VERSION=main) carries nothing
+				// to compare; fall back to main HEAD's commit.
+				if latestCommit != "" {
+					info.Latest = "main@" + shortSHA(latestCommit)
+					info.UpdateAvailable = v.Commit != "" && !sameCommit(v.Commit, latestCommit)
+				}
+				return info
 			}
+			info.UpdateAvailable = betaUpdateAvailable(v.Current, latest)
 			return info
 		}
 		// Native beta self-updates from release assets, which only exist for tagged
@@ -473,11 +482,12 @@ func (s *Service) Check(ctx context.Context) error {
 		}
 	}
 	latestCommit := ""
-	// The rolling :beta image (compared by commit) is a docker-only concept: a
-	// native beta build self-updates from the latest prerelease RELEASE tag, so it
-	// needs no commit lookup. Skipping it on native also avoids a needless GitHub
-	// API call and its failure path.
-	if s.ReleaseChannel() == channelBeta && version.Deployment() == "docker" {
+	// The commit lookup now only serves LEGACY docker beta images (VERSION=main),
+	// which have no version to compare; a modern image is stamped by
+	// scripts/ci-version.sh and compares against the prerelease tag like native
+	// does. Skipping the call otherwise saves a GitHub request per check.
+	_, currentIsSemver := parseSemver(version.Get().Current)
+	if s.ReleaseChannel() == channelBeta && version.Deployment() == "docker" && !currentIsSemver {
 		// Best-effort: a commit-fetch failure shouldn't fail the whole check.
 		if sha, cerr := s.fetchLatestMainCommit(ctx); cerr == nil {
 			latestCommit = sha

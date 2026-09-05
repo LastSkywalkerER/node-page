@@ -258,3 +258,44 @@ func TestNewestRelease_PicksHighestVersionNotListOrder(t *testing.T) {
 		t.Fatal("empty / drafts-only must yield nil")
 	}
 }
+
+// Docker beta used to show "main@<sha>" because main builds stamped
+// VERSION="main" and there was nothing to compare. Since scripts/ci-version.sh
+// gives the image and the prerelease the SAME version, a modern beta image must
+// compare and display like the native one — an operator cannot relate a commit
+// hash to the "Current 0.10.7" printed next to it.
+func TestDockerBetaComparesAgainstThePrereleaseTag(t *testing.T) {
+	cases := []struct {
+		name    string
+		current string
+		latest  string
+		want    bool
+	}{
+		{"newer prerelease offered", "0.10.7", "v0.10.8-beta.1", true},
+		{"already on it", "0.10.8-beta.1", "v0.10.8-beta.1", false},
+		{"rolls forward between betas", "0.10.8-beta.1", "v0.10.8-beta.2", true},
+		{"never goes backwards", "0.10.8-beta.2", "v0.10.8-beta.1", false},
+		// ci-version.sh stamps the image "0.10.8-beta.1" while the release tag is
+		// "v0.10.8-beta.1"; if the prefix broke the match, a node already on the
+		// newest beta would be offered it forever.
+		{"v-prefix is not a difference", "0.10.8-beta.1", "v0.10.8-beta.1", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := betaUpdateAvailable(c.current, c.latest); got != c.want {
+				t.Fatalf("betaUpdateAvailable(%q, %q) = %v, want %v", c.current, c.latest, got, c.want)
+			}
+		})
+	}
+}
+
+// A legacy image (VERSION=main) has no comparable version, so the commit
+// fallback must stay reachable — that is the case the sha display exists for.
+func TestLegacyBetaImageHasNoParseableVersion(t *testing.T) {
+	if _, ok := parseSemver("main"); ok {
+		t.Fatal(`parseSemver("main") reported success; the commit fallback would never run`)
+	}
+	if _, ok := parseSemver("0.10.8-beta.1"); !ok {
+		t.Fatal("a ci-version.sh beta version must parse, otherwise docker beta keeps showing a sha")
+	}
+}
