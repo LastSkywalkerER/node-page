@@ -11,6 +11,7 @@ import { AppIcon } from '@/shared/ui/AppIcon';
 import { ContainerRow, RingGauge } from '@/widgets/docker/ContainerRow';
 import { LogViewer } from '@/widgets/applications/LogViewer';
 import { ComposeYaml } from '@/widgets/applications/ComposeYaml';
+import { AppBackupPanel } from '@/widgets/applications/AppBackupPanel';
 import { cn } from '@/lib/utils';
 import { useHosts } from '@/widgets/hosts/useHosts';
 import {
@@ -167,6 +168,7 @@ export function ApplicationDetailPage() {
           ['resources', 'Resources'],
           ['logs', 'Logs'],
           ['compose', 'Composition'],
+          ['backup', 'Backup'],
         ] as const).map(([key, label]) => (
           <button
             key={key}
@@ -304,6 +306,11 @@ export function ApplicationDetailPage() {
       )}
 
       {/* Composition */}
+      {/* Backup, image update and restore for this application. */}
+      {tab === 'backup' && (
+        <AppBackupPanel hostId={hid} project={proj} dashboardUrl={host?.dashboard_url} />
+      )}
+
       {tab === 'compose' && (
         <Card>
             <CardHeader className="pb-2">

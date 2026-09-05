@@ -20,6 +20,7 @@ import (
 
 	"system-stats/internal/app/server"
 	"system-stats/internal/auth/users"
+	"system-stats/internal/platform/appbackup"
 	"system-stats/internal/platform/controller"
 	"system-stats/internal/platform/setup"
 	"system-stats/internal/platform/update"
@@ -42,6 +43,11 @@ func main() {
 				DBMode: setup.DBModeSQLite,
 				Image:  os.Getenv("NODE_STATS_IMAGE"),
 			}))
+			return
+		case "appjob":
+			// One application backup/update/restore job, run inside the
+			// short-lived helper container the controller launches.
+			appbackup.RunJobCLI(os.Args[2:])
 			return
 		case "reset-password":
 			// Break-glass admin password reset via the running server's loopback

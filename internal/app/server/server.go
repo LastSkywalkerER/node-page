@@ -51,6 +51,7 @@ import (
 	pbs "system-stats/internal/metrics/pbs"
 	proxmox "system-stats/internal/metrics/proxmox"
 	sensors "system-stats/internal/metrics/sensors"
+	appbackup "system-stats/internal/platform/appbackup"
 	appicons "system-stats/internal/platform/appicons"
 	connectors "system-stats/internal/platform/connectors"
 	gateway "system-stats/internal/platform/gateway"
@@ -237,6 +238,25 @@ func Run() {
 		container.GetRaftReplicator(),
 	)
 	wallpaperSvc := wallpaper.NewService(logger, container.GetConnectorRepository(), connCipher, pexelsClient)
+
+	// Application backup / image update / restore. The repository lives in the
+	// connector registry (one per cluster, secrets encrypted, Raft-replicated);
+	// the jobs themselves are executed by the controller sidecar, which is the
+	// only component with a writable docker socket.
+	appBackupDataDir := os.Getenv("NODE_STATS_DATA_DIR")
+	if appBackupDataDir == "" {
+		appBackupDataDir = "/app/data"
+	}
+	appBackupSvc := appbackup.NewService(
+		logger,
+		appbackup.NewRepository(container.GetDB()),
+		container.GetDockerService(),
+		container.GetConnectorRepository(),
+		connCipher,
+		container.GetRaftReplicator(),
+		appBackupDataDir,
+		hosts.LocalCollectorHostID,
+	)
 
 	// Gateway (ingress): replicated route table → Traefik dynamic config on the
 	// node the admin picked. The materializer runs on every node and only
@@ -513,7 +533,7 @@ func Run() {
 		go startMetrics()
 	}
 
-	router := setupRouter(container, startTime, logger, cfg, onSetupComplete, connectorsSvc, wallpaperSvc, pbsHandler, gatewaySvc)
+	router := setupRouter(container, startTime, logger, cfg, onSetupComplete, connectorsSvc, wallpaperSvc, pbsHandler, gatewaySvc, appBackupSvc)
 
 	server := &http.Server{
 		Addr:         cfg.Addr,
@@ -580,7 +600,7 @@ func gatewayDataDirFor(_ *config.Config) string {
 }
 
 // setupRouter configures the Gin router with all routes, middleware, and handlers.
-func setupRouter(container *di.Container, startTime time.Time, logger *log.Logger, cfg *config.Config, onSetupComplete func(), connectorsSvc connectors.Service, wallpaperSvc *wallpaper.Service, pbsHandler *pbs.Handler, gatewaySvc gatewayengine.Service) *gin.Engine {
+func setupRouter(container *di.Container, startTime time.Time, logger *log.Logger, cfg *config.Config, onSetupComplete func(), connectorsSvc connectors.Service, wallpaperSvc *wallpaper.Service, pbsHandler *pbs.Handler, gatewaySvc gatewayengine.Service, appBackupSvc appbackup.Service) *gin.Engine {
 	router := gin.New()
 	// TrustedProxies controls whether X-Forwarded-* headers are honored.
 	// Empty list = trust none (ignore X-Forwarded-For/Host/Proto). Safe default.
@@ -642,6 +662,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 	hostHandler := hosts.NewHandler(logger, container.GetHostService())
 	hostHandler.SetDashboardURLSource(raftcluster.NewDashboardURLSource(container.GetDB(), container.GetRaftService()))
 	connectorsHandler := connectors.NewHandler(logger, connectorsSvc)
+	appBackupHandler := appbackup.NewHandler(logger, appBackupSvc)
 	gatewayHandler := gatewayengine.NewHandler(logger, gatewaySvc)
 	wallpaperHandler := wallpaper.NewHandler(logger, wallpaperSvc)
 	healthHandler := health.NewHandler(logger, container.GetHealthService())
@@ -893,6 +914,24 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.POST("/connectors/proxmox/test", middleware.RequireAdmin(), connectorsHandler.HandleTestProxmox)
 		authAPI.POST("/connectors/pbs", middleware.RequireAdmin(), connectorsHandler.HandleCreatePBS)
 		authAPI.POST("/connectors/pbs/test", middleware.RequireAdmin(), connectorsHandler.HandleTestPBS)
+
+		// Application backup / update / restore (admin). Acts on the compose
+		// projects the docker collector already discovers; jobs run on the node
+		// that owns the application, so a remote one returns 409 with the
+		// reason and the UI redirects to that node's dashboard.
+		authAPI.GET("/app-backup/status", middleware.RequireAdmin(), appBackupHandler.HandleStatus)
+		authAPI.PUT("/app-backup/repo", middleware.RequireAdmin(), appBackupHandler.HandleSaveRepo)
+		authAPI.POST("/app-backup/repo/test", middleware.RequireAdmin(), appBackupHandler.HandleTestRepo)
+		authAPI.GET("/app-backup/repo/stats", middleware.RequireAdmin(), appBackupHandler.HandleRepoStats)
+		authAPI.DELETE("/app-backup/repo", middleware.RequireAdmin(), appBackupHandler.HandleDeleteRepo)
+		authAPI.GET("/app-backup/versions", middleware.RequireAdmin(), appBackupHandler.HandleVersions)
+		authAPI.DELETE("/app-backup/snapshots/:snapshot_id", middleware.RequireAdmin(), appBackupHandler.HandleDeleteSnapshot)
+		authAPI.GET("/app-backup/:project/plan", middleware.RequireAdmin(), appBackupHandler.HandlePlan)
+		authAPI.GET("/app-backup/:project/snapshots", middleware.RequireAdmin(), appBackupHandler.HandleSnapshots)
+		authAPI.GET("/app-backup/:project/runs", middleware.RequireAdmin(), appBackupHandler.HandleRuns)
+		authAPI.POST("/app-backup/:project/backup", middleware.RequireAdmin(), appBackupHandler.HandleBackup)
+		authAPI.POST("/app-backup/:project/update", middleware.RequireAdmin(), appBackupHandler.HandleUpdate)
+		authAPI.POST("/app-backup/:project/restore", middleware.RequireAdmin(), appBackupHandler.HandleRestore)
 		authAPI.POST("/connectors/pexels", middleware.RequireAdmin(), connectorsHandler.HandleSavePexels)
 		authAPI.PATCH("/connectors/:id", middleware.RequireAdmin(), connectorsHandler.HandleUpdate)
 		authAPI.DELETE("/connectors/:id", middleware.RequireAdmin(), connectorsHandler.HandleDelete)

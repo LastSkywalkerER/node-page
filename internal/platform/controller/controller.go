@@ -53,6 +53,7 @@ type controller struct {
 	units       map[string]*unitState // live per-unit state
 	selfUpdated bool                  // guards the controller self-update to once per app apply
 	lastStatus  string                // last status JSON written (skip identical rewrites)
+	jobImage    string                // image application-job helpers run (follows the applied desired state)
 }
 
 // Run is the controller subcommand entrypoint (cmd/server: `node-stats controller`).
@@ -75,7 +76,9 @@ func Run() {
 	if setup.ManagedExternally() {
 		log.Warn("controller: deployment is managed externally (Dokploy/Traefik) — compose mutation disabled")
 		c.writeStatus(setup.ControllerStatus{Phase: setup.PhaseDisabled, Message: "managed externally; node-stats will not mutate the compose stack"})
-		c.idle()
+		// Application backup/update jobs act on OTHER compose projects, not on
+		// node-stats' own stack, so they stay available here.
+		c.serveAppJobsOnly()
 		return
 	}
 
@@ -89,6 +92,7 @@ func Run() {
 
 	for {
 		c.tick()
+		c.appJobs()
 		time.Sleep(pollInterval)
 	}
 }
@@ -147,6 +151,9 @@ func (c *controller) tick() {
 		return
 	}
 	c.seed(*ds)
+	if img := strings.TrimSpace(ds.Image); img != "" {
+		c.jobImage = img
+	}
 	c.detectDrift(*ds)
 	now := c.now()
 
@@ -435,6 +442,15 @@ func (c *controller) writeStatus(st setup.ControllerStatus) {
 func (c *controller) idle() {
 	for {
 		time.Sleep(time.Hour)
+	}
+}
+
+// serveAppJobsOnly parks the controller for stack purposes (managed
+// externally) while still draining the application job queue.
+func (c *controller) serveAppJobsOnly() {
+	for {
+		c.appJobs()
+		time.Sleep(pollInterval)
 	}
 }
 

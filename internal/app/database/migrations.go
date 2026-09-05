@@ -15,6 +15,7 @@ import (
 	docker "system-stats/internal/metrics/docker"
 	memory "system-stats/internal/metrics/memory"
 	network "system-stats/internal/metrics/network"
+	appbackup "system-stats/internal/platform/appbackup"
 	appicons "system-stats/internal/platform/appicons"
 	connectors "system-stats/internal/platform/connectors"
 	gateway "system-stats/internal/platform/gateway"
@@ -86,6 +87,14 @@ func Migrate(db *gorm.DB) error {
 	err = db.AutoMigrate(&appicons.IconCacheEntry{})
 	if err != nil {
 		return fmt.Errorf("failed to migrate app icon cache: %w", err)
+	}
+
+	// Application backup/update run history. Node-local operational trace, not a
+	// cluster record: excluded from Raft snapshots and the DB-switch dump, in
+	// line with the regenerable-cache rule.
+	err = db.AutoMigrate(&appbackup.RunEntity{})
+	if err != nil {
+		return fmt.Errorf("failed to migrate application backup runs: %w", err)
 	}
 
 	// Fix existing invitations with NULL email before adding NOT NULL constraint

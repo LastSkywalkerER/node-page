@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // manifestAccept asks the registry for both multi-arch indexes and single
@@ -147,6 +149,10 @@ func parseChallenge(s string) map[string]string {
 // tagListPageLimit bounds how many tag-list pages we fetch per image so a huge
 // repository can't make the hourly update check unbounded.
 const tagListPageLimit = 25
+
+// tagListTimeout bounds a whole tag-list walk: a slow or rate-limited registry
+// must not hold a UI request open.
+const tagListTimeout = 20 * time.Second
 
 // listRepoTags fetches ref's repository tag list via the registry v2 tags/list
 // endpoint, following pagination Link headers. Best-effort: returns whatever it
@@ -373,4 +379,35 @@ func configDigest(ctx context.Context, client *http.Client, base, token string, 
 		return ""
 	}
 	return sm.Config.Digest
+}
+
+// ListImageTags returns the tags an image's registry repository publishes,
+// newest-looking first where the tags parse as versions. It is the read-only
+// half of the update detector, exported so the application-backup feature can
+// offer a version picker instead of only "there is something newer".
+//
+// Returns nil on any registry error: a version list is a convenience, and a
+// rate-limited registry must not fail the request that asked for it.
+func ListImageTags(ctx context.Context, ref string) []string {
+	tags := listRepoTags(ctx, &http.Client{Timeout: tagListTimeout}, ref)
+	if len(tags) == 0 {
+		return nil
+	}
+	// Order: parseable versions descending, then the rest alphabetically, so
+	// the picker opens on plausible upgrades rather than on "alpine".
+	var versioned, plain []string
+	for _, t := range tags {
+		if _, ok := parseTagVersion(t); ok {
+			versioned = append(versioned, t)
+		} else {
+			plain = append(plain, t)
+		}
+	}
+	sort.Slice(versioned, func(i, j int) bool {
+		a, _ := parseTagVersion(versioned[i])
+		b, _ := parseTagVersion(versioned[j])
+		return a.greaterThan(b)
+	})
+	sort.Strings(plain)
+	return append(versioned, plain...)
 }

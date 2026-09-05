@@ -15,6 +15,7 @@ import { cn } from '@/lib/utils'
 import { useConnectors, useTestProxmox, useCreateProxmox, useTestPBS, useCreatePBS, useSavePexels, useToggleConnector, useDeleteConnector, useSyncConnector } from './useConnectors'
 import { useQueryClient } from '@tanstack/react-query'
 import type { Connector, ConnectorPreview, DiscoveredHint } from './schemas'
+import { BackupRepoCard } from './BackupRepoCard'
 
 function fmtSyncTime(iso: string): string {
   if (!iso) return 'never'
@@ -491,7 +492,13 @@ export function ConnectorsTab() {
   const [formKind, setFormKind] = useState<ConnectKind>('proxmox')
 
   const discovered = data?.discovered ?? []
-  const configured = (data?.configured ?? []).filter((c) => c.type !== 'pexels')
+  // This registry also stores rows that are NOT machine-list data sources —
+  // the wallpaper key and the application backup repository — each of which has
+  // its own card below. A repository has nothing to "sync", so listing it here
+  // beside Proxmox would only mislead.
+  const configured = (data?.configured ?? []).filter(
+    (c) => c.type !== 'pexels' && c.type !== 'appbackup'
+  )
   const pexels = (data?.configured ?? []).find((c) => c.type === 'pexels')
 
   return (
@@ -565,6 +572,8 @@ export function ConnectorsTab() {
         )}
       </CardContent>
     </Card>
+
+    <BackupRepoCard />
 
     <WallpaperCard connector={pexels} />
     </div>
