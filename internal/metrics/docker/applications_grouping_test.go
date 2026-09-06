@@ -174,3 +174,45 @@ func TestRegroupByCommonPrefix_NoSharedPrefix(t *testing.T) {
 		t.Fatalf("unrelated apps must not merge, got %d", len(apps))
 	}
 }
+
+// CasaOS names every store app "big-bear-<x>", so three UNRELATED compose
+// stacks share a prefix. Each carries its own compose file, which is the
+// signal that they are physically separate — merging them showed Dozzle,
+// Home Assistant and NocoDB as one card whose backup/update path could not
+// address them (two services both named "app" collided).
+func TestRegroupByCommonPrefix_KeepsDistinctComposeProjectsApart(t *testing.T) {
+	os.Unsetenv("NODE_STATS_APP_PREFIX_GROUPING")
+	st := DockerStack{Name: "all"}
+	add := func(name, project, service, image string) {
+		st.Containers = append(st.Containers, DockerContainer{
+			ID: name, Name: name, Project: project, Service: service, Image: image, State: "running",
+			ComposeConfigFiles: "/var/lib/casaos/apps/" + project + "/docker-compose.yml",
+		})
+	}
+	add("big-bear-dozzle", "big-bear-dozzle", "app", "amir20/dozzle:v8.13.4")
+	add("big-bear-home-assistant", "big-bear-home-assistant", "app", "ghcr.io/home-assistant/home-assistant:2026.2.3")
+	add("big-bear-nocodb", "big-bear-nocodb", "big-bear-nocodb", "nocodb/nocodb:0.301.2")
+	add("big-bear-nocodb-db", "big-bear-nocodb", "big-bear-nocodb-db", "postgres:13")
+	add("big-bear-nocodb-redis", "big-bear-nocodb", "big-bear-nocodb-redis", "redis:alpine")
+
+	apps := BuildApplications(&DockerMetric{Stacks: []DockerStack{st}, DockerAvailable: true})
+	got := appByProject(apps)
+	if len(apps) != 3 {
+		keys := make([]string, 0, len(apps))
+		for _, a := range apps {
+			keys = append(keys, a.Project)
+		}
+		t.Fatalf("got %d apps %v, want 3 separate compose projects", len(apps), keys)
+	}
+	if got["big-bear-nocodb"].TotalContainers != 3 {
+		t.Errorf("nocodb stack should keep its 3 containers, got %d", got["big-bear-nocodb"].TotalContainers)
+	}
+	for _, p := range []string{"big-bear-dozzle", "big-bear-home-assistant"} {
+		if _, ok := got[p]; !ok {
+			t.Errorf("compose project %q was swallowed by the prefix group", p)
+		}
+	}
+	if _, merged := got["big-bear"]; merged {
+		t.Error("a synthetic \"big-bear\" card was created across distinct compose projects")
+	}
+}

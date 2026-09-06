@@ -474,6 +474,12 @@ func (s *service) Plan(ctx context.Context, hostID uint, project string) (*Plan,
 		p.Blocked = ErrRemoteHost.Error()
 	case s.isSelfProject(project):
 		p.Blocked = ErrSelfProject.Error()
+	case distinctComposeProjects(app) > 1:
+		// The executor drives `docker compose -p <project>` and matches services
+		// by name inside the compose files. Both assume ONE compose project; a
+		// card spanning several (a prefix group) would address containers that
+		// do not exist and could rewrite a same-named service in the wrong file.
+		p.Blocked = fmt.Sprintf("this card groups %d separate compose projects; back up and update each project from its own card", distinctComposeProjects(app))
 	case len(files) == 0:
 		p.Blocked = "this application has no compose file on disk (it was not deployed with docker compose), so there is nothing to snapshot or rewrite"
 	default:
@@ -482,6 +488,20 @@ func (s *service) Plan(ctx context.Context, hostID uint, project string) (*Plan,
 		}
 	}
 	return p, nil
+}
+
+// distinctComposeProjects counts the compose projects an application's
+// containers belong to. The grouping layer keeps distinct file-backed projects
+// apart, but this guard sits directly in front of the executor: whatever the
+// grouping does, a multi-project job must never be queued.
+func distinctComposeProjects(app *docker.DockerApplication) int {
+	seen := map[string]bool{}
+	for _, c := range app.Containers {
+		if c.Project != "" {
+			seen[c.Project] = true
+		}
+	}
+	return len(seen)
 }
 
 // isSelfProject guards the one project a job must never touch: our own. The

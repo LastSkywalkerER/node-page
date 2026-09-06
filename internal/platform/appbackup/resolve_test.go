@@ -15,7 +15,7 @@ func affineApp() *docker.DockerApplication {
 		Project: "affine",
 		Containers: []docker.DockerContainer{
 			{
-				Name: "/affine_server", Service: "affine",
+				Name: "/affine_server", Service: "affine", Project: "affine",
 				Image:              "ghcr.io/toeverything/affine:0.26.4",
 				ComposeWorkingDir:  "/root/affine",
 				ComposeConfigFiles: "/root/affine/docker-compose.yml",
@@ -28,7 +28,7 @@ func affineApp() *docker.DockerApplication {
 				},
 			},
 			{
-				Name: "/affine_postgres", Service: "postgres",
+				Name: "/affine_postgres", Service: "postgres", Project: "affine",
 				Image:              "pgvector/pgvector:pg16",
 				ComposeWorkingDir:  "/root/affine",
 				ComposeConfigFiles: "/root/affine/docker-compose.yml",
@@ -37,7 +37,7 @@ func affineApp() *docker.DockerApplication {
 				},
 			},
 			{
-				Name: "/affine_redis", Service: "redis",
+				Name: "/affine_redis", Service: "redis", Project: "affine",
 				Image:              "redis:latest",
 				ComposeWorkingDir:  "/root/affine",
 				ComposeConfigFiles: "/root/affine/docker-compose.yml",
@@ -156,5 +156,23 @@ func TestSplitImageRef(t *testing.T) {
 				t.Fatalf("SplitImageRef(%q) = (%q, %q), want (%q, %q)", c.in, repo, tag, c.repo, c.tag)
 			}
 		})
+	}
+}
+
+// A card assembled from several compose projects must never reach the executor:
+// it drives `compose -p <one project>` and matches services by name across the
+// files, so two projects both naming a service "app" would have one rewritten
+// with the other's image.
+func TestDistinctComposeProjectsSeesThroughAPrefixGroup(t *testing.T) {
+	grouped := &docker.DockerApplication{Project: "big-bear", Containers: []docker.DockerContainer{
+		{Name: "/big-bear-dozzle", Project: "big-bear-dozzle", Service: "app"},
+		{Name: "/big-bear-home-assistant", Project: "big-bear-home-assistant", Service: "app"},
+		{Name: "/big-bear-nocodb", Project: "big-bear-nocodb", Service: "big-bear-nocodb"},
+	}}
+	if got := distinctComposeProjects(grouped); got != 3 {
+		t.Fatalf("distinctComposeProjects = %d, want 3", got)
+	}
+	if got := distinctComposeProjects(affineApp()); got != 1 {
+		t.Fatalf("single stack reported %d projects", got)
 	}
 }

@@ -308,9 +308,33 @@ func groupByPrefix(apps []DockerApplication, minTokens int) []DockerApplication 
 			out = append(out, members[0])
 			continue
 		}
+		// A shared name prefix is only a hint. When the members are distinct
+		// file-backed compose projects, the prefix is coincidence (CasaOS names
+		// every store app "big-bear-<x>") and merging them would present several
+		// physical stacks as one — a lie the backup/update path cannot act on.
+		if distinctFileBackedProjects(members) >= 2 {
+			out = append(out, members...)
+			continue
+		}
 		out = append(out, mergeApplications(strings.TrimPrefix(key, "pfx:"), members))
 	}
 	return out
+}
+
+// distinctFileBackedProjects counts the distinct compose projects among members
+// that are backed by an actual compose file (the config_files label). Dokploy's
+// swarm services carry no such file, so they still merge by prefix; separately
+// deployed compose stacks do, and stay separate.
+func distinctFileBackedProjects(members []DockerApplication) int {
+	seen := map[string]bool{}
+	for _, a := range members {
+		for _, c := range a.Containers {
+			if c.ComposeConfigFiles != "" && c.Project != "" {
+				seen[c.Project] = true
+			}
+		}
+	}
+	return len(seen)
 }
 
 // mergeApplications combines several applications into one logical app keyed by
