@@ -2,6 +2,7 @@ package controller
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"system-stats/internal/platform/appbackup"
@@ -108,5 +109,37 @@ func TestBackupPathChangeRecreatesTheApp(t *testing.T) {
 	moved.BackupHostPath = "/mnt/backup"
 	if appHash(withPath) == appHash(moved) {
 		t.Fatal("appHash ignores a change of backup path")
+	}
+}
+
+// The controller maintains NODE_STATS_IMAGE in the stack .env, but compose gives
+// the PROCESS environment priority over that file. A value the controller
+// container was created with therefore shadowed every later .env update and
+// pinned a node to :latest through a channel switch — exactly what happened on
+// a beta node. Compose must never see the variable from the controller's env.
+func TestComposeEnvDropsTheImageVariable(t *testing.T) {
+	in := []string{"PATH=/usr/bin", "NODE_STATS_IMAGE=ghcr.io/x/y:latest", "NODE_STATS_STACK_DIR=/opt/ns", "HOME=/root"}
+	got := composeEnv(in)
+	for _, kv := range got {
+		if strings.HasPrefix(kv, "NODE_STATS_IMAGE=") {
+			t.Fatalf("NODE_STATS_IMAGE leaked into the compose environment: %v", got)
+		}
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected the other variables kept, got %v", got)
+	}
+}
+
+// The generated compose must not hand the controller NODE_STATS_IMAGE either:
+// that is how the stale value got baked in to begin with.
+func TestGeneratedComposeGivesTheControllerNoImageVariable(t *testing.T) {
+	out := setup.BuildComposeContent(setup.DesiredState{DBMode: setup.DBModeSQLite, Image: "ghcr.io/x/y:beta"})
+	// The controller stanza starts at its service key; nothing after it may set the variable.
+	idx := strings.Index(out, "node-stats-controller:")
+	if idx < 0 {
+		t.Fatal("controller service missing from generated compose")
+	}
+	if strings.Contains(out[idx:], "- NODE_STATS_IMAGE=") {
+		t.Fatalf("controller environment sets NODE_STATS_IMAGE; it would shadow the stack .env:\n%s", out[idx:])
 	}
 }

@@ -403,8 +403,27 @@ func (r *execRunner) compose(args ...string) (string, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "docker", full...)
 	cmd.Dir = r.stackDir
+	cmd.Env = composeEnv(os.Environ())
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
+}
+
+// composeEnv is the environment `docker compose` is invoked with: the process
+// environment minus NODE_STATS_IMAGE. Compose resolves ${NODE_STATS_IMAGE} from
+// the PROCESS environment before the stack .env, so a value present here — one
+// the controller container was created with — would shadow the .env the
+// controller itself maintains and pin the node to a stale image across every
+// channel switch. The .env file is the single source of truth; nothing in the
+// controller's own environment may outrank it.
+func composeEnv(environ []string) []string {
+	out := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		if strings.HasPrefix(kv, "NODE_STATS_IMAGE=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // docker runs a plain `docker ...` command (not `docker compose`) — image
