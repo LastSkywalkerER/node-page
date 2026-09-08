@@ -368,46 +368,44 @@ func Run() {
 	// bounds remote stat staleness and self-heals dropped batches). Local SSE
 	// (broker.Publish above) is unaffected — this gates only the cluster wire.
 	dockerWireGate := docker.NewWireGate(30 * time.Second)
-	historicalMetricsService = history.WithAfterCollect(historicalMetricsService, func() {
-		collectCtx, collectCancel := context.WithTimeout(appCtx, 10*time.Second)
-		defer collectCancel()
-		metrics, err := systemSvc.CollectAllCurrent(collectCtx)
+	// On-demand GET /metrics/current serves the tick's snapshot while it is
+	// younger than one tick (+ margin) instead of scanning the OS again.
+	systemSvc = system.WithFreshWindow(systemSvc, cfg.MetricsInterval+5*time.Second)
+	historicalMetricsService = history.WithAfterCollect(historicalMetricsService, func(snap system.Snapshot, host *hosts.Host) {
+		if host == nil {
+			// No successful registration yet (first ticks / DB hiccup): resolve
+			// the local row once so the event still carries its host id.
+			if h, herr := container.GetHostService().GetCurrentHost(appCtx); herr == nil && h != nil {
+				host = h
+			}
+		}
+		var hostID uint
+		if host != nil {
+			hostID = host.ID
+		}
+		// One marshal of the snapshot: the same struct that was just collected
+		// is the SSE event body — no marshal→unmarshal→re-marshal round trip to
+		// inject the host id.
+		out, err := json.Marshal(snap.Payload(hostID))
 		if err != nil {
 			return
 		}
-		data, err := json.Marshal(metrics)
-		if err != nil {
-			return
+		var cpuPct, memPct float64
+		var running int
+		if snap.CPU != nil {
+			cpuPct = snap.CPU.UsagePercent
 		}
-		var envelope map[string]interface{}
-		if err := json.Unmarshal(data, &envelope); err != nil {
-			return
+		if snap.Memory != nil {
+			memPct = snap.Memory.UsagePercent
 		}
-		if host, herr := container.GetHostService().GetCurrentHost(appCtx); herr == nil && host != nil {
-			envelope["collecting_host_id"] = host.ID
+		if snap.Docker != nil {
+			running = snap.Docker.RunningContainers
 		}
-		out, err := json.Marshal(envelope)
-		if err != nil {
-			return
-		}
-		var s struct {
-			CPU struct {
-				UsagePercent float64 `json:"usage_percent"`
-			} `json:"cpu"`
-			Memory struct {
-				UsagePercent float64 `json:"usage_percent"`
-			} `json:"memory"`
-			Docker struct {
-				RunningContainers int `json:"running_containers"`
-			} `json:"docker"`
-		}
-		if err := json.Unmarshal(data, &s); err == nil {
-			logger.Info("Metrics collected",
-				"cpu", fmt.Sprintf("%.1f%%", s.CPU.UsagePercent),
-				"mem", fmt.Sprintf("%.1f%%", s.Memory.UsagePercent),
-				"containers", s.Docker.RunningContainers,
-			)
-		}
+		logger.Info("Metrics collected",
+			"cpu", fmt.Sprintf("%.1f%%", cpuPct),
+			"mem", fmt.Sprintf("%.1f%%", memPct),
+			"containers", running,
+		)
 		broker.Publish(out)
 
 		// Replicate this host's metrics to the cluster via the best-effort metric
@@ -416,45 +414,45 @@ func Run() {
 		// current state every tick, so a dropped batch self-heals next cycle. The
 		// metrics survive this node going offline because peers persist them
 		// locally. No-op when Raft is inactive (sender is nil).
-		if sender := container.GetMetricSender(); sender != nil {
-			if host, herr := container.GetHostService().GetCurrentHost(appCtx); herr == nil && host != nil && host.MacAddress != "" {
-				batch := raftcluster.MetricBatchPayload{
-					HostMAC:   host.MacAddress,
-					HostName:  host.Name,
-					Timestamp: time.Now().UTC(),
-				}
-				if rs := container.GetRaftService(); rs != nil && rs.Enabled() {
-					batch.DashboardURL = strings.TrimRight(strings.TrimSpace(rs.Status().AdvertiseURL), "/")
-				}
-				if v := metrics["cpu"]; v != nil {
-					if b, e := json.Marshal(v); e == nil {
-						batch.CPU = b
-					}
-				}
-				if v := metrics["memory"]; v != nil {
-					if b, e := json.Marshal(v); e == nil {
-						batch.Memory = b
-					}
-				}
-				if v := metrics["disk"]; v != nil {
-					if b, e := json.Marshal(v); e == nil {
-						batch.Disk = b
-					}
-				}
-				if v := metrics["network"]; v != nil {
-					if b, e := json.Marshal(v); e == nil {
-						batch.Network = b
-					}
-				}
-				if v := metrics["docker"]; v != nil {
-					if b, e := json.Marshal(v); e == nil && dockerWireGate.ShouldSend(b, time.Now()) {
-						batch.Docker = b
-					}
-				}
-				// Broadcast fires one short-timeout POST per target and returns
-				// immediately, so it never blocks the collection cycle.
-				sender.Broadcast(appCtx, batch)
+		if sender := container.GetMetricSender(); sender != nil && host != nil && host.MacAddress != "" {
+			batch := raftcluster.MetricBatchPayload{
+				HostMAC:   host.MacAddress,
+				HostName:  host.Name,
+				Timestamp: time.Now().UTC(),
 			}
+			if rs := container.GetRaftService(); rs != nil && rs.Enabled() {
+				batch.DashboardURL = strings.TrimRight(strings.TrimSpace(rs.Status().AdvertiseURL), "/")
+			}
+			if snap.CPU != nil {
+				if b, e := json.Marshal(snap.CPU); e == nil {
+					batch.CPU = b
+				}
+			}
+			if snap.Memory != nil {
+				if b, e := json.Marshal(snap.Memory); e == nil {
+					batch.Memory = b
+				}
+			}
+			if snap.Disk != nil {
+				if b, e := json.Marshal(snap.Disk); e == nil {
+					batch.Disk = b
+				}
+			}
+			if snap.Network != nil {
+				if b, e := json.Marshal(snap.Network); e == nil {
+					batch.Network = b
+				}
+			}
+			// The gate hashes the inventory off the struct, so on an idle tick
+			// the (large) docker payload is never marshaled at all.
+			if snap.Docker != nil && dockerWireGate.ShouldSend(snap.Docker, time.Now()) {
+				if b, e := json.Marshal(snap.Docker); e == nil {
+					batch.Docker = b
+				}
+			}
+			// Broadcast fires one short-timeout POST per target and returns
+			// immediately, so it never blocks the collection cycle.
+			sender.Broadcast(appCtx, batch)
 		}
 
 		// Run due retention chores off the metrics tick — each is self-throttled
@@ -624,12 +622,7 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 
 	var promHandler *prometheusmetrics.Metrics
 	if cfg.PrometheusEnabled {
-		promHandler = prometheusmetrics.New(
-			container.GetCPUService(),
-			container.GetMemoryService(),
-			container.GetDiskService(),
-			container.GetNetworkService(),
-		)
+		promHandler = prometheusmetrics.New(container.GetSystemService())
 		router.Use(promHandler.GinMiddleware())
 	}
 

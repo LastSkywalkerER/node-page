@@ -2,10 +2,13 @@ package system
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/log"
+	"golang.org/x/sync/errgroup"
 
 	cpu "system-stats/internal/metrics/cpu"
 	disk "system-stats/internal/metrics/disk"
@@ -14,9 +17,78 @@ import (
 	network "system-stats/internal/metrics/network"
 )
 
-type Service interface {
-	CollectAllCurrent(ctx context.Context) (map[string]interface{}, error)
+// Snapshot is ONE collection pass over every local module. The metrics tick
+// produces exactly one per cycle and hands the same value to the DB writer,
+// the SSE broker, the cluster metric stream and the Prometheus exporter, so
+// the OS is scanned once per tick instead of once per consumer.
+//
+// A nil module means that collector failed this pass; consumers omit it
+// rather than shipping a zero value (the SSE merge is per-key and a null
+// would clobber a widget's last good state).
+type Snapshot struct {
+	Timestamp    time.Time
+	CPU          *cpu.CPUMetric
+	Memory       *memory.MemoryMetric
+	Disk         *disk.DiskMetric
+	Network      *network.NetworkMetric
+	Docker       *docker.DockerMetric
+	Applications []docker.DockerApplication
 }
+
+// Payload renders the live-metrics JSON object served by GET /metrics/current
+// and pushed over SSE. collectingHostID > 0 tags the event with the row id of
+// the host that produced it (the SSE client filters on it).
+func (s Snapshot) Payload(collectingHostID uint) map[string]interface{} {
+	out := map[string]interface{}{"timestamp": s.Timestamp}
+	if s.CPU != nil {
+		out["cpu"] = *s.CPU
+	}
+	if s.Memory != nil {
+		out["memory"] = *s.Memory
+	}
+	if s.Disk != nil {
+		out["disk"] = *s.Disk
+	}
+	if s.Network != nil {
+		out["network"] = *s.Network
+	}
+	if s.Docker != nil {
+		out["docker"] = *s.Docker
+		// The application projection rides the live stream so the frontend can
+		// sync its applications caches in lockstep with the containers. It is
+		// derived from the same docker metric and never replicated (peers
+		// rebuild apps from the replicated docker rows).
+		apps := s.Applications
+		if apps == nil {
+			apps = []docker.DockerApplication{}
+		}
+		out["applications"] = apps
+	}
+	if collectingHostID > 0 {
+		out["collecting_host_id"] = collectingHostID
+	}
+	return out
+}
+
+type Service interface {
+	// CollectAllCurrent returns the live-metrics payload. It serves the most
+	// recent tick's snapshot while that is still fresh and only scans the OS
+	// itself when no fresh snapshot exists (metrics not started yet, or the
+	// caller is polling faster than the tick).
+	CollectAllCurrent(ctx context.Context) (map[string]interface{}, error)
+	// CollectSnapshot scans every module once (in parallel, best-effort per
+	// module) and records the result as the latest snapshot.
+	CollectSnapshot(ctx context.Context) (Snapshot, error)
+	// SaveSnapshot persists every module present in the snapshot for hostID.
+	// Per-module failures are logged, never propagated.
+	SaveSnapshot(ctx context.Context, snap Snapshot, hostID uint) error
+	// Latest returns the most recent snapshot, if any tick has completed.
+	Latest() (Snapshot, bool)
+}
+
+// defaultFreshWindow bounds how old a snapshot CollectAllCurrent may serve
+// before it scans the OS itself; WithFreshWindow aligns it with the tick.
+const defaultFreshWindow = 15 * time.Second
 
 type service struct {
 	logger         *log.Logger
@@ -25,6 +97,21 @@ type service struct {
 	diskService    disk.Service
 	networkService network.Service
 	dockerService  docker.Service
+
+	mu          sync.RWMutex
+	latest      Snapshot
+	haveLatest  bool
+	freshWindow time.Duration
+
+	// inflight coalesces concurrent CollectSnapshot calls (the ticker and an
+	// on-demand GET /metrics/current landing together). Two overlapping
+	// passes would interleave inside the rate calculators — the network
+	// speed baseline, gopsutil's CPU-times baseline — and one of them would
+	// compute a delta against the other's newer sample (an unsigned wrap:
+	// a 10^16 kbps spike). The second caller waits for the first pass and
+	// returns its snapshot instead.
+	flightMu sync.Mutex
+	inflight chan struct{}
 }
 
 // NewService creates a new system service.
@@ -43,23 +130,84 @@ func NewService(
 		diskService:    diskSvc,
 		networkService: netSvc,
 		dockerService:  dockerSvc,
+		freshWindow:    defaultFreshWindow,
 	}
+}
+
+// WithFreshWindow sets how old the latest snapshot may be for
+// CollectAllCurrent to serve it instead of scanning. Pass the metrics tick
+// interval plus a margin so an on-demand read never races the ticker.
+func WithFreshWindow(svc Service, d time.Duration) Service {
+	if s, ok := svc.(*service); ok && d > 0 {
+		s.mu.Lock()
+		s.freshWindow = d
+		s.mu.Unlock()
+	}
+	return svc
+}
+
+func (s *service) Latest() (Snapshot, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.latest, s.haveLatest
 }
 
 // CollectAllCurrent collects all current system metrics from individual services.
 func (s *service) CollectAllCurrent(ctx context.Context) (map[string]interface{}, error) {
-	s.logger.Debug("Getting current system metrics")
+	s.mu.RLock()
+	snap, ok, window := s.latest, s.haveLatest, s.freshWindow
+	s.mu.RUnlock()
+	if ok && time.Since(snap.Timestamp) < window {
+		s.logger.Debug("Serving latest metrics snapshot", "age", time.Since(snap.Timestamp))
+		return snap.Payload(0), nil
+	}
+	snap, err := s.CollectSnapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return snap.Payload(0), nil
+}
 
-	// Structure for parallel collection results
+func (s *service) CollectSnapshot(ctx context.Context) (Snapshot, error) {
+	s.flightMu.Lock()
+	if done := s.inflight; done != nil {
+		s.flightMu.Unlock()
+		select {
+		case <-done:
+			if snap, ok := s.Latest(); ok {
+				return snap, nil
+			}
+			return Snapshot{}, errors.New("metrics collection in flight failed")
+		case <-ctx.Done():
+			return Snapshot{}, ctx.Err()
+		}
+	}
+	done := make(chan struct{})
+	s.inflight = done
+	s.flightMu.Unlock()
+	defer func() {
+		s.flightMu.Lock()
+		s.inflight = nil
+		s.flightMu.Unlock()
+		close(done)
+	}()
+	return s.collectSnapshot(ctx)
+}
+
+func (s *service) collectSnapshot(ctx context.Context) (Snapshot, error) {
+	s.logger.Debug("Collecting system metrics snapshot")
+
 	type collectResult struct {
 		name   string
 		metric interface{}
 		err    error
 	}
-
 	results := make(chan collectResult, 5)
 
-	// Function for safe metrics collection
+	// Each module runs in its own goroutine; a panic or error in one module
+	// is reported for that module only. One slow/broken module (classic: a
+	// wedged docker daemon) must not suppress the whole SSE / replication
+	// batch - the other modules still ship.
 	collectMetric := func(name string, collectFunc func() (interface{}, error)) {
 		defer func() {
 			if r := recover(); r != nil {
@@ -69,129 +217,78 @@ func (s *service) CollectAllCurrent(ctx context.Context) (map[string]interface{}
 		metric, err := collectFunc()
 		results <- collectResult{name: name, metric: metric, err: err}
 	}
+	go collectMetric("cpu", func() (interface{}, error) { return s.cpuService.Collect(ctx) })
+	go collectMetric("memory", func() (interface{}, error) { return s.memoryService.Collect(ctx) })
+	go collectMetric("disk", func() (interface{}, error) { return s.diskService.Collect(ctx) })
+	go collectMetric("network", func() (interface{}, error) { return s.networkService.Collect(ctx) })
+	go collectMetric("docker", func() (interface{}, error) { return s.dockerService.Collect(ctx) })
 
-	// Start parallel collection of all metrics
-	go collectMetric("cpu", func() (interface{}, error) {
-		return s.cpuService.Collect(ctx)
-	})
-
-	go collectMetric("memory", func() (interface{}, error) {
-		return s.memoryService.Collect(ctx)
-	})
-
-	go collectMetric("disk", func() (interface{}, error) {
-		return s.diskService.Collect(ctx)
-	})
-
-	go collectMetric("network", func() (interface{}, error) {
-		return s.networkService.Collect(ctx)
-	})
-
-	go collectMetric("docker", func() (interface{}, error) {
-		return s.dockerService.Collect(ctx)
-	})
-
-	// Collect results
-	var cpuMetric interface{}
-	var memoryMetric interface{}
-	var diskMetric interface{}
-	var networkMetric interface{}
-	var dockerMetric interface{}
-
+	snap := Snapshot{Timestamp: time.Now()}
 	for i := 0; i < 5; i++ {
 		var result collectResult
 		select {
 		case result = <-results:
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return Snapshot{}, ctx.Err()
 		}
-
-		switch result.name {
-		case "cpu":
-			if result.err != nil {
-				// Best-effort snapshot: one slow/broken module (classic: a
-				// wedged docker daemon) must not suppress the whole SSE /
-				// replication batch - the other modules still ship.
-				s.logger.Error("Failed to collect current CPU metrics", "error", result.err)
-				continue
-			}
-			cpuMetric = result.metric
-			s.logger.Debug("Current CPU metrics collected")
-
-		case "memory":
-			if result.err != nil {
-				// Best-effort snapshot: one slow/broken module (classic: a
-				// wedged docker daemon) must not suppress the whole SSE /
-				// replication batch - the other modules still ship.
-				s.logger.Error("Failed to collect current memory metrics", "error", result.err)
-				continue
-			}
-			memoryMetric = result.metric
-			s.logger.Debug("Current memory metrics collected")
-
-		case "disk":
-			if result.err != nil {
-				// Best-effort snapshot: one slow/broken module (classic: a
-				// wedged docker daemon) must not suppress the whole SSE /
-				// replication batch - the other modules still ship.
-				s.logger.Error("Failed to collect current disk metrics", "error", result.err)
-				continue
-			}
-			diskMetric = result.metric
-			s.logger.Debug("Current disk metrics collected")
-
-		case "network":
-			if result.err != nil {
-				// Best-effort snapshot: one slow/broken module (classic: a
-				// wedged docker daemon) must not suppress the whole SSE /
-				// replication batch - the other modules still ship.
-				s.logger.Error("Failed to collect current network metrics", "error", result.err)
-				continue
-			}
-			networkMetric = result.metric
-			s.logger.Debug("Current network metrics collected")
-
-		case "docker":
-			if result.err != nil {
-				// Best-effort snapshot: one slow/broken module (classic: a
-				// wedged docker daemon) must not suppress the whole SSE /
-				// replication batch - the other modules still ship.
-				s.logger.Error("Failed to collect current docker metrics", "error", result.err)
-				continue
-			}
-			dockerMetric = result.metric
-			s.logger.Debug("Current docker metrics collected")
+		if result.err != nil {
+			s.logger.Error("Failed to collect current metrics", "module", result.name, "error", result.err)
+			continue
+		}
+		switch m := result.metric.(type) {
+		case cpu.CPUMetric:
+			snap.CPU = &m
+		case memory.MemoryMetric:
+			snap.Memory = &m
+		case disk.DiskMetric:
+			snap.Disk = &m
+		case network.NetworkMetric:
+			snap.Network = &m
+		case docker.DockerMetric:
+			snap.Docker = &m
 		}
 	}
-
-	// Pre-build the application projection so the live SSE stream carries it
-	// (the frontend syncs it into the applications caches for lockstep 5s updates,
-	// instead of the slower independent REST poll). Derived from the same docker
-	// metric; not replicated (peers rebuild apps from the replicated docker rows).
-	var applications []docker.DockerApplication
-	if dm, ok := dockerMetric.(docker.DockerMetric); ok {
-		applications = docker.BuildApplications(&dm)
+	if snap.Docker != nil {
+		snap.Applications = docker.BuildApplications(snap.Docker)
 	}
 
-	s.logger.Debug("Current metrics collected successfully")
-	// Omit failed modules instead of sending JSON nulls - the SSE consumers
-	// merge per-key and a null would clobber a widget's last good state.
-	out := map[string]interface{}{"timestamp": time.Now()}
-	if cpuMetric != nil {
-		out["cpu"] = cpuMetric
+	s.mu.Lock()
+	s.latest = snap
+	s.haveLatest = true
+	s.mu.Unlock()
+	s.logger.Debug("System metrics snapshot collected")
+	return snap, nil
+}
+
+// SaveSnapshot writes every module present in the snapshot in parallel. Each
+// gets its own deadline so a slow DB write for one module can't stall the
+// others; failures are logged per module and never propagated.
+func (s *service) SaveSnapshot(ctx context.Context, snap Snapshot, hostID uint) error {
+	g, gctx := errgroup.WithContext(ctx)
+	save := func(name string, fn func(context.Context) error) {
+		g.Go(func() error {
+			saveCtx, cancel := context.WithTimeout(gctx, 15*time.Second)
+			defer cancel()
+			if err := fn(saveCtx); err != nil {
+				s.logger.Error("Failed to save metrics", "module", name, "error", err, "host_id", hostID)
+			}
+			return nil
+		})
 	}
-	if memoryMetric != nil {
-		out["memory"] = memoryMetric
+	if snap.CPU != nil {
+		save("cpu", func(c context.Context) error { return s.cpuService.Save(c, *snap.CPU, hostID) })
 	}
-	if diskMetric != nil {
-		out["disk"] = diskMetric
+	if snap.Memory != nil {
+		save("memory", func(c context.Context) error { return s.memoryService.Save(c, *snap.Memory, hostID) })
 	}
-	if networkMetric != nil {
-		out["network"] = networkMetric
+	if snap.Disk != nil {
+		save("disk", func(c context.Context) error { return s.diskService.Save(c, *snap.Disk, hostID) })
 	}
-	if dockerMetric != nil {
-		out["docker"] = dockerMetric
-		out["applications"] = applications
+	if snap.Network != nil {
+		save("network", func(c context.Context) error { return s.networkService.Save(c, *snap.Network, hostID) })
 	}
-	return out, nil
+	if snap.Docker != nil {
+		save("docker", func(c context.Context) error { return s.dockerService.Save(c, *snap.Docker, hostID) })
+	}
+	return g.Wait()
 }

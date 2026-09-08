@@ -283,16 +283,11 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 		container.dockerService,
 	)
 
-	metricsCollector := history.NewMetricsCollector(
-		container.cpuService,
-		container.memoryService,
-		container.diskService,
-		container.networkService,
-		container.dockerService,
-	)
+	// The tick scans every module ONCE through the system service and hands
+	// the same snapshot to the DB writer and the live fan-out.
 	container.historicalMetricsService = history.NewHistoricalMetricsService(
 		container.logger,
-		metricsCollector,
+		container.systemService,
 		container.hostService,
 	)
 

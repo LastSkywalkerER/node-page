@@ -33,10 +33,14 @@ func NewWireGate(resync time.Duration) *WireGate {
 	return &WireGate{resync: resync}
 }
 
-// ShouldSend reports whether payload (the marshaled DockerMetric) should be
-// included in the outgoing batch now, and records the decision.
-func (g *WireGate) ShouldSend(payload []byte, now time.Time) bool {
-	h := inventoryHash(payload)
+// ShouldSend reports whether the metric should be included in the outgoing
+// batch now, and records the decision. It hashes the inventory straight from
+// the struct, so on a gated (idle) tick the payload is never marshaled at all.
+func (g *WireGate) ShouldSend(m *DockerMetric, now time.Time) bool {
+	if m == nil {
+		return false
+	}
+	h := InventoryHash(m)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.sentOnce && h == g.lastHash && now.Sub(g.lastSent) < g.resync {
@@ -48,33 +52,43 @@ func (g *WireGate) ShouldSend(payload []byte, now time.Time) bool {
 	return true
 }
 
-// inventoryHash hashes the docker payload EXCLUDING volatile per-tick runtime
+// InventoryHash hashes the docker metric EXCLUDING volatile per-tick runtime
 // fields (Stats counters, the "Up 5 minutes" Status string), so an idle
 // inventory hashes the same tick-to-tick while any structural change — count,
 // state, image, ports, labels, sizes, update flags — changes the hash.
-func inventoryHash(payload []byte) uint64 {
-	var m DockerMetric
-	if err := json.Unmarshal(payload, &m); err != nil {
-		// Undecodable payload: hash the raw bytes so behavior degrades to
-		// change-detection on the exact payload.
-		h := fnv.New64a()
-		_, _ = h.Write(payload)
-		return h.Sum64()
-	}
+//
+// The metric is copied shallowly (stacks + containers slices) with the
+// volatile fields blanked; the shared maps/slices inside a container are
+// never mutated.
+func InventoryHash(m *DockerMetric) uint64 {
+	cp := *m
+	cp.Stacks = make([]DockerStack, len(m.Stacks))
 	for si := range m.Stacks {
+		st := m.Stacks[si]
+		st.Containers = make([]DockerContainer, len(m.Stacks[si].Containers))
 		for ci := range m.Stacks[si].Containers {
-			c := &m.Stacks[si].Containers[ci]
+			c := m.Stacks[si].Containers[ci]
 			c.Stats = DockerStats{}
 			c.Status = ""
+			st.Containers[ci] = c
 		}
-	}
-	b, err := json.Marshal(m)
-	if err != nil {
-		h := fnv.New64a()
-		_, _ = h.Write(payload)
-		return h.Sum64()
+		cp.Stacks[si] = st
 	}
 	h := fnv.New64a()
-	_, _ = h.Write(b)
+	enc := json.NewEncoder(hashWriter{h})
+	if err := enc.Encode(cp); err != nil {
+		// Unencodable metric: fall back to the raw struct's textual form so
+		// behaviour degrades to change-detection on that.
+		h.Reset()
+		_, _ = h.Write([]byte(err.Error()))
+	}
 	return h.Sum64()
 }
+
+// hashWriter streams the JSON encoding into the hash without buffering the
+// whole document.
+type hashWriter struct {
+	h interface{ Write([]byte) (int, error) }
+}
+
+func (w hashWriter) Write(p []byte) (int, error) { return w.h.Write(p) }

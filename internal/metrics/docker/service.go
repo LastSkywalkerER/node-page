@@ -9,13 +9,11 @@ import (
 	"github.com/charmbracelet/log"
 )
 
-// collectCacheTTL coalesces the two Collect calls the 5s metrics tick makes —
-// CollectAndSave (persist + replicate) and CollectAllCurrent (live/SSE payload)
-// — into ONE daemon scrape. The Docker scrape is the heavy part (one inspect +
-// stats per container, ~62 on a busy host); doing it twice per tick doubled
-// daemon load for identical data. A TTL well under the tick interval means each
-// tick still gets a fresh scrape, while the second call within the tick reuses
-// the first's result.
+// collectCacheTTL coalesces Collect calls that land within one tick — the
+// tick itself scrapes once, but an on-demand GET /metrics/current or a page
+// load arriving right behind it must not hit the daemon again for identical
+// data (one inspect + stats per container is the heavy part). A TTL well
+// under the tick interval means each tick still gets a fresh scrape.
 const collectCacheTTL = 2 * time.Second
 
 // Service defines the Docker metrics service interface.
@@ -97,9 +95,11 @@ func (s *service) Collect(ctx context.Context) (DockerMetric, error) {
 	}
 	s.logger.Debug("Docker metrics collected", "stacks_count", len(metrics.Stacks), "total_containers", metrics.TotalContainers)
 
+	// Stamp at completion, not at start: a scrape that outlives the TTL on
+	// a busy daemon must still shield the caller that arrives right behind it.
 	s.collectMu.Lock()
 	s.collectCached = metrics
-	s.collectCachedAt = now
+	s.collectCachedAt = s.clock()
 	s.collectMu.Unlock()
 	return metrics, nil
 }

@@ -94,7 +94,43 @@ type dockerMetricsCollector struct {
 	updateChecking    bool
 
 	// registryClient is used to resolve remote image versions (config blobs).
+	// inspectCache holds the inspect-only details per container. Everything
+	// inspect adds on top of the list summary is fixed for the life of a
+	// container (labels, configured image, cpu limit, mounts, created) or
+	// moves only with its state (finished-at) — so re-inspecting all N
+	// containers every tick was N daemon round-trips for identical data.
+	inspectCache map[string]*inspectDetails
+
+	// gatewayRoutes caches the cluster gateway route source (a DB read).
+	gatewayRoutes   []traefikRoute
+	gatewayRoutesAt time.Time
+
 	registryClient *http.Client
+}
+
+// inspectDetails is the subset of ContainerInspect the collector uses.
+type inspectDetails struct {
+	key         string // State|Created of the summary the details belong to
+	at          time.Time
+	labels      map[string]string
+	configImage string
+	imageID     string
+	created     string
+	finishedAt  string
+	cpuLimit    float64
+	mounts      []container.MountPoint
+}
+
+// inspectResync bounds how long cached inspect details are trusted without a
+// fresh daemon round-trip even when the summary key is unchanged.
+const inspectResync = 5 * time.Minute
+
+// gatewayRoutesTTL bounds how often the replicated gateway route table is
+// re-read for the Applications URL enrichment.
+const gatewayRoutesTTL = 30 * time.Second
+
+func inspectKey(ci container.Summary) string {
+	return ci.State + "|" + strconv.FormatInt(ci.Created, 10)
 }
 
 // imageUpdateInfo caches the registry update-check result for one image
@@ -164,6 +200,7 @@ func NewDockerCollector(logger *log.Logger, traefikDirs, nginxDirs []string) Doc
 		containerSizeCache: make(map[string]containerSize),
 		volumeSizeCache:    make(map[string]int64),
 		imageUpdateCache:   make(map[string]imageUpdateInfo),
+		inspectCache:       make(map[string]*inspectDetails),
 		registryClient:     &http.Client{},
 		traefikDirs:        traefikDirs,
 		nginxDirs:          nginxDirs,
@@ -172,6 +209,69 @@ func NewDockerCollector(logger *log.Logger, traefikDirs, nginxDirs []string) Doc
 
 // IsDockerAvailable checks if the Docker daemon is accessible and running.
 // This method caches the result for 5 seconds to avoid excessive API calls.
+// inspectDetailsFor returns the inspect-derived details for a container,
+// from cache when the summary key is unchanged and the entry is younger than
+// inspectResync; otherwise it inspects (falling back to the cached entry when
+// the daemon is slow). ok is false only when nothing is available.
+func (c *dockerMetricsCollector) inspectDetailsFor(ctx context.Context, ci container.Summary) (*inspectDetails, bool) {
+	key := inspectKey(ci)
+	c.cacheMutex.RLock()
+	cached := c.inspectCache[ci.ID]
+	c.cacheMutex.RUnlock()
+	if cached != nil && cached.key == key && time.Since(cached.at) < inspectResync {
+		return cached, true
+	}
+
+	containerJSON, err := c.client.ContainerInspect(ctx, ci.ID)
+	if err != nil {
+		if cached != nil {
+			// Slow daemon: serve the last known details rather than nothing.
+			c.logger.Debug("Container inspect failed - serving cached details", "container_id", ci.ID, "error", err)
+			return cached, true
+		}
+		return nil, false
+	}
+	if c.logger.GetLevel() <= log.DebugLevel {
+		containerJSONBytes, _ := json.Marshal(containerJSON)
+		c.logger.Debug("Container JSON details", "container_id", ci.ID, "json", string(containerJSONBytes))
+	}
+	d := &inspectDetails{
+		key:        key,
+		at:         time.Now(),
+		imageID:    containerJSON.Image,
+		created:    c.parseContainerCreatedTime(containerJSON.Created),
+		finishedAt: c.parseContainerFinishedTime(containerJSON.State.FinishedAt),
+		cpuLimit:   c.getCPULimit(containerJSON),
+		mounts:     containerJSON.Mounts,
+	}
+	if containerJSON.Config != nil {
+		d.labels = containerJSON.Config.Labels
+		d.configImage = containerJSON.Config.Image
+	}
+	c.cacheMutex.Lock()
+	c.inspectCache[ci.ID] = d
+	c.cacheMutex.Unlock()
+	return d, true
+}
+
+// cachedGatewayRoutes reads the gateway route source at most every
+// gatewayRoutesTTL (it is a cluster_config + routes DB read).
+func (c *dockerMetricsCollector) cachedGatewayRoutes(ctx context.Context, src ProxyRouteSource) []traefikRoute {
+	c.cacheMutex.RLock()
+	fresh := !c.gatewayRoutesAt.IsZero() && time.Since(c.gatewayRoutesAt) < gatewayRoutesTTL
+	routes := c.gatewayRoutes
+	c.cacheMutex.RUnlock()
+	if fresh {
+		return routes
+	}
+	routes = src(ctx)
+	c.cacheMutex.Lock()
+	c.gatewayRoutes = routes
+	c.gatewayRoutesAt = time.Now()
+	c.cacheMutex.Unlock()
+	return routes
+}
+
 func (c *dockerMetricsCollector) IsDockerAvailable(ctx context.Context) bool {
 	c.cacheMutex.Lock()
 	defer c.cacheMutex.Unlock()
@@ -262,22 +362,18 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 			}
 		}()
 
-		// Inspect adds only marginal fields (health/finished-at/cpu-limit,
-		// precise created, config image) on top of the list summary. On a
-		// slow daemon (wedged dokploy VMs) inspects time out wholesale -
-		// degrade to summary-only details instead of dropping the container,
-		// or the Applications view goes empty exactly when the operator
-		// needs it.
-		containerJSON, err := c.client.ContainerInspect(procCtx, containerInfo.ID)
-		inspected := err == nil
+		// Inspect adds only marginal fields (finished-at/cpu-limit, precise
+		// created, config image, mounts) on top of the list summary, all of
+		// them fixed per container lifecycle — served from the inspect cache
+		// and refreshed only when the summary's state/created key moves (or
+		// on the slow resync). On a slow daemon (wedged dokploy VMs) inspects
+		// time out wholesale - degrade to summary-only details instead of
+		// dropping the container, or the Applications view goes empty exactly
+		// when the operator needs it.
+		ins, inspected := c.inspectDetailsFor(procCtx, containerInfo)
 		if !inspected {
 			atomic.AddInt32(&degradedCount, 1)
-			c.logger.Debug("Container inspect failed - serving summary-only details", "container_id", containerInfo.ID, "error", err)
-		}
-
-		if inspected && c.logger.GetLevel() <= log.DebugLevel {
-			containerJSONBytes, _ := json.Marshal(containerJSON)
-			c.logger.Debug("Container JSON details", "container_id", containerInfo.ID, "json", string(containerJSONBytes))
+			c.logger.Debug("Container inspect failed - serving summary-only details", "container_id", containerInfo.ID)
 		}
 
 		// Parse container name (remove "/" prefix)
@@ -291,8 +387,8 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 		// Labels: the list summary carries the same compose labels; the
 		// inspect Config wins only because it is marginally fresher.
 		labels := containerInfo.Labels
-		if inspected && containerJSON.Config != nil {
-			labels = containerJSON.Config.Labels
+		if inspected && ins.labels != nil {
+			labels = ins.labels
 		}
 
 		// Extract stack name from compose labels first
@@ -316,7 +412,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 		// Get CPU limit from container configuration (inspect-only data)
 		var cpuLimit float64
 		if inspected {
-			cpuLimit = c.getCPULimit(containerJSON)
+			cpuLimit = ins.cpuLimit
 		}
 
 		// Get real statistics for running containers
@@ -342,8 +438,8 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 		finishedAt := ""
 		created := time.Unix(containerInfo.Created, 0).UTC().Format(time.RFC3339)
 		if inspected {
-			finishedAt = c.parseContainerFinishedTime(containerJSON.State.FinishedAt)
-			created = c.parseContainerCreatedTime(containerJSON.Created)
+			finishedAt = ins.finishedAt
+			created = ins.created
 		}
 
 		// Disk sizes: fresh from the daemon on slow cycles, cached otherwise.
@@ -354,7 +450,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 		// (the container-list "Image" can be a bare digest / short hex ID).
 		imageID := containerInfo.ImageID
 		if imageID == "" && inspected {
-			imageID = containerJSON.Image
+			imageID = ins.imageID
 		}
 
 		// Image update status from the (rarely-refreshed) registry check cache.
@@ -364,8 +460,8 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 		// source than the summary Image for swarm/dokploy; kept in-memory only to
 		// seed the update check.
 		configImage := ""
-		if inspected && containerJSON.Config != nil {
-			configImage = containerJSON.Config.Image
+		if inspected {
+			configImage = ins.configImage
 		}
 
 		// Prefer a human-readable repo:tag over a bare sha256: digest for display.
@@ -376,6 +472,11 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 			} else if r := stripImageDigest(configImage); isTrackableRef(r) {
 				displayImage = r
 			}
+		}
+
+		mounts := containerInfo.Mounts
+		if inspected {
+			mounts = ins.mounts
 		}
 
 		dockerContainer := DockerContainer{
@@ -396,7 +497,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 			ComposeWorkingDir:  labels["com.docker.compose.project.working_dir"],
 			SizeRw:             szRw,
 			SizeRootFs:         szRootFs,
-			Mounts:             c.convertMounts(mountsOf(inspected, containerJSON, containerInfo)),
+			Mounts:             c.convertMounts(mounts),
 			ImageID:            imageID,
 			UpdateAvailable:    upd.available,
 			UpdateChecked:      upd.checked,
@@ -489,8 +590,12 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 
 	c.logger.Debug("Docker metrics collected successfully", "total_containers", len(containers), "running_containers", int(runningCount), "stacks", len(dockerStacks))
 
-	// Log full content of all stacks and containers
+	// Log full content of all stacks and containers (debug only — the
+	// key/value arguments are evaluated eagerly, so gate the whole loop).
 	for i, stack := range dockerStacks {
+		if c.logger.GetLevel() > log.DebugLevel {
+			break
+		}
 		c.logger.Debug("Docker stack details", "stack_index", i, "stack_name", stack.Name, "containers_count", len(stack.Containers), "running_containers", stack.RunningContainers)
 		for j, ctr := range stack.Containers {
 			c.logger.Debug("Docker container details",
@@ -549,6 +654,11 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 			delete(c.containerSizeCache, id)
 		}
 	}
+	for id := range c.inspectCache {
+		if _, ok := currentIDs[id]; !ok {
+			delete(c.inspectCache, id)
+		}
+	}
 	for id := range c.imageUpdateCache {
 		if _, ok := currentImageIDs[id]; !ok {
 			delete(c.imageUpdateCache, id)
@@ -559,7 +669,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 	// Kick off a background registry update check on the slow cadence. Targets
 	// carry the configured image + summary image so digest-pinned swarm images
 	// can recover a registry-trackable repo:tag.
-	c.maybeRefreshImageUpdates(buildImageCheckTargets(dockerStacks))
+	c.maybeRefreshImageUpdates(func() []imageCheckTarget { return buildImageCheckTargets(dockerStacks) })
 
 	metric := DockerMetric{
 		Stacks:            dockerStacks,
@@ -586,7 +696,7 @@ func (c *dockerMetricsCollector) CollectDockerMetrics(ctx context.Context) (Dock
 	// exists only on the gateway node, but the apps it publishes may run on THIS
 	// node — so read the routes from the DB-backed source instead of the disk.
 	if src := proxyRouteSource(); src != nil {
-		enrichWithProxyRoutes(&metric, src(ctx), c.logger)
+		enrichWithProxyRoutes(&metric, c.cachedGatewayRoutes(ctx, src), c.logger)
 	}
 
 	return metric, nil
@@ -821,7 +931,7 @@ func buildImageCheckTargets(stacks []DockerStack) []imageCheckTarget {
 
 // maybeRefreshImageUpdates launches a background registry update check when the
 // interval has elapsed and one is not already running. Never blocks collection.
-func (c *dockerMetricsCollector) maybeRefreshImageUpdates(targets []imageCheckTarget) {
+func (c *dockerMetricsCollector) maybeRefreshImageUpdates(buildTargets func() []imageCheckTarget) {
 	c.cacheMutex.Lock()
 	due := c.lastUpdateCheckAt.IsZero() || time.Since(c.lastUpdateCheckAt) >= updateCheckInterval
 	if !due || c.updateChecking || c.client == nil {
@@ -832,7 +942,9 @@ func (c *dockerMetricsCollector) maybeRefreshImageUpdates(targets []imageCheckTa
 	c.lastUpdateCheckAt = time.Now()
 	c.cacheMutex.Unlock()
 
-	go c.refreshImageUpdates(targets)
+	// The target list is only built when a check is actually due (hourly),
+	// not allocated and discarded on every tick.
+	go c.refreshImageUpdates(buildTargets())
 }
 
 // refreshImageUpdates queries the registry for each distinct image and caches
@@ -1173,15 +1285,6 @@ func (c *dockerMetricsCollector) refreshVolumeSizes() {
 
 // convertMounts maps Docker mount points to our DockerMount structure, annotating
 // named volumes with their cached on-disk size.
-// mountsOf prefers the inspect mounts and falls back to the list summary's
-// when the inspect was skipped (degraded mode on a slow daemon).
-func mountsOf(inspected bool, cj container.InspectResponse, ci container.Summary) []container.MountPoint {
-	if inspected {
-		return cj.Mounts
-	}
-	return ci.Mounts
-}
-
 func (c *dockerMetricsCollector) convertMounts(mounts []container.MountPoint) []DockerMount {
 	out := make([]DockerMount, 0, len(mounts))
 	// refreshVolumeSizes replaces the map wholesale, so a snapshot reference is

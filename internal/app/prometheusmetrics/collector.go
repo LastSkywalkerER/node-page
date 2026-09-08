@@ -2,15 +2,9 @@
 package prometheusmetrics
 
 import (
-	"context"
-	"time"
-
 	"github.com/prometheus/client_golang/prometheus"
 
-	cpu "system-stats/internal/metrics/cpu"
-	disk "system-stats/internal/metrics/disk"
-	memory "system-stats/internal/metrics/memory"
-	network "system-stats/internal/metrics/network"
+	system "system-stats/internal/platform/system"
 )
 
 var (
@@ -31,16 +25,16 @@ var (
 	descNetBytesRecv = prometheus.NewDesc("system_network_bytes_recv_total", "Total bytes received per network interface.", []string{"interface"}, nil)
 )
 
-// SystemCollector implements prometheus.Collector and exposes live system metrics.
+// SystemCollector implements prometheus.Collector over the metrics tick's
+// latest snapshot. A scrape never scans the OS itself: doing so re-sampled
+// every collector on top of the tick and, for network, reset the rate
+// baseline the SSE stream relies on.
 type SystemCollector struct {
-	cpu     cpu.Service
-	memory  memory.Service
-	disk    disk.Service
-	network network.Service
+	sys system.Service
 }
 
-func newSystemCollector(c cpu.Service, mem memory.Service, d disk.Service, net network.Service) *SystemCollector {
-	return &SystemCollector{cpu: c, memory: mem, disk: d, network: net}
+func newSystemCollector(sys system.Service) *SystemCollector {
+	return &SystemCollector{sys: sys}
 }
 
 // Describe sends all descriptor pointers to the channel.
@@ -59,31 +53,30 @@ func (c *SystemCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- descNetBytesRecv
 }
 
-// Collect fetches fresh metrics from each service and sends them to the channel.
+// Collect exposes the latest tick snapshot. Modules missing from the snapshot
+// (collector failed that tick, or no tick yet) are simply not exported.
 func (c *SystemCollector) Collect(ch chan<- prometheus.Metric) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if m, err := c.cpu.Collect(ctx); err == nil {
+	snap, ok := c.sys.Latest()
+	if !ok {
+		return
+	}
+	if m := snap.CPU; m != nil {
 		ch <- prometheus.MustNewConstMetric(descCPUUsage, prometheus.GaugeValue, m.UsagePercent)
 		ch <- prometheus.MustNewConstMetric(descCPULoadAvg1, prometheus.GaugeValue, m.LoadAvg1)
 		ch <- prometheus.MustNewConstMetric(descCPULoadAvg5, prometheus.GaugeValue, m.LoadAvg5)
 		ch <- prometheus.MustNewConstMetric(descCPULoadAvg15, prometheus.GaugeValue, m.LoadAvg15)
 	}
-
-	if m, err := c.memory.Collect(ctx); err == nil {
+	if m := snap.Memory; m != nil {
 		ch <- prometheus.MustNewConstMetric(descMemUsage, prometheus.GaugeValue, m.UsagePercent)
 		ch <- prometheus.MustNewConstMetric(descMemUsed, prometheus.GaugeValue, float64(m.Used))
 		ch <- prometheus.MustNewConstMetric(descMemTotal, prometheus.GaugeValue, float64(m.Total))
 	}
-
-	if m, err := c.disk.Collect(ctx); err == nil {
+	if m := snap.Disk; m != nil {
 		ch <- prometheus.MustNewConstMetric(descDiskUsage, prometheus.GaugeValue, m.UsagePercent)
 		ch <- prometheus.MustNewConstMetric(descDiskUsed, prometheus.GaugeValue, float64(m.Used))
 		ch <- prometheus.MustNewConstMetric(descDiskTotal, prometheus.GaugeValue, float64(m.Total))
 	}
-
-	if m, err := c.network.Collect(ctx); err == nil {
+	if m := snap.Network; m != nil {
 		for _, iface := range m.Interfaces {
 			ch <- prometheus.MustNewConstMetric(descNetBytesSent, prometheus.CounterValue, float64(iface.BytesSent), iface.Name)
 			ch <- prometheus.MustNewConstMetric(descNetBytesRecv, prometheus.CounterValue, float64(iface.BytesRecv), iface.Name)

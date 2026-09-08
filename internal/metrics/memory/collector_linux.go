@@ -8,9 +8,52 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/charmbracelet/log"
 )
+
+// Where the host's proc/sys/root live never changes while the process runs,
+// yet each tick used to re-stat /host, /host/sys and /host/proc to find out.
+// Resolve once.
+var (
+	hostPathsOnce sync.Once
+	hostProcPath  string
+	hostRootPath  string
+	hostSysPath   string
+)
+
+func resolveHostPaths() {
+	hostPathsOnce.Do(func() {
+		hostProcPath = hostProcDir()
+		hostRootPath = hostRootDir()
+		hostSysPath = hostSysDir()
+	})
+}
+
+// The installed RAM only changes on memory hotplug, but the sysfs walk that
+// derives it opens one file per memory block — a 128 GB host has ~1000
+// blocks. Re-derive it on a slow cadence instead of every tick.
+const sysfsRAMRefresh = 10 * time.Minute
+
+var (
+	sysfsRAMMu sync.Mutex
+	sysfsRAM   uint64
+	sysfsRAMOK bool
+	sysfsRAMAt time.Time
+)
+
+func cachedSysfsOnlineRAMBytes(hostSys string) (uint64, bool) {
+	sysfsRAMMu.Lock()
+	defer sysfsRAMMu.Unlock()
+	if !sysfsRAMAt.IsZero() && time.Since(sysfsRAMAt) < sysfsRAMRefresh {
+		return sysfsRAM, sysfsRAMOK
+	}
+	sysfsRAM, sysfsRAMOK = readSysfsOnlineRAMBytes(hostSys)
+	sysfsRAMAt = time.Now()
+	return sysfsRAM, sysfsRAMOK
+}
 
 // hostProcDir returns the proc path used for host metrics (HOST_PROC or /host/proc).
 func hostProcDir() string {
@@ -54,12 +97,10 @@ func hostSysDir() string {
 	return "/sys"
 }
 
-// hostInitMeminfoPath is meminfo visible from PID 1's mount namespace on the host.
-// Reading /host/proc/meminfo from a container often still reflects the reader's cgroup;
-// this path usually yields real host RAM when /host is the host root bind-mount.
-func hostInitMeminfoPath() string {
-	return filepath.Join(hostProcDir(), "1/root/proc/meminfo")
-}
+// The meminfo visible from PID 1's mount namespace on the host
+// (<proc>/1/root/proc/meminfo): reading /host/proc/meminfo from a container
+// often still reflects the reader's cgroup, while this path usually yields
+// real host RAM when /host is the host root bind-mount.
 
 // readSysfsOnlineRAMBytes returns total online RAM from sysfs memory blocks (host view when hostSys is /host/sys).
 func readSysfsOnlineRAMBytes(hostSys string) (uint64, bool) {
@@ -115,19 +156,21 @@ func readHostCgroupV2MemoryCurrent(hostRoot string) (uint64, bool) {
 // tryVirtualMemoryFromHostInit prefers host-accurate RAM: sysfs total + cgroup v2 root usage when meminfo MemTotal
 // looks like a cgroup cap (common under Docker in LXC). Otherwise uses PID 1 mount-ns meminfo when plausible.
 func tryVirtualMemoryFromHostInit(logger *log.Logger) (MemoryMetric, bool) {
-	hostRoot := hostRootDir()
-	hostSys := hostSysDir()
-	phys, physOK := readSysfsOnlineRAMBytes(hostSys)
+	resolveHostPaths()
+	hostRoot, hostSys := hostRootPath, hostSysPath
+	phys, physOK := cachedSysfsOnlineRAMBytes(hostSys)
 
-	path := hostInitMeminfoPath()
+	path := filepath.Join(hostProcPath, "1/root/proc/meminfo")
+	var parsed *meminfoKBParsed
 	f, err := os.Open(path)
 	if err == nil {
-		parsed, perr := parseMeminfoKBytes(f)
+		p, perr := parseMeminfoKBytes(f)
 		_ = f.Close()
-		if perr == nil && parsed.total > 0 {
-			cgroupLike := physOK && phys > 0 && parsed.total < phys*85/100
+		if perr == nil && p.total > 0 {
+			parsed = &p
+			cgroupLike := physOK && phys > 0 && p.total < phys*85/100
 			if !cgroupLike {
-				m := parsed.toEntity()
+				m := p.toEntity()
 				if logger != nil {
 					logger.Debug("Using host init namespace meminfo", "path", path, "total", m.Total, "used_percent", m.UsagePercent)
 				}
@@ -138,7 +181,7 @@ func tryVirtualMemoryFromHostInit(logger *log.Logger) (MemoryMetric, bool) {
 
 	used, cgOK := readHostCgroupV2MemoryCurrent(hostRoot)
 	if physOK && cgOK && used <= phys {
-		m := memoryMetricFromSysfsAndCgroup(phys, used, path)
+		m := memoryMetricFromSysfsAndCgroup(phys, used, parsed)
 		if logger != nil {
 			logger.Debug("Using sysfs RAM total + host cgroup v2 memory.current", "phys", phys, "used", used, "meminfo_path", path, "host_sys", hostSys, "host_root", hostRoot)
 		}
@@ -149,14 +192,11 @@ func tryVirtualMemoryFromHostInit(logger *log.Logger) (MemoryMetric, bool) {
 }
 
 // memoryMetricFromSysfsAndCgroup builds metrics when total comes from sysfs and used from cgroup root.
-// Swap lines are taken from init meminfo when readable (usually system-wide).
-func memoryMetricFromSysfsAndCgroup(phys, used uint64, initMeminfoPath string) MemoryMetric {
+// Swap lines come from the init-namespace meminfo already parsed by the caller (nil when unreadable).
+func memoryMetricFromSysfsAndCgroup(phys, used uint64, initMeminfo *meminfoKBParsed) MemoryMetric {
 	var swapTotal, swapFree uint64
-	if f, err := os.Open(initMeminfoPath); err == nil {
-		if p, err := parseMeminfoKBytes(f); err == nil {
-			swapTotal, swapFree = p.swapTotal, p.swapFree
-		}
-		_ = f.Close()
+	if initMeminfo != nil {
+		swapTotal, swapFree = initMeminfo.swapTotal, initMeminfo.swapFree
 	}
 	swapUsed := uint64(0)
 	if swapTotal > swapFree {
@@ -188,9 +228,9 @@ func memoryMetricFromSysfsAndCgroup(phys, used uint64, initMeminfoPath string) M
 type meminfoKBParsed struct {
 	total, available, free, cached, buffers uint64
 	sreclaimable                            uint64
-	active, inactive, shared               uint64
-	swapTotal, swapFree                    uint64
-	memAvail                               bool
+	active, inactive, shared                uint64
+	swapTotal, swapFree                     uint64
+	memAvail                                bool
 }
 
 func parseMeminfoKBytes(r interface{ Read([]byte) (int, error) }) (meminfoKBParsed, error) {

@@ -110,6 +110,17 @@ func (c *NetworkSpeedCalculator) CalculateSpeed(
 		return NetworkSpeed{SpeedMbps: 0, Throughput: throughput, SpeedKbpsSent: 0, SpeedKbpsRecv: 0}
 	}
 
+	// A counter below its previous sample means the interface was reset or
+	// re-created (a bridge/veth torn down and rebuilt, a NIC re-plugged):
+	// the unsigned subtraction would wrap to ~1.8e19 and show up as a
+	// 10^16 kbps spike. Re-baseline and report zero for this interval.
+	if currentBytesSent < prev.BytesSent || currentBytesRecv < prev.BytesRecv {
+		c.interfaceData[name] = currentData
+		speed := NetworkSpeed{Throughput: throughput}
+		c.lastSpeed[name] = speed
+		return speed
+	}
+
 	sentBytesPerSecond := float64(currentBytesSent-prev.BytesSent) / timeDiff
 	recvBytesPerSecond := float64(currentBytesRecv-prev.BytesRecv) / timeDiff
 

@@ -6,55 +6,54 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
-	"golang.org/x/sync/errgroup"
 
 	hosts "system-stats/internal/cluster/hosts"
+	system "system-stats/internal/platform/system"
 )
 
-// MetricsSaver defines the interface for module services
-type MetricsSaver interface {
-	CollectAndSave(ctx context.Context, hostId uint) error
+// SnapshotSource scans every module once and persists a snapshot — the
+// system service. The tick owns the cadence; the source owns the modules.
+type SnapshotSource interface {
+	CollectSnapshot(ctx context.Context) (system.Snapshot, error)
+	SaveSnapshot(ctx context.Context, snap system.Snapshot, hostID uint) error
 }
 
-type metricsCollector struct {
-	services []MetricsSaver
-}
-
-// NewMetricsCollector creates a new metrics collector from the given savers.
-func NewMetricsCollector(services ...MetricsSaver) *metricsCollector {
-	return &metricsCollector{
-		services: services,
-	}
-}
+// AfterCollectFunc receives every tick's snapshot plus the local host row as
+// of the most recent successful registration (nil until one succeeded).
+type AfterCollectFunc func(snap system.Snapshot, host *hosts.Host)
 
 type historicalMetricsService struct {
-	logger           *log.Logger
-	metricsCollector *metricsCollector
-	hostService      hosts.Service
-	afterCollect     func()
-	ticker           *time.Ticker
-	stopChan         chan struct{}
-	isRunning        bool
-	stopMutex        sync.Mutex
+	logger       *log.Logger
+	source       SnapshotSource
+	hostService  hosts.Service
+	afterCollect AfterCollectFunc
+	ticker       *time.Ticker
+	stopChan     chan struct{}
+	isRunning    bool
+	stopMutex    sync.Mutex
+
+	hostMu   sync.Mutex
+	lastHost *hosts.Host
 }
 
 // NewHistoricalMetricsService creates a new historical metrics service.
 func NewHistoricalMetricsService(
 	logger *log.Logger,
-	metricsCollector *metricsCollector,
+	source SnapshotSource,
 	hostService hosts.Service,
 ) HistoricalMetricsService {
 	return &historicalMetricsService{
-		logger:           logger,
-		metricsCollector: metricsCollector,
-		hostService:      hostService,
-		stopChan:         make(chan struct{}),
+		logger:      logger,
+		source:      source,
+		hostService: hostService,
+		stopChan:    make(chan struct{}),
 	}
 }
 
-// WithAfterCollect sets a hook called after every successful collection cycle.
-// Used to publish metrics to the SSE broker without coupling this service to the stream package.
-func WithAfterCollect(svc HistoricalMetricsService, fn func()) HistoricalMetricsService {
+// WithAfterCollect sets a hook called after every collection cycle with that
+// cycle's snapshot. Used to publish metrics to the SSE broker and the cluster
+// metric stream without coupling this service to those packages.
+func WithAfterCollect(svc HistoricalMetricsService, fn AfterCollectFunc) HistoricalMetricsService {
 	s := svc.(*historicalMetricsService)
 	s.afterCollect = fn
 	return s
@@ -64,13 +63,22 @@ func (s *historicalMetricsService) CollectAndSaveMetrics(ctx context.Context) er
 	return s.runCycle(ctx, true)
 }
 
-// runCycle runs one collection cycle. When persist is true it registers the
-// current host and writes every module's metrics to the DB. The live fan-out
-// (afterCollect → SSE + cluster stream) runs on EVERY cycle regardless, so live
+// runCycle runs one collection cycle: ONE scan of every module, then — on
+// persist cycles only — the host registration and the DB writes, then the
+// live fan-out (afterCollect → SSE + cluster stream) on EVERY cycle. Live
 // updates stay at the collection cadence while the expensive DB writes (and
-// their WAL / autovacuum churn) happen only on persist cycles.
+// their WAL / autovacuum churn) happen only on persist cycles, and the OS is
+// never scanned twice for the same tick.
 func (s *historicalMetricsService) runCycle(ctx context.Context, persist bool) error {
 	s.logger.Debug("Starting metrics collection cycle", "persist", persist)
+
+	collectCtx, collectCancel := context.WithTimeout(ctx, 15*time.Second)
+	snap, err := s.source.CollectSnapshot(collectCtx)
+	collectCancel()
+	if err != nil {
+		s.logger.Error("Metrics collection failed", "error", err)
+		return err
+	}
 
 	if persist {
 		// Register/update the current host. CollectHostInfo has its own internal
@@ -82,32 +90,34 @@ func (s *historicalMetricsService) runCycle(ctx context.Context, persist bool) e
 			// Skip the DB writes this cycle but still run the live fan-out below.
 			s.logger.Error("Failed to register/update current host", "error", err)
 		} else {
-			hostId := host.ID
-			s.logger.Debug("Current host registered/updated", "host_id", hostId, "name", host.Name)
-
-			// Collect + save each module in parallel. Each gets its own 15s
-			// deadline so a slow/hung collector (e.g. Docker on macOS) can't stall
-			// the goroutine; a per-service failure is logged, never propagated.
-			g, gctx := errgroup.WithContext(ctx)
-			for _, service := range s.metricsCollector.services {
-				svc := service
-				g.Go(func() error {
-					serviceCtx, cancel := context.WithTimeout(gctx, 15*time.Second)
-					defer cancel()
-					if err := svc.CollectAndSave(serviceCtx, hostId); err != nil {
-						s.logger.Error("Failed to collect and save metrics", "error", err, "host_id", hostId)
-					}
-					return nil
-				})
-			}
-			_ = g.Wait()
+			s.setLastHost(host)
+			s.logger.Debug("Current host registered/updated", "host_id", host.ID, "name", host.Name)
+			saveCtx, saveCancel := context.WithTimeout(ctx, 20*time.Second)
+			_ = s.source.SaveSnapshot(saveCtx, snap, host.ID)
+			saveCancel()
 		}
 	}
 
 	if s.afterCollect != nil {
-		s.afterCollect()
+		s.afterCollect(snap, s.getLastHost())
 	}
 	return nil
+}
+
+func (s *historicalMetricsService) setLastHost(h *hosts.Host) {
+	if h == nil {
+		return
+	}
+	cp := *h
+	s.hostMu.Lock()
+	s.lastHost = &cp
+	s.hostMu.Unlock()
+}
+
+func (s *historicalMetricsService) getLastHost() *hosts.Host {
+	s.hostMu.Lock()
+	defer s.hostMu.Unlock()
+	return s.lastHost
 }
 
 func (s *historicalMetricsService) StartPeriodicCollection(ctx context.Context, interval, persistInterval time.Duration) error {

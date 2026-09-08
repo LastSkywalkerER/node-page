@@ -15,12 +15,15 @@ package hostnet
 //     netns, i.e. the host's)
 
 import (
+	"context"
 	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	gopsutilnet "github.com/shirou/gopsutil/v4/net"
 )
@@ -41,11 +44,11 @@ type hostRoute struct {
 // in-container UDP-dial probe only ever sees the docker bridge address
 // (172.x). Returns "" natively or when the host view is unavailable.
 func HostPrimaryIPv4() string {
-	details, def, ok := HostNetNS()
-	if !ok || def == "" {
+	t := CurrentTopology(context.Background())
+	if !t.HostNS || t.HostDefault == "" {
 		return ""
 	}
-	if d := details[def]; d != nil && len(d.IPs) > 0 {
+	if d := t.HostIfaces[t.HostDefault]; d != nil && len(d.IPs) > 0 {
 		return d.IPs[0]
 	}
 	return ""
@@ -247,4 +250,117 @@ func matchRouteIface(routes []hostRoute, ip net.IP) string {
 		}
 	}
 	return best
+}
+
+// ---------------------------------------------------------------------------
+// Cached network topology
+//
+// Interface addresses, MACs and the default-route interface change rarely,
+// but every metrics tick used to rediscover them: parse fib_trie + route and
+// read a sysfs file per interface (host-mounted), or UDP-dial for the primary
+// IP and ask netlink for every interface's addresses — which the standard
+// library answers with one full RTM_GETADDR dump PER interface (13 sockets a
+// tick on a 12-interface host). Per-interface COUNTERS still come fresh from
+// /proc/net/dev each tick; only the topology is cached here, shared by the
+// network collector and the host registration.
+
+// Topology is the slow-changing part of the network view.
+type Topology struct {
+	// HostNS is true when the view comes from the host's PID 1 netns
+	// (Docker deployment with HOST_PROC); then HostIfaces/HostDefault are
+	// set. Otherwise PrimaryIP/Ifaces describe the reader's own namespace.
+	HostNS      bool
+	HostIfaces  map[string]*HostIface
+	HostDefault string
+
+	PrimaryIP string
+	Ifaces    gopsutilnet.InterfaceStatList
+
+	At time.Time
+
+	// knownNames are the interface names seen by the caller when this
+	// topology was current; an unseen name means an interface appeared and
+	// triggers an early refresh (see NoteNames / CurrentTopology).
+	knownMu    sync.Mutex
+	knownNames map[string]struct{}
+}
+
+const (
+	topologyTTL      = 60 * time.Second
+	topologyMinRenew = 10 * time.Second
+)
+
+var (
+	topoMu  sync.Mutex
+	topoCur *Topology
+)
+
+// CurrentTopology returns the cached topology, refreshing it when older than
+// topologyTTL.
+func CurrentTopology(ctx context.Context) *Topology {
+	topoMu.Lock()
+	cur := topoCur
+	topoMu.Unlock()
+	if cur != nil && time.Since(cur.At) < topologyTTL {
+		return cur
+	}
+	return RefreshTopology(ctx)
+}
+
+// RefreshTopology rediscovers the topology now (rate-limited to once per
+// topologyMinRenew so a flapping interface can't turn this into a per-tick
+// scan again).
+func RefreshTopology(ctx context.Context) *Topology {
+	topoMu.Lock()
+	defer topoMu.Unlock()
+	if topoCur != nil && time.Since(topoCur.At) < topologyMinRenew {
+		return topoCur
+	}
+	t := &Topology{At: time.Now(), knownNames: make(map[string]struct{})}
+	if details, def, ok := HostNetNS(); ok {
+		t.HostNS = true
+		t.HostIfaces = details
+		t.HostDefault = def
+	} else {
+		t.PrimaryIP, t.Ifaces = NativeView(ctx)
+	}
+	topoCur = t
+	return t
+}
+
+// NativeView reads the reader's own network namespace: the primary IP (the
+// kernel picks the outbound interface for a UDP "dial" — no packet is sent)
+// and every interface with its addresses/MAC. Uncached; RefreshTopology is
+// the cached entry point.
+func NativeView(ctx context.Context) (primaryIP string, ifaces gopsutilnet.InterfaceStatList) {
+	if conn, err := net.Dial("udp", "8.8.8.8:80"); err == nil {
+		if udpAddr, ok := conn.LocalAddr().(*net.UDPAddr); ok && udpAddr.IP != nil {
+			primaryIP = udpAddr.IP.String()
+		}
+		_ = conn.Close()
+	}
+	if list, err := gopsutilnet.InterfacesWithContext(ctx); err == nil {
+		ifaces = list
+	}
+	return primaryIP, ifaces
+}
+
+// NoteNames records the interface names the caller observed under this
+// topology and reports whether any of them is new since the topology was
+// built — the signal that an interface appeared and the cache is stale.
+func (t *Topology) NoteNames(names []string) (unseen bool) {
+	t.knownMu.Lock()
+	defer t.knownMu.Unlock()
+	if len(t.knownNames) == 0 {
+		for _, n := range names {
+			t.knownNames[n] = struct{}{}
+		}
+		return false
+	}
+	for _, n := range names {
+		if _, ok := t.knownNames[n]; !ok {
+			return true
+		}
+	}
+	return false
 }

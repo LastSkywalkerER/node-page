@@ -5,7 +5,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
-	"github.com/shirou/gopsutil/v4/sensors"
+
+	"system-stats/internal/platform/hwsensors"
 )
 
 type sensorsCollector struct {
@@ -16,16 +17,14 @@ func newSensorsCollector(logger *log.Logger) *sensorsCollector {
 	return &sensorsCollector{logger: logger}
 }
 
+// Collect returns the current temperature sensors through the shared reader
+// (one cached, time-bounded read per tick, shared with the cpu collector).
 func (c *sensorsCollector) Collect(ctx context.Context) (TemperatureMetric, error) {
 	c.logger.Debug("Collecting temperature sensors")
-	temps, err := sensors.TemperaturesWithContext(ctx)
+	temps, err := hwsensors.Temperatures(ctx)
 	if err != nil {
-		c.logger.Warn("Failed to collect temperatures with context, trying fallback", "error", err)
-		temps, err = sensors.SensorsTemperatures()
-		if err != nil {
-			c.logger.Error("Failed to collect temperatures", "error", err)
-			return TemperatureMetric{Timestamp: time.Now(), Sensors: []TemperatureStat{}}, nil
-		}
+		c.logger.Debug("No temperature sensors available", "error", err)
+		return TemperatureMetric{Timestamp: time.Now(), Sensors: []TemperatureStat{}}, nil
 	}
 
 	out := make([]TemperatureStat, 0, len(temps))

@@ -26,10 +26,24 @@ func (c *networkCollector) Collect(ctx context.Context) (NetworkMetric, error) {
 		return NetworkMetric{}, err
 	}
 
+	// Addresses / MACs / primary interface change rarely and are served from
+	// the shared topology cache (hostnet); only the counters above are read
+	// fresh every tick. An interface name we have never seen under the
+	// current topology (a new veth, a VPN coming up) refreshes it early.
+	topo := hostnet.CurrentTopology(ctx)
+	names := make([]string, 0, len(netStats))
+	for _, st := range netStats {
+		names = append(names, st.Name)
+	}
+	if topo.NoteNames(names) {
+		topo = hostnet.RefreshTopology(ctx)
+		topo.NoteNames(names)
+	}
+
 	// Docker deployment: take the WHOLE view (counters + addresses + MAC +
 	// primary) from the host's network namespace via HOST_PROC/1/net — both
 	// gopsutil paths below resolve to the container's netns otherwise.
-	hostIfaces, hostDefault, hostNS := hostnet.HostNetNS()
+	hostIfaces, hostDefault, hostNS := topo.HostIfaces, topo.HostDefault, topo.HostNS
 	if hostNS {
 		if hostStats, herr := hostnet.ParseHostNetDev(); herr == nil && len(hostStats) > 0 {
 			netStats = hostStats
@@ -40,21 +54,17 @@ func (c *networkCollector) Collect(ctx context.Context) (NetworkMetric, error) {
 		}
 	}
 
-	// Determine primary interface by local IP using UDP dial trick
+	// Native: primary interface by the kernel-picked outbound address.
 	primaryIP := ""
-	if !hostNS {
-		if conn, dialErr := net.Dial("udp", "8.8.8.8:80"); dialErr == nil {
-			if udpAddr, ok := conn.LocalAddr().(*net.UDPAddr); ok && udpAddr.IP != nil {
-				primaryIP = udpAddr.IP.String()
-			}
-			conn.Close()
-		}
-	}
-
-	// Also fetch interface address info to map names to IPs
 	var ifaceDetails gopsutilnet.InterfaceStatList
 	if !hostNS {
-		ifaceDetails, _ = gopsutilnet.InterfacesWithContext(ctx)
+		primaryIP, ifaceDetails = topo.PrimaryIP, topo.Ifaces
+		if topo.HostNS {
+			// Host view configured but its counters were unreadable this
+			// tick: the cached topology carries no in-namespace details, so
+			// resolve them directly for this (rare) fallback pass.
+			primaryIP, ifaceDetails = hostnet.NativeView(ctx)
+		}
 	}
 
 	interfaces := make([]NetworkInterface, 0, len(netStats))

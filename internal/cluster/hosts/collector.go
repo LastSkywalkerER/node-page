@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/shirou/gopsutil/v4/host"
@@ -15,10 +17,28 @@ import (
 	hostnet "system-stats/internal/platform/hostnet"
 )
 
+func init() {
+	// gopsutil re-derives the boot time from /proc/stat (scanning past the
+	// multi-KB intr line) on every call unless told to cache it. It is
+	// constant for the life of the process.
+	host.EnableBootTimeCache(true)
+}
+
+// staticInfoRefresh bounds how often the OS identity (platform, kernel,
+// virtualization, host id) is re-read. gopsutil's host.Info walks /etc/*-release,
+// may fork lsb_release, and lists ALL of /proc to count processes — once an
+// hour is plenty for values that only move on an OS upgrade.
+const staticInfoRefresh = time.Hour
+
 // HostCollector implements the HostCollector interface.
 // This collector gathers host information including hostname and MAC address.
 type HostCollector struct {
 	logger *log.Logger
+
+	staticMu    sync.Mutex
+	staticInfo  *host.InfoStat
+	staticAt    time.Time
+	productUUID string
 }
 
 // newHostCollector creates a new host collector instance.
@@ -27,19 +47,43 @@ func newHostCollector(logger *log.Logger) *HostCollector {
 	return &HostCollector{logger: logger}
 }
 
+// osIdentity returns the (cached) static OS identity plus the SMBIOS UUID.
+func (c *HostCollector) osIdentity(ctx context.Context) (*host.InfoStat, string, error) {
+	c.staticMu.Lock()
+	defer c.staticMu.Unlock()
+	if c.staticInfo != nil && time.Since(c.staticAt) < staticInfoRefresh {
+		return c.staticInfo, c.productUUID, nil
+	}
+	info, err := host.InfoWithContext(ctx)
+	if err != nil {
+		if c.staticInfo != nil {
+			return c.staticInfo, c.productUUID, nil // serve the previous value
+		}
+		return nil, "", err
+	}
+	c.staticInfo = info
+	c.staticAt = time.Now()
+	c.productUUID = readProductUUID()
+	return info, c.productUUID, nil
+}
+
 // CollectHostInfo gathers current host information including hostname and MAC address.
 // This method collects host info using cross-platform system monitoring libraries (gopsutil).
 func (c *HostCollector) CollectHostInfo(ctx context.Context) (HostInfo, error) {
 	c.logger.Debug("Collecting host information")
 
-	// Get hostname and system info
-	hostInfo, err := host.InfoWithContext(ctx)
+	// Static OS identity (cached); hostname is re-read each time — it is
+	// cheap and an operator may rename the machine.
+	hostInfo, productUUID, err := c.osIdentity(ctx)
 	if err != nil {
-		c.logger.Error("Failed to collect hostname", "error", err)
+		c.logger.Error("Failed to collect host information", "error", err)
 		return HostInfo{}, err
 	}
 
 	hostname := hostInfo.Hostname
+	if h, herr := os.Hostname(); herr == nil && h != "" {
+		hostname = h
+	}
 	if override := strings.TrimSpace(os.Getenv("NODE_STATS_HOSTNAME")); override != "" {
 		hostname = override
 		c.logger.Debug("Hostname from NODE_STATS_HOSTNAME", "hostname", hostname)
@@ -53,21 +97,31 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (HostInfo, error) {
 		}
 	}
 
-	// Determine primary local IP via UDP dial trick
-	// This does not actually send traffic but lets kernel pick the outbound interface
-	primaryIP := ""
-	if conn, dialErr := net.Dial("udp", "8.8.8.8:80"); dialErr == nil {
-		if udpAddr, ok := conn.LocalAddr().(*net.UDPAddr); ok && udpAddr.IP != nil {
-			primaryIP = udpAddr.IP.String()
+	// Primary local IP + interface list come from the shared topology cache
+	// (hostnet): the UDP "dial" (kernel picks the outbound interface, no
+	// packet is sent) and the per-interface netlink address dumps are
+	// refreshed on its slow cadence, not on every registration.
+	topo := hostnet.CurrentTopology(ctx)
+	primaryIP := topo.PrimaryIP
+	interfaces := topo.Ifaces
+	if topo.HostNS {
+		// Host-mounted view: the topology carries the host's addresses, but
+		// the MAC that identifies this row must stay container-based (see
+		// below), so list the reader's own interfaces here.
+		var ierr error
+		interfaces, ierr = gopsutilnet.InterfacesWithContext(ctx)
+		if ierr != nil {
+			c.logger.Error("Failed to collect network interfaces", "error", ierr)
+			return HostInfo{}, ierr
 		}
-		conn.Close()
 	}
-
-	// Get network interfaces to find MAC address; prefer interface matching primaryIP
-	interfaces, err := gopsutilnet.InterfacesWithContext(ctx)
-	if err != nil {
-		c.logger.Error("Failed to collect network interfaces", "error", err)
-		return HostInfo{}, err
+	if len(interfaces) == 0 {
+		var ierr error
+		interfaces, ierr = gopsutilnet.InterfacesWithContext(ctx)
+		if ierr != nil {
+			c.logger.Error("Failed to collect network interfaces", "error", ierr)
+			return HostInfo{}, ierr
+		}
 	}
 
 	var macAddress string
@@ -222,6 +276,11 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (HostInfo, error) {
 		}
 	}
 
+	bootTime := hostInfo.BootTime
+	if bt, berr := host.BootTimeWithContext(ctx); berr == nil && bt > 0 {
+		bootTime = bt
+	}
+
 	c.logger.Debug("Host information collected successfully", "hostname", hostname, "mac_address", macAddress)
 	return HostInfo{
 		Name:                 hostname,
@@ -235,8 +294,8 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (HostInfo, error) {
 		VirtualizationSystem: hostInfo.VirtualizationSystem,
 		VirtualizationRole:   hostInfo.VirtualizationRole,
 		HostID:               hostInfo.HostID,
-		HardwareUUID:         readProductUUID(),
-		BootTime:             int64(hostInfo.BootTime),
+		HardwareUUID:         productUUID,
+		BootTime:             int64(bootTime),
 	}, nil
 }
 
