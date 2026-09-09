@@ -977,6 +977,13 @@ func (p *Poller) upsertHost(ctx context.Context, info hosts.ConnectorHostInfo) *
 		p.reconcilePending(ctx, existing, frozen.ExternalID, changes)
 	}
 	info = frozen
+	if existing != nil {
+		// A boot time derived as "now − uptime" wobbles by ±1 s between polls;
+		// keep the stored value when the difference is only that noise (and
+		// when the source had none this cycle), so the record fingerprint
+		// below — and the Raft round it gates — stays quiet.
+		info.BootTime = hosts.StableBootTime(existing.BootTime, info.BootTime)
+	}
 
 	submitted := false
 	if p.deps.Raft != nil && p.deps.Raft.Enabled() {

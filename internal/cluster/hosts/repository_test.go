@@ -792,3 +792,114 @@ func TestUpdateDashboardURLPersistsAcrossUpsert(t *testing.T) {
 		t.Fatalf("dashboard_url = %q, want persisted URL", got.DashboardURL)
 	}
 }
+
+// A writer that doesn't know a host's boot time (0) must never erase the value
+// another writer stored — the post-activation / bridge-reconcile backfill used
+// to do exactly that from table rows, zeroing every remote host's uptime. A
+// ±1 s wobble (now − uptime from whole-second clocks) is kept as stored too;
+// a genuinely different value (a reboot) still lands.
+func TestUpsertHostUnknownBootTimeKeepsExisting(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+	const boot = int64(1_750_000_000)
+
+	base := HostInfo{Name: "nas", MacAddress: "aa:aa:aa:aa:aa:10", HostID: "machine-nas", BootTime: boot}
+	created, err := repo.UpsertHost(ctx, base)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if created.BootTime != boot {
+		t.Fatalf("created boot_time = %d, want %d", created.BootTime, boot)
+	}
+
+	// MAC-match branch: unknown → keep; noise → keep; reboot → adopt.
+	steps := []struct {
+		incoming int64
+		want     int64
+	}{
+		{0, boot},
+		{boot + 1, boot},
+		{boot - 1, boot},
+		{boot + 7_200, boot + 7_200},
+	}
+	for _, st := range steps {
+		info := base
+		info.BootTime = st.incoming
+		got, err := repo.UpsertHost(ctx, info)
+		if err != nil {
+			t.Fatalf("upsert boot_time=%d: %v", st.incoming, err)
+		}
+		if got.BootTime != st.want {
+			t.Fatalf("after incoming %d: boot_time = %d, want %d", st.incoming, got.BootTime, st.want)
+		}
+	}
+
+	// Name-match branch (same machine-id, new MAC) with an unknown boot time.
+	renamed := base
+	renamed.MacAddress = "aa:aa:aa:aa:aa:11"
+	renamed.BootTime = 0
+	got, err := repo.UpsertHost(ctx, renamed)
+	if err != nil {
+		t.Fatalf("name-match upsert: %v", err)
+	}
+	if got.ID != created.ID {
+		t.Fatalf("name-match created a new row (%d != %d)", got.ID, created.ID)
+	}
+	if got.BootTime != boot+7_200 {
+		t.Fatalf("name-match boot_time = %d, want %d (kept)", got.BootTime, boot+7_200)
+	}
+}
+
+func TestUpsertConnectorHostUnknownBootTimeKeepsExisting(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+	const boot = int64(1_750_000_000)
+
+	info := ConnectorHostInfo{
+		HostInfo: HostInfo{Name: "pve", MacAddress: "aa:bb:cc:dd:ee:20", OS: "linux", BootTime: boot},
+		HostType: HostTypeHypervisor, ExternalID: "pve:fp/node/pve", GuestStatus: "online",
+	}
+	created, err := repo.UpsertConnectorHost(ctx, info)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if created.BootTime != boot {
+		t.Fatalf("created boot_time = %d, want %d", created.BootTime, boot)
+	}
+	for _, st := range []struct{ incoming, want int64 }{
+		{0, boot},                // node offline this cycle / backfill from a row
+		{boot + 1, boot},         // truncation noise
+		{boot + 600, boot + 600}, // rebooted
+	} {
+		info.BootTime = st.incoming
+		got, err := repo.UpsertConnectorHost(ctx, info)
+		if err != nil {
+			t.Fatalf("upsert boot_time=%d: %v", st.incoming, err)
+		}
+		if got.ID != created.ID {
+			t.Fatalf("connector upsert created a new row")
+		}
+		if got.BootTime != st.want {
+			t.Fatalf("after incoming %d: boot_time = %d, want %d", st.incoming, got.BootTime, st.want)
+		}
+	}
+}
+
+func TestUpsertLocalHostUnknownBootTimeKeepsExisting(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+	const boot = int64(1_750_000_000)
+
+	info := HostInfo{Name: "local-node", MacAddress: "00:00:00:00:00:01", HostID: "machine-local", BootTime: boot}
+	if _, err := repo.UpsertLocalHost(ctx, info); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	info.BootTime = 0 // collector couldn't read it this tick
+	got, err := repo.UpsertLocalHost(ctx, info)
+	if err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	if got.ID != LocalCollectorHostID || got.BootTime != boot {
+		t.Fatalf("local row boot_time = %d (id %d), want %d kept on id %d", got.BootTime, got.ID, boot, LocalCollectorHostID)
+	}
+}

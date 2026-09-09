@@ -247,7 +247,7 @@ func (r *hostRepository) UpsertLocalHost(ctx context.Context, hostInfo HostInfo)
 	host.SystemHostID = hostInfo.HostID
 	host.HardwareUUID = hostInfo.HardwareUUID
 	host.Source = MergeSource(host.Source, SourceAgent)
-	host.BootTime = hostInfo.BootTime
+	host.BootTime = StableBootTime(host.BootTime, hostInfo.BootTime)
 	host.LastSeen = now
 	host.UpdatedAt = now
 	return &host, r.db.WithContext(ctx).Save(&host).Error
@@ -327,7 +327,7 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		host.HardwareUUID = hostInfo.HardwareUUID
 		host.OriginCluster = hostInfo.OriginCluster
 		host.Source = MergeSource(host.Source, SourceAgent)
-		host.BootTime = hostInfo.BootTime
+		host.BootTime = StableBootTime(host.BootTime, hostInfo.BootTime)
 		host.LastSeen = now
 		host.UpdatedAt = now
 		return &host, r.db.WithContext(ctx).Save(&host).Error
@@ -374,7 +374,7 @@ func (r *hostRepository) UpsertHost(ctx context.Context, hostInfo HostInfo) (*Ho
 		hostByName.HardwareUUID = hostInfo.HardwareUUID
 		hostByName.OriginCluster = hostInfo.OriginCluster
 		hostByName.Source = MergeSource(hostByName.Source, SourceAgent)
-		hostByName.BootTime = hostInfo.BootTime
+		hostByName.BootTime = StableBootTime(hostByName.BootTime, hostInfo.BootTime)
 		hostByName.LastSeen = now
 		hostByName.UpdatedAt = now
 		return &hostByName, r.db.WithContext(ctx).Save(&hostByName).Error
@@ -610,7 +610,7 @@ func (r *hostRepository) UpsertConnectorHost(ctx context.Context, info Connector
 		host.PlatformFamily = info.PlatformFamily
 		host.PlatformVersion = info.PlatformVersion
 		host.KernelVersion = info.KernelVersion
-		host.BootTime = info.BootTime
+		host.BootTime = StableBootTime(host.BootTime, info.BootTime)
 		host.UpdatedAt = now
 		if connectorHostAlive(info.GuestStatus) {
 			host.LastSeen = now

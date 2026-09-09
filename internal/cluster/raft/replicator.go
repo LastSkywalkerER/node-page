@@ -411,6 +411,7 @@ func (r *Replicator) BackfillLocalHosts(ctx context.Context, hostRepo hosts.Repo
 			VirtualizationRole:   h.VirtualizationRole,
 			HostID:               h.SystemHostID,
 			HardwareUUID:         h.HardwareUUID,
+			BootTime:             h.BootTime,
 		}
 		// Connector-only rows must keep their topology and must NOT be
 		// republished as agent rows (that would flip their source and fake

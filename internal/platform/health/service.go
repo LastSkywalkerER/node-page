@@ -69,9 +69,10 @@ func (s *service) GetHealth(ctx context.Context, hostID *uint) (*HealthResponse,
 
 	// Uptime is the HOST's real system uptime (now - boot_time). boot_time is
 	// collected from the OS and replicated cluster-wide, so any node reports the
-	// same uptime for a given host. Falls back to the server process uptime only
-	// when boot_time isn't known yet.
-	hostUptime := serverUptime
+	// same uptime for a given host. When it isn't known the field stays empty
+	// and the card shows no uptime — never THIS server's process uptime, which
+	// printed the same number on every remote machine.
+	var hostUptime string
 	var hostUptimeSec int64
 	if host.BootTime > 0 {
 		if d := now.Sub(time.Unix(host.BootTime, 0)); d > 0 {

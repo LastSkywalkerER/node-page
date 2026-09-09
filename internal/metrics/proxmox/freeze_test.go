@@ -201,3 +201,42 @@ func TestResolveExistingRowPrefersExternalID(t *testing.T) {
 		t.Fatalf("unknown guest must resolve to nil, got %+v", h)
 	}
 }
+
+// A guest's boot time arrives as "now − uptime" from two whole-second clocks
+// and wobbles by ±1 s between polls. upsertHost must pin it to the stored value
+// while the difference is only that noise (so the record fingerprint — and the
+// Raft round it gates — stays quiet), keep the stored value when the source
+// had none this cycle, and still adopt a genuinely new one after a reboot.
+func TestUpsertHostStabilisesBootTime(t *testing.T) {
+	p, repo, _ := newFreezePoller(t)
+	ctx := context.Background()
+	const boot = int64(1_750_000_000)
+
+	withBoot := func(bt int64) hosts.ConnectorHostInfo {
+		info := freezeGuestInfo("media-vm")
+		info.BootTime = bt
+		return info
+	}
+	host := p.upsertHost(ctx, withBoot(boot))
+	if host == nil || host.BootTime != boot {
+		t.Fatalf("created row boot_time = %v, want %d", host, boot)
+	}
+	for _, st := range []struct{ incoming, want int64 }{
+		{boot + 1, boot},
+		{boot - 1, boot},
+		{0, boot},
+		{boot + 3_600, boot + 3_600},
+	} {
+		got := p.upsertHost(ctx, withBoot(st.incoming))
+		if got == nil {
+			t.Fatalf("upsert with boot_time=%d returned nil", st.incoming)
+		}
+		row, err := repo.GetHostByID(ctx, got.ID)
+		if err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+		if row.BootTime != st.want {
+			t.Fatalf("after incoming %d: stored boot_time = %d, want %d", st.incoming, row.BootTime, st.want)
+		}
+	}
+}

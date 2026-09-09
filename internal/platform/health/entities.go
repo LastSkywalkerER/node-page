@@ -19,7 +19,7 @@ type HealthResponse struct {
 	// Latency in milliseconds to reach the host (optional)
 	Latency float64 `json:"latency_ms,omitempty"`
 
-	// HostUptime is seconds since the host was last seen (optional).
+	// HostUptime is the host's system uptime in seconds (0 when its boot time is unknown).
 	HostUptime int64 `json:"host_uptime_seconds,omitempty"`
 
 	// LastSeen indicates when the host was last active (optional)
