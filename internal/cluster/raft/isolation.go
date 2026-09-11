@@ -205,8 +205,10 @@ func buildIsolationAlert(cause isolationCause, f isolationFacts, since time.Time
 		envFile, newIP, raftPort, newIP, httpPort, newIP)
 	// Only needed when the node's address actually changed (the re-advertise
 	// route): say so, or an operator who took the DHCP route will go looking
-	// for a step they don't need.
-	addPeer := fmt.Sprintf("After re-advertising, tell the leader the new address: Admin → Nodes → Raft → Add peer, id %q, address %s:%s. An existing id just gets its address updated — nothing is re-joined and no history is lost.",
+	// for a step they don't need. The path names the controls as the admin UI
+	// actually labels them — an instruction pointing at a button that isn't
+	// there is worse than no instruction.
+	addPeer := fmt.Sprintf("After re-advertising, tell the cluster the new address: on the LEADER open Admin → Nodes → \"Raft cluster sync\" → \"Advanced: manually add a voter\", enter id %q and address %s:%s, then \"Add voter\". An existing id just gets its address updated — nothing is re-joined and no history is lost.",
 		nodeID, newIP, raftPort)
 
 	switch cause {
@@ -230,7 +232,7 @@ func buildIsolationAlert(cause isolationCause, f isolationFacts, since time.Time
 		a.Detail = fmt.Sprintf("Peers report a leader, but this node has heard none for %s — nobody reaches its advertised Raft address %s. The address itself doesn't look stale, so something in between is blocking it (firewall, NAT/port forward, a moved port). Until then the node cannot make cluster writes and its host record is frozen cluster-wide. Metrics still stream to peers at a reduced rate so this card stays alive.",
 			noLeader, f.advertiseAddr)
 		a.Steps = []string{
-			fmt.Sprintf("Check from another node that %s accepts TCP connections (Admin → Nodes → Raft → Probe voter on the leader), and open the port / fix the forward.", f.advertiseAddr),
+			fmt.Sprintf("Check that %s accepts TCP connections from the other nodes: on the LEADER open Admin → Nodes → \"Raft cluster sync\" → Voters and hit \"Probe\" on this node's row. Then open the port / fix the forward.", f.advertiseAddr),
 			"If the machine's reachable address changed: " + strings.TrimPrefix(reAdvertise, "Or re-advertise: "),
 			addPeer,
 		}

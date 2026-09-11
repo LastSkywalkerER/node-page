@@ -109,7 +109,8 @@ func TestBuildIsolationAlert_StaleAdvertise(t *testing.T) {
 		"RAFT_ADVERTISE_PUBLIC_URL=http://192.168.0.103:9090",
 		"NODE_STATS_IPV4=192.168.0.103",
 		"/opt/node-stats/.env.agent",
-		`id "skynas", address 192.168.0.103:7000`, // option 2b: Add peer on the leader
+		`id "skynas" and address 192.168.0.103:7000`, // option 2b: add the voter on the leader
+		`"Advanced: manually add a voter"`,           // the real UI path, not an invented one
 		"reduced rate",
 	} {
 		if !strings.Contains(joined, want) {
@@ -132,8 +133,12 @@ func TestBuildIsolationAlert_Unreachable(t *testing.T) {
 	if a == nil || !strings.Contains(a.Detail, "65.21.152.83:7001") || !strings.Contains(a.Title, "cut off") {
 		t.Fatalf("alert = %+v", a)
 	}
-	if !strings.Contains(strings.Join(a.Steps, "\n"), "Probe voter") {
-		t.Fatalf("unreachable steps should point at the probe: %v", a.Steps)
+	joined := strings.Join(a.Steps, "\n")
+	// The steps must name controls the admin UI actually has.
+	for _, want := range []string{`"Raft cluster sync"`, `"Probe"`, `"Add voter"`} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("unreachable steps lack the real UI control %s: %v", want, a.Steps)
+		}
 	}
 }
 
