@@ -54,3 +54,42 @@ func TestNodeAlertStore_SetGetClearExpire(t *testing.T) {
 		t.Fatal("nil store returned an alert")
 	}
 }
+
+// TestNodeAlertStore_ReportsTransitions: the store tells a caller whether the
+// news is NEW, so a fault that lasts for days is logged once, not on every
+// batch that repeats it.
+func TestNodeAlertStore_ReportsTransitions(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+	s := NewNodeAlertStore()
+	s.now = func() time.Time { return now }
+
+	if !s.Set(9, NodeAlert{Kind: NodeAlertRaftIsolated, Title: "cut off"}) {
+		t.Fatal("the first alert for a host is news")
+	}
+	now = now.Add(20 * time.Second)
+	if s.Set(9, NodeAlert{Kind: NodeAlertRaftIsolated, Title: "cut off"}) {
+		t.Fatal("a repeat of the same fault is not news")
+	}
+	if !s.Set(9, NodeAlert{Kind: NodeAlertRaftIsolated, Title: "advertises a dead address"}) {
+		t.Fatal("a different fault on the same host is news")
+	}
+	// A refresh after the alert had expired counts as news again.
+	now = now.Add(NodeAlertTTL + time.Second)
+	if !s.Set(9, NodeAlert{Kind: NodeAlertRaftIsolated, Title: "advertises a dead address"}) {
+		t.Fatal("an alert that had expired is news when it comes back")
+	}
+
+	if !s.Clear(9) {
+		t.Fatal("clearing a live alert must report that there was one")
+	}
+	if s.Clear(9) {
+		t.Fatal("clearing nothing must report nothing")
+	}
+	now = now.Add(time.Second)
+	s.Set(9, NodeAlert{Title: "x"})
+	now = now.Add(NodeAlertTTL + time.Second)
+	if s.Clear(9) {
+		t.Fatal("an already-expired alert is not a live one to clear")
+	}
+}

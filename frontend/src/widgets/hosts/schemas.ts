@@ -10,12 +10,17 @@ export const NodeAlertSchema = z.object({
   severity: z.string(), // 'warning' | 'error'
   title: z.string(),
   detail: z.string().optional().default(''),
-  // What the operator can do, best option first.
+  // One short sentence naming what to do — all a compact surface shows.
+  action: z.string().optional().default(''),
+  // What the operator can do, best option first (the full remedy).
   steps: z.array(z.string()).nullish().transform((v) => v ?? []),
   node_id: z.string().optional().default(''),
   advertise_addr: z.string().optional().default(''),
   advertise_url: z.string().optional().default(''),
   local_ipv4: z.string().optional().default(''),
+  // Where this node's own dashboard answers now (the fault often makes its
+  // advertised URL unusable), so the UI can link to its settings page.
+  node_url: z.string().optional().default(''),
   since: z.string().optional().default(''),
 });
 

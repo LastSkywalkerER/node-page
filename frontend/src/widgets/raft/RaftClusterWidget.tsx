@@ -5,7 +5,6 @@ import { Input } from '@/components/ui/input'
 import { Copy, Check, RefreshCw, Trash2, Download } from 'lucide-react'
 import { toast } from 'sonner'
 import { confirmDialog } from '@/shared/lib/confirmDialog'
-import { NodeAlertPanel } from '@/widgets/hosts/NodeAlertPanel'
 import { copyToClipboard } from '@/shared/lib/clipboard'
 import {
   useRaftStatus,
@@ -489,8 +488,9 @@ export function RaftClusterWidget() {
   // advertises (typically the machine moved and its .env still pins the old
   // IP). It looks identical to "cannot elect a leader" from inside, but the
   // remedy is the opposite: re-attach this node, never re-bootstrap it — that
-  // would fork the cluster and strand the other voters. So the isolation panel
-  // with its re-attach steps REPLACES the generic recovery block here.
+  // would fork the cluster and strand the other voters. So the generic
+  // recovery block is suppressed; the fault and its steps are stated once, on
+  // this node's row in the host list above.
   const isolation = data.isolation ?? null
   const needsRecovery = (stuck || wedged) && !isolation
   const deadLeaderID = wedged ? st.leader_id : undefined
@@ -525,8 +525,6 @@ export function RaftClusterWidget() {
           Refresh
         </Button>
       </header>
-
-      {isolation && <NodeAlertPanel alert={isolation} />}
 
       {needsRecovery && (
         <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 space-y-2 text-sm">

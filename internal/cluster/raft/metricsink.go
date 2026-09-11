@@ -123,9 +123,14 @@ func (s *MetricSink) Ingest(ctx context.Context, p MetricBatchPayload, origin st
 	// than waiting out the TTL.
 	if s.alerts != nil {
 		if p.NodeAlert != nil {
-			s.alerts.Set(host.ID, *p.NodeAlert)
-		} else {
-			s.alerts.Clear(host.ID)
+			// Log the transition only: the affected node repeats the alert on
+			// every batch, and a fault that lasts a week shouldn't fill the log.
+			if s.alerts.Set(host.ID, *p.NodeAlert) && s.logger != nil {
+				s.logger.Warn("cluster: a node reports a fault about itself",
+					"host_id", host.ID, "host", host.Name, "fault", p.NodeAlert.Title, "action", p.NodeAlert.Action)
+			}
+		} else if s.alerts.Clear(host.ID) && s.logger != nil {
+			s.logger.Info("cluster: node reports itself healthy again", "host_id", host.ID, "host", host.Name)
 		}
 	}
 

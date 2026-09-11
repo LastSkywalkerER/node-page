@@ -1,10 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { confirmDialog } from '@/shared/lib/confirmDialog'
-import { Trash2, LogOut, ExternalLink, ArrowRight, Check, X } from 'lucide-react'
+import { Trash2, LogOut, ExternalLink, ArrowRight, Check, X, Unplug } from 'lucide-react'
 import { OSIcon } from '@/shared/components/OSIcon'
 import { apiClient } from '@/shared/lib/api'
 import { useHosts, useDeleteHost } from '@/widgets/hosts/useHosts'
+import { nodeAlertTarget } from '@/widgets/hosts/nodeAlert'
 import {
   usePendingChanges,
   useApprovePendingChange,
@@ -333,6 +334,57 @@ export function NodesTab() {
                               )}
                             </div>
                           </div>
+
+                          {/* The node running on this machine reported a fault
+                              about itself. This list is where the machine card's
+                              marker sends the operator, so the required action
+                              is stated here — briefly, with the full remedy in
+                              "Raft cluster sync" below for THIS node, and a link
+                              to its own settings page for any other. */}
+                          {host.node_alert && (
+                            <div className="mt-1.5 flex items-start gap-1.5 text-[11px] leading-relaxed text-rose-400/90">
+                              <Unplug className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                              <div className="min-w-0 space-y-1">
+                                <p>
+                                  <span className="font-medium">{host.node_alert.title}</span>
+                                  {host.node_alert.action ? ` — ${host.node_alert.action}` : ''}
+                                </p>
+                                {isThisNode
+                                  ? host.node_alert.steps.length > 0 && (
+                                      // Folded away by default: the one-liner
+                                      // above is the message, this is only for
+                                      // whoever is about to type the commands.
+                                      <details>
+                                        <summary className="cursor-pointer select-none hover:underline">
+                                          How to fix
+                                        </summary>
+                                        <ol className="mt-1 list-decimal space-y-1 pl-4 text-muted-foreground">
+                                          {host.node_alert.steps.map((step) => (
+                                            <li key={step} className="break-words">
+                                              {step}
+                                            </li>
+                                          ))}
+                                        </ol>
+                                      </details>
+                                    )
+                                  : (() => {
+                                      const to = nodeAlertTarget(host, localHostId)
+                                      if (!('href' in to)) return null
+                                      return (
+                                        <a
+                                          href={to.href}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          className="inline-flex items-center gap-1 hover:underline"
+                                        >
+                                          <ExternalLink className="h-3 w-3 shrink-0" />
+                                          Fix it on that node
+                                        </a>
+                                      )
+                                    })()}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )
                     })}

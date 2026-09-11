@@ -332,3 +332,53 @@ func TestDecideIsolation_NATAdvertiseIsNotCalledStale(t *testing.T) {
 		t.Fatalf("CGNAT-only machine = %v, want causeUnreachable", got)
 	}
 }
+
+// TestBuildIsolationAlert_ActionAndNodeURL pins what the COMPACT surfaces use:
+// one short action sentence, and a link that reaches the node's own settings.
+// A stale advertise must never be linked through the very URL it is stale on.
+func TestBuildIsolationAlert_ActionAndNodeURL(t *testing.T) {
+	t.Parallel()
+	stale := buildIsolationAlert(causeStaleAdvertise, isolationFacts{
+		nodeID: "skynas", advertiseAddr: "192.168.0.110:7000",
+		advertiseURL: "http://192.168.0.110:9090", localIPv4: "192.168.0.103",
+		raftPort: "7000", httpPort: "9090",
+	}, time.Now())
+	if stale.NodeURL != "http://192.168.0.103:9090" {
+		t.Fatalf("stale advertise must link through the address the machine really has, got %q", stale.NodeURL)
+	}
+	if !strings.Contains(stale.Action, "192.168.0.110") || !strings.Contains(stale.Action, "192.168.0.103") {
+		t.Fatalf("action should name both the old and the new address: %q", stale.Action)
+	}
+	if len(stale.Action) > 160 {
+		t.Fatalf("action must stay one short sentence, got %d chars: %q", len(stale.Action), stale.Action)
+	}
+
+	// A stale RAFT address does not condemn a dashboard URL on a DIFFERENT
+	// host — a reverse-proxied node keeps answering there.
+	proxied := buildIsolationAlert(causeStaleAdvertise, isolationFacts{
+		nodeID: "skynas", advertiseAddr: "192.168.0.110:7000",
+		advertiseURL: "https://dash.example.com", localIPv4: "192.168.0.103", httpPort: "9090",
+	}, time.Now())
+	if proxied.NodeURL != "https://dash.example.com" {
+		t.Fatalf("a dashboard URL on another host must be kept, got %q", proxied.NodeURL)
+	}
+
+	// Address isn't the problem → the node's own advertised URL is the better
+	// (reverse-proxy aware) link.
+	unreach := buildIsolationAlert(causeUnreachable, isolationFacts{
+		nodeID: "valheim", advertiseAddr: "65.21.152.83:7001",
+		advertiseURL: "https://dashboard.example.com", localIPv4: "10.0.12.3", httpPort: "9090",
+	}, time.Now())
+	if unreach.NodeURL != "https://dashboard.example.com" {
+		t.Fatalf("unreachable should keep the node's advertised URL, got %q", unreach.NodeURL)
+	}
+	if unreach.Action == "" || !strings.Contains(unreach.Action, "65.21.152.83:7001") {
+		t.Fatalf("action should name the blocked address: %q", unreach.Action)
+	}
+
+	// Nothing to build a URL from → no link rather than a wrong one.
+	blind := buildIsolationAlert(causeUnreachable, isolationFacts{nodeID: "x", advertiseAddr: "host:7000"}, time.Now())
+	if blind.NodeURL != "" {
+		t.Fatalf("with no known address the alert must carry no link, got %q", blind.NodeURL)
+	}
+}

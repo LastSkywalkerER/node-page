@@ -211,6 +211,22 @@ func buildIsolationAlert(cause isolationCause, f isolationFacts, since time.Time
 	addPeer := fmt.Sprintf("After re-advertising, tell the cluster the new address: on the LEADER open Admin → Nodes → \"Raft cluster sync\" → \"Advanced: manually add a voter\", enter id %q and address %s:%s, then \"Add voter\". An existing id just gets its address updated — nothing is re-joined and no history is lost.",
 		nodeID, newIP, raftPort)
 
+	// Where this node's dashboard actually answers, so the UI can link to the
+	// settings page of the machine that needs the fix. Prefer the node's own
+	// advertised URL — it is the one that survives a reverse proxy — and fall
+	// back to the address the machine really holds ONLY when that URL is
+	// demonstrably the dead one (it points at the very address peers cannot
+	// reach). A URL on a different host may be perfectly fine even when the
+	// Raft address is stale, so don't discard it blindly.
+	advertiseURL := strings.TrimRight(f.advertiseURL, "/")
+	if advertiseURL != "" && !urlPointsAt(advertiseURL, oldIP) {
+		a.NodeURL = advertiseURL
+	} else if f.localIPv4 != "" {
+		a.NodeURL = "http://" + net.JoinHostPort(f.localIPv4, httpPort)
+	} else {
+		a.NodeURL = advertiseURL
+	}
+
 	switch cause {
 	case causeStaleAdvertise:
 		a.Title = "Node advertises an address it no longer has"
@@ -225,6 +241,11 @@ func buildIsolationAlert(cause isolationCause, f isolationFacts, since time.Time
 			steps = append(steps, fmt.Sprintf("Easiest: give this machine its old address %s back (DHCP reservation or static IP). The cluster reconnects on its own — nothing to click.", oldIP))
 		}
 		a.Steps = append(steps, reAdvertise, addPeer)
+		if oldIP != "" {
+			a.Action = fmt.Sprintf("Give the machine %s back, or point the node at %s and add that voter on the leader.", oldIP, newIP)
+		} else {
+			a.Action = fmt.Sprintf("Point the node at %s and add that voter on the leader.", newIP)
+		}
 	case causeUnreachable:
 		a.Title = "Node cut off from its cluster"
 		// Do NOT claim the address is local here: this branch also covers a
@@ -236,6 +257,7 @@ func buildIsolationAlert(cause isolationCause, f isolationFacts, since time.Time
 			"If the machine's reachable address changed: " + strings.TrimPrefix(reAdvertise, "Or re-advertise: "),
 			addPeer,
 		}
+		a.Action = fmt.Sprintf("Open the path to %s from the other nodes, or re-advertise the address this machine really has.", f.advertiseAddr)
 	}
 	return a
 }
@@ -425,6 +447,20 @@ func (d *IsolationDetector) probePeers(ctx context.Context, clusterID, selfNode 
 		}
 	}
 	return answered, withLeader
+}
+
+// urlPointsAt reports whether rawURL's host is exactly ip — i.e. the URL leads
+// to the address that is being reported as unreachable. False for an empty ip
+// (nothing to compare) and for a hostname, which may resolve anywhere.
+func urlPointsAt(rawURL, ip string) bool {
+	if ip == "" {
+		return false
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	return u.Hostname() == ip
 }
 
 func portOf(hostport string) string {

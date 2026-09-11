@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { AreaChart, Area } from 'recharts'
 import { Server, Wifi, WifiOff, Zap, Clock, MonitorDot, ExternalLink, Unplug } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -21,8 +21,9 @@ import { PBSCardSummary } from '@/widgets/pbs/PBSCardSummary'
 import { usePBS } from '@/widgets/pbs/usePBS'
 import { OSIcon } from '@/shared/components/OSIcon'
 import { getHostCardTitle } from '@/shared/lib/hostDisplay'
+import { nodeAlertTarget, nodeAlertSummary, NODE_SETTINGS_PATH } from '@/widgets/hosts/nodeAlert'
+import { useUserStore } from '@/shared/store/user'
 import { AllApplicationsSection } from '@/widgets/applications/AllApplicationsSection'
-import { NodeAlertPanel } from '@/widgets/hosts/NodeAlertPanel'
 
 // While the SSE stream is connected the cards update live from the per-host
 // metric caches (one REST load on mount), so no interval polling. If SSE drops,
@@ -263,7 +264,10 @@ function HostCard({
   // fault about ITSELF — e.g. it is cut off from the cluster, so its record is
   // frozen while these gauges keep streaming. Details + how to re-attach are
   // in the banner above the grid; the card just has to stop looking fine.
-  const nodeAlert = host.node_alert || guests.find((g) => g.node_alert)?.node_alert || null
+  const alertedHost = host.node_alert ? host : guests.find((g) => g.node_alert)
+  const nodeAlert = alertedHost?.node_alert ?? null
+  const navigate = useNavigate()
+  const isAdmin = useUserStore((s) => s.user?.role === 'ADMIN')
   // A card is one consistent entity: gather every query it needs (metrics,
   // health, PBS backups) and hold a skeleton until they've all loaded once, so
   // the card pops in whole instead of charts/fields/backups arriving piecemeal.
@@ -356,13 +360,33 @@ function HostCard({
                     title="Pending identity change — review in Admin → Nodes"
                   />
                 )}
-                {nodeAlert && (
+                {nodeAlert && !isAdmin && (
+                  // The fault is worth showing to everyone, but the page that
+                  // fixes it is admin-only — don't offer a click that would
+                  // just bounce the viewer back to the dashboard.
                   <span
                     className="mt-0.5 shrink-0 text-rose-400 drop-shadow-[0_0_8px_oklch(0.63_0.22_15/0.6)]"
-                    title={`${nodeAlert.title} — see the banner at the top of this page`}
+                    title={nodeAlertSummary(alertedHost ?? host)}
                   >
                     <Unplug className="h-4 w-4" />
                   </span>
+                )}
+                {nodeAlert && isAdmin && (
+                  // A <button>, not a link: the whole card is already a <Link>.
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      const to = nodeAlertTarget(alertedHost ?? host)
+                      if ('local' in to) navigate(NODE_SETTINGS_PATH)
+                      else window.open(to.href, '_blank', 'noopener,noreferrer')
+                    }}
+                    title={`${nodeAlertSummary(alertedHost ?? host)}\nClick to open this node's settings.`}
+                    className="mt-0.5 shrink-0 rounded p-0.5 text-rose-400 drop-shadow-[0_0_8px_oklch(0.63_0.22_15/0.6)] transition-colors hover:bg-rose-500/10 hover:text-rose-300"
+                  >
+                    <Unplug className="h-4 w-4" />
+                  </button>
                 )}
                 {/* Jump to the node-stats dashboard served by THIS machine (its own
                     node). Local node → this origin; cluster peers → advertised URL. */}
@@ -468,26 +492,8 @@ export function MachineListPage() {
   }
   const topLevel = hosts.filter((h) => !(h.parent_id && h.parent_id !== h.id && knownIds.has(h.parent_id)))
 
-  // Nodes that diagnosed a fault about THEMSELVES (currently: cut off from the
-  // cluster — peers can't reach the address they advertise). Their cards still
-  // show live metrics, which is exactly why the condition needs saying out
-  // loud: their replicated record is frozen and they accept no cluster writes.
-  const alerted = hosts.filter((h) => h.node_alert)
-
   return (
     <div className="mx-auto max-w-7xl space-y-10 px-4 py-8 md:py-10">
-      {alerted.length > 0 && (
-        <section className="space-y-3">
-          {alerted.map((h) => (
-            <NodeAlertPanel
-              key={h.id}
-              alert={h.node_alert!}
-              machine={getHostCardTitle(h) ?? `Host ${h.id}`}
-            />
-          ))}
-        </section>
-      )}
-
       <section>
         <div className="flex items-center gap-3 mb-5">
           <MonitorDot className="h-6 w-6 text-primary drop-shadow-[0_0_10px_oklch(0.72_0.16_195/0.45)]" />

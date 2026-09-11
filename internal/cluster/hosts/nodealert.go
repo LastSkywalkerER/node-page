@@ -32,6 +32,10 @@ type NodeAlert struct {
 	// Title is the one-line headline; Detail explains what the node observed.
 	Title  string `json:"title"`
 	Detail string `json:"detail"`
+	// Action is ONE short sentence naming what to do — the only text compact
+	// surfaces (a machine card's tooltip, a row in the node list) show. Steps
+	// carry the same remedy in full, for the page the operator lands on.
+	Action string `json:"action,omitempty"`
 	// Steps are the operator's options, in order of preference.
 	Steps []string `json:"steps,omitempty"`
 
@@ -42,6 +46,11 @@ type NodeAlert struct {
 	// LocalIPv4 is where the machine actually is (its default-route address)
 	// when that differs from what it advertises; "" when unknown.
 	LocalIPv4 string `json:"local_ipv4,omitempty"`
+	// NodeURL is where THIS node's own dashboard actually answers now, so the
+	// UI can send the operator to the settings page of the machine that needs
+	// the fix. Deliberately not the advertised URL when that is the stale
+	// value being complained about — it would link into the void.
+	NodeURL string `json:"node_url,omitempty"`
 
 	// Since is when the node first detected the condition.
 	Since time.Time `json:"since"`
@@ -78,24 +87,36 @@ func NewNodeAlertStore() *NodeAlertStore {
 	return &NodeAlertStore{byHost: map[uint]storedNodeAlert{}, ttl: NodeAlertTTL, now: time.Now}
 }
 
-// Set records (or refreshes) the alert for a host.
-func (s *NodeAlertStore) Set(hostID uint, alert NodeAlert) {
+// Set records (or refreshes) the alert for a host. It reports whether this is
+// NEW news — a host that had no live alert, or a different fault than before —
+// so callers can log the transition instead of every refresh (an affected node
+// re-sends the same alert with every batch).
+func (s *NodeAlertStore) Set(hostID uint, alert NodeAlert) (changed bool) {
 	if s == nil {
-		return
+		return false
 	}
 	s.mu.Lock()
-	s.byHost[hostID] = storedNodeAlert{alert: alert, at: s.now()}
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	now := s.now()
+	prev, had := s.byHost[hostID]
+	changed = !had || now.Sub(prev.at) > s.ttl ||
+		prev.alert.Kind != alert.Kind || prev.alert.Title != alert.Title
+	s.byHost[hostID] = storedNodeAlert{alert: alert, at: now}
+	return changed
 }
 
-// Clear drops the alert for a host (the node reports itself healthy again).
-func (s *NodeAlertStore) Clear(hostID uint) {
+// Clear drops the alert for a host (the node reports itself healthy again) and
+// reports whether there was a live one to drop.
+func (s *NodeAlertStore) Clear(hostID uint) (had bool) {
 	if s == nil {
-		return
+		return false
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev, ok := s.byHost[hostID]
+	had = ok && s.now().Sub(prev.at) <= s.ttl
 	delete(s.byHost, hostID)
-	s.mu.Unlock()
+	return had
 }
 
 // NodeAlert implements NodeAlertSource: the host's alert unless it expired.
