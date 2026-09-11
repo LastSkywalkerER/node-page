@@ -880,11 +880,11 @@ func (c *Container) startSelfAdvertiseLoopLocked(ctx context.Context) {
 		// round (forwarded by followers), so, like the host-record heartbeat,
 		// it must not run on a tight wall-clock cadence.
 		const selfAdvertiseResync = 10 * time.Minute
+		const advertiseRetryAfter = 30 * time.Second
+		gate := newAdvertiseGate(selfAdvertiseResync, advertiseRetryAfter)
 		t := time.NewTicker(3 * time.Second)
 		defer t.Stop()
 		wasLeader := false
-		lastURL := ""
-		var lastAt time.Time
 		for {
 			select {
 			case <-ctx.Done():
@@ -899,10 +899,8 @@ func (c *Container) startSelfAdvertiseLoopLocked(ctx context.Context) {
 				// Advertise when: we just gained leadership (so the leader URL
 				// lands ASAP and followers can forward), the URL changed, or the
 				// rare resync elapsed.
-				if (!wasLeader && isLeader) || (url != "" && url != lastURL) || time.Since(lastAt) >= selfAdvertiseResync {
-					c.AdvertiseSelfNow(ctx)
-					lastURL = url
-					lastAt = time.Now()
+				if now := time.Now(); gate.due(now, url, !wasLeader && isLeader) {
+					gate.record(now, url, c.AdvertiseSelfNow(ctx))
 				}
 			}
 			wasLeader = isLeader
@@ -1068,7 +1066,7 @@ func (c *Container) SeedClusterSecrets(ctx context.Context, jwtSecret, refreshSe
 // peer-URL catalog (CmdPeerNodeAdvertise) using the currently-active Raft
 // config, so followers can forward writes to it. Best-effort; the publish is
 // leader-committed (a follower forwards it).
-func (c *Container) AdvertiseSelfNow(ctx context.Context) {
+func (c *Container) AdvertiseSelfNow(ctx context.Context) error {
 	cfg := c.CurrentRaftConfig()
 	url := cfg.AdvertiseURL
 	if url == "" {
@@ -1081,9 +1079,9 @@ func (c *Container) AdvertiseSelfNow(ctx context.Context) {
 		url = deriveAdvertiseURLFromAddr(cfg.AdvertiseAddr)
 	}
 	if url == "" {
-		return
+		return nil
 	}
-	raftcluster.AdvertiseSelf(ctx, c.logger, c.GetRaftService(), c.GetRaftReplicator(), cfg.ClusterID, cfg.NodeID, url)
+	return raftcluster.AdvertiseSelf(ctx, c.logger, c.GetRaftService(), c.GetRaftReplicator(), cfg.ClusterID, cfg.NodeID, url)
 }
 
 // deriveAdvertiseURLFromAddr builds an HTTP advertise URL from the Raft advertise

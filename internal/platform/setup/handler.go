@@ -44,7 +44,7 @@ type RaftActivator interface {
 	SeedClusterSecrets(ctx context.Context, jwtSecret, refreshSecret string) error
 	// AdvertiseSelfNow publishes this node's advertise URL into the catalog
 	// (best-effort, leader-only) so followers can forward writes.
-	AdvertiseSelfNow(ctx context.Context)
+	AdvertiseSelfNow(ctx context.Context) error
 	// ApplyBridgeUplink turns on this node's cross-cluster uplink (push mode)
 	// with the given shared secret + hub seed URLs and persists it to .env.
 	// Used by the join flow so a freshly-joined node immediately ships its own
@@ -530,7 +530,7 @@ func (h *Handler) CompleteSetup(c *gin.Context) {
 				sctx, scancel := context.WithTimeout(context.Background(), 10*time.Second)
 				_ = h.raftActivator.SeedClusterSecrets(sctx, jwt, refresh)
 				scancel()
-				h.raftActivator.AdvertiseSelfNow(context.Background())
+				_ = h.raftActivator.AdvertiseSelfNow(context.Background())
 			}()
 		}
 	}
@@ -1234,7 +1234,7 @@ func (h *Handler) AdminStartCluster(c *gin.Context) {
 	seedCancel()
 
 	// Advertise self so followers can forward writes to this leader.
-	h.raftActivator.AdvertiseSelfNow(ctx)
+	_ = h.raftActivator.AdvertiseSelfNow(ctx)
 
 	// Persist the Raft block so the node comes back as the leader on restart.
 	cv.RaftEnabled = "true"

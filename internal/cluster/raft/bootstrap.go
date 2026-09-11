@@ -49,8 +49,8 @@ func BootstrapClusterSecrets(ctx context.Context, logger *log.Logger, svc Servic
 }
 
 // AdvertiseSelf publishes this node's advertised URL into the URL catalog
-// (CmdPeerNodeAdvertise). Best-effort: a transient error here is recorded
-// but does not block startup — the catalog updates again on every restart.
+// (CmdPeerNodeAdvertise). Best-effort: a transient error here does not block
+// startup.
 //
 // EVERY node advertises itself (followers forward the write to the leader),
 // using its OWN live cluster id. The leader only ever learns a follower's URL
@@ -60,9 +60,14 @@ func BootstrapClusterSecrets(ctx context.Context, logger *log.Logger, svc Servic
 // the intra-cluster metric fanout (it keys on cluster_id) and the bridge
 // own-cluster filter. Letting each node re-assert its own (cluster_id, node_id,
 // url) keeps the catalog self-correcting without a re-join.
-func AdvertiseSelf(ctx context.Context, logger *log.Logger, svc Service, replicator *Replicator, clusterID, nodeID, advertiseURL string) {
+// Returns the submit error so the caller can retry instead of recording a
+// publish that never happened: a node normally advertises for the first time
+// while it has NO leader (it is started before an admin adds it, and stays
+// leaderless through the join), and a catalog row that never lands leaves the
+// node invisible to its peers' metric streams.
+func AdvertiseSelf(ctx context.Context, logger *log.Logger, svc Service, replicator *Replicator, clusterID, nodeID, advertiseURL string) error {
 	if svc == nil || !svc.Enabled() || replicator == nil || advertiseURL == "" {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -73,5 +78,7 @@ func AdvertiseSelf(ctx context.Context, logger *log.Logger, svc Service, replica
 		if logger != nil {
 			logger.Warn("raft: peer advertise failed", "error", err)
 		}
+		return err
 	}
+	return nil
 }
