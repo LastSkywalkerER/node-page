@@ -19,6 +19,8 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+
+	hosts "system-stats/internal/cluster/hosts"
 )
 
 // BridgePickerSnapshot is the small interface the handler needs from the
@@ -43,6 +45,8 @@ type Handler struct {
 	resetCfg     func() error
 	wipeState    func() error
 	factoryReset func() error
+	// isolation yields this node's own isolation diagnosis (nil when healthy).
+	isolation func() *hosts.NodeAlert
 
 	// forwardSecret returns the cluster-shared secret used to verify signed
 	// command forwards. nil disables verification entirely (Raft off).
@@ -186,6 +190,14 @@ func (h *Handler) Status(c *gin.Context) {
 	if h.bridgeInfo != nil {
 		if bi := h.bridgeInfo(); bi != nil {
 			resp["bridge"] = bi
+		}
+	}
+	// This node's own isolation diagnosis (cut off from the cluster because
+	// peers can't reach its advertised address) — the admin Raft panel renders
+	// it with the re-attach steps instead of the generic "cannot elect" advice.
+	if h.isolation != nil {
+		if a := h.isolation(); a != nil {
+			resp["isolation"] = a
 		}
 	}
 	// Uplinked spoke clusters (hub side): summarized from the bridge dedupe
@@ -628,7 +640,21 @@ func (h *Handler) Ping(c *gin.Context) {
 	c.Header("X-Raft-Cluster-ID", st.ClusterID)
 	c.Header("X-Raft-Node-ID", st.NodeID)
 	c.Header("X-Raft-State", st.State)
+	// The leader this peer follows (its own id when it leads). A node that has
+	// heard no leader for a while asks its peers this to tell "the cluster has
+	// a leader nobody lets me reach" apart from "the cluster has no leader".
+	c.Header(LeaderIDHeader, st.LeaderID)
 	c.Status(http.StatusNoContent)
+}
+
+// LeaderIDHeader carries the responding peer's current leader id on /raft/ping.
+const LeaderIDHeader = "X-Raft-Leader-ID"
+
+// WithIsolationSource wires the node's self-diagnosis (see IsolationDetector)
+// so GET /raft/status can surface it to the admin UI.
+func (h *Handler) WithIsolationSource(fn func() *hosts.NodeAlert) *Handler {
+	h.isolation = fn
+	return h
 }
 
 // AddPeer adds a Raft voter to the current cluster. Leader-only.

@@ -747,7 +747,8 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 			}
 			return nil
 		}).
-		WithBridgeInfo(container.BridgeInfo)
+		WithBridgeInfo(container.BridgeInfo).
+		WithIsolationSource(container.IsolationAlert)
 
 	// Swagger UI (always available)
 	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))

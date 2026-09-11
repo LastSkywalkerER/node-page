@@ -44,6 +44,18 @@ type MetricSink struct {
 	// PBS field) keyed by the resolved LOCAL host id, so non-polling nodes and
 	// bridged hubs can serve GET /pbs. Set via SetPBSSink (DI), nil otherwise.
 	pbsSink func(ctx context.Context, hostID uint, raw json.RawMessage)
+	// alerts, when set, receives the sender node's self-diagnosed fault carried
+	// by the batch (NodeAlert) keyed by the resolved LOCAL host id, and clears
+	// it when a batch arrives without one. Set via SetNodeAlertStore (DI).
+	alerts *hosts.NodeAlertStore
+}
+
+// SetNodeAlertStore wires the RAM store that serves each machine's node alert
+// to the /hosts responses (see hosts.NodeAlert).
+func (s *MetricSink) SetNodeAlertStore(store *hosts.NodeAlertStore) {
+	if s != nil {
+		s.alerts = store
+	}
 }
 
 // SetPBSSink wires the handler that stores a replicated PBS snapshot for a host
@@ -105,6 +117,17 @@ func (s *MetricSink) Ingest(ctx context.Context, p MetricBatchPayload, origin st
 		return nil // our own machine — the local collector already saved these
 	}
 	ts := p.Timestamp
+
+	// The sender's self-diagnosis rides every batch while the fault lasts; a
+	// batch without it means the node is healthy again — clear at once rather
+	// than waiting out the TTL.
+	if s.alerts != nil {
+		if p.NodeAlert != nil {
+			s.alerts.Set(host.ID, *p.NodeAlert)
+		} else {
+			s.alerts.Clear(host.ID)
+		}
+	}
 
 	// Remember where this host's own node-stats lives (the sender's advertised
 	// URL) so the machine card can link to it even where no Raft peer view of

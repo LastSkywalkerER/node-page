@@ -22,6 +22,19 @@ import (
 // durable-log traffic proportional to real record changes, not wall-clock.
 var hostUpsertHeartbeat = 10 * time.Minute
 
+// A node whose submissions keep failing is not in a transient hiccup — it
+// cannot reach a leader at all (it was cut off from the cluster: peers can't
+// dial the address it advertises). Retrying the consensus round on every
+// metrics tick then burns work and floods the log for something that cannot
+// commit until an operator re-attaches the node. Retry fast for the first few
+// failures — that is how the leaderless window right after a join heals — and
+// back off afterwards. The condition itself is surfaced by the isolation
+// detector, so backing off hides nothing.
+const (
+	upsertFailFastRetries = 3
+	upsertFailBackoff     = 60 * time.Second
+)
+
 // ErrCannotRemoveLocalHost is returned when a caller tries to remove this
 // node's own collector row (id=1). Use the Raft "leave cluster" flow instead.
 var ErrCannotRemoveLocalHost = errors.New("cannot remove this node's own host; use leave cluster")
@@ -89,6 +102,9 @@ type service struct {
 	hostRepository Repository
 	raft           RaftReplicator
 	statics        StaticHardwareSource
+	// alerts serves each host's node self-diagnosed fault (RAM store fed by
+	// the metric stream + this node's own isolation detector); nil = none.
+	alerts NodeAlertSource
 
 	// upsertMu guards the throttling state for the periodic Raft host upsert.
 	upsertMu sync.Mutex
@@ -100,6 +116,10 @@ type service struct {
 	lastUpsertSubmit time.Time
 	// haveUpserted records whether any submission has happened yet.
 	haveUpserted bool
+	// upsertFailures counts consecutive failed submissions; nextUpsertRetry is
+	// when the next attempt is allowed once they pass upsertFailFastRetries.
+	upsertFailures  int
+	nextUpsertRetry time.Time
 }
 
 // NewService creates a new hosts service.
@@ -135,9 +155,23 @@ func AttachStaticHardwareSource(svc Service, src StaticHardwareSource) {
 	}
 }
 
+// AttachNodeAlertSource wires the store of node self-diagnosed faults so the
+// /hosts and /hosts/current responses carry each machine's current alert.
+func AttachNodeAlertSource(svc Service, src NodeAlertSource) {
+	if impl, ok := svc.(*service); ok {
+		impl.alerts = src
+	}
+}
+
 // enrichStatics fills a host's static hardware fields from its latest metrics.
 func (s *service) enrichStatics(ctx context.Context, h *Host) {
-	if s.statics == nil || h == nil {
+	if h == nil {
+		return
+	}
+	if s.alerts != nil {
+		h.NodeAlert = s.alerts.NodeAlert(h.ID)
+	}
+	if s.statics == nil {
 		return
 	}
 	st := s.statics.HostStatics(ctx, h.ID)
@@ -184,8 +218,13 @@ func (s *service) RegisterOrUpdateCurrentHost(ctx context.Context) (*Host, error
 			s.logger.Warn("Raft host upsert failed", "error", rerr)
 			// The throttle recorded this submission before we knew it failed
 			// (e.g. no leader yet during a join). Reset it so the next tick
-			// retries instead of waiting out the whole resync heartbeat.
+			// retries instead of waiting out the whole resync heartbeat —
+			// under the failure back-off, which only bites once the failures
+			// stop looking transient.
+			s.noteUpsertFailure(time.Now())
 			s.resetUpsertThrottle()
+		} else {
+			s.noteUpsertSuccess()
 		}
 	}
 
@@ -236,11 +275,33 @@ func (s *service) resetUpsertThrottle() {
 	s.upsertMu.Unlock()
 }
 
+// noteUpsertFailure records a failed submission and arms the back-off.
+func (s *service) noteUpsertFailure(now time.Time) {
+	s.upsertMu.Lock()
+	s.upsertFailures++
+	s.nextUpsertRetry = now.Add(upsertFailBackoff)
+	s.upsertMu.Unlock()
+}
+
+// noteUpsertSuccess clears the failure streak (the node is writable again).
+func (s *service) noteUpsertSuccess() {
+	s.upsertMu.Lock()
+	s.upsertFailures = 0
+	s.nextUpsertRetry = time.Time{}
+	s.upsertMu.Unlock()
+}
+
 func (s *service) shouldSubmitUpsert(info HostInfo, now time.Time) bool {
 	fp := hostInfoFingerprint(info)
 
 	s.upsertMu.Lock()
 	defer s.upsertMu.Unlock()
+
+	// Persistent failure (no leader reachable): skip the attempt entirely
+	// until the back-off elapses.
+	if s.upsertFailures >= upsertFailFastRetries && now.Before(s.nextUpsertRetry) {
+		return false
+	}
 
 	changed := !s.haveUpserted || fp != s.lastUpsertHash
 	elapsed := now.Sub(s.lastUpsertSubmit) >= hostUpsertHeartbeat

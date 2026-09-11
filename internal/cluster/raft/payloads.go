@@ -3,6 +3,8 @@ package raft
 import (
 	"encoding/json"
 	"time"
+
+	hosts "system-stats/internal/cluster/hosts"
 )
 
 // Concrete payload structs for each CommandType. They are JSON-encoded into
@@ -296,6 +298,11 @@ type MetricBatchPayload struct {
 	// groups/health) for this host, so non-polling nodes and bridged hub
 	// clusters can serve GET /pbs. Opaque JSON (the pbs.Status entity).
 	PBS json.RawMessage `json:"pbs,omitempty"`
+	// NodeAlert is a fault the sending NODE diagnosed about itself (e.g. it is
+	// cut off from its Raft cluster). It rides this best-effort stream because
+	// that is the one channel an isolated node still has; receivers keep it in
+	// RAM per host and a batch WITHOUT it clears the previous one.
+	NodeAlert *hosts.NodeAlert `json:"node_alert,omitempty"`
 }
 
 // RetentionDeleteBeforePayload tells every replica to delete metric rows

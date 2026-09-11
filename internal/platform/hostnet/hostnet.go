@@ -26,6 +26,8 @@ import (
 	"time"
 
 	gopsutilnet "github.com/shirou/gopsutil/v4/net"
+
+	"system-stats/internal/app/dockerenv"
 )
 
 type HostIface struct {
@@ -363,4 +365,52 @@ func (t *Topology) NoteNames(names []string) (unseen bool) {
 		}
 	}
 	return false
+}
+
+// LocalIPv4s returns every IPv4 address the MACHINE holds (not a container's
+// bridge address) and whether that list can be trusted. Through a host mount
+// (Docker with HOST_PROC) it is the host netns view; natively it is the
+// reader's own interfaces. Inside a container WITHOUT the host view the list
+// would only ever be the 172.x bridge address, so known is false — callers
+// judging "is this address mine?" must then abstain rather than misfire.
+func LocalIPv4s(ctx context.Context) (ips []string, known bool) {
+	t := CurrentTopology(ctx)
+	if t.HostNS {
+		for _, d := range t.HostIfaces {
+			if d != nil {
+				ips = append(ips, d.IPs...)
+			}
+		}
+		return ips, true
+	}
+	if dockerenv.Running() {
+		return nil, false
+	}
+	for _, iface := range t.Ifaces {
+		for _, a := range iface.Addrs {
+			var ip net.IP
+			if parsed, _, err := net.ParseCIDR(a.Addr); err == nil {
+				ip = parsed
+			} else {
+				ip = net.ParseIP(a.Addr)
+			}
+			if ip != nil && ip.To4() != nil {
+				ips = append(ips, ip.String())
+			}
+		}
+	}
+	return ips, true
+}
+
+// PrimaryIPv4 is the address of the machine's default-route interface: the
+// host's through a host mount, otherwise the reader's own. "" when unknown.
+func PrimaryIPv4(ctx context.Context) string {
+	if ip := HostPrimaryIPv4(); ip != "" {
+		return ip
+	}
+	t := CurrentTopology(ctx)
+	if t.HostNS {
+		return ""
+	}
+	return t.PrimaryIP
 }

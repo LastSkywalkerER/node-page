@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 import { AreaChart, Area } from 'recharts'
-import { Server, Wifi, WifiOff, Zap, Clock, MonitorDot, ExternalLink } from 'lucide-react'
+import { Server, Wifi, WifiOff, Zap, Clock, MonitorDot, ExternalLink, Unplug } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ChartContainer, type ChartConfig } from '@/components/ui/chart'
@@ -22,6 +22,7 @@ import { usePBS } from '@/widgets/pbs/usePBS'
 import { OSIcon } from '@/shared/components/OSIcon'
 import { getHostCardTitle } from '@/shared/lib/hostDisplay'
 import { AllApplicationsSection } from '@/widgets/applications/AllApplicationsSection'
+import { NodeAlertPanel } from '@/widgets/hosts/NodeAlertPanel'
 
 // While the SSE stream is connected the cards update live from the per-host
 // metric caches (one REST load on mount), so no interval polling. If SSE drops,
@@ -258,6 +259,11 @@ function HostCard({
   live: boolean
   hasPendingChange?: boolean
 }) {
+  // The node running on this machine (or on one of its guests) reported a
+  // fault about ITSELF — e.g. it is cut off from the cluster, so its record is
+  // frozen while these gauges keep streaming. Details + how to re-attach are
+  // in the banner above the grid; the card just has to stop looking fine.
+  const nodeAlert = host.node_alert || guests.find((g) => g.node_alert)?.node_alert || null
   // A card is one consistent entity: gather every query it needs (metrics,
   // health, PBS backups) and hold a skeleton until they've all loaded once, so
   // the card pops in whole instead of charts/fields/backups arriving piecemeal.
@@ -299,7 +305,9 @@ function HostCard({
           className={cn(
             'cyber-frame relative flex flex-col rounded-xl backdrop-blur-xl backdrop-saturate-150',
             'border border-border/60 dark:border-white/10 overflow-hidden bg-card',
-            isConnected ? '' : 'bg-card/92 dark:bg-card/75 ring-1 ring-inset ring-red-500/15 dark:ring-red-400/20'
+            isConnected && !nodeAlert
+              ? ''
+              : 'bg-card/92 dark:bg-card/75 ring-1 ring-inset ring-red-500/15 dark:ring-red-400/20'
           )}
         >
           <div
@@ -347,6 +355,14 @@ function HostCard({
                     className="mt-1 h-2 w-2 shrink-0 rounded-full bg-amber-400 shadow-[0_0_8px_oklch(0.8_0.14_85/0.7)]"
                     title="Pending identity change — review in Admin → Nodes"
                   />
+                )}
+                {nodeAlert && (
+                  <span
+                    className="mt-0.5 shrink-0 text-rose-400 drop-shadow-[0_0_8px_oklch(0.63_0.22_15/0.6)]"
+                    title={`${nodeAlert.title} — see the banner at the top of this page`}
+                  >
+                    <Unplug className="h-4 w-4" />
+                  </span>
                 )}
                 {/* Jump to the node-stats dashboard served by THIS machine (its own
                     node). Local node → this origin; cluster peers → advertised URL. */}
@@ -452,8 +468,26 @@ export function MachineListPage() {
   }
   const topLevel = hosts.filter((h) => !(h.parent_id && h.parent_id !== h.id && knownIds.has(h.parent_id)))
 
+  // Nodes that diagnosed a fault about THEMSELVES (currently: cut off from the
+  // cluster — peers can't reach the address they advertise). Their cards still
+  // show live metrics, which is exactly why the condition needs saying out
+  // loud: their replicated record is frozen and they accept no cluster writes.
+  const alerted = hosts.filter((h) => h.node_alert)
+
   return (
     <div className="mx-auto max-w-7xl space-y-10 px-4 py-8 md:py-10">
+      {alerted.length > 0 && (
+        <section className="space-y-3">
+          {alerted.map((h) => (
+            <NodeAlertPanel
+              key={h.id}
+              alert={h.node_alert!}
+              machine={getHostCardTitle(h) ?? `Host ${h.id}`}
+            />
+          ))}
+        </section>
+      )}
+
       <section>
         <div className="flex items-center gap-3 mb-5">
           <MonitorDot className="h-6 w-6 text-primary drop-shadow-[0_0_10px_oklch(0.72_0.16_195/0.45)]" />

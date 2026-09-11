@@ -1,5 +1,26 @@
 import { z } from 'zod';
 
+// A fault the node-stats NODE running on a machine diagnosed about ITSELF —
+// e.g. it is cut off from its Raft cluster because peers can't reach the
+// address it advertises. It travels on the metric stream (the one channel an
+// isolated node still has), lives in RAM on each receiver and disappears on
+// its own once the node reports healthy again.
+export const NodeAlertSchema = z.object({
+  kind: z.string(), // 'raft_isolated'
+  severity: z.string(), // 'warning' | 'error'
+  title: z.string(),
+  detail: z.string().optional().default(''),
+  // What the operator can do, best option first.
+  steps: z.array(z.string()).nullish().transform((v) => v ?? []),
+  node_id: z.string().optional().default(''),
+  advertise_addr: z.string().optional().default(''),
+  advertise_url: z.string().optional().default(''),
+  local_ipv4: z.string().optional().default(''),
+  since: z.string().optional().default(''),
+});
+
+export type NodeAlert = z.infer<typeof NodeAlertSchema>;
+
 export const HostSchema = z.object({
   id: z.number(),
   name: z.string(),
@@ -36,6 +57,8 @@ export const HostSchema = z.object({
   memory_total: z.number().optional().default(0), // bytes
   disk_total: z.number().optional().default(0), // bytes
   last_seen: z.string().optional().default(''),
+  // Self-diagnosed fault of the node running on this machine (see above).
+  node_alert: NodeAlertSchema.nullish().transform((v) => v ?? null),
   created_at: z.string(),
   updated_at: z.string(),
 });

@@ -129,6 +129,11 @@ type Host struct {
 	// node (the UI uses its own origin) and for agent-less hosts.
 	DashboardURL string `json:"dashboard_url,omitempty" gorm:"column:dashboard_url"`
 
+	// NodeAlert is a fault the node-stats node running on this machine reported
+	// about ITSELF (e.g. cut off from its Raft cluster) — filled at read time
+	// from the RAM alert store fed by the metric stream, never a DB column.
+	NodeAlert *NodeAlert `json:"node_alert,omitempty" gorm:"-"`
+
 	// CreatedAt indicates when this host record was created
 	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`
 

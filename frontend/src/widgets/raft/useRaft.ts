@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '@/shared/lib/api'
+import type { NodeAlert } from '@/widgets/hosts/schemas'
 
 export interface RaftPeer {
   id: string
@@ -75,6 +76,11 @@ export interface RaftStatusResponse {
   uplinks?: UplinkInfo[]
   /** Set when the most recent boot-time activation failed (e.g. port in use). */
   boot_error?: string
+  /** This node's own diagnosis that it is cut off from the cluster: peers
+   *  can't reach the Raft address it advertises, so it hears no leader and
+   *  every write it forwards is lost, while its outbound metric stream keeps
+   *  its card looking alive. Carries the steps to re-attach it. */
+  isolation?: NodeAlert
   /** Raw hashicorp/raft Stats() map — string-to-string. Used by the
    *  admin UI to surface low-level fields like last_contact, num_peers,
    *  latest_configuration when the cluster can't elect a leader. */

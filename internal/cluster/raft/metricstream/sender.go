@@ -25,6 +25,7 @@ import (
 	"gorm.io/gorm"
 
 	"system-stats/internal/app/config"
+	hosts "system-stats/internal/cluster/hosts"
 	raftcluster "system-stats/internal/cluster/raft"
 	"system-stats/internal/cluster/raft/bridge"
 )
@@ -73,6 +74,28 @@ type Sender struct {
 	// lastErrLog is the unix-nano time of the last "peer rejected" warning,
 	// used to rate-limit that log to ~once/30s across all peers/ticks.
 	lastErrLog atomic.Int64
+
+	// nodeAlert yields this node's self-diagnosed fault (the isolation
+	// detector); nil / returns nil when healthy. While a fault is active the
+	// alert rides every batch and the stream drops to a liveness cadence
+	// (isolatedShipInterval): the batches are the only thing keeping the card
+	// alive, but hammering peers every tick while the record is frozen buys
+	// nothing. Set via SetNodeAlertSource.
+	nodeAlert   func() *hosts.NodeAlert
+	lastShipAt  atomic.Int64 // unix-nano of the last batch actually shipped
+	throttleLog atomic.Bool  // "throttled" logged once per fault episode
+}
+
+// isolatedShipInterval is the metric cadence while this node is cut off from
+// its cluster: half the normal tick, and still two batches inside the
+// 45 s offline threshold so one dropped POST can't flip the card red.
+const isolatedShipInterval = 20 * time.Second
+
+// SetNodeAlertSource wires the self-diagnosis provider (see hosts.NodeAlert).
+func (s *Sender) SetNodeAlertSource(fn func() *hosts.NodeAlert) {
+	s.mu.Lock()
+	s.nodeAlert = fn
+	s.mu.Unlock()
 }
 
 // NewSender builds a metric-stream sender. intraSecret is the cluster-shared key
@@ -124,6 +147,9 @@ func (s *Sender) SetIntraSecret(secret string) {
 // slow/unreachable peer never blocks the collection cycle and a failed POST is
 // silently dropped (the next tick re-sends the full current state).
 func (s *Sender) Broadcast(ctx context.Context, payload raftcluster.MetricBatchPayload) {
+	if !s.admit(&payload) {
+		return
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return
@@ -211,4 +237,35 @@ func (s *Sender) fire(baseURL string, body []byte, encoding, secret string) {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 	}()
+}
+
+// admit decides whether this tick's batch ships and stamps the node's own alert
+// onto it. Healthy: every tick ships, no alert. Isolated: the alert rides
+// every shipped batch and only one batch per isolatedShipInterval goes out.
+func (s *Sender) admit(payload *raftcluster.MetricBatchPayload) bool {
+	s.mu.RLock()
+	src := s.nodeAlert
+	s.mu.RUnlock()
+	var alert *hosts.NodeAlert
+	if src != nil {
+		alert = src()
+	}
+	now := time.Now()
+	if alert == nil {
+		if s.throttleLog.CompareAndSwap(true, false) && s.logger != nil {
+			s.logger.Info("metricstream: node reconnected — metric stream back to full rate")
+		}
+		s.lastShipAt.Store(now.UnixNano())
+		return true
+	}
+	payload.NodeAlert = alert
+	if last := s.lastShipAt.Load(); last != 0 && now.Sub(time.Unix(0, last)) < isolatedShipInterval {
+		return false
+	}
+	if s.throttleLog.CompareAndSwap(false, true) && s.logger != nil {
+		s.logger.Warn("metricstream: node is cut off from its cluster — throttling the metric stream to a liveness cadence",
+			"interval", isolatedShipInterval, "alert", alert.Title)
+	}
+	s.lastShipAt.Store(now.UnixNano())
+	return true
 }

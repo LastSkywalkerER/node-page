@@ -191,3 +191,55 @@ func TestRemoveHost_LocalCascadeWhenRaftDisabled(t *testing.T) {
 		t.Fatalf("expected local cascade of id=7, got %v", repo.cascadedIDs)
 	}
 }
+
+// TestShouldSubmitUpsert_BacksOffAfterRepeatedFailures pins the behaviour that
+// keeps a node cut off from its cluster from burning a consensus attempt (and a
+// log line) on every metrics tick: the first few failures still retry at once —
+// that is how the leaderless window right after a join heals — and only a
+// persistent failure is backed off. A success clears the streak immediately.
+func TestShouldSubmitUpsert_BacksOffAfterRepeatedFailures(t *testing.T) {
+	s := newTestService(&fakeRepo{}, nil)
+	info := HostInfo{Name: "skynas", MacAddress: "aa:bb:cc:dd:ee:ff", IPv4: "192.168.0.103"}
+	base := time.Now()
+
+	// Fast-retry window: every tick attempts, because each failure resets the
+	// throttle the way a transient leaderless join window needs.
+	for i := 0; i < upsertFailFastRetries; i++ {
+		at := base.Add(time.Duration(i) * 10 * time.Second)
+		if !s.shouldSubmitUpsert(info, at) {
+			t.Fatalf("attempt %d must be sent while failures still look transient", i)
+		}
+		s.noteUpsertFailure(at)
+		s.resetUpsertThrottle()
+	}
+
+	// Past that, the same unchanged record is skipped until the back-off ends
+	// (measured from the last failure).
+	lastFail := base.Add(time.Duration(upsertFailFastRetries-1) * 10 * time.Second)
+	retryAt := lastFail.Add(upsertFailBackoff)
+	if s.shouldSubmitUpsert(info, lastFail.Add(10*time.Second)) {
+		t.Fatal("a persistently failing submission must be backed off, not retried every tick")
+	}
+	if s.shouldSubmitUpsert(info, retryAt.Add(-time.Second)) {
+		t.Fatal("back-off ended early")
+	}
+	// A CHANGED record doesn't get a free pass either — it still cannot commit.
+	changed := info
+	changed.IPv4 = "192.168.0.104"
+	if s.shouldSubmitUpsert(changed, retryAt.Add(-time.Second)) {
+		t.Fatal("back-off must hold even when the record changed — nothing can commit yet")
+	}
+
+	if !s.shouldSubmitUpsert(info, retryAt) {
+		t.Fatal("an attempt must be allowed once the back-off elapses")
+	}
+	// It succeeded (node re-attached): the streak clears and normal throttling
+	// resumes — an unchanged record waits for the heartbeat, a change goes now.
+	s.noteUpsertSuccess()
+	if s.shouldSubmitUpsert(info, retryAt.Add(time.Second)) {
+		t.Fatal("after recovery an unchanged record must follow the normal heartbeat throttle")
+	}
+	if !s.shouldSubmitUpsert(changed, retryAt.Add(2*time.Second)) {
+		t.Fatal("after recovery a changed record must be submitted immediately")
+	}
+}

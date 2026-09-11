@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gorm.io/gorm"
@@ -118,6 +119,19 @@ type Container struct {
 	metricSink     *raftcluster.MetricSink
 	metricSender   *metricstream.Sender
 	metricReceiver *metricstream.Receiver
+	// nodeAlerts is the RAM store of node self-diagnosed faults (this node's
+	// own from the isolation detector, peers' from their metric batches) that
+	// the /hosts responses carry as node_alert. Created once; survives Raft
+	// re-activation (entries expire on their own).
+	nodeAlerts *hosts.NodeAlertStore
+	// isolation detects the "cut off from the cluster" state of THIS node
+	// (peers can't reach the advertised Raft address). One loop for the
+	// process, started by SetAppContext; reads the swappable Service live.
+	// isolation is read from the metrics tick (the sender asks for the current
+	// alert on every batch), so it is an atomic pointer rather than activateMu
+	// state — the hot path must never wait on a running Raft activation.
+	isolation        atomic.Pointer[raftcluster.IsolationDetector]
+	isolationStarted bool
 	// pbsSnapshotSink stores PBS detail snapshots carried by received metric
 	// batches; registered by server wiring and (re)applied to the metric sink on
 	// every Raft activation so it survives a wizard-driven join.
@@ -258,6 +272,10 @@ func NewContainer(logger *log.Logger, dbConfig config.DatabaseConfig, jwtSecret,
 		mem:  container.memoryRepository,
 		disk: container.diskRepository,
 	})
+	// Node self-diagnosed faults (e.g. cut off from the Raft cluster) ride the
+	// metric stream into this RAM store and surface on the machine cards.
+	container.nodeAlerts = hosts.NewNodeAlertStore()
+	hosts.AttachNodeAlertSource(container.hostService, container.nodeAlerts)
 	container.healthService = health.NewService(container.logger, container.hostRepository, startTime)
 	container.sensorsService = sensors.NewService(container.logger)
 
@@ -378,7 +396,11 @@ func (c *Container) activateLocked(ctx context.Context, cfg config.RaftConfig) (
 	if c.pbsSnapshotSink != nil {
 		c.metricSink.SetPBSSink(c.pbsSnapshotSink)
 	}
+	c.metricSink.SetNodeAlertStore(c.nodeAlerts)
 	c.metricSender = metricstream.NewSender(c.logger, c.db, cfg.ClusterID, cfg.NodeID, c.jwtSecret, cfg.Bridge)
+	// While this node is cut off from its cluster the sender stamps the
+	// diagnosis onto every batch and throttles the stream to a liveness cadence.
+	c.metricSender.SetNodeAlertSource(c.IsolationAlert)
 	c.metricReceiver = metricstream.NewReceiver(c.logger, c.metricSink, cfg.ClusterID, c.jwtSecret, cfg.Bridge)
 
 	// Wire the forward-signing secret provider onto the live node so
@@ -519,7 +541,32 @@ func (c *Container) SetAppContext(ctx context.Context) {
 	c.startBridgeGoroutinesLocked()
 	c.startSelfAdvertiseLoopLocked(ctx)
 	c.startMembershipManagerLocked(ctx)
+	c.startIsolationDetectorLocked(ctx)
 	c.startClusterSecretReconcilerLocked(ctx)
+}
+
+// startIsolationDetectorLocked launches the single loop that recognises the
+// "deaf node" state — this node advertises a Raft address peers can't reach,
+// so it hears no leader while its own outbound paths still work — and
+// publishes the operator-facing hosts.NodeAlert for the local collector row.
+// Runs on every node; a healthy cluster never pays for it (it only probes
+// peers once the node has gone without a leader for a while). activateMu must
+// be held.
+func (c *Container) startIsolationDetectorLocked(ctx context.Context) {
+	if ctx == nil || c.isolationStarted || c.raftSwap == nil {
+		return
+	}
+	c.isolationStarted = true
+	d := raftcluster.NewIsolationDetector(c.logger, c.raftSwap, c.db, c.CurrentRaftConfig, c.nodeAlerts)
+	c.isolation.Store(d)
+	go d.Run(ctx)
+}
+
+// IsolationAlert returns this node's own isolation diagnosis (nil when it is
+// attached to its cluster, or Raft is off). Feeds the metric-stream sender and
+// GET /raft/status.
+func (c *Container) IsolationAlert() *hosts.NodeAlert {
+	return c.isolation.Load().Current()
 }
 
 // startClusterSecretReconcilerLocked launches the single loop that keeps the
