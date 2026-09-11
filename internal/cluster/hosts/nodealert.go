@@ -5,6 +5,10 @@ import (
 	"time"
 )
 
+// NodeAlertFixReadvertise is the Fix value for "this node can move itself to
+// an address the cluster can reach" (POST /raft/reattach on that node).
+const NodeAlertFixReadvertise = "readvertise"
+
 // NodeAlert kinds.
 const (
 	// NodeAlertRaftIsolated: the node-stats node on this host is cut off from
@@ -32,12 +36,17 @@ type NodeAlert struct {
 	// Title is the one-line headline; Detail explains what the node observed.
 	Title  string `json:"title"`
 	Detail string `json:"detail"`
-	// Action is ONE short sentence naming what to do — the only text compact
-	// surfaces (a machine card's tooltip, a row in the node list) show. Steps
-	// carry the same remedy in full, for the page the operator lands on.
+	// Action is ONE short sentence naming what to do. It is the whole of the
+	// human-readable remedy: a fault the operator can only fix by hand (open
+	// a port, fix a NAT rule) needs a sentence, not a page, and anything the
+	// app can do for them belongs in Fix instead of in prose.
 	Action string `json:"action,omitempty"`
-	// Steps are the operator's options, in order of preference.
-	Steps []string `json:"steps,omitempty"`
+	// Fix names a remedy the affected NODE can carry out on itself when an
+	// operator asks (empty when there is none): "readvertise" — move to
+	// FixTarget and have the cluster update its record of this node. The UI
+	// offers it as a button with FixTarget prefilled and editable.
+	Fix       string `json:"fix,omitempty"`
+	FixTarget string `json:"fix_target,omitempty"`
 
 	// Diagnostic facts the UI may render in monospace.
 	NodeID        string `json:"node_id,omitempty"`

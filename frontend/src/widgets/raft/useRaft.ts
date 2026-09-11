@@ -30,6 +30,17 @@ export interface RaftStatus {
   leader_reachable?: boolean
 }
 
+/** What POST /raft/reattach reports back. */
+export interface ReattachResult {
+  raft_addr: string
+  http_url: string
+  /** Whether a peer applied the new address to the cluster's membership. */
+  cluster_updated: boolean
+  cluster_error?: string
+  /** Set when the change is live but could not be written to the env file. */
+  persist_error?: string
+}
+
 export interface BridgeSample {
   url: string
   cluster_id: string
@@ -354,6 +365,26 @@ export interface ProbeVoterResult {
   addr: string
   error?: string
 }
+/**
+ * Moves THIS node to an address the cluster can reach: persists its advertise
+ * settings, restarts the cluster layer on them (data is kept) and asks a peer
+ * to update the membership, which only the leader can do and a cut-off node
+ * cannot reach. An empty address means "use the one the node proposes".
+ */
+export function useReattachNode() {
+  const queryClient = useQueryClient()
+  return useMutation<ReattachResult, Error, string | undefined>({
+    mutationFn: async (raftAddr) => {
+      const { data } = await apiClient.post<ReattachResult>('/raft/reattach', { raft_addr: raftAddr ?? '' })
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['hosts'] })
+      queryClient.invalidateQueries({ queryKey: ['raft', 'status'] })
+    },
+  })
+}
+
 export function useProbeVoter() {
   return useMutation<ProbeVoterResult, Error, string>({
     mutationFn: async (addr) => {

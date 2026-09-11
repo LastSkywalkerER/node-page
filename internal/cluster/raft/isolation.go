@@ -201,15 +201,15 @@ func buildIsolationAlert(cause isolationCause, f isolationFacts, since time.Time
 		noLeader = f.noLeaderFor.Truncate(time.Second)
 	}
 
-	reAdvertise := fmt.Sprintf("Or re-advertise: in %s set RAFT_ADVERTISE_ADDR=%s:%s, RAFT_ADVERTISE_PUBLIC_URL=http://%s:%s and NODE_STATS_IPV4=%s, then restart node-stats.",
-		envFile, newIP, raftPort, newIP, httpPort, newIP)
-	// Only needed when the node's address actually changed (the re-advertise
-	// route): say so, or an operator who took the DHCP route will go looking
-	// for a step they don't need. The path names the controls as the admin UI
-	// actually labels them — an instruction pointing at a button that isn't
-	// there is worse than no instruction.
-	addPeer := fmt.Sprintf("After re-advertising, tell the cluster the new address: on the LEADER open Admin → Nodes → \"Raft cluster sync\" → \"Advanced: manually add a voter\", enter id %q and address %s:%s, then \"Add voter\". An existing id just gets its address updated — nothing is re-joined and no history is lost.",
-		nodeID, newIP, raftPort)
+	// What the node can do for the operator, rather than instructions for them
+	// to type: move itself to the address the machine really holds and ask the
+	// cluster to update its record. Offered only when this node knows an
+	// address DIFFERENT from the one it advertises — otherwise there is
+	// nothing to move to and the fault is somewhere in the path.
+	if f.localIPv4 != "" && f.localIPv4 != oldIP {
+		a.Fix = hosts.NodeAlertFixReadvertise
+		a.FixTarget = net.JoinHostPort(f.localIPv4, raftPort)
+	}
 
 	// Where this node's dashboard actually answers, so the UI can link to the
 	// settings page of the machine that needs the fix. Prefer the node's own
@@ -236,15 +236,10 @@ func buildIsolationAlert(cause isolationCause, f isolationFacts, since time.Time
 		}
 		a.Detail = fmt.Sprintf("This node tells the cluster to reach it at %s, but %s. Peers keep dialing the dead address, so the node has heard no leader for %s: it cannot make cluster writes and its host record (IP, uptime, kernel, …) is frozen cluster-wide. Metrics still stream to peers at a reduced rate so this card stays alive.",
 			f.advertiseAddr, where, noLeader)
-		steps := []string{}
 		if oldIP != "" {
-			steps = append(steps, fmt.Sprintf("Easiest: give this machine its old address %s back (DHCP reservation or static IP). The cluster reconnects on its own — nothing to click.", oldIP))
-		}
-		a.Steps = append(steps, reAdvertise, addPeer)
-		if oldIP != "" {
-			a.Action = fmt.Sprintf("Give the machine %s back, or point the node at %s and add that voter on the leader.", oldIP, newIP)
+			a.Action = fmt.Sprintf("Give the machine %s back, or move the node to %s.", oldIP, newIP)
 		} else {
-			a.Action = fmt.Sprintf("Point the node at %s and add that voter on the leader.", newIP)
+			a.Action = fmt.Sprintf("Move the node to %s.", newIP)
 		}
 	case causeUnreachable:
 		a.Title = "Node cut off from its cluster"
@@ -252,12 +247,7 @@ func buildIsolationAlert(cause isolationCause, f isolationFacts, since time.Time
 		// correct public/NAT address on a privately-addressed machine.
 		a.Detail = fmt.Sprintf("Peers report a leader, but this node has heard none for %s — nobody reaches its advertised Raft address %s. The address itself doesn't look stale, so something in between is blocking it (firewall, NAT/port forward, a moved port). Until then the node cannot make cluster writes and its host record is frozen cluster-wide. Metrics still stream to peers at a reduced rate so this card stays alive.",
 			noLeader, f.advertiseAddr)
-		a.Steps = []string{
-			fmt.Sprintf("Check that %s accepts TCP connections from the other nodes: on the LEADER open Admin → Nodes → \"Raft cluster sync\" → Voters and hit \"Probe\" on this node's row. Then open the port / fix the forward.", f.advertiseAddr),
-			"If the machine's reachable address changed: " + strings.TrimPrefix(reAdvertise, "Or re-advertise: "),
-			addPeer,
-		}
-		a.Action = fmt.Sprintf("Open the path to %s from the other nodes, or re-advertise the address this machine really has.", f.advertiseAddr)
+		a.Action = fmt.Sprintf("Open the path to %s from the other nodes, or move the node to the address it really has.", f.advertiseAddr)
 	}
 	return a
 }

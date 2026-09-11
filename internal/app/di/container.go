@@ -1153,8 +1153,26 @@ func (c *Container) shutdownAndWipeLocked() error {
 	if !c.raftSwap.Enabled() && prevCfg.NodeID == "" {
 		return nil
 	}
+	c.shutdownRaftLocked()
+
+	dir := prevCfg.DataDir
+	if dir == "" {
+		dir = config.DefaultRaftDataDir()
+	}
+	if err := wipeDirContents(dir); err != nil {
+		return fmt.Errorf("raft wipe: clear data dir: %w", err)
+	}
+	return nil
+}
+
+// shutdownRaftLocked stops the running raft layer and drops everything built
+// around it, KEEPING the on-disk log and snapshots. activateLocked rebuilds
+// all of it. Split out of shutdownAndWipeLocked so a node can restart its own
+// layer under a corrected address without throwing away the cluster state it
+// still holds — a re-attach is not a recovery. activateMu must be held.
+func (c *Container) shutdownRaftLocked() {
 	if err := c.raftSwap.Close(); err != nil && c.logger != nil {
-		c.logger.Warn("raft wipe: shutdown returned error (continuing)", "error", err)
+		c.logger.Warn("raft: shutdown returned error (continuing)", "error", err)
 	}
 	c.raftSwap.Swap(raftcluster.NewDisabledService())
 	c.raftFSM = nil
@@ -1164,16 +1182,7 @@ func (c *Container) shutdownAndWipeLocked() error {
 	c.metricSink = nil
 	c.metricSender = nil
 	c.metricReceiver = nil
-
-	dir := prevCfg.DataDir
-	if dir == "" {
-		dir = config.DefaultRaftDataDir()
-	}
-	if err := wipeDirContents(dir); err != nil {
-		return fmt.Errorf("raft wipe: clear data dir: %w", err)
-	}
 	c.raftBootError = ""
-	return nil
 }
 
 // RaftEnabled satisfies setup.RaftActivator. Reports whether the running

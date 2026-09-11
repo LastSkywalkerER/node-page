@@ -47,6 +47,10 @@ type Handler struct {
 	factoryReset func() error
 	// isolation yields this node's own isolation diagnosis (nil when healthy).
 	isolation func() *hosts.NodeAlert
+	// reattach moves THIS node to the given Raft address (empty = the address
+	// it proposes for itself) and asks the cluster to update its record.
+	// Returns whatever the caller wants to report back, JSON-encoded.
+	reattach func(ctx context.Context, raftAddr string) (any, error)
 
 	// forwardSecret returns the cluster-shared secret used to verify signed
 	// command forwards. nil disables verification entirely (Raft off).
@@ -655,6 +659,36 @@ const LeaderIDHeader = "X-Raft-Leader-ID"
 func (h *Handler) WithIsolationSource(fn func() *hosts.NodeAlert) *Handler {
 	h.isolation = fn
 	return h
+}
+
+// WithReattach wires the action behind the admin UI's re-attach button.
+func (h *Handler) WithReattach(fn func(ctx context.Context, raftAddr string) (any, error)) *Handler {
+	h.reattach = fn
+	return h
+}
+
+// Reattach moves this node to an address the cluster can reach: it persists
+// the new advertise settings, restarts the layer on them (keeping all data)
+// and asks a peer to update the membership, which only the leader can do.
+// The address is the operator's to confirm or change, so it comes from the
+// request; an empty one means "use the one this node proposes".
+//
+// POST /api/v1/raft/reattach   { "raft_addr": "10.0.0.7:7000" }
+func (h *Handler) Reattach(c *gin.Context) {
+	if h.reattach == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "reattach not wired"})
+		return
+	}
+	var req struct {
+		RaftAddr string `json:"raft_addr"`
+	}
+	_ = c.ShouldBindJSON(&req) // body optional: no address means "your call"
+	res, err := h.reattach(c.Request.Context(), req.RaftAddr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, res)
 }
 
 // AddPeer adds a Raft voter to the current cluster. Leader-only.

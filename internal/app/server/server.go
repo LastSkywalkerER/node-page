@@ -748,7 +748,10 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 			return nil
 		}).
 		WithBridgeInfo(container.BridgeInfo).
-		WithIsolationSource(container.IsolationAlert)
+		WithIsolationSource(container.IsolationAlert).
+		WithReattach(func(ctx context.Context, raftAddr string) (any, error) {
+			return container.ReattachNode(ctx, raftAddr)
+		})
 
 	// Swagger UI (always available)
 	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
@@ -862,6 +865,11 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		// here; we authenticate (HMAC) and write them straight into local state +
 		// SSE without a consensus round. Resolved at request time since the
 		// receiver is (re)built on every Raft activation.
+		// A node the cluster can no longer dial asks a peer to update its
+		// address here (HMAC-signed with the cluster secret, like the other
+		// off-Raft peer endpoints — it moves a voter, so it can't be open).
+		api.POST(raftcluster.ReattachRoutePath, raftHandler.ClusterReattach)
+
 		api.POST(metricstream.RoutePath, func(c *gin.Context) {
 			if mr := container.GetMetricReceiver(); mr != nil {
 				mr.Handle(c)
@@ -991,6 +999,8 @@ func setupRouter(container *di.Container, startTime time.Time, logger *log.Logge
 		authAPI.POST("/raft/reset", middleware.RequireAdmin(), raftHandler.ResetConfig)
 		// Wipe Raft on-disk state + re-bootstrap as fresh single voter
 		authAPI.POST("/raft/wipe-state", middleware.RequireAdmin(), raftHandler.WipeState)
+		// Admin: move THIS node to an address the cluster can reach.
+		authAPI.POST("/raft/reattach", middleware.RequireAdmin(), raftHandler.Reattach)
 		// Fully decouple from Raft: wipe state + remove .env entries
 		authAPI.POST("/raft/factory-reset", middleware.RequireAdmin(), raftHandler.FactoryReset)
 		// Self-leave: remove THIS node from the cluster, then decouple to standalone

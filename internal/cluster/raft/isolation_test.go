@@ -100,45 +100,56 @@ func TestBuildIsolationAlert_StaleAdvertise(t *testing.T) {
 	if a == nil || a.Kind != hosts.NodeAlertRaftIsolated || a.Severity != hosts.NodeAlertSeverityError {
 		t.Fatalf("alert = %+v", a)
 	}
-	joined := a.Title + "\n" + a.Detail + "\n" + strings.Join(a.Steps, "\n")
-	for _, want := range []string{
-		"192.168.0.110:7000",                     // what it advertises
-		"it is at 192.168.0.103 now",             // where it really is
-		"old address 192.168.0.110 back",         // option 1: DHCP reservation
-		"RAFT_ADVERTISE_ADDR=192.168.0.103:7000", // option 2: re-advertise
-		"RAFT_ADVERTISE_PUBLIC_URL=http://192.168.0.103:9090",
-		"NODE_STATS_IPV4=192.168.0.103",
-		"/opt/node-stats/.env.agent",
-		`id "skynas" and address 192.168.0.103:7000`, // option 2b: add the voter on the leader
-		`"Advanced: manually add a voter"`,           // the real UI path, not an invented one
-		"reduced rate",
-	} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("alert text lacks %q:\n%s", want, joined)
+	// The remedy is an OFFER the node can carry out, not instructions to type:
+	// no env lines, no menu paths, no wall of steps.
+	if a.Fix != hosts.NodeAlertFixReadvertise || a.FixTarget != "192.168.0.103:7000" {
+		t.Fatalf("expected an offer to move to the address the machine has, got fix=%q target=%q", a.Fix, a.FixTarget)
+	}
+	text := a.Title + "\n" + a.Detail + "\n" + a.Action
+	for _, forbidden := range []string{"RAFT_ADVERTISE_ADDR", ".env", "Admin →", "Add voter"} {
+		if strings.Contains(text, forbidden) {
+			t.Errorf("the alert must not tell the operator to edit config by hand; found %q in:\n%s", forbidden, text)
 		}
 	}
-	if len(a.Steps) != 3 {
-		t.Fatalf("want 3 steps (DHCP, re-advertise, add peer), got %d: %v", len(a.Steps), a.Steps)
+	for _, want := range []string{"192.168.0.110", "192.168.0.103"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("alert text lacks %q:\n%s", want, text)
+		}
+	}
+	if len(a.Action) > 160 {
+		t.Fatalf("action must stay one short sentence, got %d chars: %q", len(a.Action), a.Action)
 	}
 	if buildIsolationAlert(causeNone, isolationFacts{}, time.Now()) != nil {
 		t.Fatal("causeNone must yield no alert")
 	}
 }
 
+// TestBuildIsolationAlert_NoFixWhenNothingToMoveTo: when the node's own
+// address IS what it advertises, moving it somewhere would be a lie — the
+// fault is in the path, so no button is offered.
+func TestBuildIsolationAlert_NoFixWhenNothingToMoveTo(t *testing.T) {
+	t.Parallel()
+	a := buildIsolationAlert(causeUnreachable, isolationFacts{
+		nodeID: "valheim", advertiseAddr: "10.0.0.5:7000", localIPv4: "10.0.0.5", raftPort: "7000",
+	}, time.Now())
+	if a.Fix != "" || a.FixTarget != "" {
+		t.Fatalf("no move to offer, yet fix=%q target=%q", a.Fix, a.FixTarget)
+	}
+}
+
 func TestBuildIsolationAlert_Unreachable(t *testing.T) {
 	t.Parallel()
 	a := buildIsolationAlert(causeUnreachable, isolationFacts{
-		nodeID: "valheim", advertiseAddr: "65.21.152.83:7001", noLeaderFor: 3 * time.Minute,
+		nodeID: "valheim", advertiseAddr: "65.21.152.83:7001", localIPv4: "10.0.12.3",
+		raftPort: "7001", noLeaderFor: 3 * time.Minute,
 	}, time.Now())
 	if a == nil || !strings.Contains(a.Detail, "65.21.152.83:7001") || !strings.Contains(a.Title, "cut off") {
 		t.Fatalf("alert = %+v", a)
 	}
-	joined := strings.Join(a.Steps, "\n")
-	// The steps must name controls the admin UI actually has.
-	for _, want := range []string{`"Raft cluster sync"`, `"Probe"`, `"Add voter"`} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("unreachable steps lack the real UI control %s: %v", want, a.Steps)
-		}
+	// A machine whose real address differs from the advertised one can still
+	// be offered the move, whatever the cause.
+	if a.Fix != hosts.NodeAlertFixReadvertise || a.FixTarget != "10.0.12.3:7001" {
+		t.Fatalf("fix=%q target=%q", a.Fix, a.FixTarget)
 	}
 }
 

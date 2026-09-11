@@ -148,7 +148,9 @@ func TestNodeAlertEndToEnd(t *testing.T) {
 		Severity:      hosts.NodeAlertSeverityError,
 		Title:         "Node advertises an address it no longer has",
 		Detail:        "peers keep dialing 192.168.0.110:7000",
-		Steps:         []string{"give it 192.168.0.110 back", "or re-advertise 192.168.0.103:7000"},
+		Action:        "Give the machine 192.168.0.110 back, or move the node to 192.168.0.103.",
+		Fix:           hosts.NodeAlertFixReadvertise,
+		FixTarget:     "192.168.0.103:7000",
 		NodeID:        "skynas",
 		AdvertiseAddr: "192.168.0.110:7000",
 		LocalIPv4:     "192.168.0.103",
@@ -163,9 +165,11 @@ func TestNodeAlertEndToEnd(t *testing.T) {
 	if a["kind"] != hosts.NodeAlertRaftIsolated || a["node_id"] != "skynas" || a["advertise_addr"] != "192.168.0.110:7000" || a["local_ipv4"] != "192.168.0.103" {
 		t.Fatalf("alert facts lost on the wire: %v", a)
 	}
-	steps, ok := a["steps"].([]any)
-	if !ok || len(steps) != 2 || !strings.Contains(steps[1].(string), "192.168.0.103:7000") {
-		t.Fatalf("re-attach steps lost on the wire: %v", a["steps"])
+	if a["fix"] != hosts.NodeAlertFixReadvertise || a["fix_target"] != "192.168.0.103:7000" {
+		t.Fatalf("the offered remedy was lost on the wire: fix=%v target=%v", a["fix"], a["fix_target"])
+	}
+	if !strings.Contains(a["action"].(string), "192.168.0.103") {
+		t.Fatalf("action lost on the wire: %v", a["action"])
 	}
 	// Only the machine that reported it is marked — not every card.
 	if other := alertOf(hosts.LocalCollectorHostID); other != nil {

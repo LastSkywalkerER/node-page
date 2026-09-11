@@ -1,11 +1,14 @@
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { confirmDialog } from '@/shared/lib/confirmDialog'
-import { Trash2, LogOut, ExternalLink, ArrowRight, Check, X, Unplug } from 'lucide-react'
+import type React from 'react'
+import { useState } from 'react'
+import { Trash2, LogOut, ExternalLink, ArrowRight, Check, X, Unplug, Wrench } from 'lucide-react'
 import { OSIcon } from '@/shared/components/OSIcon'
 import { apiClient } from '@/shared/lib/api'
 import { useHosts, useDeleteHost } from '@/widgets/hosts/useHosts'
 import { nodeAlertTarget } from '@/widgets/hosts/nodeAlert'
+import type { NodeAlert } from '@/widgets/hosts/schemas'
 import {
   usePendingChanges,
   useApprovePendingChange,
@@ -13,6 +16,7 @@ import {
 } from '@/widgets/hosts/usePendingChanges'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Accordion,
@@ -26,6 +30,7 @@ import {
   useRaftStatus,
   useLeaveRaftCluster,
   useFactoryResetRaft,
+  useReattachNode,
 } from '@/widgets/raft'
 
 const nodeAccordionTrigger =
@@ -349,39 +354,25 @@ export function NodesTab() {
                                   <span className="font-medium">{host.node_alert.title}</span>
                                   {host.node_alert.action ? ` — ${host.node_alert.action}` : ''}
                                 </p>
-                                {isThisNode
-                                  ? host.node_alert.steps.length > 0 && (
-                                      // Folded away by default: the one-liner
-                                      // above is the message, this is only for
-                                      // whoever is about to type the commands.
-                                      <details>
-                                        <summary className="cursor-pointer select-none hover:underline">
-                                          How to fix
-                                        </summary>
-                                        <ol className="mt-1 list-decimal space-y-1 pl-4 text-muted-foreground">
-                                          {host.node_alert.steps.map((step) => (
-                                            <li key={step} className="break-words">
-                                              {step}
-                                            </li>
-                                          ))}
-                                        </ol>
-                                      </details>
+                                {isThisNode ? (
+                                  <NodeAlertFix alert={host.node_alert} />
+                                ) : (
+                                  (() => {
+                                    const to = nodeAlertTarget(host, localHostId)
+                                    if (!('href' in to)) return null
+                                    return (
+                                      <a
+                                        href={to.href}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="inline-flex items-center gap-1 hover:underline"
+                                      >
+                                        <ExternalLink className="h-3 w-3 shrink-0" />
+                                        Fix it on that node
+                                      </a>
                                     )
-                                  : (() => {
-                                      const to = nodeAlertTarget(host, localHostId)
-                                      if (!('href' in to)) return null
-                                      return (
-                                        <a
-                                          href={to.href}
-                                          target="_blank"
-                                          rel="noreferrer"
-                                          className="inline-flex items-center gap-1 hover:underline"
-                                        >
-                                          <ExternalLink className="h-3 w-3 shrink-0" />
-                                          Fix it on that node
-                                        </a>
-                                      )
-                                    })()}
+                                  })()
+                                )}
                               </div>
                             </div>
                           )}
@@ -428,5 +419,88 @@ export function NodesTab() {
         </Accordion>
       </CardContent>
     </Card>
+  )
+}
+
+/**
+ * The remedy for a node's own fault, offered as a control rather than as
+ * instructions: the address the node proposes for itself, editable because the
+ * machine may hold several and only the operator knows which one the cluster
+ * should use, and one button that applies it.
+ *
+ * Applying rewrites this node's advertised address, restarts its cluster layer
+ * on it (data is kept) and asks a peer to update the membership — the part a
+ * cut-off node cannot do alone, since only the leader can move a voter.
+ */
+function NodeAlertFix({ alert }: { alert: NodeAlert }) {
+  const [open, setOpen] = useState(false)
+  const [addr, setAddr] = useState(alert.fix_target)
+  const reattach = useReattachNode()
+
+  if (alert.fix !== 'readvertise') return null
+
+  if (!open) {
+    return (
+      <Button
+        size="sm"
+        variant="outline"
+        className="h-6 border-rose-500/50 px-2 text-[11px] text-rose-300 hover:bg-rose-500/10 hover:text-rose-200"
+        onClick={() => {
+          setAddr(alert.fix_target)
+          setOpen(true)
+        }}
+      >
+        <Wrench className="mr-1 h-3 w-3" /> Fix
+      </Button>
+    )
+  }
+
+  const apply = async () => {
+    try {
+      const res = await reattach.mutateAsync(addr.trim())
+      if (res.cluster_updated) {
+        toast.success(`This node now answers at ${res.raft_addr} and the cluster was told.`)
+      } else {
+        toast.warning(
+          `This node now answers at ${res.raft_addr}, but the cluster still has the old address: ${res.cluster_error ?? 'no peer applied the change'}`
+        )
+      }
+      if (res.persist_error) {
+        toast.warning(`Applied, but not saved on disk — a restart will undo it: ${res.persist_error}`)
+      }
+      setOpen(false)
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <label className="text-muted-foreground">Address for the other nodes</label>
+        <Input
+          value={addr}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAddr(e.target.value)}
+          placeholder="10.0.0.7:7000"
+          className="h-7 w-44 font-mono text-[11px]"
+        />
+        <Button size="sm" className="h-7 px-2 text-[11px]" disabled={reattach.isPending || !addr.trim()} onClick={apply}>
+          {reattach.isPending ? 'Applying…' : 'Apply'}
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 px-2 text-[11px]"
+          disabled={reattach.isPending}
+          onClick={() => setOpen(false)}
+        >
+          Cancel
+        </Button>
+      </div>
+      <p className="text-muted-foreground">
+        Saves it on this node, restarts its cluster layer (data is kept) and asks a peer to update the
+        cluster. Nothing is re-joined.
+      </p>
+    </div>
   )
 }

@@ -10,10 +10,13 @@ export const NodeAlertSchema = z.object({
   severity: z.string(), // 'warning' | 'error'
   title: z.string(),
   detail: z.string().optional().default(''),
-  // One short sentence naming what to do — all a compact surface shows.
+  // One short sentence naming what to do — the whole human-readable remedy.
   action: z.string().optional().default(''),
-  // What the operator can do, best option first (the full remedy).
-  steps: z.array(z.string()).nullish().transform((v) => v ?? []),
+  // A remedy the affected NODE can carry out on itself when an operator asks.
+  // '' = none (the fault is in the path and only a human can clear it).
+  // 'readvertise' = move to fix_target and have the cluster update its record.
+  fix: z.string().optional().default(''),
+  fix_target: z.string().optional().default(''),
   node_id: z.string().optional().default(''),
   advertise_addr: z.string().optional().default(''),
   advertise_url: z.string().optional().default(''),
