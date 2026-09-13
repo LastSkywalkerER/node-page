@@ -423,6 +423,15 @@ func (c *Container) activateLocked(ctx context.Context, cfg config.RaftConfig) (
 	// the backfill will run again on the next ActivateRaft.
 	if c.raftReplicator != nil && act.Node.IsLeader() {
 		go func() {
+			// Both backfills read the LOCAL tables, so they must not run before
+			// the start-up replay has refilled them — see raftCaughtUp. This one
+			// runs once per activation rather than on a retrying tick, so it
+			// waits; a node still behind after that is exactly the one whose rows
+			// must not be published.
+			if !c.waitForLogCatchUp(context.Background(), 10*time.Minute) {
+				c.logger.Warn("raft: skipping the user/host backfill — this node has not finished applying its log, and republishing rows from behind would overwrite the cluster's current state")
+				return
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if n, err := c.raftReplicator.BackfillLocalUsers(ctx, c.userRepository); err != nil {
@@ -604,6 +613,50 @@ func (c *Container) startClusterSecretReconcilerLocked(ctx context.Context) {
 	}()
 }
 
+// raftCaughtUp reports whether this node has applied everything it knows to be
+// committed — i.e. the log replay that follows EVERY start has finished.
+//
+// It gates the backfills, and it has to. They all work the same way: read the
+// local tables, republish each row into the log. But raft restores the newest
+// snapshot into those tables on every start and only then re-applies the tail,
+// so until the replay is through they hold snapshot-age values — and a backfill
+// that runs early does not heal anything, it publishes stale rows as NEW
+// commands that overwrite the cluster's current state with them. That is how
+// gateway routes edited minutes earlier came back with their old settings after
+// an update: the node restarted, its routes were briefly rewound, and five
+// seconds later it told the whole cluster those were the current ones.
+func (c *Container) raftCaughtUp() bool {
+	svc := c.GetRaftService()
+	if svc == nil || !svc.Enabled() {
+		return false
+	}
+	st := svc.Status()
+	if st.CommitIndex == 0 {
+		return false // nothing committed yet — we cannot claim to be current
+	}
+	return st.AppliedIndex >= st.CommitIndex
+}
+
+// waitForLogCatchUp blocks until raftCaughtUp, ctx ends or timeout expires,
+// reporting whether the node caught up. Backfills that cannot wait for a later
+// tick (they run once per activation) use this instead of publishing blind.
+func (c *Container) waitForLogCatchUp(ctx context.Context, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if c.raftCaughtUp() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(time.Second):
+		}
+	}
+}
+
 // reconcileConnectorBackfill republishes connectors that exist only in this
 // node's local SQLite into the replicated Raft log. A connector configured
 // while the node was standalone (or auto-created on the PVE-LXC node before it
@@ -617,8 +670,8 @@ func (c *Container) startClusterSecretReconcilerLocked(ctx context.Context) {
 // avoid per-cycle log churn. New connectors added later go through Raft directly
 // (persistUpsert), so they need no backfill.
 func (c *Container) reconcileConnectorBackfill(ctx context.Context) {
-	if c.connectorBackfillDone {
-		return
+	if c.connectorBackfillDone || !c.raftCaughtUp() {
+		return // see raftCaughtUp: publishing pre-replay rows overwrites the cluster
 	}
 	repl := c.GetRaftReplicator()
 	if repl == nil || !repl.Enabled() || c.connectorRepository == nil {
@@ -642,8 +695,8 @@ func (c *Container) reconcileConnectorBackfill(ctx context.Context) {
 // reconcileGatewayBackfill republishes gateway routes that only live in this
 // node's local DB (created while standalone) — see reconcileConnectorBackfill.
 func (c *Container) reconcileGatewayBackfill(ctx context.Context) {
-	if c.gatewayBackfillDone {
-		return
+	if c.gatewayBackfillDone || !c.raftCaughtUp() {
+		return // see raftCaughtUp: publishing pre-replay rows overwrites the cluster
 	}
 	repl := c.GetRaftReplicator()
 	if repl == nil || !repl.Enabled() || c.gatewayRepository == nil {
