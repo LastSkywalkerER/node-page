@@ -491,10 +491,13 @@ func ConnectorHostAlive(status string) bool {
 // connectorHostAlive is the internal alias used by the upsert paths.
 func connectorHostAlive(status string) bool { return ConnectorHostAlive(status) }
 
-// resolveFreeName returns desired if no OTHER row holds it, otherwise a
-// deterministic suffixed variant (hosts.name is unique; a PVE guest may share
-// a hostname with an unrelated registered machine).
-func (r *hostRepository) resolveFreeName(ctx context.Context, desired string, selfID uint, externalID string) (string, error) {
+// resolveFreeName returns desired if no OTHER row holds it, otherwise desired
+// with suffix in brackets (hosts.name is unique; a PVE guest may share a
+// hostname with an unrelated registered machine). The suffix must already be in
+// its display form — externalIDSuffix for connector rows, macTail for agents —
+// so the caller decides how the machine is told apart, e.g.
+// "media-vm [pve/qemu/105]" or "SkyNAS [00:03]". Stable, so retries converge.
+func (r *hostRepository) resolveFreeName(ctx context.Context, desired string, selfID uint, suffix string) (string, error) {
 	var count int64
 	err := r.db.WithContext(ctx).Model(&Host{}).
 		Where("name = ? AND id != ?", desired, selfID).
@@ -505,7 +508,21 @@ func (r *hostRepository) resolveFreeName(ctx context.Context, desired string, se
 	if count == 0 {
 		return desired, nil
 	}
-	// e.g. "media-vm [pve/qemu/105]" — stable, so retries converge.
+	if strings.TrimSpace(suffix) == "" {
+		// Nothing to tell them apart with — a bracketed blank is worse than a
+		// duplicate-looking name, and the row's own id keeps it unique in the DB.
+		return desired, nil
+	}
+	return fmt.Sprintf("%s [%s]", desired, suffix), nil
+}
+
+// externalIDSuffix shortens a connector identity into the part that identifies
+// the guest, dropping the scheme and the connector kind:
+// "proxmox:node/inno-pve@host:8006/inno-pve/qemu/101" →
+// "inno-pve@host:8006/inno-pve/qemu/101". Only ever applied to external ids:
+// running it over a MAC tail used to cut "00:03" down to "03", turning the
+// disambiguating suffix into a number that matches nothing on the machine.
+func externalIDSuffix(externalID string) string {
 	suffix := externalID
 	if i := strings.Index(suffix, ":"); i >= 0 {
 		suffix = suffix[i+1:]
@@ -513,7 +530,7 @@ func (r *hostRepository) resolveFreeName(ctx context.Context, desired string, se
 	if i := strings.Index(suffix, "/"); i >= 0 {
 		suffix = suffix[i+1:]
 	}
-	return fmt.Sprintf("%s [%s]", desired, suffix), nil
+	return suffix
 }
 
 func (r *hostRepository) UpsertConnectorHost(ctx context.Context, info ConnectorHostInfo) (*Host, error) {
@@ -583,7 +600,7 @@ func (r *hostRepository) UpsertConnectorHost(ctx context.Context, info Connector
 				}).Error
 		}
 		// Connector-owned row: the connector is the only writer, refresh everything.
-		name, nerr := r.resolveFreeName(ctx, info.Name, host.ID, info.ExternalID)
+		name, nerr := r.resolveFreeName(ctx, info.Name, host.ID, externalIDSuffix(info.ExternalID))
 		if nerr != nil {
 			return nil, nerr
 		}
@@ -618,7 +635,7 @@ func (r *hostRepository) UpsertConnectorHost(ctx context.Context, info Connector
 		return &host, r.db.WithContext(ctx).Save(&host).Error
 	}
 
-	name, nerr := r.resolveFreeName(ctx, info.Name, 0, info.ExternalID)
+	name, nerr := r.resolveFreeName(ctx, info.Name, 0, externalIDSuffix(info.ExternalID))
 	if nerr != nil {
 		return nil, nerr
 	}
@@ -849,6 +866,15 @@ const cascadeDeleteChunkSize = 5000
 // progress is durable and incremental. Raw SQL is used to avoid an import
 // cycle with the metrics packages. `timestamp` is quoted because it is a
 // reserved word on Postgres.
+//
+// ORDER MATTERS. The host row goes FIRST, the history after it. The row is what
+// the cluster agrees on — a replicated delete that purged history for two
+// minutes and then ran out of context left the row itself behind on that node,
+// which then disagreed with its peers about which machines exist (and, because
+// the surviving row still owned the external_id and MAC, could never converge
+// again). Deleting the row first makes the part that matters atomic and cheap;
+// the metric rows it orphans are swept later by retention, so running out of
+// time during the purge is no longer a correctness problem.
 func (r *hostRepository) DeleteHostCascade(ctx context.Context, hostID uint) error {
 	pg := r.db.Dialector.Name() == "postgres"
 
@@ -875,36 +901,8 @@ func (r *hostRepository) DeleteHostCascade(ctx context.Context, hostID uint) err
 		rowKey = "ctid"
 	}
 
-	// 1) Child docker rows (docker_container_entities) first, scoped directly by
-	// the host_id column (current-state table: one row per live container). The
-	// chunk is bounded by the table's OWN physical row identity (rowid/ctid).
-	containerQuery := fmt.Sprintf(
-		"DELETE FROM docker_container_entities WHERE %[1]s IN "+
-			"(SELECT %[1]s FROM docker_container_entities WHERE host_id = ? LIMIT %[2]d)",
-		rowKey, cascadeDeleteChunkSize)
-	if err := chunkDelete(containerQuery, hostID); err != nil {
-		return err
-	}
-
-	// 2) Each metric table in chunks, keyed by host_id, bounded by a LIMITed
-	// subselect on the table's own physical row identity (rowid on SQLite, ctid
-	// on Postgres) — the same portable shape used by the retention service.
-	for _, table := range []string{
-		"docker_metrics",
-		"cpu_metrics",
-		"memory_metrics",
-		"disk_metrics",
-		"network_metrics",
-	} {
-		q := fmt.Sprintf(
-			"DELETE FROM %[1]s WHERE %[2]s IN (SELECT %[2]s FROM %[1]s WHERE host_id = ? LIMIT %[3]d)",
-			table, rowKey, cascadeDeleteChunkSize)
-		if err := chunkDelete(q, hostID); err != nil {
-			return err
-		}
-	}
-
-	// 3) Any parked identity proposals for this host (keyed by its MAC).
+	// 1) Any parked identity proposals for this host (keyed by its MAC) — read
+	// the MAC while the row is still there.
 	if r.db.Migrator().HasTable(&HostPendingChange{}) {
 		var macs []string
 		if err := r.db.WithContext(ctx).Model(&Host{}).
@@ -918,11 +916,55 @@ func (r *hostRepository) DeleteHostCascade(ctx context.Context, hostID uint) err
 		}
 	}
 
-	// 4) Finally the host row itself.
+	// 2) The host row itself — one small statement, so the cluster-visible part
+	// of the delete either happens or reports a real error.
 	if err := r.db.WithContext(ctx).Exec("DELETE FROM hosts WHERE id = ?", hostID).Error; err != nil {
 		return fmt.Errorf("cascade delete host %d (hosts row): %w", hostID, err)
 	}
+
+	// 3) Child docker rows (docker_container_entities), scoped directly by the
+	// host_id column (current-state table: one row per live container). The
+	// chunk is bounded by the table's OWN physical row identity (rowid/ctid).
+	containerQuery := fmt.Sprintf(
+		"DELETE FROM docker_container_entities WHERE %[1]s IN "+
+			"(SELECT %[1]s FROM docker_container_entities WHERE host_id = ? LIMIT %[2]d)",
+		rowKey, cascadeDeleteChunkSize)
+	if err := chunkDelete(containerQuery, hostID); err != nil {
+		return purgeErr(err)
+	}
+
+	// 4) Each metric table in chunks, keyed by host_id, bounded by a LIMITed
+	// subselect on the table's own physical row identity (rowid on SQLite, ctid
+	// on Postgres) — the same portable shape used by the retention service.
+	for _, table := range []string{
+		"docker_metrics",
+		"cpu_metrics",
+		"memory_metrics",
+		"disk_metrics",
+		"network_metrics",
+	} {
+		q := fmt.Sprintf(
+			"DELETE FROM %[1]s WHERE %[2]s IN (SELECT %[2]s FROM %[1]s WHERE host_id = ? LIMIT %[3]d)",
+			table, rowKey, cascadeDeleteChunkSize)
+		if err := chunkDelete(q, hostID); err != nil {
+			return purgeErr(err)
+		}
+	}
 	return nil
+}
+
+// purgeErr decides whether a failure DURING the history purge should surface.
+// Running out of context there is not a failed delete: the host row is already
+// gone, every caller's contract ("this host is no longer known") is met, and the
+// rows left behind are orphans the retention sweep collects. Reporting it as an
+// error would make a replicated delete look un-applied and get retried forever
+// on exactly the loaded node that could least afford it. Real SQL errors still
+// propagate.
+func purgeErr(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }
 
 // UpdateDashboardURL implements Repository.
@@ -1022,7 +1064,14 @@ func (r *hostRepository) ApplyPendingChange(ctx context.Context, changeID string
 			if ch.New == "" {
 				continue
 			}
-			name, nerr := r.resolveFreeName(ctx, ch.New, host.ID, host.ExternalID)
+			// An approved rename may land on an agent row with no connector
+			// identity — fall back to its MAC tail so the bracketed suffix
+			// still names something the operator can match to the machine.
+			suffix := externalIDSuffix(host.ExternalID)
+			if suffix == "" {
+				suffix = macTail(host.MacAddress)
+			}
+			name, nerr := r.resolveFreeName(ctx, ch.New, host.ID, suffix)
 			if nerr != nil {
 				return nerr
 			}

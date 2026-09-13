@@ -92,8 +92,9 @@ type SQLiteSnapshotter struct{ db *gorm.DB }
 // NewSQLiteSnapshotter wires the snapshotter.
 func NewSQLiteSnapshotter(db *gorm.DB) *SQLiteSnapshotter { return &SQLiteSnapshotter{db: db} }
 
-// Snapshot implements Snapshotter.
-func (s *SQLiteSnapshotter) Snapshot() (hraft.FSMSnapshot, error) {
+// Snapshot implements Snapshotter. appliedIndex is stamped into the dump so a
+// later Restore can tell whether it would move a durable FSM forward or back.
+func (s *SQLiteSnapshotter) Snapshot(appliedIndex uint64) (hraft.FSMSnapshot, error) {
 	if s.db == nil {
 		return emptySnapshot{}, nil
 	}
@@ -122,11 +123,12 @@ func (s *SQLiteSnapshotter) Snapshot() (hraft.FSMSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &sqliteSnapshot{tables: tables}, nil
+	return &sqliteSnapshot{tables: tables, appliedIndex: appliedIndex}, nil
 }
 
 type sqliteSnapshot struct {
-	tables map[string][]map[string]any
+	tables       map[string][]map[string]any
+	appliedIndex uint64
 }
 
 // Persist implements hraft.FSMSnapshot. It serialises every managed table
@@ -142,7 +144,7 @@ func (s *sqliteSnapshot) Persist(sink hraft.SnapshotSink) error {
 	}
 	sort.Strings(keys)
 
-	header := snapshotHeader{Version: 1, Tables: keys}
+	header := snapshotHeader{Version: snapshotVersion, Tables: keys, AppliedIndex: s.appliedIndex}
 	if err := enc.Encode(header); err != nil {
 		_ = sink.Cancel()
 		return err
@@ -174,7 +176,17 @@ func (s *sqliteSnapshot) Release() {}
 type snapshotHeader struct {
 	Version int
 	Tables  []string
+	// AppliedIndex is the log index the dump was taken at (snapshotVersion 2+).
+	// It is what lets a restore decide whether it would move this node's durable
+	// state FORWARD or drag it backwards — raft restores the newest snapshot on
+	// EVERY start, with no idea that our FSM already survived the restart in
+	// SQLite. Zero means an older snapshot that predates the field.
+	AppliedIndex uint64
 }
+
+// snapshotVersion is the current snapshot format. 1 = tables only; 2 adds
+// AppliedIndex. Readers accept both.
+const snapshotVersion = 2
 
 type snapshotTable struct {
 	Name string
@@ -188,27 +200,44 @@ type SQLiteRestorer struct{ db *gorm.DB }
 func NewSQLiteRestorer(db *gorm.DB) *SQLiteRestorer { return &SQLiteRestorer{db: db} }
 
 // Restore implements Restorer. It truncates every managed table and bulk-
-// inserts the snapshot contents under a single transaction.
-func (r *SQLiteRestorer) Restore(rc io.ReadCloser) error {
+// inserts the snapshot contents under a single transaction — UNLESS the local
+// database is already at or beyond the snapshot's applied index, in which case
+// the stream is drained and the local state kept (see RestoreResult).
+func (r *SQLiteRestorer) Restore(rc io.ReadCloser, localIndex uint64) (RestoreResult, error) {
 	defer rc.Close()
 	if r.db == nil {
 		_, _ = io.Copy(io.Discard, rc)
-		return nil
+		return RestoreResult{}, nil
 	}
 
 	gz, err := gzip.NewReader(rc)
 	if err != nil {
-		return fmt.Errorf("snapshot: gzip reader: %w", err)
+		return RestoreResult{}, fmt.Errorf("snapshot: gzip reader: %w", err)
 	}
 	defer gz.Close()
 
 	dec := gob.NewDecoder(gz)
 	var header snapshotHeader
 	if err := dec.Decode(&header); err != nil {
-		return fmt.Errorf("snapshot: decode header: %w", err)
+		return RestoreResult{}, fmt.Errorf("snapshot: decode header: %w", err)
 	}
 
-	return r.db.Transaction(func(tx *gorm.DB) error {
+	// raft restores the newest snapshot on EVERY start, because a textbook FSM
+	// lives in memory and has to be rebuilt. Ours is the SQLite database that
+	// just survived the restart, and these snapshots are rare (90s cadence, but
+	// only past 4096 new entries — a quiet cluster can go days), so obeying that
+	// would rewind days of state and then re-apply the whole log tail on top of
+	// a live collector: the way a machine that moved came back as a second,
+	// ghost host row. Only restore when the snapshot is genuinely AHEAD of us —
+	// a fresh joiner, a node that fell behind its peers' log, a wiped database.
+	res := RestoreResult{Index: header.AppliedIndex}
+	if header.AppliedIndex > 0 && localIndex > 0 && localIndex >= header.AppliedIndex {
+		res.Skipped = true
+		_, _ = io.Copy(io.Discard, gz)
+		return res, nil
+	}
+
+	err = r.db.Transaction(func(tx *gorm.DB) error {
 		// SQLite: defer FK checks to commit so the wipe/reinsert can't trip a
 		// constraint mid-restore regardless of table order. (Best-effort; harmless
 		// when foreign_keys is already off.)
@@ -255,6 +284,10 @@ func (r *SQLiteRestorer) Restore(rc io.ReadCloser) error {
 		}
 		return nil
 	})
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	return res, nil
 }
 
 // dumpTable reads every row from the named table as a generic map. Done

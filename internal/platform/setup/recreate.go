@@ -41,6 +41,45 @@ func RequestPortChange(dataDir, dbType, dbDSN, httpPort, raftPort string) (resta
 	return true, nil
 }
 
+// RequestIPv4Change records this machine's current IPv4 on the desired state so
+// the controller writes it into the stack .env as NODE_STATS_IPV4 (Docker only).
+// Idempotent: an unchanged address writes nothing.
+//
+// A missing desired state means no controller owns this stack (a pre-controller
+// install, or a hand-managed one), so there is nothing to update — the app's own
+// .env, which the caller has already written, is then the effective source.
+//
+// The new generation only re-syncs files: IPv4 is part of composeHash, not
+// appHash, so the controller rewrites the .env WITHOUT recreating the app.
+func RequestIPv4Change(dataDir, ipv4 string) (changed bool, err error) {
+	if !dockerenv.Running() || ManagedExternally() {
+		return false, nil
+	}
+	return ReconcileIPv4DesiredState(dataDir, ipv4)
+}
+
+// ReconcileIPv4DesiredState is RequestIPv4Change without the deployment gate
+// (exported for tests, like ReconcileGatewayDesiredState).
+func ReconcileIPv4DesiredState(dataDir, ipv4 string) (changed bool, err error) {
+	ipv4 = strings.TrimSpace(ipv4)
+	if ipv4 == "" {
+		return false, nil
+	}
+	ds, _ := ReadDesiredState(dataDir)
+	if ds == nil {
+		return false, nil
+	}
+	if strings.TrimSpace(ds.IPv4) == ipv4 {
+		return false, nil
+	}
+	ds.IPv4 = ipv4
+	ds.Generation++
+	if err := WriteDesiredState(dataDir, *ds); err != nil {
+		return false, fmt.Errorf("failed to record the machine's address for the controller: %w", err)
+	}
+	return true, nil
+}
+
 // RequestGatewayState reconciles the desired-state's Gateway section with want.
 // It is idempotent: when the stored section already equals want nothing is
 // written (so the gateway materializer can call it every cycle). Returns

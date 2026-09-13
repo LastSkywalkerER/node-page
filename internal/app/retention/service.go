@@ -46,6 +46,9 @@ type Service struct {
 
 	iconMu          sync.Mutex
 	lastIconCleanup time.Time
+
+	orphanMu          sync.Mutex
+	lastOrphanCleanup time.Time
 }
 
 // RunDue runs all retention chores that are due, each self-throttled: metric
@@ -66,6 +69,92 @@ func (s *Service) RunDue(ctx context.Context) {
 	}
 	s.CleanupExpiredTokens(ctx)
 	s.CleanupExpiredIcons(ctx)
+	s.CleanupOrphanMetrics(ctx)
+}
+
+// orphanCleanupInterval / orphanCleanupBatch bound the orphan sweep. It exists
+// because a host delete now removes the hosts row first and drains its history
+// afterwards (see hosts.DeleteHostCascade): whatever the purge did not finish —
+// it runs inside a replicated applier's budget — is left for this sweep, which
+// has all the time in the world. It also collects history left behind by older
+// versions, where a cascade that ran out of context abandoned both the rows and
+// the row's own deletion.
+const (
+	orphanCleanupInterval = 5 * time.Minute
+	orphanCleanupBatch    = 5000
+)
+
+// CleanupOrphanMetrics deletes metric rows whose host_id no longer exists,
+// throttled to orphanCleanupInterval and bounded to one batch per table per
+// run. Work is derived from the data itself (the distinct host_ids present
+// versus the hosts table), so there is no queue to keep in sync and a sweep
+// interrupted half-way simply continues next time. Errors are logged.
+func (s *Service) CleanupOrphanMetrics(ctx context.Context) {
+	s.orphanMu.Lock()
+	if !s.lastOrphanCleanup.IsZero() && time.Since(s.lastOrphanCleanup) < orphanCleanupInterval {
+		s.orphanMu.Unlock()
+		return
+	}
+	s.lastOrphanCleanup = time.Now()
+	s.orphanMu.Unlock()
+
+	var liveIDs []uint
+	if err := s.db.WithContext(ctx).Table("hosts").Pluck("id", &liveIDs).Error; err != nil {
+		if ctx.Err() == nil {
+			s.logger.Warn("orphan metric sweep: list hosts failed", "error", err)
+		}
+		return
+	}
+	// An empty hosts table is not a licence to wipe every metric: it reads far
+	// more like a half-migrated or mid-restore database than like a node that
+	// genuinely knows about no machines.
+	if len(liveIDs) == 0 {
+		return
+	}
+	live := make(map[uint]struct{}, len(liveIDs))
+	for _, id := range liveIDs {
+		live[id] = struct{}{}
+	}
+
+	rowKey := "rowid"
+	if s.db.Dialector.Name() == "postgres" {
+		rowKey = "ctid"
+	}
+	tables := append(append([]string{}, MetricTables...), "docker_container_entities")
+	for _, table := range tables {
+		if ctx.Err() != nil {
+			return
+		}
+		if !s.db.Migrator().HasTable(table) {
+			continue
+		}
+		var present []uint
+		// host_id is indexed on every one of these tables, so the distinct scan
+		// is cheap next to the deletes it saves.
+		if err := s.db.WithContext(ctx).Table(table).Distinct().Pluck("host_id", &present).Error; err != nil {
+			if ctx.Err() == nil {
+				s.logger.Warn("orphan metric sweep: scan failed", "table", table, "error", err)
+			}
+			continue
+		}
+		for _, hostID := range present {
+			if _, ok := live[hostID]; ok || ctx.Err() != nil {
+				continue
+			}
+			query := "DELETE FROM " + table + " WHERE " + rowKey + " IN (SELECT " + rowKey +
+				" FROM " + table + " WHERE host_id = ? LIMIT ?)"
+			res := s.db.WithContext(ctx).Exec(query, hostID, orphanCleanupBatch)
+			if res.Error != nil {
+				if ctx.Err() == nil {
+					s.logger.Warn("orphan metric sweep failed", "table", table, "host_id", hostID, "error", res.Error)
+				}
+				continue
+			}
+			if res.RowsAffected > 0 {
+				s.logger.Info("orphan metric sweep", "table", table, "host_id", hostID, "deleted", res.RowsAffected)
+			}
+		}
+	}
 }
 
 // iconCleanupInterval bounds how often the app-icon cache is pruned — entries

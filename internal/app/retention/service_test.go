@@ -135,3 +135,106 @@ func TestCleanupExpiredTokensPrunesExpiredAndLongRevoked(t *testing.T) {
 	// Second immediate call is throttled — a no-op, never an error/panic.
 	svc.CleanupExpiredTokens(context.Background())
 }
+
+// newOrphanTestDB builds the metric tables plus a hosts table with one live host.
+func newOrphanTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.Exec(`CREATE TABLE hosts (id INTEGER PRIMARY KEY, name TEXT)`).Error; err != nil {
+		t.Fatalf("create hosts: %v", err)
+	}
+	for _, tbl := range MetricTables {
+		if err := db.Exec("CREATE TABLE " + tbl + " (host_id INTEGER, timestamp DATETIME, PRIMARY KEY (host_id, timestamp))").Error; err != nil {
+			t.Fatalf("create %s: %v", tbl, err)
+		}
+	}
+	if err := db.Exec(`CREATE TABLE docker_container_entities (id TEXT PRIMARY KEY, host_id INTEGER, metric_timestamp DATETIME)`).Error; err != nil {
+		t.Fatalf("create docker_container_entities: %v", err)
+	}
+	return db
+}
+
+// History belonging to a host that no longer exists is collected. This is where
+// the rows land when a replicated host delete drops the row and runs out of
+// budget before draining the (possibly million-row) history behind it.
+func TestCleanupOrphanMetricsCollectsDeletedHostsHistory(t *testing.T) {
+	db := newOrphanTestDB(t)
+	now := time.Now()
+	if err := db.Exec(`INSERT INTO hosts (id, name) VALUES (1, 'live')`).Error; err != nil {
+		t.Fatalf("seed hosts: %v", err)
+	}
+	for _, tbl := range MetricTables {
+		if err := db.Exec("INSERT INTO "+tbl+" (host_id, timestamp) VALUES (1, ?), (7, ?)", now, now).Error; err != nil {
+			t.Fatalf("seed %s: %v", tbl, err)
+		}
+	}
+	if err := db.Exec(`INSERT INTO docker_container_entities (id, host_id, metric_timestamp) VALUES ('live', 1, ?), ('ghost', 7, ?)`, now, now).Error; err != nil {
+		t.Fatalf("seed containers: %v", err)
+	}
+
+	NewService(db, log.New(io.Discard), 30, nil).CleanupOrphanMetrics(context.Background())
+
+	for _, tbl := range append(append([]string{}, MetricTables...), "docker_container_entities") {
+		var orphans, live int64
+		if err := db.Raw("SELECT count(*) FROM " + tbl + " WHERE host_id = 7").Scan(&orphans).Error; err != nil {
+			t.Fatalf("count orphans in %s: %v", tbl, err)
+		}
+		if orphans != 0 {
+			t.Errorf("%s: %d orphan rows left", tbl, orphans)
+		}
+		if err := db.Raw("SELECT count(*) FROM " + tbl + " WHERE host_id = 1").Scan(&live).Error; err != nil {
+			t.Fatalf("count live in %s: %v", tbl, err)
+		}
+		if live != 1 {
+			t.Errorf("%s: live host's rows were touched (%d left, want 1)", tbl, live)
+		}
+	}
+}
+
+// An empty hosts table reads as a half-migrated or mid-restore database, not as
+// a node that legitimately knows no machines — it must never trigger a wipe.
+func TestCleanupOrphanMetricsKeepsEverythingWhenNoHostsAreKnown(t *testing.T) {
+	db := newOrphanTestDB(t)
+	now := time.Now()
+	if err := db.Exec(`INSERT INTO cpu_metrics (host_id, timestamp) VALUES (3, ?)`, now).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	NewService(db, log.New(io.Discard), 30, nil).CleanupOrphanMetrics(context.Background())
+
+	var rows int64
+	if err := db.Raw(`SELECT count(*) FROM cpu_metrics`).Scan(&rows).Error; err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("metric rows were purged with an empty hosts table, %d left", rows)
+	}
+}
+
+// The sweep is throttled: the driving hook fires every few seconds and must not
+// re-scan every table each time.
+func TestCleanupOrphanMetricsIsThrottled(t *testing.T) {
+	db := newOrphanTestDB(t)
+	now := time.Now()
+	if err := db.Exec(`INSERT INTO hosts (id, name) VALUES (1, 'live')`).Error; err != nil {
+		t.Fatalf("seed hosts: %v", err)
+	}
+	svc := NewService(db, log.New(io.Discard), 30, nil)
+	svc.CleanupOrphanMetrics(context.Background())
+
+	if err := db.Exec(`INSERT INTO cpu_metrics (host_id, timestamp) VALUES (9, ?)`, now).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	svc.CleanupOrphanMetrics(context.Background()) // too soon — must be a no-op
+
+	var rows int64
+	if err := db.Raw(`SELECT count(*) FROM cpu_metrics WHERE host_id = 9`).Scan(&rows).Error; err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("the throttle did not hold the second sweep back")
+	}
+}

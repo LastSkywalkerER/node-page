@@ -688,6 +688,11 @@ func (h *Handler) writeDesiredState(mode, dsn string, cv *ConfigValues) error {
 	return WriteDesiredState(dir, ds)
 }
 
+// DesiredStateDir is the shared data dir where the app writes
+// desired-state.json for the controller to read — exported for callers outside
+// this package that need to address the controller (e.g. the re-attach flow).
+func DesiredStateDir() string { return desiredStateDir() }
+
 // desiredStateDir is the shared data dir where the app writes desired-state.json
 // for the controller to read (the app's /app/data mount in Docker).
 func desiredStateDir() string {

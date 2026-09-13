@@ -39,6 +39,29 @@ type HostCollector struct {
 	staticInfo  *host.InfoStat
 	staticAt    time.Time
 	productUUID string
+
+	// stalePin* throttle the "the pinned IPv4 is not ours" warning: the
+	// condition is re-evaluated on every collection tick (~5s) and lasts until
+	// someone fixes the pin, so it must be said once and then rarely.
+	stalePinValue string
+	stalePinAt    time.Time
+}
+
+// stalePinWarnInterval is how often the stale-pin warning repeats for the same
+// pinned address.
+const stalePinWarnInterval = time.Hour
+
+// shouldWarnStalePin reports whether the stale-pin warning is due for pin —
+// immediately when the pinned value is new, then once per interval.
+func (c *HostCollector) shouldWarnStalePin(pin string) bool {
+	c.staticMu.Lock()
+	defer c.staticMu.Unlock()
+	if c.stalePinValue == pin && time.Since(c.stalePinAt) < stalePinWarnInterval {
+		return false
+	}
+	c.stalePinValue = pin
+	c.stalePinAt = time.Now()
+	return true
 }
 
 // newHostCollector creates a new host collector instance.
@@ -271,8 +294,22 @@ func (c *HostCollector) CollectHostInfo(ctx context.Context) (HostInfo, error) {
 
 	if v := strings.TrimSpace(os.Getenv("NODE_STATS_IPV4")); v != "" {
 		if ip := net.ParseIP(v); ip != nil && ip.To4() != nil {
-			ipv4 = v
-			c.logger.Debug("IPv4 from NODE_STATS_IPV4", "ipv4", ipv4)
+			// The pin wins — unless the machine demonstrably does not hold that
+			// address any more. It is set once at install time and injected by
+			// compose, so a machine that moves (new lease, restored onto another
+			// host) would otherwise publish the old address on its card forever,
+			// with no way to tell the pin from the truth. Only override when the
+			// machine's real addresses are actually knowable (a container without
+			// the host netns view sees only its bridge, so it must abstain).
+			if locals, known := hostnet.LocalIPv4s(ctx); known && ipv4 != "" && !machineHoldsIP(locals, v) {
+				if c.shouldWarnStalePin(v) {
+					c.logger.Warn("NODE_STATS_IPV4 is pinned to an address this machine no longer holds — using the detected one; re-attach the node (or fix the pin) to silence this",
+						"pinned", v, "detected", ipv4)
+				}
+			} else {
+				ipv4 = v
+				c.logger.Debug("IPv4 from NODE_STATS_IPV4", "ipv4", ipv4)
+			}
 		}
 	}
 
@@ -315,4 +352,21 @@ func readProductUUID() string {
 		return ""
 	}
 	return strings.ToLower(strings.TrimSpace(string(data)))
+}
+
+// machineHoldsIP reports whether ip is one of the addresses the machine
+// actually holds. Compared as parsed addresses so notation differences
+// ("192.168.0.103" vs a zero-padded or mapped form) cannot read as a mismatch
+// and demote a perfectly good pin.
+func machineHoldsIP(local []string, ip string) bool {
+	want := net.ParseIP(ip)
+	if want == nil {
+		return false
+	}
+	for _, v := range local {
+		if got := net.ParseIP(strings.TrimSpace(v)); got != nil && got.Equal(want) {
+			return true
+		}
+	}
+	return false
 }

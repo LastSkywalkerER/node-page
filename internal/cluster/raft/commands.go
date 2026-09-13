@@ -145,16 +145,25 @@ func (w SubmitResultWire) SubmitResult() SubmitResult {
 
 // Status describes the local view of the Raft layer at a point in time.
 type Status struct {
-	Enabled         bool      `json:"enabled"`
-	ClusterID       string    `json:"cluster_id,omitempty"`
-	NodeID          string    `json:"node_id,omitempty"`
-	State           string    `json:"state,omitempty"` // leader | follower | candidate | shutdown
-	LeaderID        string    `json:"leader_id,omitempty"`
-	LeaderAddr      string    `json:"leader_addr,omitempty"`
-	Term            uint64    `json:"term,omitempty"`
-	LastIndex       uint64    `json:"last_index,omitempty"`
-	AppliedIndex    uint64    `json:"applied_index,omitempty"`
-	CommitIndex     uint64    `json:"commit_index,omitempty"`
+	Enabled      bool   `json:"enabled"`
+	ClusterID    string `json:"cluster_id,omitempty"`
+	NodeID       string `json:"node_id,omitempty"`
+	State        string `json:"state,omitempty"` // leader | follower | candidate | shutdown
+	LeaderID     string `json:"leader_id,omitempty"`
+	LeaderAddr   string `json:"leader_addr,omitempty"`
+	Term         uint64 `json:"term,omitempty"`
+	LastIndex    uint64 `json:"last_index,omitempty"`
+	AppliedIndex uint64 `json:"applied_index,omitempty"`
+	CommitIndex  uint64 `json:"commit_index,omitempty"`
+	// DurableIndex is how far this node's own database is known to be caught
+	// up — the point its log replay resumes from after a restart. It normally
+	// tracks AppliedIndex within a couple of seconds.
+	DurableIndex uint64 `json:"durable_index,omitempty"`
+	// ApplyStalled reports that an applier failed non-deterministically and
+	// could not be retried through, freezing DurableIndex. The node keeps
+	// serving and re-applies from there on its next restart, but until then its
+	// record of that write may differ from the cluster's.
+	ApplyStalled    bool      `json:"apply_stalled,omitempty"`
 	Peers           []Peer    `json:"peers,omitempty"`
 	AdvertiseAddr   string    `json:"advertise_addr,omitempty"`
 	AdvertiseURL    string    `json:"advertise_url,omitempty"`

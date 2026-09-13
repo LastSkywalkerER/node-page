@@ -3,6 +3,7 @@ package raft
 import (
 	"bytes"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,7 +62,7 @@ func TestSQLiteSnapshot_TimeColumnsRoundTrip(t *testing.T) {
 		t.Fatalf("seed row: %v", err)
 	}
 
-	snap, err := NewSQLiteSnapshotter(src).Snapshot()
+	snap, err := NewSQLiteSnapshotter(src).Snapshot(0)
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
@@ -82,7 +83,7 @@ func TestSQLiteSnapshot_TimeColumnsRoundTrip(t *testing.T) {
 
 	dst := newSnapshotTestDB(t)
 	rc := io.NopCloser(bytes.NewReader(sink.Bytes()))
-	if err := NewSQLiteRestorer(dst).Restore(rc); err != nil {
+	if _, err := NewSQLiteRestorer(dst).Restore(rc, 0); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 
@@ -139,7 +140,7 @@ func TestSQLiteRestore_ForeignKeyWipeOrder(t *testing.T) {
 	src.Create(&snapAccount{ID: 1, Username: "admin"})
 	src.Create(&snapRefreshToken{ID: 10, UserID: 1})
 
-	snap, err := NewSQLiteSnapshotter(src).Snapshot()
+	snap, err := NewSQLiteSnapshotter(src).Snapshot(0)
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
@@ -155,7 +156,7 @@ func TestSQLiteRestore_ForeignKeyWipeOrder(t *testing.T) {
 	dst.Create(&snapRefreshToken{ID: 20, UserID: 2})
 
 	rc := io.NopCloser(bytes.NewReader(sink.Bytes()))
-	if err := NewSQLiteRestorer(dst).Restore(rc); err != nil {
+	if _, err := NewSQLiteRestorer(dst).Restore(rc, 0); err != nil {
 		t.Fatalf("Restore must not fail on the FK wipe order: %v", err)
 	}
 
@@ -234,7 +235,7 @@ func TestSQLiteSnapshot_OmitsMetricTables(t *testing.T) {
 		t.Fatalf("seed host: %v", err)
 	}
 
-	snap, err := NewSQLiteSnapshotter(db).Snapshot()
+	snap, err := NewSQLiteSnapshotter(db).Snapshot(0)
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
@@ -248,4 +249,178 @@ func TestSQLiteSnapshot_OmitsMetricTables(t *testing.T) {
 	if _, present := s.tables["hosts"]; !present {
 		t.Fatal("hosts must be present in the snapshot table set")
 	}
+}
+
+// snapshotBytes dumps src at appliedIndex and returns the serialised snapshot.
+func snapshotBytes(t *testing.T, src *gorm.DB, appliedIndex uint64) []byte {
+	t.Helper()
+	snap, err := NewSQLiteSnapshotter(src).Snapshot(appliedIndex)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	sink := &memorySink{}
+	if err := snap.Persist(sink); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+	snap.Release()
+	return sink.Bytes()
+}
+
+// raft restores the newest snapshot on EVERY start. Our FSM is the database
+// that just survived the restart, and snapshots here are rare, so obeying that
+// blindly would rewind days of state — and then re-apply the whole log tail on
+// top of it, which is how a machine that moved came back as a ghost row.
+func TestSQLiteRestore_SkippedWhenLocalStateIsAhead(t *testing.T) {
+	t.Parallel()
+
+	src := newSnapshotTestDB(t)
+	if err := src.Create(&snapshotTestHost{ID: 1, Name: "old-name"}).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	data := snapshotBytes(t, src, 100)
+
+	// The local node is PAST that snapshot: it has the newer name and a higher
+	// watermark.
+	dst := newSnapshotTestDB(t)
+	if err := dst.Create(&snapshotTestHost{ID: 1, Name: "new-name"}).Error; err != nil {
+		t.Fatalf("seed dst: %v", err)
+	}
+
+	res, err := NewSQLiteRestorer(dst).Restore(io.NopCloser(bytes.NewReader(data)), 140)
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if !res.Skipped {
+		t.Fatal("restore rewound a database that was already ahead of the snapshot")
+	}
+	if res.Index != 100 {
+		t.Fatalf("res.Index = %d, want 100", res.Index)
+	}
+	var got snapshotTestHost
+	if err := dst.First(&got, 1).Error; err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got.Name != "new-name" {
+		t.Fatalf("local row was overwritten: %q", got.Name)
+	}
+}
+
+// A snapshot that IS ahead (a fresh joiner, a node that fell behind its peers'
+// log, a wiped database) must still be taken in full.
+func TestSQLiteRestore_AppliedWhenSnapshotIsAhead(t *testing.T) {
+	t.Parallel()
+
+	src := newSnapshotTestDB(t)
+	if err := src.Create(&snapshotTestHost{ID: 1, Name: "from-leader"}).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	data := snapshotBytes(t, src, 900)
+
+	dst := newSnapshotTestDB(t)
+	if err := dst.Create(&snapshotTestHost{ID: 2, Name: "stale-local"}).Error; err != nil {
+		t.Fatalf("seed dst: %v", err)
+	}
+
+	res, err := NewSQLiteRestorer(dst).Restore(io.NopCloser(bytes.NewReader(data)), 120)
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if res.Skipped {
+		t.Fatal("restore was skipped although the snapshot was ahead")
+	}
+	if res.Index != 900 {
+		t.Fatalf("res.Index = %d, want 900", res.Index)
+	}
+	var names []string
+	if err := dst.Model(&snapshotTestHost{}).Pluck("name", &names).Error; err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(names) != 1 || names[0] != "from-leader" {
+		t.Fatalf("tables not replaced by the snapshot: %v", names)
+	}
+}
+
+// A snapshot written before the index existed says nothing about where it sits,
+// so it is always taken and the caller is told "unknown" (Index 0).
+func TestSQLiteRestore_SnapshotWithoutIndexAlwaysApplies(t *testing.T) {
+	t.Parallel()
+
+	src := newSnapshotTestDB(t)
+	if err := src.Create(&snapshotTestHost{ID: 1, Name: "legacy"}).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	data := snapshotBytes(t, src, 0)
+
+	dst := newSnapshotTestDB(t)
+	res, err := NewSQLiteRestorer(dst).Restore(io.NopCloser(bytes.NewReader(data)), 5000)
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if res.Skipped || res.Index != 0 {
+		t.Fatalf("res = %+v, want an applied restore with an unknown index", res)
+	}
+}
+
+// stubRestorer lets the FSM-level watermark behaviour be exercised without a DB.
+type stubRestorer struct {
+	res        RestoreResult
+	localSeen  uint64
+	restoreErr error
+}
+
+func (s *stubRestorer) Restore(rc io.ReadCloser, localIndex uint64) (RestoreResult, error) {
+	_ = rc.Close()
+	s.localSeen = localIndex
+	return s.res, s.restoreErr
+}
+
+// After a restore the watermark must describe the state that is actually in the
+// database: the snapshot's index when it was taken, unchanged when it was
+// skipped, and "nothing proven" for a snapshot that carries no index.
+func TestFSM_RestoreRealignsTheWatermark(t *testing.T) {
+	t.Parallel()
+
+	newFSM := func(local uint64) (*FSM, *memAppliedIndexStore) {
+		fsm := NewFSM(newTestLogger(t))
+		store := &memAppliedIndexStore{idx: local}
+		fsm.SetAppliedIndexStore(store)
+		return fsm, store
+	}
+
+	t.Run("applied", func(t *testing.T) {
+		fsm, store := newFSM(120)
+		st := &stubRestorer{res: RestoreResult{Index: 900}}
+		fsm.SetRestorer(st)
+		if err := fsm.Restore(io.NopCloser(strings.NewReader(""))); err != nil {
+			t.Fatalf("Restore: %v", err)
+		}
+		if st.localSeen != 120 {
+			t.Fatalf("restorer saw localIndex=%d, want 120", st.localSeen)
+		}
+		if fsm.DurableIndex() != 900 || store.idx != 900 {
+			t.Fatalf("watermark = %d (persisted %d), want 900", fsm.DurableIndex(), store.idx)
+		}
+	})
+
+	t.Run("skipped", func(t *testing.T) {
+		fsm, _ := newFSM(140)
+		fsm.SetRestorer(&stubRestorer{res: RestoreResult{Index: 100, Skipped: true}})
+		if err := fsm.Restore(io.NopCloser(strings.NewReader(""))); err != nil {
+			t.Fatalf("Restore: %v", err)
+		}
+		if fsm.DurableIndex() != 140 {
+			t.Fatalf("watermark = %d after a skipped restore, want 140", fsm.DurableIndex())
+		}
+	})
+
+	t.Run("unknown index", func(t *testing.T) {
+		fsm, store := newFSM(140)
+		fsm.SetRestorer(&stubRestorer{res: RestoreResult{}})
+		if err := fsm.Restore(io.NopCloser(strings.NewReader(""))); err != nil {
+			t.Fatalf("Restore: %v", err)
+		}
+		if fsm.DurableIndex() != 0 || store.idx != 0 {
+			t.Fatalf("watermark = %d (persisted %d), want 0 — nothing is proven about the restored state", fsm.DurableIndex(), store.idx)
+		}
+	})
 }

@@ -51,7 +51,7 @@ func (clusterJoinToken) TableName() string { return "cluster_join_tokens" }
 // AutoMigrate creates the Raft-managed tables. Called from the central
 // database migrations entry-point.
 func AutoMigrate(db *gorm.DB) error {
-	return db.AutoMigrate(&clusterConfig{}, &peerNodeAdvertise{}, &clusterJoinToken{})
+	return db.AutoMigrate(&clusterConfig{}, &peerNodeAdvertise{}, &clusterJoinToken{}, &fsmApplyState{})
 }
 
 // upsertClusterConfig writes a single key/value pair to cluster_config.

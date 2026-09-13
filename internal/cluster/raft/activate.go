@@ -83,6 +83,9 @@ func Activate(ctx context.Context, deps ActivationDeps, cfg config.RaftConfig, s
 	RegisterAppliers(fsm, deps.Appliers)
 	fsm.SetSnapshotter(NewSQLiteSnapshotter(deps.DB))
 	fsm.SetRestorer(NewSQLiteRestorer(deps.DB))
+	// Our FSM state is durable (SQLite), so it must tell raft's replay where it
+	// already is — otherwise every restart re-applies the whole log tail.
+	fsm.SetAppliedIndexStore(NewAppliedIndexStore(deps.DB))
 
 	node := NewNode(deps.Logger, cfg, fsm)
 	node.SetDB(deps.DB) // for leader-forwarding's peer_node_advertise lookup

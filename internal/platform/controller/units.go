@@ -99,7 +99,8 @@ func composeHash(ds setup.DesiredState) string {
 		Image    string
 		HTTPPort string
 		RaftPort string
-	}{setup.BuildComposeContent(ds), ds.Image, ds.HTTPPort, ds.RaftPort})
+		IPv4     string
+	}{setup.BuildComposeContent(ds), ds.Image, ds.HTTPPort, ds.RaftPort, ds.IPv4})
 }
 
 // dbHash: the managed Postgres provision, or "absent".
@@ -198,6 +199,15 @@ func (c *controller) applyCompose(ds setup.DesiredState) (string, error) {
 	if strings.TrimSpace(ds.RaftPort) != "" {
 		if err := upsertEnvKey(envPath, "NODE_STATS_RAFT_PORT", ds.RaftPort); err != nil {
 			return "", fmt.Errorf("update stack .env (NODE_STATS_RAFT_PORT): %w", err)
+		}
+	}
+	// The machine's own address: written by the installer, corrected here after
+	// a move. compose passes it into the container, where it outranks anything
+	// the app writes to its own .env — so this file is the only place a stale
+	// value can actually be fixed.
+	if strings.TrimSpace(ds.IPv4) != "" {
+		if err := upsertEnvKey(envPath, "NODE_STATS_IPV4", ds.IPv4); err != nil {
+			return "", fmt.Errorf("update stack .env (NODE_STATS_IPV4): %w", err)
 		}
 	}
 	return "compose regenerated", nil

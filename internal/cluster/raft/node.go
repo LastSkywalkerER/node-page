@@ -391,6 +391,8 @@ func (n *Node) Status() Status {
 	st.State = n.raft.State().String()
 	st.LastIndex = n.raft.LastIndex()
 	st.AppliedIndex = n.fsm.AppliedIndex()
+	st.DurableIndex = n.fsm.DurableIndex()
+	st.ApplyStalled = n.fsm.Stalled()
 	st.CommitIndex = n.raft.CommitIndex()
 	if leaderAddr, leaderID := n.raft.LeaderWithID(); leaderID != "" {
 		st.LeaderID = string(leaderID)

@@ -63,6 +63,18 @@ type DesiredState struct {
 	HTTPPort string `json:"http_port,omitempty"`
 	RaftPort string `json:"raft_port,omitempty"`
 
+	// IPv4, when non-empty, is the machine address the controller writes into
+	// the stack .env as NODE_STATS_IPV4 — the address the app puts on this
+	// machine's card. The installer seeds it once at install time, so a machine
+	// that later moves (new DHCP lease, restored onto another host) would keep
+	// advertising the address it no longer has: compose injects the stale pin
+	// into the container environment, where it beats both the detected address
+	// and the app's own .env (godotenv never overrides a set variable). A
+	// re-attach records the corrected address here so the fix survives the next
+	// container recreate. Deliberately NOT part of appHash: the .env is synced
+	// in place and the running process is updated live, so nothing restarts.
+	IPv4 string `json:"ipv4,omitempty"`
+
 	// BackupHostPath, when set, is the host directory the application-backup
 	// repository lives in. The controller bind-mounts it into the app at
 	// BackupMountPath so restic can reach it: the operator names a path on the

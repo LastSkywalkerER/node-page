@@ -142,12 +142,48 @@ func (c *Container) persistReattachEnv(p raftcluster.ReattachPayload) error {
 	}
 	cv.RaftAdvertiseAddr = p.RaftAddr
 	cv.RaftAdvertisePublicURL = p.HTTPURL
+	ipv4 := ""
 	if host, _, serr := net.SplitHostPort(p.RaftAddr); serr == nil {
 		if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
+			ipv4 = host
 			cv.NodeStatsIPv4 = host
 		}
 	}
-	return cw.WriteConfigFile(cv)
+	if err := cw.WriteConfigFile(cv); err != nil {
+		return err
+	}
+	if ipv4 != "" {
+		c.applyReattachedIPv4(ipv4)
+	}
+	return nil
+}
+
+// applyReattachedIPv4 makes the corrected machine address effective everywhere
+// it is read from, not just in the file we just wrote.
+//
+// In Docker the address ALSO lives in the installer-owned stack .env, which
+// compose injects into the container — and an environment variable outranks the
+// app's own .env (godotenv deliberately never overrides a set variable). So a
+// move used to be only half-fixed: Raft re-attached to the new address while
+// every machine card in the cluster kept showing the old one, and a container
+// recreate put the stale pin back. Two writes close that: the process picks the
+// address up now, and the controller syncs the stack .env for the next restart.
+//
+// Both are best-effort — the re-attach itself has already succeeded, and a
+// deployment with no controller (native, or an externally managed stack) simply
+// has nothing else to update.
+func (c *Container) applyReattachedIPv4(ipv4 string) {
+	if err := os.Setenv("NODE_STATS_IPV4", ipv4); err != nil {
+		c.logger.Warn("re-attach: could not update NODE_STATS_IPV4 in this process", "ipv4", ipv4, "error", err)
+	}
+	changed, err := setupcfg.RequestIPv4Change(setupcfg.DesiredStateDir(), ipv4)
+	switch {
+	case err != nil:
+		c.logger.Warn("re-attach: could not hand the new address to the controller; a container recreate would restore the old one",
+			"ipv4", ipv4, "error", err)
+	case changed:
+		c.logger.Info("re-attach: stack configuration updated with the machine's new address", "ipv4", ipv4)
+	}
 }
 
 // reattachHTTPURL keeps the node's dashboard URL pointing at the same host as

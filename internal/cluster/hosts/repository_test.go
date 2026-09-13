@@ -903,3 +903,95 @@ func TestUpsertLocalHostUnknownBootTimeKeepsExisting(t *testing.T) {
 		t.Fatalf("local row boot_time = %d (id %d), want %d kept on id %d", got.BootTime, got.ID, boot, LocalCollectorHostID)
 	}
 }
+
+// A second machine that shares a hostname is told apart by its MAC tail, in
+// full. The suffix used to be run through the external-id shortener, which cut
+// "00:03" down to "03" — a bracketed number matching nothing on the machine.
+func TestUpsertHostNameSuffixKeepsWholeMACTail(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+
+	if _, err := repo.UpsertHost(ctx, HostInfo{
+		Name: "SkyNAS", MacAddress: "02:42:ac:1c:00:03", HostID: "machine-old",
+	}); err != nil {
+		t.Fatalf("upsert first: %v", err)
+	}
+	// Same hostname, same docker-bridge MAC shape, different machine — exactly
+	// what a node-stats stack rebuilt on another box looks like.
+	second, err := repo.UpsertHost(ctx, HostInfo{
+		Name: "SkyNAS", MacAddress: "02:42:ac:1b:00:03", HostID: "machine-new",
+	})
+	if err != nil {
+		t.Fatalf("upsert second: %v", err)
+	}
+	if second.Name != "SkyNAS [00:03]" {
+		t.Fatalf("second row name = %q, want %q", second.Name, "SkyNAS [00:03]")
+	}
+}
+
+// The connector suffix keeps naming the guest, not the MAC.
+func TestExternalIDSuffix(t *testing.T) {
+	got := externalIDSuffix("proxmox:node/inno-pve@192.168.0.87:8006/inno-pve/qemu/101")
+	want := "inno-pve@192.168.0.87:8006/inno-pve/qemu/101"
+	if got != want {
+		t.Fatalf("externalIDSuffix = %q, want %q", got, want)
+	}
+	if got := externalIDSuffix(""); got != "" {
+		t.Fatalf("externalIDSuffix(\"\") = %q, want empty", got)
+	}
+}
+
+// Running out of time while draining a host's history must NOT leave the host
+// row behind: the row is what the cluster agrees on, and a node that kept it
+// disagreed with its peers about which machines exist — permanently, because
+// the surviving row still owned the external_id and MAC the correction needed.
+func TestDeleteHostCascadeDropsRowEvenWhenHistoryPurgeIsCutShort(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&Host{}, &cascadeCPU{}, &cascadeMem{}, &cascadeDisk{},
+		&cascadeNet{}, &cascadeDocker{}, &cascadeContainer{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	repo := NewRepository(db)
+
+	var target uint = 10
+	if err := db.Create(&Host{ID: target, Name: "target", MacAddress: "aa:00:00:00:00:10"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	hid := target
+	base := time.Now().Truncate(time.Second)
+	for i := 0; i < 50; i++ {
+		if err := db.Create(&cascadeCPU{HostID: &hid, Timestamp: base.Add(time.Duration(i) * time.Second)}).Error; err != nil {
+			t.Fatalf("seed cpu: %v", err)
+		}
+	}
+
+	// Stand in for the applier's deadline expiring mid-cascade: the context dies
+	// the moment the host row is gone.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := db.Callback().Raw().After("gorm:raw").Register("test:cut_short", func(tx *gorm.DB) {
+		if strings.Contains(tx.Statement.SQL.String(), "DELETE FROM hosts") {
+			cancel()
+		}
+	}); err != nil {
+		t.Fatalf("register callback: %v", err)
+	}
+
+	if err := repo.DeleteHostCascade(ctx, target); err != nil {
+		t.Fatalf("cascade reported a failure although the host row was deleted: %v", err)
+	}
+	if _, err := repo.GetHostByID(context.Background(), target); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("host row survived the cascade (err=%v)", err)
+	}
+	// The history it could not reach is left for the retention orphan sweep.
+	var left int64
+	if err := db.Model(&cascadeCPU{}).Where("host_id = ?", target).Count(&left).Error; err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if left == 0 {
+		t.Log("purge completed before the context died; the row assertion is what matters here")
+	}
+}
