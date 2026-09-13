@@ -360,10 +360,12 @@ func (f *FSM) runApplier(applier CommandApplier, cmd Command, rlog *hraft.Log) e
 	return err
 }
 
-// alreadyApplied reports whether index is covered by the durable watermark, and
-// keeps that watermark honest across a snapshot install: raft only skips indexes
-// when it has just restored state, so a GAP means everything below is already in
-// the restored tables.
+// alreadyApplied reports whether index is covered by the durable watermark.
+//
+// The watermark is not required to be contiguous with the log: raft keeps
+// configuration and no-op entries out of the FSM entirely, so indexes legitimately
+// skip in normal operation. Only "is this one already in our tables" matters here;
+// a restore realigns the watermark explicitly (see Restore).
 func (f *FSM) alreadyApplied(index uint64) bool {
 	f.mu.RLock()
 	store := f.applyStore
@@ -375,15 +377,7 @@ func (f *FSM) alreadyApplied(index uint64) bool {
 	if durable == 0 {
 		return false // nothing proven yet — replay rather than skip
 	}
-	if index <= durable {
-		return true
-	}
-	if index > durable+1 && !f.stalled.Load() {
-		f.logger.Info("raft FSM: log continues past the local watermark (snapshot restored); fast-forwarding it",
-			"from", durable, "to", index-1)
-		f.durableIndex.Store(index - 1)
-	}
-	return false
+	return index <= durable
 }
 
 // markApplied advances the durable watermark, flushing it to the store at most

@@ -995,3 +995,106 @@ func TestDeleteHostCascadeDropsRowEvenWhenHistoryPurgeIsCutShort(t *testing.T) {
 		t.Log("purge completed before the context died; the row assertion is what matters here")
 	}
 }
+
+// A node's own machine must never stay split across two rows. The local
+// collector row (id=1) always carries the machine's CURRENT MAC, so when the
+// cluster moved that MAC onto its copy of the same machine the update was
+// deflected here (mac_address is unique) and the copy kept the external_id —
+// after which it won every external_id lookup, id=1 never received the topology,
+// and the card the node showed for itself was the frozen copy.
+func TestUpsertConnectorHostFoldsStaleCopyOfOwnMachineIntoLocalRow(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&Host{}, &HostPendingChange{}, &cascadeCPU{}, &cascadeMem{},
+		&cascadeDisk{}, &cascadeNet{}, &cascadeDocker{}, &cascadeContainer{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	repo := NewRepository(db)
+	ctx := context.Background()
+
+	const uuid = "4b23b4fd-57cf-49a4-b572-8be7c4eff370"
+	// This node's own row, on the MAC the container has right now.
+	if err := db.Create(&Host{
+		ID: LocalCollectorHostID, Name: "SkyNAS", MacAddress: "02:42:ac:1b:00:02",
+		IPv4: "192.168.0.103", SystemHostID: uuid, HardwareUUID: uuid, Source: SourceAgent,
+	}).Error; err != nil {
+		t.Fatalf("seed local row: %v", err)
+	}
+	// The cluster's copy of the SAME machine, stuck on the previous MAC and
+	// holding the connector identity.
+	stale := &Host{
+		Name: "SkyNAS", MacAddress: "02:42:ac:1b:00:03", IPv4: "192.168.0.103",
+		SystemHostID: uuid, HardwareUUID: uuid, HostType: HostTypeVM,
+		Source: SourceAgentConnector, ExternalID: "proxmox:node/pve/qemu/101", GuestStatus: "running",
+	}
+	if err := db.Create(stale).Error; err != nil {
+		t.Fatalf("seed stale copy: %v", err)
+	}
+
+	got, err := repo.UpsertConnectorHost(ctx, ConnectorHostInfo{
+		HostInfo:    HostInfo{Name: "SkyNAS", MacAddress: "02:42:ac:1b:00:02", IPv4: "192.168.0.103"},
+		HostType:    HostTypeVM,
+		ParentMAC:   "aa:bb:cc:dd:ee:ff",
+		ExternalID:  "proxmox:node/pve/qemu/101",
+		GuestStatus: "running",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if got.ID != LocalCollectorHostID {
+		t.Fatalf("upsert landed on row %d, want the local collector row", got.ID)
+	}
+
+	var rows []Host
+	if err := db.Find(&rows).Error; err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("machine still split across %d rows", len(rows))
+	}
+	if rows[0].ExternalID != "proxmox:node/pve/qemu/101" || rows[0].HostType != HostTypeVM ||
+		rows[0].ParentMAC != "aa:bb:cc:dd:ee:ff" || rows[0].Source != SourceAgentConnector {
+		t.Fatalf("topology did not move onto the local row: %+v", rows[0])
+	}
+	if rows[0].MacAddress != "02:42:ac:1b:00:02" {
+		t.Fatalf("local row lost its current MAC: %q", rows[0].MacAddress)
+	}
+}
+
+// The fold needs a shared STABLE identity. Two machines behind Docker bridges
+// derive identical 02:42:… MACs, so a matching MAC alone must never make one
+// node's row swallow another machine's.
+func TestUpsertConnectorHostKeepsSeparateMachinesApart(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+
+	// newTestRepo's local row has no stable identity; give the connector row one
+	// that cannot corroborate with it either way.
+	other, err := repo.UpsertConnectorHost(ctx, ConnectorHostInfo{
+		HostInfo:    HostInfo{Name: "other-machine", MacAddress: "02:42:ac:1b:00:09"},
+		HostType:    HostTypeVM,
+		ExternalID:  "proxmox:node/pve/qemu/202",
+		GuestStatus: "running",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if other.ID == LocalCollectorHostID {
+		t.Fatal("an unrelated machine was folded into this node's own row")
+	}
+
+	again, err := repo.UpsertConnectorHost(ctx, ConnectorHostInfo{
+		HostInfo:    HostInfo{Name: "other-machine", MacAddress: "02:42:ac:1b:00:09"},
+		HostType:    HostTypeVM,
+		ExternalID:  "proxmox:node/pve/qemu/202",
+		GuestStatus: "running",
+	})
+	if err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	if again.ID != other.ID {
+		t.Fatalf("row id moved from %d to %d", other.ID, again.ID)
+	}
+}

@@ -324,19 +324,25 @@ func TestFSM_SkipsEntriesBelowDurableWatermark(t *testing.T) {
 	}
 }
 
-// A gap in the log means raft installed a snapshot: everything below the entry
-// it resumes at is already in the restored tables.
-func TestFSM_FastForwardsWatermarkAfterSnapshotGap(t *testing.T) {
+// Raft keeps configuration and no-op entries out of the FSM, so the indexes it
+// hands us legitimately skip. A gap must be applied like any other entry — and
+// must not be mistaken for anything about a snapshot.
+func TestFSM_GapsInTheLogAreNormal(t *testing.T) {
 	t.Parallel()
 	fsm := NewFSM(newTestLogger(t))
 	fsm.SetAppliedIndexStore(&memAppliedIndexStore{idx: 10})
-	fsm.Register(CmdHostUpsert, func(Command, *hraft.Log) error { return nil })
+
+	applied := 0
+	fsm.Register(CmdHostUpsert, func(Command, *hraft.Log) error { applied++; return nil })
 
 	if res := fsm.Apply(&hraft.Log{Index: 500, Data: mustCommand(t, CmdHostUpsert)}); res != nil {
 		t.Fatalf("apply after gap: %v", res)
 	}
+	if applied != 1 {
+		t.Fatalf("applier ran %d times, want 1 — a gap must not skip the entry", applied)
+	}
 	if got := fsm.DurableIndex(); got != 500 {
-		t.Fatalf("DurableIndex=%d after a snapshot gap, want 500", got)
+		t.Fatalf("DurableIndex=%d, want 500", got)
 	}
 }
 

@@ -582,6 +582,29 @@ func (r *hostRepository) UpsertConnectorHost(ctx context.Context, info Connector
 		err = gorm.ErrRecordNotFound
 	}
 
+	// The resolved row may be a STALE COPY of this node's OWN machine. The local
+	// collector row (id=1) is written locally and always carries the machine's
+	// current MAC; when the cluster moved that MAC onto its copy of the same
+	// machine, the update was deflected here (mac_address is unique and id=1
+	// already held it) and the copy kept the external_id. It then keeps winning
+	// the external_id lookup above, so the machine stays split in two forever:
+	// id=1 never receives the topology, and the stale row is what the card shows,
+	// frozen. Fold them back together — but only on the strongest evidence there
+	// is, a shared non-empty stable machine identity, never on a MAC alone
+	// (docker-bridge agents on different machines derive identical 02:42:… ones).
+	if err == nil && host.ID != LocalCollectorHostID && !r.isRemoteOrigin(info.OriginCluster) {
+		local, lerr := r.localRowForSameMachine(ctx, &host)
+		if lerr != nil {
+			return nil, lerr
+		}
+		if local != nil {
+			if derr := r.DeleteHostCascade(ctx, host.ID); derr != nil {
+				return nil, derr
+			}
+			host = *local
+		}
+	}
+
 	if err == nil {
 		merged := MergeSource(host.Source, SourceConnector)
 		if merged != SourceConnector {
@@ -1099,4 +1122,35 @@ func (r *hostRepository) ApplyPendingChange(ctx context.Context, changeID string
 		}
 	}
 	return r.DeletePendingChange(ctx, changeID)
+}
+
+// localRowForSameMachine returns this node's own collector row when `other`
+// describes the SAME physical machine — i.e. the two rows agree on a non-empty
+// stable identity (SMBIOS UUID or machine-id).
+//
+// Deliberately narrow. A shared hostname or a shared MAC proves nothing: Docker
+// bridge agents on different machines derive identical 02:42:… MACs, and a
+// mistaken merge here would swallow another machine's row. Returns nil when
+// there is no local row, when it IS the row in question, or when either side has
+// no stable identity to corroborate with.
+func (r *hostRepository) localRowForSameMachine(ctx context.Context, other *Host) (*Host, error) {
+	if other == nil || other.ID == LocalCollectorHostID {
+		return nil, nil
+	}
+	if other.HardwareUUID == "" && other.SystemHostID == "" {
+		return nil, nil
+	}
+	var local Host
+	err := r.db.WithContext(ctx).Where("id = ?", LocalCollectorHostID).First(&local).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if (local.HardwareUUID != "" && local.HardwareUUID == other.HardwareUUID) ||
+		(local.SystemHostID != "" && local.SystemHostID == other.SystemHostID) {
+		return &local, nil
+	}
+	return nil, nil
 }
